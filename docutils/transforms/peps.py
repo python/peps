@@ -22,7 +22,7 @@ import time
 from docutils import nodes, utils
 from docutils import ApplicationError, DataError
 from docutils.transforms import Transform, TransformError
-from docutils.transforms import parts, references
+from docutils.transforms import parts, references, misc
 
 
 class Headers(Transform):
@@ -42,13 +42,14 @@ class Headers(Transform):
 
     def apply(self):
         if not len(self.document):
+            # @@@ replace these DataErrors with proper system messages
             raise DataError('Document tree is empty.')
         header = self.document[0]
         if not isinstance(header, nodes.field_list) or \
               header.get('class') != 'rfc2822':
             raise DataError('Document does not begin with an RFC-2822 '
                             'header; it is not a PEP.')
-        pep = title = None
+        pep = None
         for field in header:
             if field[0].astext().lower() == 'pep': # should be the first field
                 value = field[1].astext()
@@ -79,6 +80,8 @@ class Headers(Transform):
             pending = nodes.pending(PEPZero)
             self.document.insert(1, pending)
             self.document.note_pending(pending)
+        if len(header) < 2 or header[1][0].astext().lower() != 'title':
+            raise DataError('No title!')
         for field in header:
             name = field[0].astext().lower()
             body = field[1]
@@ -150,7 +153,8 @@ class TargetNotes(Transform):
 
     """
     Locate the "References" section, insert a placeholder for an external
-    target footnote insertion transform at the end, and run the transform.
+    target footnote insertion transform at the end, and schedule the
+    transform to run immediately.
     """
 
     default_priority = 520
@@ -180,6 +184,19 @@ class TargetNotes(Transform):
         pending = nodes.pending(references.TargetNotes)
         refsect.append(pending)
         self.document.note_pending(pending, 0)
+        pending = nodes.pending(misc.CallBack,
+                                details={'callback': self.cleanup_callback})
+        refsect.append(pending)
+        self.document.note_pending(pending, 1)
+
+    def cleanup_callback(self, pending):
+        """
+        Remove an empty "References" section.
+
+        Called after the `references.TargetNotes` transform is complete.
+        """
+        if len(pending.parent) == 2:    # <title> and <pending>
+            pending.parent.parent.remove(pending.parent)
 
 
 class PEPZero(Transform):

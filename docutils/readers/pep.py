@@ -20,6 +20,15 @@ from docutils.transforms import peps, references
 from docutils.parsers import rst
 
 
+class Inliner(rst.states.Inliner):
+
+    """
+    Extend `rst.Inliner` to for local PEP references.
+    """
+
+    pep_url = rst.states.Inliner.pep_url_local
+
+
 class Reader(standalone.Reader):
 
     supported = ('pep',)
@@ -44,17 +53,10 @@ class Reader(standalone.Reader):
 
     settings_default_overrides = {'pep_references': 1, 'rfc_references': 1}
 
+    inliner_class = Inliner
+
     def __init__(self, parser=None, parser_name=None):
         """`parser` should be ``None``."""
         if parser is None:
-            parser = rst.Parser(rfc2822=1, inliner=Inliner())
+            parser = rst.Parser(rfc2822=1, inliner=self.inliner_class())
         standalone.Reader.__init__(self, parser, '')
-
-
-class Inliner(rst.states.Inliner):
-
-    """
-    Extend `rst.Inliner` to for local PEP references.
-    """
-
-    pep_url = rst.states.Inliner.pep_url_local

@@ -61,8 +61,7 @@ class Reader(Component):
         if not self.parser:
             self.parser = parser
         self.settings = settings
-        # May modify self.parser, depending on input:
-        self.input = self.source.read(self)
+        self.input = self.source.read()
         self.parse()
         return self.document
 

@@ -11,15 +11,16 @@ __docformat__ = 'reStructuredText'
 import sys
 import os.path
 from urllib2 import urlopen, URLError
-from docutils import nodes, statemachine, utils
+from docutils import io, nodes, statemachine, utils
 from docutils.parsers.rst import directives, states
 
 
 def include(name, arguments, options, content, lineno,
             content_offset, block_text, state, state_machine):
     """Include a reST file as part of the content of this reST file."""
-    source_dir = os.path.dirname(
-        os.path.abspath(state.document.current_source))
+    source = state_machine.input_lines.source(
+        lineno - state_machine.input_offset - 1)
+    source_dir = os.path.dirname(os.path.abspath(source))
     path = ''.join(arguments[0].splitlines())
     if path.find(' ') != -1:
         error = state_machine.reporter.error(
@@ -29,14 +30,14 @@ def include(name, arguments, options, content, lineno,
     path = os.path.normpath(os.path.join(source_dir, path))
     path = utils.relative_path(None, path)
     try:
-        include_file = open(path)
+        include_file = io.FileInput(
+            source_path=path, encoding=state.document.settings.input_encoding)
     except IOError, error:
         severe = state_machine.reporter.severe(
               'Problems with "%s" directive path:\n%s.' % (name, error),
               nodes.literal_block(block_text, block_text), line=lineno)
         return [severe]
     include_text = include_file.read()
-    include_file.close()
     if options.has_key('literal'):
         literal_block = nodes.literal_block(include_text, include_text,
                                             source=path)

@@ -26,10 +26,20 @@ class Input(TransformSpec):
 
     default_source_path = None
 
-    def __init__(self, settings, source=None, source_path=None):
-        self.settings = settings
-        """A settings object with "input_encoding" and "output_encoding"
-        attributes (typically a `docutils.optik.Values` object)."""
+    def __init__(self, settings=None, source=None, source_path=None,
+                 encoding=None):
+        self.encoding = encoding
+        """The character encoding for the input source."""
+
+        if settings:
+            if not encoding:
+                self.encoding = settings.input_encoding
+            import warnings, traceback
+            warnings.warn(
+                'Setting input encoding via a "settings" struct is '
+                'deprecated; send encoding directly instead.\n%s'
+                % ''.join(traceback.format_list(traceback.extract_stack()
+                                                [-3:-1])))
 
         self.source = source
         """The source of input data."""
@@ -44,7 +54,7 @@ class Input(TransformSpec):
         return '%s: source=%r, source_path=%r' % (self.__class__, self.source,
                                                   self.source_path)
 
-    def read(self, reader):
+    def read(self):
         raise NotImplementedError
 
     def decode(self, data):
@@ -57,10 +67,9 @@ class Input(TransformSpec):
 
             locale.setlocale(locale.LC_ALL, '')
         """
-        if self.settings.input_encoding \
-               and self.settings.input_encoding.lower() == 'unicode':
+        if self.encoding and self.encoding.lower() == 'unicode':
             return unicode(data)
-        encodings = [self.settings.input_encoding, 'utf-8']
+        encodings = [self.encoding, 'utf-8']
         try:
             encodings.append(locale.nl_langinfo(locale.CODESET))
         except:
@@ -97,10 +106,20 @@ class Output(TransformSpec):
 
     default_destination_path = None
 
-    def __init__(self, settings, destination=None, destination_path=None):
-        self.settings = settings
-        """A settings object with "input_encoding" and "output_encoding"
-        attributes (typically a `docutils.optik.Values` object)."""
+    def __init__(self, settings=None, destination=None, destination_path=None,
+                 encoding=None):
+        self.encoding = encoding
+        """The character encoding for the output destination."""
+
+        if settings:
+            if not encoding:
+                self.encoding = settings.output_encoding
+            import warnings, traceback
+            warnings.warn(
+                'Setting output encoding via a "settings" struct is '
+                'deprecated; send encoding directly instead.\n%s'
+                % ''.join(traceback.format_list(traceback.extract_stack()
+                                                [-3:-1])))
 
         self.destination = destination
         """The destination for output data."""
@@ -119,11 +138,10 @@ class Output(TransformSpec):
         raise NotImplementedError
 
     def encode(self, data):
-        if self.settings.output_encoding \
-               and self.settings.output_encoding.lower() == 'unicode':
+        if self.encoding and self.encoding.lower() == 'unicode':
             return data
         else:
-            return data.encode(self.settings.output_encoding or '')
+            return data.encode(self.encoding or '')
 
 
 class FileInput(Input):
@@ -132,7 +150,8 @@ class FileInput(Input):
     Input for single, simple file-like objects.
     """
 
-    def __init__(self, settings, source=None, source_path=None, autoclose=1):
+    def __init__(self, settings=None, source=None, source_path=None,
+                 encoding=None, autoclose=1):
         """
         :Parameters:
             - `source`: either a file-like object (which is read directly), or
@@ -141,7 +160,7 @@ class FileInput(Input):
             - `autoclose`: close automatically after read (boolean); always
               false if `sys.stdin` is the source.
         """
-        Input.__init__(self, settings, source, source_path)
+        Input.__init__(self, settings, source, source_path, encoding)
         self.autoclose = autoclose
         if source is None:
             if source_path:
@@ -155,7 +174,7 @@ class FileInput(Input):
             except AttributeError:
                 pass
 
-    def read(self, reader):
+    def read(self):
         """Read and decode a single file and return the data."""
         data = self.source.read()
         if self.autoclose:
@@ -172,8 +191,8 @@ class FileOutput(Output):
     Output for single, simple file-like objects.
     """
 
-    def __init__(self, settings, destination=None, destination_path=None,
-                 autoclose=1):
+    def __init__(self, settings=None, destination=None, destination_path=None,
+                 encoding=None, autoclose=1):
         """
         :Parameters:
             - `destination`: either a file-like object (which is written
@@ -184,7 +203,8 @@ class FileOutput(Output):
             - `autoclose`: close automatically after write (boolean); always
               false if `sys.stdout` is the destination.
         """
-        Output.__init__(self, settings, destination, destination_path)
+        Output.__init__(self, settings, destination, destination_path,
+                        encoding)
         self.opened = 1
         self.autoclose = autoclose
         if destination is None:
@@ -226,7 +246,7 @@ class StringInput(Input):
 
     default_source_path = '<string>'
 
-    def read(self, reader):
+    def read(self):
         """Decode and return the source string."""
         return self.decode(self.source)
 
@@ -253,7 +273,7 @@ class NullInput(Input):
 
     default_source_path = 'null input'
 
-    def read(self, reader):
+    def read(self):
         """Return a null string."""
         return u''
 

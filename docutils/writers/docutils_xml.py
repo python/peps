@@ -22,12 +22,18 @@ class Writer(writers.Writer):
 
     settings_spec = (
         '"Docutils XML" Writer Options',
-        'Warning: these options may adversely affect whitespace; use them '
-        'only for reading convenience.',
+        'Warning: the --newlines and --indents options may adversely affect '
+        'whitespace; use them only for reading convenience.',
         (('Generate XML with newlines before and after tags.',
           ['--newlines'], {'action': 'store_true'}),
          ('Generate XML with indents and newlines.',
-          ['--indents'], {'action': 'store_true'}),),)
+          ['--indents'], {'action': 'store_true'}),
+         ('Omit the XML declaration.  Use with caution.',
+          ['--no-xml-declaration'], {'dest': 'xml_declaration', 'default': 1,
+                                     'action': 'store_false'}),
+         ('Omit the DOCTYPE declaration.',
+          ['--no-doctype'], {'dest': 'doctype_declaration', 'default': 1,
+                             'action': 'store_false'}),))
 
     output = None
     """Final translated form of `document`."""
@@ -48,9 +54,13 @@ class Writer(writers.Writer):
         if settings.indents:
             newline = '\n'
             indent = '    '
-        output_prefix = [self.xml_declaration % settings.output_encoding,
-                         self.doctype,
-                         self.generator % docutils.__version__]
+        output_prefix = []
+        if settings.xml_declaration:
+            output_prefix.append(
+                self.xml_declaration % settings.output_encoding)
+        if settings.doctype_declaration:
+            output_prefix.append(self.doctype)
+        output_prefix.append(self.generator % docutils.__version__)
         docnode = self.document.asdom().childNodes[0]
         self.output = (''.join(output_prefix)
                        + docnode.toprettyxml(indent, newline))

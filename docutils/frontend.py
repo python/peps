@@ -303,33 +303,8 @@ class ConfigParser(CP.ConfigParser):
 
         The section DEFAULT is special.
         """
-        try:
-            sectdict = self._ConfigParser__sections[section].copy()
-        except KeyError:
-            sectdict = {}
-        d = self._ConfigParser__defaults.copy()
-        d.update(sectdict)
-        # Update with the entry specific variables
-        if vars:
-            d.update(vars)
-        if raw:
-            return sectdict
-        # do the string interpolation
-        for option in sectdict.keys():
-            rawval = sectdict[option]
-            value = rawval              # Make it a pretty variable name
-            depth = 0
-            while depth < 10:           # Loop through this until it's done
-                depth += 1
-                if value.find("%(") >= 0:
-                    try:
-                        value = value % d
-                    except KeyError, key:
-                        raise CP.InterpolationError(key, option, section,
-                                                    rawval)
-                else:
-                    break
-            if value.find("%(") >= 0:
-                raise CP.InterpolationDepthError(option, section, rawval)
-            sectdict[option] = value
-        return sectdict
+        section_dict = {}
+        if self.has_section(section):
+            for option in self.options(section):
+                section_dict[option] = self.get(section, option, raw, vars)
+        return section_dict

@@ -137,8 +137,9 @@ class Publisher:
             source_path = self.settings._source
         else:
             self.settings._source = source_path
-        self.source = self.source_class(self.settings, source=source,
-                                        source_path=source_path)
+        self.source = self.source_class(
+            source=source, source_path=source_path,
+            encoding=self.settings.input_encoding)
 
     def set_destination(self, destination=None, destination_path=None):
         if destination_path is None:
@@ -146,8 +147,8 @@ class Publisher:
         else:
             self.settings._destination = destination_path
         self.destination = self.destination_class(
-            self.settings, destination=destination,
-            destination_path=destination_path)
+            destination=destination, destination_path=destination_path,
+            encoding=self.settings.output_encoding)
 
     def apply_transforms(self, document):
         document.transformer.populate_from_components(

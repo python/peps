@@ -373,6 +373,15 @@ def normalize_name(name):
     return ' '.join(name.lower().split())
 
 def new_document(source, settings=None):
+    """
+    Return a new empty document object.
+
+    :Parameters:
+        `source` : string
+            The path to or description of the source text of the document.
+        `settings` : optparse.Values object
+            Runtime settings.  If none provided, a default set will be used.
+    """
     if settings is None:
         settings = frontend.OptionParser().get_default_values()
     reporter = Reporter(source, settings.report_level, settings.halt_level,
