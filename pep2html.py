@@ -49,10 +49,13 @@ LOCALVARS = "Local Variables:"
 DTD = ('<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN"\n'
        '                      "http://www.w3.org/TR/REC-html40/loose.dtd">')
 
-fixpat = re.compile("((http|ftp):[-_a-zA-Z0-9/.+~:?#$=&]+)|(pep-\d+(.txt)?)|"
+fixpat = re.compile("((http|ftp):[-_a-zA-Z0-9/.+~:?#$=&,]+)|(pep-\d+(.txt)?)|"
                     "(RFC[- ]?(?P<rfcnum>\d+))|"
                     "(PEP\s+(?P<pepnum>\d+))|"
                     ".")
+
+EMPTYSTRING = ''
+SPACE = ' '
 
 
 
@@ -67,14 +70,21 @@ def usage(code, msg=''):
 def fixanchor(current, match):
     text = match.group(0)
     link = None
-    if text[:5] == "http:" or text[:4] == "ftp:":
-        link = text
-    elif text[:4] == "pep-" and text != current:
+    if text.startswith('http:') or text.startswith('ftp:'):
+        # Strip off trailing punctuation.  Pattern taken from faqwiz.
+        ltext = list(text)
+        while ltext:
+            c = ltext.pop()
+            if c not in '();:,.?\'"<>':
+                ltext.append(c)
+                break
+        link = EMPTYSTRING.join(ltext)
+    elif text.startswith('pep-') and text <> current:
         link = os.path.splitext(text)[0] + ".html"
-    elif text[:3] == 'PEP':
+    elif text.startswith('PEP'):
         pepnum = int(match.group('pepnum'))
         link = PEPURL % pepnum
-    elif text[:3] == 'RFC':
+    elif text.startswith('RFC'):
         rfcnum = int(match.group('rfcnum'))
         link = RFCURL % rfcnum
     if link:
@@ -147,7 +157,7 @@ def fixfile(infile, outfile):
                         '<a href="%s">%s</a>' % (addr, addr))
                 else:
                     mailtos.append(addr)
-            v = ' '.join(mailtos)
+            v = SPACE.join(mailtos)
         elif k.lower() in ('replaces', 'replaced-by'):
             peps = ''
             for pep in v.split():
@@ -218,7 +228,6 @@ def make_html(file, verbose=0):
     fixfile(file, newfile)
     return newfile
 
-SPACE = ' '
 def push_pep(htmlfiles, txtfiles, username, verbose):
     if verbose:
         quiet = ""
