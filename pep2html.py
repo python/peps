@@ -159,9 +159,10 @@ def find_pep(pep_str):
     num = int(pep_str)
     return "pep-%04d.txt" % num
 
-def make_html(file):
+def make_html(file, verbose=0):
     newfile = os.path.splitext(file)[0] + ".html"
-    print file, "->", newfile
+    if verbose:
+        print file, "->", newfile
     fixfile(file, newfile)
     return newfile
 
@@ -170,9 +171,11 @@ def main():
     # defaults
     update = 0
     username = ''
+    verbose = 1
 
     try:
-        opts, args = getopt.getopt(sys.argv[1:], 'ih', ['install', 'help'])
+        opts, args = getopt.getopt(sys.argv[1:], 'ihq',
+                                   ['install', 'help', 'quiet'])
     except getopt.error, msg:
         usage(1, msg)
 
@@ -183,19 +186,22 @@ def main():
             update = 1
         elif opt in ('-u', '--user'):
             username = arg + "@"
+        elif opt in ('-q', '--quiet'):
+            verbose = 0
 
     if args:
         html = []
         for pep in args:
             file = find_pep(pep)
-            newfile = make_html(file)
+            newfile = make_html(file, verbose=verbose)
             html.append(newfile)
-        os.system("scp %s style.css " % " ".join(html) \
-                  + username + HOST + ":" + HDIR)
+        if update:
+            os.system("scp %s style.css " % " ".join(html) \
+                      + username + HOST + ":" + HDIR)
     else:
         # do them all
         for file in glob.glob("pep-*.txt"):
-            make_html(file)
+            make_html(file, verbose=verbose)
         if update:
             os.system("scp pep-*.html style.css " + \
                       username + HOST + ":" + HDIR)
