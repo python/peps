@@ -3,7 +3,7 @@
 #
 # Not really important, but convenient.
 
-PEP2HTML=./pep2html.py -q
+PEP2HTML=./pep2html.py
 
 .SUFFIXES: .txt .html
 
@@ -13,3 +13,9 @@ PEP2HTML=./pep2html.py -q
 TARGETS=$(patsubst %.txt,%.html,$(wildcard pep-*.txt))
 
 all:	$(TARGETS)
+
+install:
+	$(PEP2HTML) -i
+
+clean:
+	-rm *.html
