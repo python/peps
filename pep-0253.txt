@@ -11,11 +11,366 @@ Post-History:
 Abstract
 
     This PEP proposes ways for creating subtypes of existing built-in
-    types, either in C or in Python.
+    types, either in C or in Python.  The text is currently long and
+    rambling; I'll go over it again later to make it shorter.
 
-Introduction
+    Traditionally, types in Python have been created statically, by
+    declaring a global variable of type PyTypeObject and initializing
+    it with a static initializer.  The fields in the type object
+    describe all aspects of a Python object that are relevant to the
+    Python interpreter.  A few fields contain dimensional information
+    (e.g. the basic allocation size of instances), others contain
+    various flags, but most fields are pointers to functions to
+    implement various kinds of behaviors.  A NULL pointer means that
+    the type does not implement the specific behavior; in that case
+    the system may provide a default behavior in that case or raise an
+    exception when the behavior is invoked.  Some collections of
+    functions pointers that are usually defined together are obtained
+    indirectly via a pointer to an additional structure containing.
 
-    [XXX to be done.]
+    While the details of initializing a PyTypeObject structure haven't
+    been documented as such, they are easily glanced from the examples
+    in the source code, and I am assuming that the reader is
+    sufficiently familiar with the traditional way of creating new
+    Python types in C.
+
+    This PEP will introduce the following optional features to types:
+
+    - create an instance of a type by calling it
+
+    - create a subtype in C by specifying a base type pointer
+
+    - create a subtype in Python using a class statement
+
+    - multiple inheritance
+
+    This PEP builds on PEP 252, which adds standard introspection to
+    types; in particular, types are assumed to have e.g. a __hash__
+    method when the type object defines the tp_hash slot.  PEP 252 also
+    adds a dictionary to type objects which contains all methods.  At
+    the Python level, this dictionary is read-only; at the C level, it
+    is accessible directly (but modifying it is not recommended except
+    as part of initialization).
+
+
+Metatypes
+
+    Inevitably the following discussion will come to mention metatypes
+    (or metaclasses).  Metatypes are nothing new in Python: Python has
+    always been able to talk about the type of a type:
+
+    >>> a = 0
+    >>> type(a)
+    <type 'int'>
+    >>> type(type(a))
+    <type 'type'>
+    >>> type(type(type(a)))
+    <type 'type'>
+    >>> 
+
+    In this example, type(a) is a "regular" type, and type(type(a)) is
+    a metatype.  While as distributed all types have the same metatype
+    (which is also its own metatype), this is not a requirement, and
+    in fact a useful 3rd party extension (ExtensionClasses by Jim
+    Fulton) creates an additional metatype.  A related feature is the
+    "Don Beaudry hook", which says that if a metatype is callable, its
+    instances (which are regular types) can be subclassed (really
+    subtyped) using a Python class statement.  We will use this rule
+    to support subtyping of built-in types, and in the process we will
+    introduce some additional metatypes, and a "metametatype". (The
+    metametatype is nothing unusual; Python's type system allows any
+    number of metalevels.)
+
+    Note that Python uses the concept of metatypes or metaclasses in a
+    different way than Smalltalk.  In Smalltalk-80, there is a
+    hierarchy of metaclasses that mirrors the hierarchy of regular
+    classes, metaclasses map 1-1 to classes (except for some funny
+    business at the root of the hierarchy), and each class statement
+    creates both a regular class and its metaclass, putting class
+    methods in the metaclass and instance methods in the regular
+    class.
+
+    Nice though this may be in the context of Smalltalk, it's not
+    compatible with the traditional use of metatypes in Python, and I
+    prefer to continue in the Python way.  This means that Python
+    metatypes are typically written in C, and may be shared between
+    many regular types. (It will be possible to subtype metatypes in
+    Python, so it won't be absolutely necessary to write C in order to
+    use metatypes; but the power of Python metatypes will be limited,
+    e.g. Python code will never be allowed to allocate raw memory and
+    initialize it at will.)
+
+
+Instantiation by calling the type object
+
+    Traditionally, for each type there is at least one C function that
+    creates instances of the type.  This function has to take care of
+    both allocating memory for the object and initializing that
+    memory.  As of Python 2.0, it also has to interface with the
+    garbage collection subsystem, if the type chooses to participate
+    in garbage collection (which is optional, but strongly recommended
+    for so-called "container" types: types that may contain arbitrary
+    references to other objects, and hence may participate in
+    reference cycles).
+
+    If we're going to implement subtyping, we must separate allocation
+    and initialization: typically, the most derived subtype is in
+    charge of allocation (and hence deallocation!), but in most cases
+    each base type's initializer (constructor) must still be called,
+    from the "most base" type to the most derived type.
+
+    But let's first get the interface for instantiation right.  If we
+    call an object, the tp_call slot if its type gets invoked.  Thus,
+    if we call a type, this invokes the tp_call slot of the type's
+    type: in other words, the tp_call slot of the metatype.
+    Traditionally this has been a NULL pointer, meaning that types
+    can't be called.  Now we're adding a tp_call slot to the metatype,
+    which makes all types "callable" in a trivial sense.  But
+    obviously the metatype's tp_call implementation doesn't know how
+    to initialize individual types.  So the type defines a new slot,
+    tp_construct, which is invoked by the metatype's tp_call slot.  If
+    the tp_construct slot is NULL, the metatype's tp_call issues a
+    nice error message: the type isn't callable.
+
+    We already know that tp_construct is responsible for initializing
+    the object (this will be important for subtyping too).  Who should
+    be responsible for allocation of the new object? Either the
+    metatype's tp_call can allocate the object, or the type's
+    tp_construct can allocate it.  The solution is copied from typical
+    C++ implementations: if the metatype's tp_call allocates storage
+    for the object it passes the storage as a pointer to the type's
+    tp_construct; if the metatype's tp_call does not allocate storage,
+    it passes a NULL pointer to the type's tp_call in which case the
+    type allocates the storage itself.  This moves the policy decision
+    to the metatype, and different metatypes may have different
+    policies.  The mechanisms are fixed though: either the metatype's
+    tp_call allocates storage, or the type's tp_construct allocates.
+
+    The deallocation mechanism chosen should match the allocation
+    mechanism: an allocation policy should prescribe both the
+    allocation and deallocation mechanism.  And again, planning ahead
+    for subtyping would be nice.  But the available mechanisms are
+    different.  The deallocation function has always been part of the
+    type structure, as tp_dealloc, which combines the
+    "uninitialization" with deallocation.  This was good enough for
+    the traditional situation, where it matched the combined
+    allocation and initialization of the creation function.  But now
+    imagine a type whose creation function uses a special free list
+    for allocation.  It's deallocation function puts the object's
+    memory back on the same free list.  But when allocation and
+    creation are separate, the object may have been allocated from the
+    regular heap, and it would be wrong (in some cases disastrous) if
+    it were placed on the free list by the deallocation function.
+
+    A solution would be for the tp_construct function to somehow mark
+    whether the object was allocated from the special free list, so
+    that the tp_dealloc function can choose the right deallocation
+    method (assuming that the only two alternatives are a special free
+    list or the regular heap).  A variant that doesn't require space
+    for an allocation flag bit would be to have two type objects,
+    identical in the contents of all their slots except for their
+    deallocation slot.  But this requires that all type-checking code
+    (e.g. the PyDict_Check()) recognizes both types.  We'll come back
+    to this solution in the context of subtyping.  Another alternative
+    is to require the metatype's tp_call to leave the allocation to
+    the tp_construct method, by passing in a NULL pointer.  But this
+    doesn't work once we allow subtyping.
+
+    Eventually, when we add any form of subtyping, we'll have to
+    separate deallocation from uninitialization.  The way to do this
+    is to add a separate slot to the type object that does the
+    uninitialization without the deallocation.  Fortunately, there is
+    already such a slot: tp_clear, currently used by the garbage
+    collection subsystem.  A simple rule makes this slot reusable as
+    an uninitialization: for types that support separate allocation
+    and initialization, tp_clear must be defined (even if the object
+    doesn't support garbage collection) and it must DECREF all
+    contained objects and FREE all other memory areas the object owns.
+    It must also be reentrant: it must be possible to clear an already
+    cleared object.  The easiest way to do this is to replace all
+    pointers DECREFed or FREEd with NULL pointers.
+
+
+Subtyping in C
+
+    The simplest form of subtyping is subtyping in C.  It is the
+    simplest form because we can require the C code to be aware of the
+    various problems, and it's acceptable for C code that doesn't
+    follow the rules to dump core; while for Python subtyping we would
+    need to catch all errors before they become core dumps.
+
+    The idea behind subtyping is very similar to that of single
+    inheritance in C++.  A base type is described by a structure
+    declaration plus a type object.  A derived type can extend the
+    structure (but must leave the names, order and type of the fields
+    of the base structure unchanged) and can override certain slots in
+    the type object, leaving others the same.
+
+    Not every type can serve as a base type.  The base type must
+    support separation of allocation and initialization by having a
+    tp_construct slot that can be called with a preallocated object,
+    and it must support uninitialization without deallocation by
+    having a tp_clear slot as described above.  The derived type must
+    also export the structure declaration for its instances through a
+    header file, as it is needed in order to derive a subtype.  The
+    type object for the base type must also be exported.
+
+    If the base type has a type-checking macro (e.g. PyDict_Check()),
+    this macro may be changed to recognize subtypes.  This can be done
+    by using the new PyObject_TypeCheck(object, type) macro, which
+    calls a function that follows the base class links.  There are
+    arguments for and against changing the type-checking macro in this
+    way.  The argument for the change should be clear: it allows
+    subtypes to be used in places where the base type is required,
+    which is often the prime attraction of subtyping (as opposed to
+    sharing implementation).  An argument against changing the
+    type-checking macro could be that the type check is used
+    frequently and a function call would slow things down too much
+    (hard to believe); or one could fear that a subtype might break an
+    invariant assumed by the support functions of the base type.
+    Sometimes it would be wise to change the base type to remove this
+    reliance; other times, it would be better to require that derived
+    types (implemented in C) maintain the invariants.
+
+    The derived type begins by declaring a type structure which
+    contains the base type's structure.  For example, here's the type
+    structure for a subtype of the built-in list type:
+
+    typedef struct {
+        PyListObject list;
+        int state;
+    } spamlistobject;
+
+    Note that the base type structure field (here PyListObject) must
+    be the first field in the structure; any following fields are
+    extension fields.  Also note that the base type is not referenced
+    via a pointer; the actual contents of its structure must be
+    included! (The goal is for the memory lay out of the beginning of
+    the subtype instance to be the same as that of the base type
+    instance.)
+
+    Next, the derived type must declare a type object and initialize
+    it.  Most of the slots in the type object may be initialized to
+    zero, which is a signal that the base type slot must be copied
+    into it.  Some fields that must be initialized properly:
+
+    - the object header must be filled in as usual; the type should be
+      PyType_Type
+
+    - the tp_basicsize field must be set to the size of the subtype
+      instances
+
+    - the tp_base field must be set to the address of the base type's
+      type object
+
+    - the tp_dealloc slot function must be a deallocation function for
+      the subtype
+
+    - the tp_flags field must be set to the usual Py_TPFLAGS_DEFAULT
+      value
+
+    - the tp_name field must be set (otherwise it will be inherited,
+      which is wrong)
+
+    Exception: if the subtype defines no additional fields in its
+    structure (i.e., it only defines new behavior, no new data), the
+    tp_basicsize and the tp_dealloc fields may be set to zero.  In
+    order to complete the initialization of the type,
+    PyType_InitDict() must be called.  This replaces zero slots in the
+    subtype with the value of the corresponding base type slots.  It
+    also fills in tp_dict, the type's dictionary; this is more a
+    matter of PEP 252.
+
+    The subtype's tp_dealloc slot deserves special attention.  It must
+    uninitialize and deallocate the object in an orderly manner: first
+    it must uninitialize the fields added by the extension type; then
+    it must call the base type's tp_clear function; finally it must
+    deallocate the memory of the object.  Usually, the base type's
+    tp_clear function has no global name; it is permissible to call it
+    via the base type's tp_clear slot, e.g. PyListType.tp_clear(obj).
+    Only if it is known that the base type uses the same allocation
+    method as the subtype and the subtype requires no uninitialization
+    (e.g. it adds no data fields or all its data fields are numbers)
+    is it permissible to leave tp_dealloc set to zero in the subtype's
+    type object; it will be copied from the base type.
+
+    A subtype is not usable until PyType_InitDict() is called for it;
+    this is best done during module initialization, assuming the
+    subtype belongs to a module.  An alternative for subtypes added to
+    the Python core (which don't live in a particular module) would be
+    to initialize the subtype in their constructor function.  It is
+    allowed to call PyType_InitDict() more than once, the second and
+    further calls have no effect.  In order to avoid unnecessary
+    calls, a test for tp_dict==NULL can be made.
+
+    If the subtype itself should be subtypable (usually desirable), it
+    should follow the same rules are given above for base types: have
+    a tp_construct that accepts a preallocated object and calls the
+    base type's tp_construct, and have a tp_clear that calls the base
+    type's tp_clear.
+
+
+Subtyping in Python
+
+    The next step is to allow subtyping of selected built-in types
+    through a class statement in Python.  Limiting ourselves to single
+    inheritance for now, here is what happens for a simple class
+    statement:
+
+    class C(B):
+        var1 = 1
+        def method1(self): pass
+        # etc.
+
+    The body of the class statement is executes in a fresh environment
+    (basically, a new dictionary used as local namespace), and then C
+    is created.  The following explains how C is created.
+
+    Assume B is a type object.  Since type objects are objects, and
+    every object has a type, B has a type.  B's type is accessible via
+    type(B) or B.__class__ (the latter notation is new for types; it
+    is introduced in PEP 252).  Let's say B's type is M (for
+    Metatype).  The class statement will create a new type, C.  Since
+    C will be a type object just like B, we view the creation of C as
+    an instantiation of the metatype, M.  The information that needs
+    to be provided for the creation of C is: its name (in this example
+    the string "C"); the list of base classes (a singleton tuple
+    containing B); and the results of executing the class body, in the
+    form of a dictionary (e.g. {"var1": 1, "method1": <function...>,
+    ...}).
+
+    According to the Don Beaudry hook, the following call is made:
+
+    C = M("C", (B,), dict)
+
+    (where dict is the dictionary resulting from execution of the
+    class body).  In other words, the metatype (M) is called.  Note
+    that even though we currently require there to be exactly one base
+    class, we still pass in a (singleton) sequence of base classes;
+    this makes it possible to support multiple inheritance later (or
+    for types with a different metaclass!) without changing this
+    interface.
+
+    Note that calling M requires that M itself has a type: the
+    meta-metatype.  In the current implementation, I have introduced a
+    new type object for this purpose, named turtle because of my
+    fondness of the phrase "turtles all the way down".  However I now
+    believe that it would be better if M were its own metatype, just
+    like before.  This can be accomplished by making M's tp_call slot
+    slightly more flexible.
+
+    In any case, the work for creating C is done by M's tp_construct
+    slot.  It allocates space for an "extended" type structure, which
+    contains space for: the type object; the auxiliary structures
+    (as_sequence etc.); the string object containing the type name (to
+    ensure that this object isn't deallocated while the type object is
+    still referencing it); and some more auxiliary storage (to be
+    described later).  It initializes this storage to zeros except for
+    a few crucial slots (e.g. tp_name is set to point to the type
+    name) and then sets the tp_base slot to point to B.  Then
+    PyType_InitDict() is called to inherit B's slots.  Finally, C's
+    tp_dict slot is updated with the contents of the namespace
+    dictionary (the third argument to the call to M).
 
 
 Copyright
