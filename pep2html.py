@@ -31,11 +31,12 @@ import cgi
 import glob
 import getopt
 import errno
+import time
 
 PROGRAM = sys.argv[0]
 RFCURL = 'http://www.faqs.org/rfcs/rfc%d.html'
 PEPURL = 'pep-%04d.html'
-
+PEPCVSURL = 'http://cvs.sourceforge.net/cgi-bin/viewcvs.cgi/python/python/nondist/peps/pep-%04d.txt'
 
 
 HOST = "shell.sourceforge.net"                    # host for update
@@ -158,11 +159,17 @@ def fixfile(infile, outfile):
                     mailtos.append(addr)
             v = SPACE.join(mailtos)
         elif k.lower() in ('replaces', 'replaced-by'):
-            peps = ''
-            for pep in v.split():
-                pep = int(pep)
-                peps += '<a href="pep-%04d.html">%i</a> ' % (pep, pep)
-            v = peps
+            otherpeps = ''
+            for otherpep in v.split():
+                otherpep = int(otherpep)
+                otherpeps += '<a href="pep-%04d.html">%i</a> ' % (otherpep, 
+                                                                  otherpep)
+            v = otherpeps
+        elif k.lower() in ('last-modified',):
+            url = PEPCVSURL % int(pep)
+            date = v or time.strftime('%d-%b-%Y',
+                                      time.localtime(os.stat(infile)[8]))
+            v = '<a href="%s">%s</a> ' % (url, cgi.escape(date))
         else:
             v = cgi.escape(v)
         print >> fo, '  <tr><th align="right">%s:</th><td>%s</td></tr>' % (
