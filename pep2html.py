@@ -19,6 +19,9 @@ Options:
         given (in which case, it is used instead).  Without -i, sf_username is
         ignored.
 
+    -q/--quiet
+        Turn off verbose messages.
+
     -h/--help
         Print this help message and exit.
 """
