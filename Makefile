@@ -1,0 +1,15 @@
+# Rules to only make the required HTML versions, not all of them,
+# without the user having to keep track of which.
+#
+# Not really important, but convenient.
+
+PEP2HTML=./pep2html.py -q
+
+.SUFFIXES: .txt .html
+
+.txt.html:
+	$(PEP2HTML) $<
+
+TARGETS=$(patsubst %.txt,%.html,$(wildcard pep-*.txt))
+
+all:	$(TARGETS)
