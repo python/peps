@@ -41,7 +41,7 @@ import random
 import time
 
 REQUIRES = {'python': '2.2',
-            'docutils': '0.2.3'}
+            'docutils': '0.2.6'}
 PROGRAM = sys.argv[0]
 RFCURL = 'http://www.faqs.org/rfcs/rfc%d.html'
 PEPURL = 'pep-%04d.html'
@@ -280,9 +280,9 @@ def fixfile(inpath, input_lines, outfile):
     print >> outfile, '</html>'
 
 
-docutils_options = None
-"""Option value object used by Docutils.  Can be set by the client application
-when this module is imported."""
+docutils_settings = None
+"""Runtime settings object used by Docutils.  Can be set by the client
+application when this module is imported."""
 
 def fix_rst_pep(inpath, input_lines, outfile):
     from docutils import core, io
@@ -290,17 +290,17 @@ def fix_rst_pep(inpath, input_lines, outfile):
     pub.set_reader(reader_name='pep', parser_name='restructuredtext',
                    parser=None)
     pub.set_writer(writer_name='pep_html')
-    if docutils_options:
-        options = docutils_options
-        pub.options = options
+    if docutils_settings:
+        settings = docutils_settings
+        pub.settings = settings
     else:
-        options = pub.set_options()
-    options._source = inpath
-    options._destination = outfile.name
+        settings = pub.get_settings()
+    settings._source = inpath
+    settings._destination = outfile.name
     pub.source = io.StringInput(
-        options, source=''.join(input_lines), source_path=inpath)
+        settings, source=''.join(input_lines), source_path=inpath)
     pub.destination = io.FileOutput(
-        options, destination=outfile, destination_path=outfile.name,
+        settings, destination=outfile, destination_path=outfile.name,
         autoclose=0)
     pub.publish()
 
