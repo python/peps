@@ -70,8 +70,8 @@ def fixanchor(current, match):
     elif text[:4] == "pep-" and text != current:
         link = os.path.splitext(text)[0] + ".html"
     elif text[:3] == 'RFC':
-        link = ('http://www.rfc-editor.org/rfc/rfc%s.txt' %
-                 match.groupdict()['rfcnum'])
+        rfcnum = int(match.group('rfcnum'), 10)
+        link = 'http://www.rfc-editor.org/rfc/rfc%04d.txt' % rfcnum
     if link:
         return "<a href='%s'>%s</a>" % (link, cgi.escape(text))
     return cgi.escape(match.group(0)) # really slow, but it works...
