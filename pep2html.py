@@ -198,7 +198,7 @@ def fixfile(infile, outfile):
     print >> fo, '</div>'
     print >> fo, '<hr />'
     print >> fo, '<div class="content">'
-    print >> fo, '<pre>'
+    need_pre = 1
     while 1:
         line = fi.readline()
         if not line:
@@ -210,9 +210,12 @@ def fixfile(infile, outfile):
         if line[0].strip():
             if line.strip() == LOCALVARS:
                 break
-            print >> fo, '</pre>'
+            if not need_pre:
+                print >> fo, '</pre>'
             print >> fo, '<h3>%s</h3>' % line.strip()
-            print >> fo, '<pre>',
+            need_pre = 1
+        elif not line.strip() and need_pre:
+            continue
         else:
             # PEP 0 has some special treatment
             if basename == 'pep-0000.txt':
@@ -220,6 +223,9 @@ def fixfile(infile, outfile):
                 if len(parts) > 1 and re.match(r'\s*\d{1,4}', parts[1]):
                     # This is a PEP summary line, which we need to hyperlink
                     url = PEPURL % int(parts[1])
+                    if need_pre:
+                        print >> fo, '<pre>'
+                        need_pre = 0
                     print >> fo, re.sub(
                         parts[1],
                         '<a href="%s">%s</a>' % (url, parts[1]),
@@ -228,12 +234,19 @@ def fixfile(infile, outfile):
                 elif parts and '@' in parts[-1]:
                     # This is a pep email address line, so hyperlink it
                     url = '<a href="mailto:%s">%s</a>' % (parts[-1], parts[-1])
+                    if need_pre:
+                        print >> fo, '<pre>'
+                        need_pre = 0
                     print >> fo, re.sub(
                         parts[-1], url, line, 1),
                     continue
             line = fixpat.sub(lambda x, c=infile: fixanchor(c, x), line)
+            if need_pre:
+                print >> fo, '<pre>'
+                need_pre = 0
             fo.write(line)
-    print >> fo, '</pre>'
+    if not need_pre:
+        print >> fo, '</pre>'
     print >> fo, '</div>'
     print >> fo, '</body>'
     print >> fo, '</html>'
