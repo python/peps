@@ -191,8 +191,8 @@ def main():
     verbose = 1
 
     try:
-        opts, args = getopt.getopt(sys.argv[1:], 'ihq',
-                                   ['install', 'help', 'quiet'])
+        opts, args = getopt.getopt(sys.argv[1:], 'ihqu:',
+                                   ['install', 'help', 'quiet', 'user='])
     except getopt.error, msg:
         usage(1, msg)
 
