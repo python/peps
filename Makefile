@@ -14,6 +14,8 @@ TARGETS=$(patsubst %.txt,%.html,$(wildcard pep-*.txt))
 
 all:	$(TARGETS)
 
+$(TARGETS): pep2html.py
+
 install:
 	$(PEP2HTML) -i
 
