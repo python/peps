@@ -187,8 +187,12 @@ introspected upon.
 The server or gateway invokes the application callable once for each
 request it receives from an HTTP client, that is directed at the
 application.  To illustrate, here is a simple CGI gateway, implemented
-as a function taking an application object (all error handling
-omitted)::
+as a function taking an application object.  Note that this simple 
+example has limited error handling, because by default an uncaught 
+exception will be dumped to ``sys.stderr`` and logged by the web 
+server.
+
+::
 
     import os, sys
 
@@ -203,15 +207,44 @@ omitted)::
         environ['wsgi.multiprocess'] = True
         environ['wsgi.last_call']    = True
 
+        # XXX really should set defaults for WSGI-required variables;
+        #     see "environ Variables" section below
+
+        if environ.get('HTTPS','off') in ('on','1'):
+            environ['wsgi.url_scheme'] = 'https'
+        else:
+            environ['wsgi.url_scheme'] = 'http'
+
+        headers_set = []
+        headers_sent = []
+
         def write(data):
+            if not headers_set:
+                 raise AssertionError("write() before start_response()")
+
+            elif not headers_sent:
+                 # Before the first output, send the stored headers
+                 status, headers = headers_sent[:] = headers_set
+                 sys.stdout.write('Status: %s\r\n' % status)
+                 for header in headers:
+                     sys.stdout.write('%s: %s\r\n' % header)
+                 sys.stdout.write('\r\n')
+
             sys.stdout.write(data)
             sys.stdout.flush()
 
-        def start_response(status,headers):
-            sys.stdout.write("Status: %s\r\n" % status)
-            for key,val in headers:
-                sys.stdout.write("%s: %s\r\n" % (key,val))
-            sys.stdout.write("\r\n")
+        def start_response(status,headers,exc_info=None):
+            if exc_info:
+                try:
+                    if headers_sent:
+                        # Re-raise original exception if headers sent
+                        raise exc_info[0], exc_info[1], exc_info[2]
+                finally:
+                    exc_info = None		# avoid dangling circular ref
+            elif headers_sent:
+                raise AssertionError("Headers already sent!")
+                
+            headers_set[:] = [status,headers]
             return write
 
         result = application(environ, start_response)
@@ -246,21 +279,27 @@ also include server-specific extension variables, named according
 to a convention that will be described below.
 
 The ``start_response`` parameter is a callable accepting two
-positional arguments.  For the sake of illustration, we have named
-them ``status`` and ``headers``, but they are not required to have
-these names, and the application **must** invoke the ``start_response``
-callable using positional arguments
-(e.g. ``start_response(status,headers)``).
+required positional arguments, and one optional argument.  For the sake
+of illustration, we have named these arguments ``status``, ``headers``,
+and ``exc_info``, but they are not required to have these names, and 
+the application **must** invoke the ``start_response`` callable using
+positional arguments (e.g. ``start_response(status,headers)``).
 
 The ``status`` parameter is a status string of the form
-``"999 Message here"``, and a list of ``(header_name,header_value)``
-tuples describing the HTTP response header.  This ``start_response``
-callable must return a ``write(body_data)`` callable that takes one
-positional parameter: a string to be written as part of the HTTP
-response body.  (Note: the ``write()`` callable is provided only
-to support certain existing frameworks' imperative output APIs;
-it should not be used by new applications or frameworks.  See
-the `Buffering and Streaming`_ section for more details.)
+``"999 Message here"``, and ``headers`` is a list of 
+``(header_name,header_value)`` tuples describing the HTTP response
+header.  The optional ``exc_info`` parameter is described below in the
+sections on `The start_response() Callable`_ and `Error Handling`_.
+It is used only when the application has trapped an error and is
+attempting to display an error message to the browser.
+
+The ``start_response`` callable must return a ``write(body_data)``
+callable that takes one positional parameter: a string to be written 
+as part of the HTTP response body.  (Note: the ``write()`` callable is
+provided only to support certain existing frameworks' imperative output
+APIs; it should not be used by new applications or frameworks if it
+can be avoided.  See the `Buffering and Streaming`_ section for more
+details.)
 
 The application object must return an iterable yielding strings.
 (For example, it could be a generator-iterator that yields strings,
@@ -279,15 +318,16 @@ written are in a format suitable for the client.
 If a call to ``len(iterable)`` succeeds, the server must be able 
 to rely on the result being accurate.  That is, if the iterable 
 returned by the application provides a working ``__len__()`` 
-method, it **must** return an accurate result.
+method, it **must** return an accurate result.  (See
+the `Handling the Content-Length Header`_ section for information
+on how this would normally be used.)
 
 If the iterable returned by the application has a ``close()`` method,
 the server or gateway **must** call that method upon completion of the
 current request, whether the request was completed normally, or 
 terminated early due to an error.  (This is to support resource release
-by the application.  This protocol is intended to support PEP 325, and
-also other simple cases such as an application returning an open text
-file.)
+by the application.  This protocol is intended to complement PEP 325's
+generator support, and other common iterables with ``close()`` methods.
 
 (Note: the application **must** invoke the ``start_response()`` 
 callable before the iterable yields its first body string, so that the
@@ -296,12 +336,13 @@ invocation **may** be performed by the iterable's first iteration, so
 servers **must not** assume that ``start_response()`` has been called
 before they begin iterating over the iterable.)
 
-Finally, servers **must not** directly use any other attributes of
-the iterable returned by the application.  For example, it the 
-iterable is a file object, it may have a ``read()`` method, but
-the server **must not** utilize it.  Only attributes specified
-here, or accessed via e.g. the PEP 234 iteration APIs are 
-acceptable.
+Finally, servers and gateways **must not** directly use any other
+attributes of the iterable returned by the application, unless it is an
+instance of a type specific to that server or gateway, such as a "file
+wrapper" returned by ``wsgi.file_wrapper`` (see `Optional 
+Platform-Specific File Handling`_).  In the general case, only 
+attributes specified here, or accessed via e.g. the PEP 234 iteration
+APIs are acceptable.
 
 
 ``environ`` Variables
@@ -366,6 +407,11 @@ Variable               Value
 ``wsgi.version``       The tuple ``(1,0)``, representing WSGI
                        version 1.0.
 
+``wsgi.url_scheme``    A string representing the "scheme" portion of
+                       the URL at which the application is being 
+                       invoked.  Normally, this will have the value
+                       ``"http"`` or ``"https"``, as appropriate.
+
 ``wsgi.input``         An input stream from which the HTTP request
                        body can be read.  (The server or gateway may
                        perform reads on-demand as requested by the
@@ -382,7 +428,7 @@ Variable               Value
                        will be the server's main error log.
 
                        Alternatively, this may be ``sys.stderr``, or 
-                       a log file of  some sort.  The server's
+                       a log file of some sort.  The server's
                        documentation should include an explanation of
                        how to configure this or where to find the
                        recorded output.  A server or gateway may
@@ -439,7 +485,7 @@ Reference, except for these notes as listed in the table above:
 1. The server is not required to read past the client's specified
    ``Content-Length``, and is allowed to simulate an end-of-file
    condition if the application attempts to read past that point.
-   The application *should not* attempt to read more data than is
+   The application **should not** attempt to read more data than is
    specified by the ``CONTENT_LENGTH`` variable.
 
 2. The optional "size" argument to ``readline()`` is not supported,
@@ -470,8 +516,8 @@ of the ``input`` or ``errors`` objects.  In particular, applications
 The ``start_response()`` Callable
 ---------------------------------
 
-The second parameter passed to the application object is itself a
-two-argument callable, of the form ``start_response(status,headers)``.
+The second parameter passed to the application object is a callable
+of the form ``start_response(status,headers,exc_info=None)``.
 (As with all WSGI callables, the arguments must be supplied
 positionally, not by keyword.)  The ``start_response`` callable is
 used to begin the HTTP response, and it must return a
@@ -479,9 +525,9 @@ used to begin the HTTP response, and it must return a
 section, below).
 
 The ``status`` argument is an HTTP "status" string like ``"200 OK"``
-or ``"404 Not Found"``.  The string **must** be pure 7-bit ASCII,
-containing no control characters.  It must not be terminated with
-a carriage return or linefeed.
+or ``"404 Not Found"``.  The string **must not** contain control
+characters, and must not be terminated with a carriage return,
+linefeed, or combination thereof.
 
 The ``headers`` argument is a list of ``(header_name,header_value)``
 tuples.  It must be a Python list; i.e. ``type(headers) is
@@ -514,6 +560,60 @@ but the server wishes transience, or vice versa.
 However, if a server or gateway discards or overrides any application
 header for any reason, it **must** record this action in a log (such as
 the ``wsgi.errors`` log) for the benefit of the application author.
+
+The ``start_response`` callable **must not** actually transmit the
+HTTP headers.  It must store them until the first ``write`` call,
+or until after the first iteration of the application return value.
+This is to ensure that buffered applications can replace their 
+originally intended output with error output, up until the last
+possible moment.
+
+The ``exc_info`` argument, if supplied, must be a Python
+``sys.exc_info()`` tuple.  This argument should be supplied by the
+application only if ``start_response`` is being called by an error
+handler.  If ``exc_info`` is supplied, and no HTTP headers have been
+output yet, ``start_response`` should replace the currently-stored
+HTTP headers with the newly-supplied ones, thus allowing the 
+application to "change its mind" about the output when an error has
+occurred.
+
+However, if ``exc_info`` is provided, and the HTTP headers have already
+been sent, ``start_response`` **must** raise an error, and **should**
+raise the ``exc_info`` tuple.  That is::
+
+    raise exc_info[0],exc_info[1],exc_info[2]
+    
+This will re-raise the exception trapped by the application, and in
+principle should abort the application.  (It is not safe for the 
+application to attempt error output to the browser once the HTTP
+headers have already been sent.)  The application **must not** trap
+any exceptions raised by ``start_response``, if it called 
+``start_response`` with ``exc_info``.  Instead, it should allow
+such exceptions to propagate back to the server or gateway.  See
+`Error Handling`_ below, for more details.
+
+The application **may** call ``start_response`` more than once, if and
+only if the ``exc_info`` argument is provided.  More precisely, it is
+a fatal error to call ``start_response`` without the ``exc_info``
+argument if ``start_response`` has already been called within the
+current invocation of the application.  (See the example CGI
+gateway above for an illustration of the correct logic.)
+
+Note: servers, gateways, or middleware implementing ``start_response``
+**should** ensure that no reference is held to the ``exc_info`` 
+parameter beyond the duration of the function's execution, to avoid
+creating a circular reference through the traceback and frames
+involved.  The simplest way to do this is something like::
+
+    def start_response(status,headers,exc_info=None):
+        if exc_info:
+             try:
+                 # do stuff w/exc_info here
+             finally:
+                 exc_info = None	# Avoid circular ref.
+
+The example CGI gateway provides another illustration of this
+technique.
 
 
 Handling the ``Content-Length`` Header
@@ -613,9 +713,12 @@ returned by the ``start_response`` callable.
 
 New WSGI applications and frameworks **should not** use the 
 ``write()`` callable if it is possible to avoid doing so.  The
-``write()`` callable is strictly a hack to support existing 
-frameworks' imperative APIs.  In general, applications
-should either be internally buffered, or produce iterable output.
+``write()`` callable is strictly a hack to support imperative
+streaming APIs.  In general, applications should either be 
+internally buffered, or produce iterable output, as this makes
+it possible for web servers to interleave other tasks in the
+same Python thread, potentially providing better throughput for
+the server as a whole.
 
 The ``write()`` callable is returned by the ``start_response()``
 callable, and it accepts a single parameter:  a string to be
@@ -628,7 +731,9 @@ proceeds forward.
 
 An application **may** return a non-empty iterable even if it
 invokes ``write()``, and that output must be treated normally
-by the server or gateway.
+by the server or gateway (i.e., it must be sent or queued
+immediately).  Applications **must not** invoke ``write()``
+from within their return iterable.
 
 
 Implementation/Application Notes
@@ -639,9 +744,14 @@ Unicode
 
 HTTP does not directly support Unicode, and neither does this
 interface.  All encoding/decoding must be handled by the application;
-all strings and streams passed to or from the server must be standard
-Python byte strings, not Unicode objects.  The result of using a
-Unicode object where a string object is required, is undefined.
+all strings passed to or from the server must be standard Python byte
+strings, not Unicode objects.  The result of using a Unicode object 
+where a string object is required, is undefined.
+
+Note also that strings passed to ``start_response()`` as a status or
+as headers **must** follow RFC 2616 with respect to encoding.  That
+is, they must either be ISO-8859-1 characters, or use RFC 2047 MIME
+encoding.
 
 
 Multiple Invocations
@@ -654,18 +764,65 @@ virtually all servers/gateways will make such requests.
 Error Handling
 --------------
 
-Servers *should* trap and log exceptions raised by
-applications, and **may** continue to execute, or attempt to shut down
-gracefully.  Applications *should* avoid allowing exceptions to
-escape their execution scope, since the result of uncaught exceptions
-is server-defined.
+In general, applications **should** try to trap their own, internal
+errors, and display a helpful message in the browser.  (It is up
+to the application to decide what "helpful" means in this context.)
+
+However, to display such a message, the application must not have
+actually sent any data to the browser yet, or else it risks corrupting
+the response.  WSGI therefore provides a mechanism to either allow the
+application to send its error message, or be automatically aborted:
+the ``exc_info`` argument to ``start_response``.  Here is an example
+of its use::
+
+    try:
+        # regular application code here
+        status = "200 Froody"
+        headers = [("content-type","text/plain")]
+        start_response(status, headers)
+        return ["normal body goes here"]  
+    except:
+        status = "500 Oops"
+        headers = [("content-type","text/plain")]
+        start_response(status, headers, sys.exc_info())
+        return ["error body goes here"]
+
+If no output has been written when an exception occurs, the call to
+``start_response`` will return normally, and the application will 
+return an error body to be sent to the browser.  However, if any output
+has already been sent to the browser, ``start_response`` will reraise 
+the provided exception.  This exception **should not** be trapped by 
+the application, and so the application will abort.  The server or
+gateway can then trap this (fatal) exception and abort the response.
+
+Servers **should** trap and log any exception that aborts an 
+application or the iteration of its return value.  If a partial 
+response has already been written to the browser when an application
+error occurs, the server or gateway **may** attempt to add an error
+message to the output, if the already-sent headers indicate a
+``text/*`` content type that the server knows how to modify cleanly.
+
+Some middleware may wish to provide additional exception handling 
+services, or intercept and replace application error messages.  In
+such cases, middleware may choose to **not** re-raise the ``exc_info``
+supplied to ``start_response``, but instead raise a middleware-specific
+exception, or simply return without an exception after storing the
+supplied arguments.  This will then cause the application to return
+its error body iterable (or invoke ``write()``), allowing the middleware
+to capture and modify the error output.  These techniques will work as
+long as application authors:
+
+1. Always provide ``exc_info`` when beginning an error response
+
+2. Never trap errors raised by ``start_response`` when ``exc_info`` is
+   being provided
 
 
 Thread Support
 --------------
 
 Thread support, or lack thereof, is also server-dependent.
-Servers that can run multiple requests in parallel, *should* also
+Servers that can run multiple requests in parallel, **should** also
 provide the option of running an application in a single-threaded
 fashion, so that applications or frameworks that are not thread-safe
 may still be used with that server.
@@ -677,17 +834,14 @@ URL Reconstruction
 If an application wishes to reconstruct a request's complete URL, it
 may do so using the following algorithm, contributed by Ian Bicking::
 
-    if environ.get('HTTPS') == 'on':
-        url = 'https://'
-    else:
-        url = 'http://'
+    url = environ['wsgi.url_scheme']+'://'
 
     if environ.get('HTTP_HOST'):
         url += environ['HTTP_HOST']
     else:
         url += environ['SERVER_NAME']
 
-    if environ.get('HTTPS') == 'on':
+    if environ['wsgi.url_scheme'] == 'https':
         if environ['SERVER_PORT'] != '443'
            url += ':' + environ['SERVER_PORT']
     else:
@@ -722,6 +876,35 @@ must connect the two together.  However, since both the framework and
 the server now have a common interface, this should be merely a
 mechanical matter, rather than a significant engineering effort for
 each new server/framework pair.
+
+Finally, some applications, frameworks, and middleware may wish to
+use the ``environ`` dictionary to receive simple string configuration
+options.  Servers and gateways **should** support this by allowing
+an application's deployer to specify name-value pairs to be placed in
+``environ``.  In the simplest case, this support can consist merely of
+copying all operating system-supplied environment variables from
+``os.environ`` into the ``environ`` dictionary, since the deployer in
+principle can configure these externally to the server, or in the
+CGI case they may be able to be set via the server's configuration
+files.
+
+Applications **should** try to keep such required variables to a 
+minimum, since not all servers will support easy configuration of 
+them.  Of course, even in the worst case, persons deploying an 
+application can create a script to supply the necessary configuration
+values::
+
+   from the_app import application
+   
+   def new_app(environ,start_response):
+       environ['the_app.configval1'] = 'something'
+       return application(environ,start_response)
+
+But, most existing applications and frameworks will probably only need
+a single configuration value from ``environ``, to indicate the location
+of their application or framework-specific configuration file(s).  (Of
+course, applications should cache such configuration, to avoid having
+to re-read it upon each invocation.)
 
 
 Middleware
@@ -773,12 +956,12 @@ For applications, supporting pre-2.2 versions of Python is slightly
 more complex:
 
 * You may not return a file object and expect it to work as an iterable,
-  since before Python 2.2, files were not iterable.  (Some servers
-  may loosen this guideline by checking for ``types.FileType``, but
-  this is an optional, server-specific extension.  If you want your
-  application code to be used with pre-2.2 Pythons such as Jython,
-  you should *not* return a file object; use a pre-2.2 iterable
-  or a sequence instead.)
+  since before Python 2.2, files were not iterable.  (In general, you
+  shouldn't do this anyway, because it will peform quite poorly most
+  of the time!)  Use ``wsgi.file_wrapper`` or an application-specific
+  file wrapper class.  (See `Optional Platform-Specific File Handling`_
+  for more on ``wsgi.file_wrapper``, and an example class you can use
+  to wrap a file as an iterable.)
 
 * If you return a custom iterable, it **must** implement the pre-2.2
   iterator protocol.  That is, provide a ``__getitem__`` method that
@@ -857,36 +1040,99 @@ being bypassed by applications using those extensions!
 Optional Platform-Specific File Handling
 ----------------------------------------
 
-If the application-returned iterable has a ``fileno`` attribute,
-the server or gateway **may** assume that this is a ``fileno()`` 
-method returning an operating system file descriptor, and that it is
-allowed to read directly from that descriptor up to the end of the
-file, and/or use any appropriate operating system facilities (e.g.
-the ``sendfile()`` system call) to transmit the file's contents.  If
-the server does this, it must begin transmission with the file's
-current position, and end at the end of the file.
+Some operating environments provide special high-performance file-
+transmission facilities, such as the Unix ``sendfile()`` call.
+Servers and gateways **may** expose this functionality via an optional
+``wsgi.file_wrapper`` key in the ``environ``.  An application
+**may** use this "file wrapper" to convert a file or file-like object
+into an iterable that it then returns, e.g.::
 
-Note that an application **must not** return an iterable with a
-``fileno`` attribute if it is anything other than a method returning
-an **operating system file descriptor**.  "File-like" objects
-that do not possess a true operating system file descriptor number
-are expressly forbidden.  Servers running on platforms where file
-descriptors do not exist, or where there is no meaningful API for
-accelerating transmission from a file descriptor should ignore the
-``fileno`` attribute.
+    if 'wsgi.file_wrapper' in environ:
+        return environ['wsgi.file_wrapper'](filelike, block_size)
+    else:
+        return iter(lambda: filelike.read(block_size), '')
 
-On platforms that possess some analagous mechanism for fast
-transmission of static files or pipes, a server or gateway **may**
-offer a similar extension using a different method name, returning
-an object of the appropriate type for that platform.  Such servers
-**should** document the method name to be used and the type of
-object that it should return.
+If the server or gateway supplies ``wsgi.file_wrapper``, it must be
+a callable that accepts one required positional parameter, and one 
+optional positional parameter.  The first parameter is the file-like
+object to be sent, and the second parameter is an optional block
+size "suggestion" (which the server/gateway need not use).  The
+callable **must** return an iterable object, and **must not** perform
+any data transmission until and unless the server/gateway actually
+receives the iterable as a return value from the application.
+(To do otherwise would prevent middleware from being able to interpret
+or override the response data.)
 
-Please note that this optional extension does not excuse the
-application from returning an iterable object.  Returning an object
-that is not iterable -- even if it implements ``fileno()`` or is
-"file-like" -- is not acceptable, and will be rejected by servers
-and gateways that do not support this optional extension.
+To be considered "file-like", the object supplied by the application
+must have a ``read()`` method that takes an optional size argument.
+It **may** have a ``close()`` method, and if so, the iterable returned
+by ``wsgi.file_wrapper`` **must** have a ``close()`` method that
+invokes the original file-like object's ``close()`` method.  If the
+"file-like" object has any other methods or attributes with names
+matching those of Python built-in file objects (e.g. ``fileno()``),
+the ``wsgi.file_wrapper`` **may** assume that these methods or
+attributes have the same semantics as those of a built-in file object.
+
+The actual implementation of any platform-specific file handling
+must occur **after** the application returns, and the server or
+gateway checks to see if a wrapper object was returned.  (Again,
+because of the presence of middleware, error handlers, and the like,
+it is not guaranteed that any wrapper created will actually be used.)
+ 
+Apart from the handling of ``close()``, the semantics of returning a
+file wrapper from the application should be the same as if the
+application had returned ``iter(filelike.read, '')``.  In other words,
+transmission should begin at the current position within the "file"
+at the time that transmission begins, and continue until the end is
+reached.
+
+Of course, platform-specific file transmission APIs don't usually
+accept arbitrary "file-like" objects.  Therefore, a
+``wsgi.file_wrapper`` has to introspect the supplied object for
+things such as a ``fileno()`` (Unix-like OSes) or a 
+``java.nio.FileChannel`` (under Jython) in order to determine if
+the file-like object is suitable for use with the platform-specific
+API it supports.
+
+Note that even if the object is *not* suitable for the platform API,
+the ``wsgi.file_wrapper`` **must** still return an iterable that wraps
+``read()`` and ``close()``, so that applications using file wrappers
+are portable across platforms.  Here's a simple platform-agnostic
+file wrapper class, suitable for old (pre 2.2) and new Pythons alike::
+
+    class FileWrapper:
+
+        def __init__(self, filelike, blksize=8192):
+            self.filelike = filelike
+            self.blksize = blksize
+            if hasattr(filelike,'close'):
+                self.close = filelike.close
+                
+        def __getitem__(self,key):
+            data = self.filelike.read(self.blksize)
+            if data:
+                return data
+            raise IndexError
+
+and here is a snippet from a server/gateway that uses it to provide
+access to a platform-specific API::
+
+    environ['wsgi.file_wrapper'] = FileWrapper
+    result = application(environ, start_response)
+    
+    try:
+        if isinstance(result,FileWrapper):
+            # check if result.filelike is usable w/platform-specific
+            # API, and if so, use that API to transmit the result.
+            # If not, fall through to normal iterable handling
+            # loop below.
+
+        for data in result:
+            # etc.
+            
+    finally:
+        if hasattr(result,'close'):
+            result.close()    
 
 
 HTTP 1.1 Expect/Continue
@@ -1063,21 +1309,6 @@ Questions and Answers
 Open Issues
 ===========
 
-* Some persons have requested information about whether the 
-  ``HTTP_AUTHENTICATION`` header may be provided by the server.
-  That is, some web servers do not supply this information to
-  e.g. CGI applications, and they would like the application
-  to know that this is the case so it can use alternative
-  means of authentication.
-  
-* Error handling: strategies for effective error handling are
-  currently in discussion on the Web-SIG mailing list.  In
-  particular, a mechanism for specifying what errors an
-  application or middleware should *not* trap (because they
-  indicate that the request should be aborted), and mechanisms
-  for servers, gateways, and middleware to handle exceptions
-  occurring at various phases of the response processing.
-  
 * Byte strings: future versions of Python may replace today's
   8-bit strings with some kind of "byte array" type.  Some sort
   of future-proofing would be good to have, and strategies for
@@ -1085,6 +1316,9 @@ Open Issues
   every string in WSGI is potentially affected by this, although
   some contexts should perhaps continue to allow strings as long as
   they're pure ASCII.
+
+* Required CGI variables: should we really be requiring all of the
+  variables named?  Some of them seem reasonable to be optional.
 
 
 Acknowledgements
@@ -1104,7 +1338,14 @@ thoughtful feedback made this revised draft possible.  Especially:
 
 * Tony Lownds, who came up with the concept of a ``start_response``
   function that took the status and headers, returning a ``write``
-  function.
+  function.  His input also guided the design of the exception handling
+  facilities, especially in the area of allowing for middleware that
+  overrides application error messages.
+  
+* Alan Kennedy, whose courageous attempts to implement WSGI-on-Jython
+  (well before the spec was finalized) helped to shape the "supporting
+  older versions of Python" section, as well as the optional
+  ``wsgi.file_wrapper`` facility.
 
 
 References
