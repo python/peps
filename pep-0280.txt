@@ -33,7 +33,197 @@ Hylton's approach: using a dlict
 
     XXX (Jerely, please check in a description!)
 
+    See Jeremy's Python10 DevDay slides at
+    http://www.python.org/~jeremy/talks/spam10/PEP-267-1.html
+    and his Wiki at
+    http://www.zope.org/Members/jeremy/CurrentAndFutureProjects/FastGlobals
+
 
 Van Rossum's approach: using a celldict
 
-    XXX (Guido, please check in a description!)
+    (Note: Jason Orendorff writes: """I implemented this once, long
+    ago, for Python 1.5-ish, I believe.  I got it to the point where
+    it was only 15% slower than ordinary Python, then abandoned it.
+    ;) In my implementation, "cells" were real first-class objects,
+    and "celldict" was a copy-and-hack version of dictionary.  I
+    forget how the rest worked."""  Reference:
+    http://mail.python.org/pipermail/python-dev/2002-February/019876.html)
+
+    Let a cell be a really simple Python object, containing a pointer
+    to a Python object and a pointer to a cell.  Both pointers may be
+    NULL.  A Python implementation could be:
+
+        class cell(object):
+
+            def __init__(self):
+                self.objptr = NULL
+                self.cellptr = NULL
+
+    The cellptr attribute is used for chaining cells together for
+    searching built-ins; this will be explained later.
+
+    Let a celldict be a mapping from strings (the names of a module's
+    globals) to objects (the values of those globals), implemented
+    using a dict of cells.  A Python implementation could be:
+
+        class celldict(object):
+
+            def __init__(self):
+                self.__dict = {} # dict of cells
+
+            def getcell(self, key):
+                c = self.__dict.get(key)
+                if c is None:
+                    c = cell()
+                    self.__dict[key] = c
+                return c
+
+            def cellkeys(self):
+                return self.__dict.keys()
+
+            def __getitem__(self, key):
+                c = self.__dict.get(key)
+                if c is None:
+                    raise KeyError, key
+                value = c.objptr
+                if value is NULL:
+                    raise KeyError, key
+                else:
+                    return value
+
+            def __setitem__(self, key, value):
+                c = self.__dict.get(key)
+                if c is None:
+                    c = cell()
+                    self.__dict[key] = c
+                c.objptr = value
+
+            def __delitem__(self, key):
+                c = self.__dict.get(key)
+                if c is None or c.objptr is NULL:
+                    raise KeyError, key
+                c.objptr = NULL
+
+            def keys(self):
+                return [k for k, c in self.__dict.iteritems()
+                        if c.objptr is not NULL]
+
+            def items(self):
+                return [k, c.objptr for k, c in self.__dict.iteritems()
+                        if c.objptr is not NULL]
+
+            def values(self):
+                preturn [c.objptr for c in self.__dict.itervalues()
+                        if c.objptr is not NULL]
+
+            def clear(self):
+                for c in self.__dict.values():
+                    c.objptr = NULL
+
+            # Etc.
+
+    It is possible that a cell exists corresponding to a given key,
+    but the cell's objptr is NULL; let's call such a cell empty.  When
+    the celldict is used as a mapping, it is as if empty cells don't
+    exist.  However, once added, a cell is never deleted from a
+    celldict, and it is possible to get at empty cells using the
+    getcell() method.
+
+    The celldict implementation never uses the cellptr attribute of
+    cells.
+
+    We change the module implementation to use a celldict for its
+    __dict__.  The module's getattr, setattr and delattr operations
+    now map to getitem, setitem and delitem on the celldict.  The type
+    of <module>.__dict__ and globals() is probably the only backwards
+    incompatibility.
+
+    When a module is initialized, its __builtins__ is initialized from
+    the __builtin__ module's __dict__, which is itself a celldict.
+    For each cell in __builtins__, the new module's __dict__ adds a
+    cell with a NULL objptr, whose cellptr points to the corresponding
+    cell of __builtins__.  Python pseudo-code (ignoring rexec):
+
+        import __builtin__
+
+        class module(object):
+
+            def __init__(self):
+                self.__dict__ = d = celldict()
+                d['__builtins__'] = bd = __builtin__.__dict__
+                for k in bd.cellkeys():
+                    c = self.__dict__.getcell(k)
+                    c.cellptr = bd.getcell(k)
+
+            def __getattr__(self, k):
+                try:
+                    return self.__dict__[k]
+                except KeyError:
+                    raise IndexError, k
+
+            def __setattr__(self, k, v):
+                self.__dict__[k] = v
+
+            def __delattr__(self, k):
+                del self.__dict__[k]
+
+    The compiler generates LOAD_GLOBAL_CELL <i> (and STORE_GLOBAL_CELL
+    <i> etc.) opcodes for references to globals, where <i> is a small
+    index with meaning only within one code object like the const
+    index in LOAD_CONST.  The code object has a new tuple, co_globals,
+    giving the names of the globals referenced by the code indexed by
+    <i>.  No new analysis is required to be able to do this.
+
+    When a function object is created from a code object and a celldict,
+    the function object creates an array of cell pointers by asking the
+    celldict for cells corresponding to the names in the code object's
+    co_globals.  If the celldict doesn't already have a cell for a
+    particular name, it creates and an empty one.  This array of cell
+    pointers is stored on the function object as func_cells.  When a
+    function object is created from a regular dict instead of a
+    celldict, func_cells is a NULL pointer.
+
+    When the VM executes a LOAD_GLOBAL_CELL <i> instruction, it gets
+    cell number <i> from func_cells.  It then looks in the cell's
+    PyObject pointer, and if not NULL, that's the global value.  If it
+    is NULL, it follows the cell's cell pointer to the next cell, if it
+    is not NULL, and looks in the PyObject pointer in that cell.  If
+    that's also NULL, or if there is no second cell, NameError is
+    raised.  (It could follow the chain of cell pointers until a NULL
+    cell pointer is found; but I have no use for this.)  Similar for
+    STORE_GLOBAL_CELL <i>, except it doesn't follow the cell pointer
+    chain -- it always stores in the first cell.
+
+    There are fallbacks in the VM for the case where the function's
+    globals aren't a celldict, and hence func_cells is NULL.  In that
+    case, the code object's co_globals is indexed with <i> to find the
+    name of the corresponding global and this name is used to index the
+    function's globals dict.
+
+    Additional ideas:
+
+    - Never make func_cell a NULL pointer; instead, make up an array
+      of empty cells, so that LOAD_GLOBAL_CELL can index func_cells
+      without a NULL check.
+
+    - Make c.cellptr equal to c when a cell is created, so that
+      LOAD_GLOBAL_CELL can always dereference c.cellptr without a NULL
+      check.
+
+    With these two additional ideas added, here's Python pseudo-code
+    for LOAD_GLOBAL_CELL:
+
+	def LOAD_GLOBAL_CELL(self, i):
+	    # self is the frame
+	    c = self.func_cells[i]
+	    obj = c.objptr
+	    if obj is not NULL:
+		return obj # Existing global
+	    return c.cellptr.objptr # Built-in or NULL
+
+    XXX Incorporate Tim's most recent posts.  (Tim, can you do this?)
+
+
+Comparison
+
+    XXX Here, a comparison of the three approaches should be added.
