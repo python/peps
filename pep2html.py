@@ -38,7 +38,7 @@ PROGRAM = sys.argv[0]
 
 
 HOST = "shell.sourceforge.net"                    # host for update
-HDIR = "/home/groups/python/htdocs/peps"          # target host directory
+HDIR = "/home/groups/p/py/python/htdocs/peps"     # target host directory
 LOCALVARS = "Local Variables:"
 
 # The generated HTML doesn't validate -- you cannot use <hr> and <h3> inside
