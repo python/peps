@@ -31,6 +31,8 @@ Options:
 The optional argument `peps' is a list of either pep numbers or .txt files.
 """
 
+# Requires Python 2.2
+
 import sys
 import os
 import re
@@ -40,6 +42,7 @@ import getopt
 import errno
 import random
 import time
+from email.Utils import parseaddr
 
 PROGRAM = sys.argv[0]
 RFCURL = 'http://www.faqs.org/rfcs/rfc%d.html'
@@ -64,6 +67,7 @@ fixpat = re.compile("((http|ftp):[-_a-zA-Z0-9/.+~:?#$=&,]+)|(pep-\d+(.txt)?)|"
 
 EMPTYSTRING = ''
 SPACE = ' '
+COMMASPACE = ', '
 
 
 
@@ -187,19 +191,22 @@ def fixfile(infile, outfile):
     for k, v in header:
         if k.lower() in ('author', 'discussions-to'):
             mailtos = []
-            for addr in v.split():
-                if '@' in addr:
+            for part in re.split(',\s*', v):
+                print 'part:', part
+                if '@' in part:
+                    realname, addr = parseaddr(part)
                     if k.lower() == 'discussions-to':
                         m = linkemail(addr, pep)
                     else:
                         m = fixemail(addr, pep)
-                    mailtos.append(m)
-                elif addr.startswith('http:'):
+                    mailtos.append('%s &lt;%s&gt;' % (realname, m))
+                elif part.startswith('http:'):
                     mailtos.append(
-                        '<a href="%s">%s</a>' % (addr, addr))
+                        '<a href="%s">%s</a>' % (part, part))
                 else:
-                    mailtos.append(addr)
-            v = SPACE.join(mailtos)
+                    mailtos.append(part)
+            print 'mailtos:', mailtos
+            v = COMMASPACE.join(mailtos)
         elif k.lower() in ('replaces', 'replaced-by'):
             otherpeps = ''
             for otherpep in v.split():
