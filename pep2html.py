@@ -115,6 +115,7 @@ def fixfile(infile, outfile):
     fo.write('[<b><a href="../">home</a></b>]\n')
     if os.path.basename(infile) != "pep-0000.txt":
         fo.write('[<b><a href=".">index</a></b>]\n')
+    fo.write('[<b><a href="pep-%04d.txt">PEP source</a></b>]\n' % int(pep))
     fo.write('</div>\n'
              '<div class="header">\n<table border="0">\n')
     for k, v in header:
