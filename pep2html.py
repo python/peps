@@ -123,7 +123,7 @@ def fixfile(infile, outfile):
     fo.write('</div>\n'
              '<div class="header">\n<table border="0">\n')
     for k, v in header:
-        if k.lower() == 'author':
+        if k.lower() in ('author', 'discussions-to'):
             mailtos = []
             for addr in v.split():
                 if '@' in addr:
@@ -133,6 +133,12 @@ def fixfile(infile, outfile):
                 else:
                     mailtos.append(addr)
             v = ' '.join(mailtos)
+        elif k.lower() in ('replaces', 'replaced-by'):
+            peps = ''
+            for pep in v.split():
+                pep = int(pep)
+                peps += '<a href="pep-%04d.html">%i</a> ' % (pep, pep)
+            v = peps
         else:
             v = cgi.escape(v)
         fo.write("  <tr><th align='right'>%s:</th><td>%s</td></tr>\n"
