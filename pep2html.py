@@ -4,10 +4,6 @@ convert PEP's to (X)HTML - courtesy of /F
 
 Usage: %(PROGRAM)s [options] [peps]
 
-Notes:
-
-    The optional argument peps can be either pep numbers or .txt files.
-
 Options:
 
     -u/--user
@@ -24,6 +20,8 @@ Options:
 
     -h/--help
         Print this help message and exit.
+
+The optional argument `peps' is a list of either pep numbers or .txt files.
 """
 
 import sys
