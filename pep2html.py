@@ -19,6 +19,7 @@ import cgi, glob, os, re, sys
 
 HOST = "shell.sourceforge.net" # host for update
 HDIR = "/home/groups/python/htdocs/peps" # target host directory
+LOCALVARS = "Local Variables:"
 
 DTD = ('<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN"\n'
        '                      "http://www.w3.org/TR/REC-html40/loose.dtd">')
@@ -91,7 +92,7 @@ def fixfile(infile, outfile):
             break
         if line[0] != "\f":
             if line[0].strip():
-                if line.strip() == "Local Variables:":
+                if line.strip() == LOCALVARS:
                     break
                 fo.write("</pre>\n<h3>%s</h3>\n<pre>" % line.strip())
                 title = 0
