@@ -32,9 +32,11 @@ import re
 import cgi
 import glob
 import getopt
+import errno
 
 PROGRAM = sys.argv[0]
 RFCURL = 'http://www.faqs.org/rfcs/rfc%d.html'
+PEPURL = 'pep-%04d.html'
 
 
 
@@ -48,7 +50,9 @@ DTD = ('<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN"\n'
        '                      "http://www.w3.org/TR/REC-html40/loose.dtd">')
 
 fixpat = re.compile("((http|ftp):[-_a-zA-Z0-9/.+~:?#$=&]+)|(pep-\d+(.txt)?)|"
-                    "(RFC[- ]?(?P<rfcnum>\d+))|.")
+                    "(RFC[- ]?(?P<rfcnum>\d+))|"
+                    "(PEP\s+(?P<pepnum>\d+))|"
+                    ".")
 
 
 
@@ -70,8 +74,11 @@ def fixanchor(current, match):
         link = text
     elif text[:4] == "pep-" and text != current:
         link = os.path.splitext(text)[0] + ".html"
+    elif text[:3] == 'PEP':
+        pepnum = int(match.group('pepnum'))
+        link = PEPURL % pepnum
     elif text[:3] == 'RFC':
-        rfcnum = int(match.group('rfcnum'), 10)
+        rfcnum = int(match.group('rfcnum'))
         link = RFCURL % rfcnum
     if link:
         return "<a href='%s'>%s</a>" % (link, cgi.escape(text))
@@ -81,7 +88,12 @@ def fixanchor(current, match):
 
 def fixfile(infile, outfile):
     # convert plain text pep to minimal XHTML markup
-    fi = open(infile)
+    try:
+        fi = open(infile)
+    except IOError, e:
+        if e.errno <> errno.ENOENT: raise
+        print >> sys.stderr, 'Error: Skipping missing PEP file:', e.filename
+        return
     fo = open(outfile, "w")
     fo.write(DTD + "\n<html>\n<head>\n")
     # head
