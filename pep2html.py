@@ -9,11 +9,18 @@ Options:
     -u/--user
         SF username
 
+    -b/--browse
+        After generating the HTML, direct your web browser to view it
+        (using the Python webbrowser module).  If both -i and -b are
+        given, this will browse the on-line HTML; otherwise it will
+        browse the local HTML.  If no pep arguments are given, this
+        will browse PEP 0.
+
     -i/--install
         After generating the HTML, install it and the plain text source file
         (.txt) SourceForge.  In that case the user's name is used in the scp
-        and ssh commands, unless sf_username is given (in which case, it is
-        used instead).  Without -i, sf_username is ignored.
+        and ssh commands, unless -u sf_username is given (in which case, it is
+        used instead).  Without -i, -u is ignored.
 
     -q/--quiet
         Turn off verbose messages.
@@ -37,6 +44,7 @@ PROGRAM = sys.argv[0]
 RFCURL = 'http://www.faqs.org/rfcs/rfc%d.html'
 PEPURL = 'pep-%04d.html'
 PEPCVSURL = 'http://cvs.sourceforge.net/cgi-bin/viewcvs.cgi/python/python/nondist/peps/pep-%04d.txt'
+PEPDIRRUL = 'http://www.python.org/peps/'
 
 
 HOST = "shell.sourceforge.net"                    # host for update
@@ -254,15 +262,35 @@ def push_pep(htmlfiles, txtfiles, username, verbose):
         sys.exit(rc)
 
 
+def browse_file(pep):
+    import webbrowser
+    file = find_pep(pep)
+    if file.endswith(".txt"):
+        file = file[:-3] + "html"
+    file = os.path.abspath(file)
+    url = "file:" + file
+    webbrowser.open(url)
+
+def browse_remote(pep):
+    import webbrowser
+    file = find_pep(pep)
+    if file.endswith(".txt"):
+        file = file[:-3] + "html"
+    url = PEPDIRRUL + file
+    webbrowser.open(url)
+
+
 def main():
     # defaults
     update = 0
     username = ''
     verbose = 1
+    browse = 0
 
     try:
-        opts, args = getopt.getopt(sys.argv[1:], 'ihqu:',
-                                   ['install', 'help', 'quiet', 'user='])
+        opts, args = getopt.getopt(
+            sys.argv[1:], 'bihqu:',
+            ['browse', 'install', 'help', 'quiet', 'user='])
     except getopt.error, msg:
         usage(1, msg)
 
@@ -275,6 +303,8 @@ def main():
             username = arg
         elif opt in ('-q', '--quiet'):
             verbose = 0
+        elif opt in ('-b', '--browse'):
+            browse = 1
 
     if args:
         peptxt = []
@@ -284,15 +314,28 @@ def main():
             peptxt.append(file)
             newfile = make_html(file, verbose=verbose)
             html.append(newfile)
+            if browse and not update:
+                browse_file(pep)
     else:
         # do them all
         peptxt = []
-        for file in glob.glob("pep-*.txt"):
+        files = glob.glob("pep-*.txt")
+        files.sort()
+        for file in files:
             peptxt.append(file)
             make_html(file, verbose=verbose)
         html = ["pep-*.html"]
+        if browse and not update:
+            browse_file("0")
+
     if update:
         push_pep(html, peptxt, username, verbose)
+        if browse:
+            if args:
+                for pep in args:
+                    browse_remote(pep)
+            else:
+                browse_remote("0")
 
 
 
