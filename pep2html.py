@@ -41,7 +41,7 @@ import random
 import time
 
 REQUIRES = {'python': '2.2',
-            'docutils': '0.2.6'}
+            'docutils': '0.2.7'}
 PROGRAM = sys.argv[0]
 RFCURL = 'http://www.faqs.org/rfcs/rfc%d.html'
 PEPURL = 'pep-%04d.html'
@@ -286,23 +286,15 @@ application when this module is imported."""
 
 def fix_rst_pep(inpath, input_lines, outfile):
     from docutils import core, io
-    pub = core.Publisher()
-    pub.set_reader(reader_name='pep', parser_name='restructuredtext',
-                   parser=None)
-    pub.set_writer(writer_name='pep_html')
-    if docutils_settings:
-        settings = docutils_settings
-        pub.settings = settings
-    else:
-        settings = pub.get_settings()
-    settings._source = inpath
-    settings._destination = outfile.name
-    pub.source = io.StringInput(
-        settings, source=''.join(input_lines), source_path=inpath)
-    pub.destination = io.FileOutput(
-        settings, destination=outfile, destination_path=outfile.name,
-        autoclose=0)
-    pub.publish()
+    output = core.publish_string(
+        source=''.join(input_lines),
+        source_path=inpath,
+        destination_path=outfile.name,
+        reader_name='pep',
+        parser_name='restructuredtext',
+        writer_name='pep_html',
+        settings=docutils_settings)
+    outfile.write(output)
 
 
 def get_pep_type(input_lines):
