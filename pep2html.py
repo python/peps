@@ -34,6 +34,7 @@ import glob
 import getopt
 
 PROGRAM = sys.argv[0]
+RFCURL = 'http://www.faqs.org/rfcs/rfc%d.html'
 
 
 
@@ -71,7 +72,7 @@ def fixanchor(current, match):
         link = os.path.splitext(text)[0] + ".html"
     elif text[:3] == 'RFC':
         rfcnum = int(match.group('rfcnum'), 10)
-        link = 'http://www.rfc-editor.org/rfc/rfc%04d.txt' % rfcnum
+        link = RFCURL % rfcnum
     if link:
         return "<a href='%s'>%s</a>" % (link, cgi.escape(text))
     return cgi.escape(match.group(0)) # really slow, but it works...
