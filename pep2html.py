@@ -96,7 +96,8 @@ def usage(code, msg=''):
 def fixanchor(current, match):
     text = match.group(0)
     link = None
-    if text.startswith('http:') or text.startswith('ftp:'):
+    if (text.startswith('http:') or text.startswith('https:')
+        or text.startswith('ftp:')):
         # Strip off trailing punctuation.  Pattern taken from faqwiz.
         ltext = list(text)
         while ltext:
