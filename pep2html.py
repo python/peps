@@ -46,7 +46,8 @@ LOCALVARS = "Local Variables:"
 DTD = ('<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN"\n'
        '                      "http://www.w3.org/TR/REC-html40/loose.dtd">')
 
-fixpat = re.compile("((http|ftp):[-_a-zA-Z0-9/.+~:?#$=&]+)|(pep-\d+(.txt)?)|.")
+fixpat = re.compile("((http|ftp):[-_a-zA-Z0-9/.+~:?#$=&]+)|(pep-\d+(.txt)?)|"
+                    "(RFC[- ]?(?P<rfcnum>\d+))|.")
 
 
 
@@ -68,6 +69,9 @@ def fixanchor(current, match):
         link = text
     elif text[:4] == "pep-" and text != current:
         link = os.path.splitext(text)[0] + ".html"
+    elif text[:3] == 'RFC':
+        link = ('http://www.rfc-editor.org/rfc/rfc%s.txt' %
+                 match.groupdict()['rfcnum'])
     if link:
         return "<a href='%s'>%s</a>" % (link, cgi.escape(text))
     return cgi.escape(match.group(0)) # really slow, but it works...
