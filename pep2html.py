@@ -57,12 +57,9 @@ fixpat = re.compile("((http|ftp):[-_a-zA-Z0-9/.+~:?#$=&]+)|(pep-\d+(.txt)?)|"
 
 
 def usage(code, msg=''):
-    sys.stderr.write(__doc__ % globals() + '\n')
+    print >> sys.stderr, __docs__ % globals()
     if msg:
-        msg = str(msg)
-        if msg[-1] <> '\n':
-            msg = msg + '\n'
-        sys.stderr.write(msg)
+        print >> sys.stderr, msg
     sys.exit(code)
 
 
@@ -81,12 +78,13 @@ def fixanchor(current, match):
         rfcnum = int(match.group('rfcnum'))
         link = RFCURL % rfcnum
     if link:
-        return "<a href='%s'>%s</a>" % (link, cgi.escape(text))
+        return '<a href="%s">%s</a>' % (link, cgi.escape(text))
     return cgi.escape(match.group(0)) # really slow, but it works...
 
 
 
 def fixfile(infile, outfile):
+    basename = os.path.basename(infile)
     # convert plain text pep to minimal XHTML markup
     try:
         fi = open(infile)
@@ -95,7 +93,9 @@ def fixfile(infile, outfile):
         print >> sys.stderr, 'Error: Skipping missing PEP file:', e.filename
         return
     fo = open(outfile, "w")
-    fo.write(DTD + "\n<html>\n<head>\n")
+    print >> fo, DTD
+    print >> fo, '<html>'
+    print >> fo, '<head>'
     # head
     header = []
     pep = ""
@@ -122,19 +122,18 @@ def fixfile(infile, outfile):
     if pep:
         title = "PEP " + pep + " -- " + title
     if title:
-        fo.write("  <title>%s</title>\n"
-                 '  <link rel="STYLESHEET" href="style.css">\n'
-                 % cgi.escape(title))
-    fo.write("</head>\n")
+        print >> fo, '  <title>%s</title>' % cgi.escape(title)
+        print >> fo, '  <link rel="STYLESHEET" href="style.css">'
+    print >> fo, '</head>'
     # body
-    fo.write('<body bgcolor="white">\n'
-             '<div class="navigation">\n')
-    fo.write('[<b><a href="../">home</a></b>]\n')
-    if os.path.basename(infile) != "pep-0000.txt":
-        fo.write('[<b><a href=".">index</a></b>]\n')
-    fo.write('[<b><a href="pep-%04d.txt">PEP source</a></b>]\n' % int(pep))
-    fo.write('</div>\n'
-             '<div class="header">\n<table border="0">\n')
+    print >> fo, '<body bgcolor="white">'
+    print >> fo, '<div class="navigation">'
+    print >> fo, '[<b><a href="../">home</a></b>]'
+    if basename <> 'pep-0000.txt':
+        print >> fo, '[<b><a href=".">index</a></b>]'
+    print >> fo, '[<b><a href="pep-%04d.txt">PEP source</a></b>]' % int(pep)
+    print >> fo, '</div>'
+    print >> fo, '<div class="header">\n<table border="0">'
     for k, v in header:
         if k.lower() in ('author', 'discussions-to'):
             mailtos = []
@@ -157,29 +156,52 @@ def fixfile(infile, outfile):
             v = peps
         else:
             v = cgi.escape(v)
-        fo.write("  <tr><th align='right'>%s:</th><td>%s</td></tr>\n"
-                 % (cgi.escape(k), v))
-    title = 0
-    fo.write("</table>\n</div>\n<hr />\n"
-             "<pre>")
+        print >> fo, '  <tr><th align="right">%s:</th><td>%s</td></tr>' % (
+            cgi.escape(k), v)
+    print >> fo, '</table>'
+    print >> fo, '</div>'
+    print >> fo, '<hr />'
+    print >> fo, '<pre>'
     while 1:
         line = fi.readline()
         if not line:
             break
-        if line[0] != "\f":
-            if line[0].strip():
-                if line.strip() == LOCALVARS:
-                    break
-                fo.write("</pre>\n<h3>%s</h3>\n<pre>" % line.strip())
-                title = 0
-            else:
-                line = fixpat.sub(lambda x, c=infile: fixanchor(c, x), line)
-                fo.write(line)
-    fo.write("</pre>\n"
-             "</body>\n"
-             "</html>\n")
+        if line[0] == '\f':
+            continue
+        if line.strip() == LOCALVARS:
+            break
+        if line[0].strip():
+            if line.strip() == LOCALVARS:
+                break
+            print >> fo, '</pre>'
+            print >> fo, '<h3>%s</h3>' % line.strip()
+            print >> fo, '<pre>',
+        else:
+            # PEP 0 has some special treatment
+            if basename == 'pep-0000.txt':
+                parts = line.split()
+                if len(parts) > 1 and re.match(r'\s*\d{1,4}', parts[1]):
+                    # This is a PEP summary line, which we need to hyperlink
+                    url = PEPURL % int(parts[1])
+                    print >> fo, re.sub(
+                        parts[1],
+                        '<a href="%s">%s</a>' % (url, parts[1]),
+                        line, 1),
+                    continue
+                elif parts and '@' in parts[-1]:
+                    # This is a pep email address line, so hyperlink it
+                    url = '<a href="mailto:%s">%s</a>' % (parts[-1], parts[-1])
+                    print >> fo, re.sub(
+                        parts[-1], url, line, 1),
+                    continue
+            line = fixpat.sub(lambda x, c=infile: fixanchor(c, x), line)
+            fo.write(line)
+    print >> fo, '</pre>'
+    print >> fo, '</body>'
+    print >> fo, '</html>'
     fo.close()
     os.chmod(outfile, 0664)
+
 
 
 def find_pep(pep_str):
@@ -256,6 +278,7 @@ def main():
         html = ["pep-*.html"]
     if update:
         push_pep(html, peptxt, username, verbose)
+
 
 
 if __name__ == "__main__":
