@@ -108,8 +108,20 @@ def fixfile(infile, outfile):
     fo.write('</div>\n'
              '<div class="header">\n<table border="0">\n')
     for k, v in header:
+        if k.lower() == 'author':
+            mailtos = []
+            for addr in v.split():
+                if '@' in addr:
+                    mailtos.append(
+                        '<a href="mailto:%s?subject=PEP%%20%s">%s</a>' %
+                        (addr, pep, addr))
+                else:
+                    mailtos.append(addr)
+            v = ' '.join(mailtos)
+        else:
+            v = cgi.escape(v)
         fo.write("  <tr><th align='right'>%s:</th><td>%s</td></tr>\n"
-                 % (cgi.escape(k), cgi.escape(v)))
+                 % (cgi.escape(k), v))
     title = 0
     fo.write("</table>\n</div>\n<hr />\n"
              "<pre>")
