@@ -141,10 +141,7 @@ def fixfile(infile, outfile):
         title = "PEP " + pep + " -- " + title
     if title:
         print >> fo, '  <title>%s</title>' % cgi.escape(title)
-    print >> fo, '  <style type="text/css">'
-    css = open(os.path.join(os.path.dirname(infile), "style.css")).read()
-    print >> fo, css.rstrip()
-    print >> fo, '  </style>'
+    print >> fo, '  <link rel="STYLESHEET" href="style.css" type="text/css">'
     print >> fo, '</head>'
     # body
     print >> fo, '<body bgcolor="white" marginwidth="0" marginheight="0">'
@@ -192,7 +189,7 @@ def fixfile(infile, outfile):
             v = '<a href="%s">%s</a> ' % (url, cgi.escape(date))
         else:
             v = cgi.escape(v)
-        print >> fo, '  <tr><th align="right">%s:&nbsp;</th><td>%s</td></tr>' \
+        print >> fo, '  <tr><th>%s:&nbsp;</th><td>%s</td></tr>' \
               % (cgi.escape(k), v)
     print >> fo, '</table>'
     print >> fo, '</div>'
