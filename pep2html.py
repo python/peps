@@ -14,10 +14,10 @@ Options:
         SF username
 
     -i/--install
-        After generating the HTML, install it SourceForge.  In that case the
-        user's name is used in the scp and ssh commands, unless sf_username is
-        given (in which case, it is used instead).  Without -i, sf_username is
-        ignored.
+        After generating the HTML, install it and the plain text source file
+        (.txt) SourceForge.  In that case the user's name is used in the scp
+        and ssh commands, unless sf_username is given (in which case, it is
+        used instead).  Without -i, sf_username is ignored.
 
     -q/--quiet
         Turn off verbose messages.
@@ -170,7 +170,8 @@ def make_html(file, verbose=0):
     fixfile(file, newfile)
     return newfile
 
-def push_html(files, username, verbose):
+SPACE = ' '
+def push_pep(htmlfiles, txtfiles, username, verbose):
     if verbose:
         quiet = ""
     else:
@@ -178,8 +179,10 @@ def push_html(files, username, verbose):
     if username:
         username = username + "@"
     target = username + HOST + ":" + HDIR
+    files = htmlfiles[:]
+    files.extend(txtfiles)
     files.append("style.css")
-    filelist = " ".join(files)
+    filelist = SPACE.join(files)
     rc = os.system("scp %s %s %s" % (quiet, filelist, target))
     if rc:
         sys.exit(rc)
@@ -211,18 +214,22 @@ def main():
             verbose = 0
 
     if args:
+        peptxt = []
         html = []
         for pep in args:
             file = find_pep(pep)
+            peptxt.append(file)
             newfile = make_html(file, verbose=verbose)
             html.append(newfile)
     else:
         # do them all
+        peptxt = []
         for file in glob.glob("pep-*.txt"):
+            peptxt.append(file)
             make_html(file, verbose=verbose)
         html = ["pep-*.html"]
     if update:
-        push_html(html, username, verbose)
+        push_pep(html, peptxt, username, verbose)
 
 
 if __name__ == "__main__":
