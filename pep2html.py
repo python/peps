@@ -17,6 +17,9 @@ import cgi, glob, os, re, sys
 # this doesn't validate -- you cannot use <hr> and <h3> inside <pre>
 # tags.  but if I change that, the result doesn't look very nice...
 
+HOST = "shell.sourceforge.net" # host for update
+HDIR = "/home/groups/python/htdocs/peps" # target host directory
+
 DTD = ('<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN"\n'
        '                      "http://www.w3.org/TR/REC-html40/loose.dtd">')
 
@@ -90,6 +93,8 @@ def fixfile(infile, outfile):
     fo.write("</pre>\n")
     fo.write("</body>\n")
     fo.write("</html>\n")
+    fo.close()
+    os.chmod(outfile, 0664)
 
 
 def main():
@@ -110,8 +115,8 @@ def main():
         raise "Syntax: "+sys.argv[0]+" [-n] [sf_username]"
 
     if update:
-        os.system("scp pep-*.html " + username
-                  + "shell.sourceforge.net:/home/groups/python/htdocs/peps")
+        os.system("scp pep-*.html " + username + HOST + ":" + HDIR)
+        os.system("ssh " + username + HOST + " chmod 664 " + HDIR + "/*")
 
 
 if __name__ == "__main__":
