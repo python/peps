@@ -2,30 +2,55 @@
 """
 convert PEP's to (X)HTML - courtesy of /F
 
-Syntax: pep2html [-n] [sf_username]
+Usage: %(PROGRAM)s [options] [sf_username]
 
-The user name 'sf_username' is used to upload the converted files
-to the web pages at source forge.
+Options:
 
-If -n is given, the script doesn't actually try to install the
-generated HTML at SourceForge.
+    -i/--install
+        After generating the HTML, install it SourceForge.  In that case the
+        user's name is used in the scp and ssh commands, unless sf_username is
+        given (in which case, it is used instead).  Without -i, sf_username is
+        ignored.
 
+    -h/--help
+        Print this help message and exit.
 """
 
-import cgi, glob, os, re, sys
+import sys
+import os
+import re
+import cgi
+import glob
+import getopt
 
-# this doesn't validate -- you cannot use <hr> and <h3> inside <pre>
-# tags.  but if I change that, the result doesn't look very nice...
+PROGRAM = sys.argv[0]
 
-HOST = "shell.sourceforge.net" # host for update
-HDIR = "/home/groups/python/htdocs/peps" # target host directory
+
+
+HOST = "shell.sourceforge.net"                    # host for update
+HDIR = "/home/groups/python/htdocs/peps"          # target host directory
 LOCALVARS = "Local Variables:"
 
+# The generated HTML doesn't validate -- you cannot use <hr> and <h3> inside
+# <pre> tags.  But if I change that, the result doesn't look very nice...
 DTD = ('<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN"\n'
        '                      "http://www.w3.org/TR/REC-html40/loose.dtd">')
 
 fixpat = re.compile("((http|ftp):[-_a-zA-Z0-9/.+~:?#$=&]+)|(pep-\d+(.txt)?)|.")
 
+
+
+def usage(code, msg=''):
+    sys.stderr.write(__doc__ % globals() + '\n')
+    if msg:
+        msg = str(msg)
+        if msg[-1] <> '\n':
+            msg = msg + '\n'
+        sys.stderr.write(msg)
+    sys.exit(code)
+
+
+
 def fixanchor(current, match):
     text = match.group(0)
     link = None
@@ -37,6 +62,8 @@ def fixanchor(current, match):
         return "<a href='%s'>%s</a>" % (link, cgi.escape(text))
     return cgi.escape(match.group(0)) # really slow, but it works...
 
+
+
 def fixfile(infile, outfile):
     # convert plain text pep to minimal XHTML markup
     fi = open(infile)
@@ -106,28 +133,39 @@ def fixfile(infile, outfile):
     os.chmod(outfile, 0664)
 
 
+
 def main():
-    update = 1
+    # defaults
+    update = 0
+    username = ''
+
+    try:
+        opts, args = getopt.getopt(sys.argv[1:], 'ih', ['install', 'help'])
+    except getopt.error, msg:
+        usage(1, msg)
+
+    if args:
+        username = args[0] + '@'
+        del args[0]
+    if args:
+        usage(1, 'unexpected arguments')
+
+    for opt, arg in opts:
+        if opt in ('-h', '--help'):
+            usage(0)
+        elif opt in ('-i', '--install'):
+            update = 1
+
     for file in glob.glob("pep-*.txt"):
         newfile = os.path.splitext(file)[0] + ".html"
         print file, "->", newfile
         fixfile(file, newfile)
-
-    if len(sys.argv) > 1 and sys.argv[1] == "-n":
-        update = 0
-        del sys.argv[1]
-
-    if len(sys.argv) == 1:
-        username = ""
-    elif len(sys.argv) == 2:
-        username = sys.argv[1]+"@"
-    else:
-        raise "Syntax: "+sys.argv[0]+" [-n] [sf_username]"
 
     if update:
         os.system("scp pep-*.html style.css " + username + HOST + ":" + HDIR)
         os.system("ssh " + username + HOST + " chmod 664 " + HDIR + "/*")
 
 
+
 if __name__ == "__main__":
     main()
