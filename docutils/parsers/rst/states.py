@@ -534,9 +534,17 @@ class Inliner:
     non_whitespace_after = r'(?![ \n])'
     # Alphanumerics with isolated internal [-._] chars (i.e. not 2 together):
     simplename = r'(?:(?!_)\w)+(?:[-._](?:(?!_)\w)+)*'
+    # Valid URI characters (see RFC 2396 & RFC 2732):
     uric = r"""[-_.!~*'()[\];/:@&=+$,%a-zA-Z0-9]"""
-    urilast = r"""[_~/\]a-zA-Z0-9]"""   # no punctuation
+    # Last URI character; same as uric but no punctuation:
+    urilast = r"""[_~/a-zA-Z0-9]"""
     emailc = r"""[-_!~*'{|}/#?^`&=+$%a-zA-Z0-9]"""
+    email_pattern = r"""
+          %(emailc)s+(?:\.%(emailc)s+)*   # name
+          @                               # at
+          %(emailc)s+(?:\.%(emailc)s*)*   # host
+          %(urilast)s                     # final URI char
+          """
     parts = ('initial_inline', start_string_prefix, '',
              [('start', '', non_whitespace_after,  # simple start-strings
                [r'\*\*',                # strong
@@ -581,6 +589,18 @@ class Inliner:
               )
               %(end_string_suffix)s
               """ % locals(), re.VERBOSE | re.UNICODE),
+          embedded_uri=re.compile(
+              r"""
+              (
+                [ \n]+                  # spaces or beginning of line
+                <                       # open bracket
+                %(non_whitespace_after)s
+                ([^<>\0]+)              # anything but angle brackets & nulls
+                %(non_whitespace_before)s
+                >                       # close bracket w/o whitespace before
+              )
+              $                         # end of string
+              """ % locals(), re.VERBOSE),
           literal=re.compile(non_whitespace_before + '(``)'
                              + end_string_suffix),
           target=re.compile(non_whitespace_escape_before
@@ -588,8 +608,9 @@ class Inliner:
           substitution_ref=re.compile(non_whitespace_escape_before
                                       + r'(\|_{0,2})'
                                       + end_string_suffix),
+          email=re.compile(email_pattern % locals() + '$', re.VERBOSE),
           uri=re.compile(
-                r"""
+                (r"""
                 %(start_string_prefix)s
                 (?P<whole>
                   (?P<absolute>           # absolute URI
@@ -615,14 +636,11 @@ class Inliner:
                   )
                 |                       # *OR*
                   (?P<email>              # email address
-                    %(emailc)s+(\.%(emailc)s+)*  # name
-                    @                            # at
-                    %(emailc)s+(\.%(emailc)s*)*  # host
-                    %(urilast)s                  # final URI char
+                    """ + email_pattern + r"""
                   )
                 )
                 %(end_string_suffix)s
-                """ % locals(), re.VERBOSE),
+                """) % locals(), re.VERBOSE),
           pep=re.compile(
                 r"""
                 %(start_string_prefix)s
@@ -736,7 +754,7 @@ class Inliner:
                     prb = self.problematic(text, text, msg)
                     return string[:rolestart], [prb], string[textend:], [msg]
                 return self.phrase_ref(string[:matchstart], string[textend:],
-                                       rawsource, text)
+                                       rawsource, escaped, text)
             else:
                 return self.interpreted(string[:rolestart], string[textend:],
                                         rawsource, text, role, position)
@@ -747,16 +765,46 @@ class Inliner:
         prb = self.problematic(text, text, msg)
         return string[:matchstart], [prb], string[matchend:], [msg]
 
-    def phrase_ref(self, before, after, rawsource, text):
+    def phrase_ref(self, before, after, rawsource, escaped, text):
+        match = self.patterns.embedded_uri.search(escaped)
+        if match:
+            text = unescape(escaped[:match.start(0)])
+            uri_text = match.group(2)
+            uri = ''.join(uri_text.split())
+            uri = self.adjust_uri(uri)
+            if uri:
+                target = nodes.target(match.group(1), refuri=uri)
+            else:
+                raise ApplicationError('problem with URI: %r' % uri_text)
+        else:
+            target = None
         refname = normalize_name(text)
         reference = nodes.reference(rawsource, text)
+        node_list = [reference]
         if rawsource[-2:] == '__':
-            reference['anonymous'] = 1
-            self.document.note_anonymous_ref(reference)
+            if target:
+                reference['refuri'] = uri
+            else:
+                reference['anonymous'] = 1
+                self.document.note_anonymous_ref(reference)
         else:
-            reference['refname'] = refname
-            self.document.note_refname(reference)
-        return before, [reference], after, []
+            if target:
+                reference['refuri'] = uri
+                target['name'] = refname
+                self.document.note_external_target(target)
+                self.document.note_explicit_target(target, self.parent)
+                node_list.append(target)
+            else:
+                reference['refname'] = refname
+                self.document.note_refname(reference)
+        return before, node_list, after, []
+
+    def adjust_uri(self, uri):
+        match = self.patterns.email.match(uri)
+        if match:
+            return 'mailto:' + uri
+        else:
+            return uri
 
     def interpreted(self, before, after, rawsource, text, role, position):
         if role:
@@ -1639,8 +1687,12 @@ class Body(RSTState):
             name = normalize_name(unescape(targetname))
             target['name'] = name
             if refuri:
-                target['refuri'] = refuri
-                self.document.note_external_target(target)
+                uri = self.inliner.adjust_uri(refuri)
+                if uri:
+                    target['refuri'] = uri
+                    self.document.note_external_target(target)
+                else:
+                    raise ApplicationError('problem with URI: %r' % refuri)
             else:
                 self.document.note_internal_target(target)
             self.document.note_explicit_target(target, self.parent)

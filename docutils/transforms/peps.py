@@ -170,6 +170,7 @@ class TargetNotes(Transform):
         if not refsect:
             refsect = nodes.section()
             refsect += nodes.title('', 'References')
+            doc.set_id(refsect)
             if copyright:
                 # Put the new "References" section before "Copyright":
                 doc.insert(copyright, refsect)

@@ -134,12 +134,13 @@ class HTMLTranslator(nodes.NodeVisitor):
     option) disables list whitespace optimization.
     """
 
-    xml_declaration = '<?xml version="1.0" encoding="%s"?>\n'
+    xml_declaration = '<?xml version="1.0" encoding="%s" ?>\n'
     doctype = ('<!DOCTYPE html' 
                ' PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"'
                ' "http://www.w3.org/TR/xhtml1/DTD/'
                'xhtml1-transitional.dtd">\n')
-    html_head = '<html lang="%s">\n<head>\n'
+    html_head = ('<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="%s" '
+                 'lang="%s">\n<head>\n')
     content_type = ('<meta http-equiv="Content-Type" content="text/html; '
                     'charset=%s" />\n')
     generator = ('<meta name="generator" content="Docutils %s: '
@@ -153,11 +154,12 @@ class HTMLTranslator(nodes.NodeVisitor):
     def __init__(self, document):
         nodes.NodeVisitor.__init__(self, document)
         self.settings = settings = document.settings
-        self.language = languages.get_language(settings.language_code)
+        lcode = settings.language_code
+        self.language = languages.get_language(lcode)
         self.head_prefix = [
               self.xml_declaration % settings.output_encoding,
               self.doctype,
-              self.html_head % settings.language_code,
+              self.html_head % (lcode, lcode),
               self.content_type % settings.output_encoding,
               self.generator % docutils.__version__]
         self.head = []
@@ -167,7 +169,10 @@ class HTMLTranslator(nodes.NodeVisitor):
             self.stylesheet = [self.embedded_stylesheet % stylesheet_text]
         else:
             stylesheet = self.get_stylesheet_reference()
-            self.stylesheet = [self.stylesheet_link % stylesheet]
+            if stylesheet:
+                self.stylesheet = [self.stylesheet_link % stylesheet]
+            else:
+                self.stylesheet = []
         self.body_prefix = ['</head>\n<body>\n']
         self.body_pre_docinfo = []
         self.docinfo = []

@@ -16,6 +16,9 @@ _languages = {}
 def get_language(language_code):
     if _languages.has_key(language_code):
         return _languages[language_code]
-    module = __import__(language_code, globals(), locals())
+    try:
+        module = __import__(language_code, globals(), locals())
+    except ImportError:
+        return None
     _languages[language_code] = module
     return module

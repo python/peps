@@ -122,29 +122,37 @@ _directives = {}
 def directive(directive_name, language_module, document):
     """
     Locate and return a directive function from its language-dependent name.
-    If not found in the current language, check English.
+    If not found in the current language, check English.  Return None if the
+    named directive cannot be found.
     """
     normname = directive_name.lower()
     messages = []
+    msg_text = []
     if _directives.has_key(normname):
         return _directives[normname], messages
+    canonicalname = None
     try:
         canonicalname = language_module.directives[normname]
-    except (KeyError, AttributeError):
-        msg_text = ('No directive entry for "%s" in module "%s".'
-                    % (directive_name, language_module.__name__))
+    except AttributeError, error:
+        msg_text.append('Problem retrieving directive entry from language '
+                        'module %r: %s.' % (language_module, error))
+    except KeyError:
+        msg_text.append('No directive entry for "%s" in module "%s".'
+                        % (directive_name, language_module.__name__))
+    if not canonicalname:
         try:
             canonicalname = _fallback_language_module.directives[normname]
-            msg_text += ('\nUsing English fallback for directive "%s".'
-                         % directive_name)
+            msg_text.append('Using English fallback for directive "%s".'
+                            % directive_name)
         except KeyError:
-            msg_text += ('\nTrying "%s" as canonical directive name.'
-                         % directive_name)
+            msg_text.append('Trying "%s" as canonical directive name.'
+                            % directive_name)
             # The canonical name should be an English name, but just in case:
             canonicalname = normname
-        warning = document.reporter.warning(
-            msg_text, line=document.current_line)
-        messages.append(warning)
+    if msg_text:
+        message = document.reporter.info(
+            '\n'.join(msg_text), line=document.current_line)
+        messages.append(message)
     try:
         modulename, functionname = _directive_registry[canonicalname]
     except KeyError:
