@@ -19,3 +19,6 @@ install:
 
 clean:
 	-rm *.html
+
+update:
+	cvs update -P -d
