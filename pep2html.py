@@ -101,6 +101,29 @@ def fixanchor(current, match):
 
 
 
+NON_MASKED_EMAILS = [
+    'peps@python.org',
+    'python-list@python.org',
+    'python-dev@python.org',
+    ]
+
+def fixemail(address, pepno):
+    if address.lower() in NON_MASKED_EMAILS:
+        # return hyperlinked version of email address
+        return linkemail(address, pepno)
+    else:
+        # return masked version of email address
+        parts = address.split('@', 1)
+        return '%s&#32;&#97;t&#32;%s' % (parts[0], parts[1])
+
+
+def linkemail(address, pepno):
+    parts = address.split('@', 1)
+    return ('<a href="mailto:%s&#64;%s?subject=PEP%%20%s">'
+            '%s&#32;&#97;t&#32;%s</a>'
+            % (parts[0], parts[1], pepno, parts[0], parts[1]))
+
+
 def fixfile(infile, outfile):
     basename = os.path.basename(infile)
     # convert plain text pep to minimal XHTML markup
@@ -166,9 +189,11 @@ def fixfile(infile, outfile):
             mailtos = []
             for addr in v.split():
                 if '@' in addr:
-                    mailtos.append(
-                        '<a href="mailto:%s?subject=PEP%%20%s">%s</a>' %
-                        (addr, pep, addr))
+                    if k.lower() == 'discussions-to':
+                        m = linkemail(addr, pep)
+                    else:
+                        m = fixemail(addr, pep)
+                    mailtos.append(m)
                 elif addr.startswith('http:'):
                     mailtos.append(
                         '<a href="%s">%s</a>' % (addr, addr))
@@ -229,8 +254,8 @@ def fixfile(infile, outfile):
                         line, 1),
                     continue
                 elif parts and '@' in parts[-1]:
-                    # This is a pep email address line, so hyperlink it
-                    url = '<a href="mailto:%s">%s</a>' % (parts[-1], parts[-1])
+                    # This is a pep email address line, so filter it.
+                    url = fixemail(parts[-1], pep)
                     if need_pre:
                         print >> fo, '<pre>'
                         need_pre = 0
