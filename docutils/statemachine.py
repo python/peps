@@ -110,6 +110,7 @@ __docformat__ = 'restructuredtext'
 
 import sys
 import re
+from types import SliceType as _SliceType
 
 
 class StateMachine:
@@ -1104,22 +1105,23 @@ class ViewList:
     def __contains__(self, item): return item in self.data
     def __len__(self): return len(self.data)
 
+    # The __getitem__()/__setitem__() methods check whether the index
+    # is a slice first, since native list objects start supporting
+    # them directly in Python 2.3 (no exception is raised when
+    # indexing a list with a slice object; they just work).
+
     def __getitem__(self, i):
-        try:
-            return self.data[i]
-        except TypeError:
-            assert i.step is None, 'cannot handle slice with stride'
+        if isinstance(i, _SliceType):
+            assert i.step in (None, 1),  'cannot handle slice with stride'
             return self.__class__(self.data[i.start:i.stop],
                                   items=self.items[i.start:i.stop],
                                   parent=self, parent_offset=i.start)
+        else:
+            return self.data[i]
 
     def __setitem__(self, i, item):
-        try:
-            self.data[i] = item
-            if self.parent:
-                self.parent[i + self.parent_offset] = item
-        except TypeError:
-            assert i.step is None, 'cannot handle slice with stride'
+        if isinstance(i, _SliceType):
+            assert i.step in (None, 1), 'cannot handle slice with stride'
             if not isinstance(item, ViewList):
                 raise TypeError('assigning non-ViewList to ViewList slice')
             self.data[i.start:i.stop] = item.data
@@ -1128,6 +1130,10 @@ class ViewList:
             if self.parent:
                 self.parent[i.start + self.parent_offset
                             : i.stop + self.parent_offset] = item
+        else:
+            self.data[i] = item
+            if self.parent:
+                self.parent[i + self.parent_offset] = item
 
     def __delitem__(self, i):
         try:

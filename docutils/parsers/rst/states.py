@@ -1910,7 +1910,7 @@ class Body(RSTState):
         try:
             options = utils.extract_extension_options(node, option_spec)
         except KeyError, detail:
-            return 0, ('unknown option: "%s"' % detail)
+            return 0, ('unknown option: "%s"' % detail.args[0])
         except (ValueError, TypeError), detail:
             return 0, ('invalid option value: %s' % detail)
         except utils.ExtensionOptionError, detail:

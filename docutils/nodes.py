@@ -57,8 +57,9 @@ class Node:
         return 1
 
     def asdom(self, dom=xml.dom.minidom):
-        """Return a DOM representation of this Node."""
-        return self._dom_node(dom)
+        """Return a DOM **fragment** representation of this Node."""
+        domroot = dom.Document()
+        return self._dom_node(domroot)
 
     def pformat(self, indent='    ', level=0):
         """Return an indented pseudo-XML representation, for test purposes."""
@@ -180,10 +181,7 @@ class Text(Node, UserString):
             data = repr(self.data[:16] + ' ...')
         return '<%s: %s>' % (self.tagname, data)
 
-    def _dom_node(self, dom):
-        return dom.Text(self.data)
-
-    def _rooted_dom_node(self, domroot):
+    def _dom_node(self, domroot):
         return domroot.createTextNode(self.data)
 
     def astext(self):
@@ -260,22 +258,14 @@ class Element(Node):
         if self.tagname is None:
             self.tagname = self.__class__.__name__
 
-    def _dom_node(self, dom):
-        element = dom.Element(self.tagname)
-        for attribute, value in self.attributes.items():
-            element.setAttribute(attribute, str(value))
-        for child in self.children:
-            element.appendChild(child._dom_node(dom))
-        return element
-
-    def _rooted_dom_node(self, domroot):
+    def _dom_node(self, domroot):
         element = domroot.createElement(self.tagname)
         for attribute, value in self.attributes.items():
             if type(value) is ListType:
                 value = ' '.join(value)
             element.setAttribute(attribute, str(value))
         for child in self.children:
-            element.appendChild(child._rooted_dom_node(domroot))
+            element.appendChild(child._dom_node(domroot))
         return element
 
     def __repr__(self):
@@ -335,7 +325,7 @@ class Element(Node):
         elif isinstance(key, IntType):
             return self.children[key]
         elif isinstance(key, SliceType):
-            assert key.step is None, 'cannot handle slice with stride'
+            assert key.step in (None, 1), 'cannot handle slice with stride'
             return self.children[key.start:key.stop]
         else:
             raise TypeError, ('element index must be an integer, a slice, or '
@@ -348,7 +338,7 @@ class Element(Node):
             self.setup_child(item)
             self.children[key] = item
         elif isinstance(key, SliceType):
-            assert key.step is None, 'cannot handle slice with stride'
+            assert key.step in (None, 1), 'cannot handle slice with stride'
             for node in item:
                 self.setup_child(node)
             self.children[key.start:key.stop] = item
@@ -362,7 +352,7 @@ class Element(Node):
         elif isinstance(key, IntType):
             del self.children[key]
         elif isinstance(key, SliceType):
-            assert key.step is None, 'cannot handle slice with stride'
+            assert key.step in (None, 1), 'cannot handle slice with stride'
             del self.children[key.start:key.stop]
         else:
             raise TypeError, ('element index must be an integer, a simple '
@@ -701,8 +691,9 @@ class document(Root, Structural, Element):
         self.document = self
 
     def asdom(self, dom=xml.dom.minidom):
+        """Return a DOM representation of this document."""
         domroot = dom.Document()
-        domroot.appendChild(self._rooted_dom_node(domroot))
+        domroot.appendChild(self._dom_node(domroot))
         return domroot
 
     def set_id(self, node, msgnode=None):
