@@ -142,9 +142,9 @@ def fixfile(inpath, input_lines, outfile):
     basename = os.path.basename(inpath)
     infile = iter(input_lines)
     # convert plaintext pep to minimal XHTML markup
-    print >> outfile, COMMENT
     print >> outfile, DTD
     print >> outfile, '<html>'
+    print >> outfile, COMMENT
     print >> outfile, '<head>'
     # head
     header = []
