@@ -1,0 +1,204 @@
+PEP: 266
+Title: Optimizing Global Variable/Attribute Access
+Version: $Revision$
+Author: skip@pobox.com (Skip Montanaro)
+Status: Draft
+Type: Standards Track
+Python-Version: 2.3
+Created: 13-Aug-2001
+Post-History:
+
+
+Abstract
+
+    The bindings for most global variables and attributes of other
+    modules typically never change during the execution of a Python
+    program, but because of Python's dynamic nature, code which
+    accesses such global objects must run through a full lookup each
+    time the object is needed.  This PEP proposes a mechanism that
+    allows code that accesses most global objects to treat them as
+    local objects and places the burden of updating references on the
+    code that changes the name bindings of such objects.
+
+
+Introduction
+
+    Consider the workhorse function sre_compile._compile.  It is the
+    internal compilation function for the sre module.  It consists
+    almost entirely of a loop over the elements of the pattern being
+    compiled, comparing opcodes with known constant values and
+    appending tokens to an output list.  Most of the comparisons are
+    with constants imported from the sre_constants module.  This means
+    there are lots of LOAD_GLOBAL bytecodes in the compiled output of
+    this module.  Just by reading the code it's apparent that the
+    author intended LITERAL, NOT_LITERAL, OPCODES and many other
+    symbols to be constants.  Still, each time they are involved in an
+    expression, they must be looked up anew.
+
+    Most global accesses are actually to objects that are "almost
+    constants".  This includes global variables in the current module
+    as well as the attributes of other imported modules.  Since they
+    rarely change, it seems reasonable to place the burden of updating
+    references to such objects on the code that changes the name
+    bindings.  If sre_constants.LITERAL is changed to refer to another
+    object, perhaps it would be worthwhile for the code that modifies
+    the sre_constants module dict to correct any active references to
+    that object.  By doing so, in many cases global variables and the
+    attributes of many objects could be cached as local variables.  If
+    the bindings between the names given to the objects and the
+    objects themselves changes rarely, the cost of keeping track of
+    such objects should be low and the potential payoff fairly large.
+
+
+Proposed Change
+
+    I propose that the Python virtual machine be modified to include
+    TRACK_OBJECT and UNTRACK_OBJECT opcodes.  TRACK_OBJECT would
+    associate a global name or attribute of a global name with a slot
+    in the local variable array and perform an initial lookup of the
+    associated object to fill in the slot with a valid value.  The
+    association it creates would be noted by the code responsible for
+    changing the name-to-object binding to cause the associated local
+    variable to be updated.  The UNTRACK_OBJECT opcode would delete
+    any association between the name and the local variable slot.
+
+
+Rationale
+
+    Global variables and attributes rarely change.  For example, once
+    a function imports the math module, the binding between the name
+    "math" and the module it refers to aren't likely to change.
+    Similarly, if the function that uses the math module refers to its
+    "sin" attribute, it's unlikely to change.  Still, every time the
+    module wants to call the math.sin function, it must first execute
+    a pair of instructions:
+
+        LOAD_GLOBAL     math
+        LOAD_ATTR       sin
+
+    If the client module always assumed that math.sin was a local
+    constant and it was the responsibility of "external forces"
+    outside the function to keep the reference correct, we might have
+    code like this:
+
+        TRACK_OBJECT       math.sin
+        ...
+        LOAD_FAST          math.sin
+        ...
+        UNTRACK_OBJECT     math.sin
+
+    If the LOAD_FAST was in a loop the payoff in reduced global loads
+    and attribute lookups could be significant.
+
+    This technique could, in theory, be applied to any global variable
+    access or attribute lookup.  Consider this code:
+
+        l = []
+        for i in range(10):
+            l.append(math.sin(i))
+        return l
+
+    Even though l is a local variable, you still pay the cost of
+    loading l.append ten times in the loop.  The compiler (or an
+    optimizer) could recognize that both math.sin and l.append are
+    being called in the loop and decide to generate the tracked local
+    code, avoiding it for the builtin range() function because it's
+    only called once during loop setup.
+
+    According to a post to python-dev by Marc-Andre Lemburg [1],
+    LOAD_GLOBAL opcodes account for over 7% of all instructions
+    executed by the Python virtual machine.  This can be a very
+    expensive instruction, at least relative to a LOAD_FAST
+    instruction, which is a simple array index and requires no extra
+    function calls by the virtual machine.  I believe many LOAD_GLOBAL
+    instructions and LOAD_GLOBAL/ LOAD_ATTR pairs could be converted
+    to LOAD_FAST instructions.
+
+    Code that uses global variables heavily often resorts to various
+    tricks to avoid global variable and attribute lookup.  The
+    aforementioned sre_compile._compile function caches the append
+    method of the growing output list.  Many people commonly abuse
+    functions' default argument feature to cache global variable
+    lookups.  Both of these schemes are hackish and rarely address all
+    the available opportunities for optimization.  (For example,
+    sre_compile._compile does not cache the two globals that it uses
+    most frequently: the builtin len function and the global OPCODES
+    array that it imports from sre_constants.py.
+
+
+Discussion
+
+    Jeremy Hylton has an alternate proposal on the table [2].  His
+    proposal seeks to create a hybrid dictionary/list object for use
+    in global name lookups that would make global variable access look
+    more like local variable access.  While there is no C code
+    available to examine, the Python implementation given in his
+    proposal still appears to require dictionary key lookup.  It
+    doesn't appear that his proposal could speed local variable
+    attribute lookup, which might be worthwhile in some situations.
+
+
+Backwards Compatibility
+
+    I don't believe there will be any serious issues of backward
+    compatibility.  Obviously, Python bytecode that contains
+    TRACK_OBJECT opcodes could not be executed by earlier versions of
+    the interpreter, but breakage at the bytecode level is often
+    assumed between versions.
+
+
+Implementation
+
+    TBD.  This is where I need help.  I believe there should be either
+    a central name/location registry or the code that modifies object
+    attributes should be modified, but I'm not sure the best way to go
+    about this.  If you look at the code that implements the
+    STORE_GLOBAL and STORE_ATTR opcodes, it seems likely that some
+    changes will be required to PyDict_SetItem and PyObject_SetAttr or
+    their String variants.  Ideally, there'd be a fairly central place
+    to localize these changes.  If you begin considering tracking
+    attributes of local variables you get into issues of modifying
+    STORE_FAST as well, which could be a problem, since the name
+    bindings for local variables are changed much more frequently.  (I
+    think an optimizer could avoid inserting the tracking code for the
+    attributes for any local variables where the variable's name
+    binding changes.)
+
+
+Performance
+
+    I believe (though I have no code to prove it at this point), that
+    implementing TRACK_OBJECT will generally not be much more
+    expensive than a single LOAD_GLOBAL instruction or a
+    LOAD_GLOBAL/LOAD_ATTR pair.  An optimizer should be able to avoid
+    converting LOAD_GLOBAL and LOAD_GLOBAL/LOAD_ATTR to the new scheme
+    unless the object access occurred within a loop.  Further down the
+    line, a register-oriented replacement for the current Python
+    virtual machine [3] could conceivably eliminate most of the
+    LOAD_FAST instructions as well.
+
+    The number of tracked objects should be relatively small.  All
+    active frames of all active threads could conceivably be tracking
+    objects, but this seems small compared to the number of functions
+    defined in a given application.
+
+
+References
+
+    [1] http://mail.python.org/pipermail/python-dev/2000-July/007609.html
+
+    [2] http://www.zope.org/Members/jeremy/CurrentAndFutureProjects/FastGlobalsPEP
+
+    [3] http://www.musi-cal.com/~skip/python/rattlesnake20010813.tar.gz
+
+
+Copyright
+
+    This document has been placed in the public domain.
+
+
+
+Local Variables:
+mode: indented-text
+indent-tabs-mode: nil
+End:
