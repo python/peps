@@ -59,19 +59,24 @@ def fixfile(infile, outfile):
     if pep:
         title = "PEP " + pep + " -- " + title
     if title:
-        fo.write("  <title>%s</title>\n" % cgi.escape(title))
+        fo.write("  <title>%s</title>\n"
+                 '  <link rel="STYLESHEET" href="style.css">\n'
+                 % cgi.escape(title))
     fo.write("</head>\n")
     # body
-    fo.write('<body bgcolor="white">\n')
-    fo.write('[<a href="../">home</a>]\n')
+    fo.write('<body bgcolor="white">\n'
+             '<div class="navigation">\n')
+    fo.write('[<b><a href="../">home</a></b>]\n')
     if os.path.basename(infile) != "pep-0000.txt":
-        fo.write('[<a href=".">index</a>]\n')
-    fo.write('<hr />\n<table border="0">\n')
+        fo.write('[<b><a href=".">index</a></b>]\n')
+    fo.write('</div>\n'
+             '<div class="header">\n<table border="0">\n')
     for k, v in header:
         fo.write("  <tr><th align='right'>%s:</th><td>%s</td></tr>\n"
                  % (cgi.escape(k), cgi.escape(v)))
     title = 0
-    fo.write("</table>\n<hr />\n<pre>")
+    fo.write("</table>\n</div>\n<hr />\n"
+             "<pre>")
     while 1:
         line = fi.readline()
         if not line:
@@ -110,7 +115,7 @@ def main():
         raise "Syntax: "+sys.argv[0]+" [-n] [sf_username]"
 
     if update:
-        os.system("scp pep-*.html " + username + HOST + ":" + HDIR)
+        os.system("scp pep-*.html style.css " + username + HOST + ":" + HDIR)
         os.system("ssh " + username + HOST + " chmod 664 " + HDIR + "/*")
 
 
