@@ -374,6 +374,7 @@ def push_pep(htmlfiles, txtfiles, username, verbose):
     files = htmlfiles[:]
     files.extend(txtfiles)
     files.append("style.css")
+    files.append("pep.css")
     filelist = SPACE.join(files)
     rc = os.system("scp %s %s %s" % (quiet, filelist, target))
     if rc:
