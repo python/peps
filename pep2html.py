@@ -38,6 +38,7 @@ import cgi
 import glob
 import getopt
 import errno
+import random
 import time
 
 PROGRAM = sys.argv[0]
@@ -47,8 +48,8 @@ PEPCVSURL = 'http://cvs.sourceforge.net/cgi-bin/viewcvs.cgi/python/python/nondis
 PEPDIRRUL = 'http://www.python.org/peps/'
 
 
-HOST = "shell.sourceforge.net"                    # host for update
-HDIR = "/home/groups/p/py/python/htdocs/peps"     # target host directory
+HOST = "www.python.org"                    # host for update
+HDIR = "/ftp/ftp.python.org/pub/www.python.org/peps" # target host directory
 LOCALVARS = "Local Variables:"
 
 # The generated HTML doesn't validate -- you cannot use <hr> and <h3> inside
@@ -140,17 +141,28 @@ def fixfile(infile, outfile):
         title = "PEP " + pep + " -- " + title
     if title:
         print >> fo, '  <title>%s</title>' % cgi.escape(title)
-        print >> fo, '  <link rel="STYLESHEET" href="style.css">'
+    print >> fo, '  <style type="text/css">'
+    css = open(os.path.join(os.path.dirname(infile), "style.css")).read()
+    print >> fo, css.rstrip()
+    print >> fo, '  </style>'
     print >> fo, '</head>'
     # body
-    print >> fo, '<body bgcolor="white">'
-    print >> fo, '<div class="navigation">'
-    print >> fo, '[<b><a href="../">home</a></b>]'
+    print >> fo, '<body bgcolor="white" marginwidth="0" marginheight="0">'
+    print >> fo, '<table class="navigation" cellpadding="0" cellspacing="0"'
+    print >> fo, '       width="100%" border="0">'
+    print >> fo, '<tr><td class="navicon" width="150" height="35">'
+    r = random.choice(range(64))
+    print >> fo, '<a href="../" title="Python Home Page">'
+    print >> fo, '<img src="../pics/PyBanner%03d.gif" alt="[Python]"' % r
+    print >> fo, ' border="0" width="150" height="35" /></a></td>'
+    print >> fo, '<td class="textlinks" align="left">'
+    print >> fo, '[<b><a href="../">Python Home</a></b>]'
     if basename <> 'pep-0000.txt':
-        print >> fo, '[<b><a href=".">index</a></b>]'
+        print >> fo, '[<b><a href=".">PEP Index</a></b>]'
     if pep:
-        print >> fo, '[<b><a href="pep-%04d.txt">PEP source</a></b>]' % int(pep)
-    print >> fo, '</div>'
+        print >> fo, '[<b><a href="pep-%04d.txt">PEP Source</a></b>]' \
+              % int(pep)
+    print >> fo, '</td></tr></table>'
     print >> fo, '<div class="header">\n<table border="0">'
     for k, v in header:
         if k.lower() in ('author', 'discussions-to'):
@@ -180,11 +192,12 @@ def fixfile(infile, outfile):
             v = '<a href="%s">%s</a> ' % (url, cgi.escape(date))
         else:
             v = cgi.escape(v)
-        print >> fo, '  <tr><th align="right">%s:</th><td>%s</td></tr>' % (
-            cgi.escape(k), v)
+        print >> fo, '  <tr><th align="right">%s:&nbsp;</th><td>%s</td></tr>' \
+              % (cgi.escape(k), v)
     print >> fo, '</table>'
     print >> fo, '</div>'
     print >> fo, '<hr />'
+    print >> fo, '<div class="content">'
     print >> fo, '<pre>'
     while 1:
         line = fi.readline()
@@ -221,6 +234,7 @@ def fixfile(infile, outfile):
             line = fixpat.sub(lambda x, c=infile: fixanchor(c, x), line)
             fo.write(line)
     print >> fo, '</pre>'
+    print >> fo, '</div>'
     print >> fo, '</body>'
     print >> fo, '</html>'
     fo.close()
