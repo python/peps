@@ -139,7 +139,8 @@ def fixfile(infile, outfile):
     print >> fo, '[<b><a href="../">home</a></b>]'
     if basename <> 'pep-0000.txt':
         print >> fo, '[<b><a href=".">index</a></b>]'
-    print >> fo, '[<b><a href="pep-%04d.txt">PEP source</a></b>]' % int(pep)
+    if pep:
+        print >> fo, '[<b><a href="pep-%04d.txt">PEP source</a></b>]' % int(pep)
     print >> fo, '</div>'
     print >> fo, '<div class="header">\n<table border="0">'
     for k, v in header:
