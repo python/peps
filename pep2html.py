@@ -21,6 +21,10 @@ Options:
         and ssh commands, unless "-u username" is given (in which case, it is
         used instead).  Without -i, -u is ignored.
 
+    -l/--local
+        Same as -i/--install, except run on the local machine.  Use this when
+        logged in to the python.org machine (creosote).
+
     -q/--quiet
         Turn off verbose messages.
 
@@ -105,7 +109,7 @@ def fixanchor(current, match):
         rfcnum = int(match.group('rfcnum'))
         link = RFCURL % rfcnum
     if link:
-        return '<a href="%s">%s</a>' % (link, cgi.escape(text))
+        return '<a href="%s">%s</a>' % (cgi.escape(link), cgi.escape(text))
     return cgi.escape(match.group(0)) # really slow, but it works...
 
 
@@ -170,9 +174,9 @@ def fixfile(inpath, input_lines, outfile):
         print >> outfile, '  <title>%s</title>' % cgi.escape(title)
     r = random.choice(range(64))
     print >> outfile, (
-        '  <link rel="STYLESHEET" href="style.css" type="text/css">\n'
+        '  <link rel="STYLESHEET" href="style.css" type="text/css" />\n'
         '</head>\n'
-        '<body bgcolor="white" marginwidth="0" marginheight="0">\n'
+        '<body bgcolor="white">\n'
         '<table class="navigation" cellpadding="0" cellspacing="0"\n'
         '       width="100%%" border="0">\n'
         '<tr><td class="navicon" width="150" height="35">\n'
@@ -367,23 +371,31 @@ def make_html(inpath, verbose=0):
     os.chmod(outfile.name, 0664)
     return outpath
 
-def push_pep(htmlfiles, txtfiles, username, verbose):
-    if verbose:
-        quiet = ""
+def push_pep(htmlfiles, txtfiles, username, verbose, local=0):
+    quiet = ""
+    if local:
+        if verbose:
+            quiet = "-v"
+        target = HDIR
+        copy_cmd = "cp"
+        chmod_cmd = "chmod"
     else:
-        quiet = "-q"
-    if username:
-        username = username + "@"
-    target = username + HOST + ":" + HDIR
+        if not verbose:
+            quiet = "-q"
+        if username:
+            username = username + "@"
+        target = username + HOST + ":" + HDIR
+        copy_cmd = "scp"
+        chmod_cmd = "ssh %s%s chmod" % (username, HOST)
     files = htmlfiles[:]
     files.extend(txtfiles)
     files.append("style.css")
     files.append("pep.css")
     filelist = SPACE.join(files)
-    rc = os.system("scp %s %s %s" % (quiet, filelist, target))
+    rc = os.system("%s %s %s %s" % (copy_cmd, quiet, filelist, target))
     if rc:
         sys.exit(rc)
-    rc = os.system("ssh %s%s chmod 664 %s/*" % (username, HOST, HDIR))
+    rc = os.system("%s 664 %s/*" % (chmod_cmd, HDIR))
     if rc:
         sys.exit(rc)
 
@@ -445,6 +457,7 @@ def browse_remote(pep):
 def main(argv=None):
     # defaults
     update = 0
+    local = 0
     username = ''
     verbose = 1
     browse = 0
@@ -456,8 +469,8 @@ def main(argv=None):
 
     try:
         opts, args = getopt.getopt(
-            argv, 'bihqu:',
-            ['browse', 'install', 'help', 'quiet', 'user='])
+            argv, 'bilhqu:',
+            ['browse', 'install', 'local', 'help', 'quiet', 'user='])
     except getopt.error, msg:
         usage(1, msg)
 
@@ -466,6 +479,9 @@ def main(argv=None):
             usage(0)
         elif opt in ('-i', '--install'):
             update = 1
+        elif opt in ('-l', '--local'):
+            update = 1
+            local = 1
         elif opt in ('-u', '--user'):
             username = arg
         elif opt in ('-q', '--quiet'):
@@ -499,7 +515,7 @@ def main(argv=None):
             browse_file("0")
 
     if update:
-        push_pep(html, peptxt, username, verbose)
+        push_pep(html, peptxt, username, verbose, local=local)
         if browse:
             if args:
                 for pep in args:
