@@ -59,40 +59,35 @@ def fixfile(infile, outfile):
     if pep:
         title = "PEP " + pep + " -- " + title
     if title:
-        fo.write("<title>%s</title>\n" % cgi.escape(title))
+        fo.write("  <title>%s</title>\n" % cgi.escape(title))
     fo.write("</head>\n")
     # body
-    fo.write("<body bgcolor='white'>\n")
-    fo.write("[<a href='../'>home</a>]\n")
+    fo.write('<body bgcolor="white">\n')
+    fo.write('[<a href="../">home</a>]\n')
     if os.path.basename(infile) != "pep-0000.txt":
-        fo.write("[<a href='.'>index</a>]\n")
-    fo.write("<hr />\n<table border='0'>\n")
+        fo.write('[<a href=".">index</a>]\n')
+    fo.write('<hr />\n<table border="0">\n')
     for k, v in header:
         fo.write("  <tr><th align='right'>%s:</th><td>%s</td></tr>\n"
                  % (cgi.escape(k), cgi.escape(v)))
     title = 0
-    fo.write("</table>\n<pre>")
+    fo.write("</table>\n<hr />\n<pre>")
     while 1:
         line = fi.readline()
         if not line:
             break
-        if line[:1] == "\f":
-            fo.write("<hr />")
-            # fo.write("\n</pre><hr /><pre>\n")
-            title = 1
-        else:
-            line = fixpat.sub(lambda x, c=infile: fixanchor(c, x), line)
-            if title:
+        if line[0] != "\f":
+            if line[0].strip():
                 if line.strip() == "Local Variables:":
                     break
                 fo.write("</pre>\n<h3>%s</h3>\n<pre>" % line.strip())
-                # fo.write("</pre><h3><tt>%s</tt></h3><pre>\n" % line)
                 title = 0
             else:
+                line = fixpat.sub(lambda x, c=infile: fixanchor(c, x), line)
                 fo.write(line)
-    fo.write("</pre>\n")
-    fo.write("</body>\n")
-    fo.write("</html>\n")
+    fo.write("</pre>\n"
+             "</body>\n"
+             "</html>\n")
     fo.close()
     os.chmod(outfile, 0664)
 
