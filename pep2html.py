@@ -166,6 +166,23 @@ def make_html(file, verbose=0):
     fixfile(file, newfile)
     return newfile
 
+def push_html(files, username, verbose):
+    if verbose:
+        quiet = ""
+    else:
+        quiet = "-q"
+    if username:
+        username = username + "@"
+    target = username + HOST + ":" + HDIR
+    files.append("style.css")
+    filelist = " ".join(files)
+    rc = os.system("scp %s %s %s" % (quiet, filelist, target))
+    if rc:
+        sys.exit(rc)
+    rc = os.system("ssh %s%s chmod 664 %s/*" % (username, HOST, HDIR))
+    if rc:
+        sys.exit(rc)
+
 
 def main():
     # defaults
@@ -185,7 +202,7 @@ def main():
         elif opt in ('-i', '--install'):
             update = 1
         elif opt in ('-u', '--user'):
-            username = arg + "@"
+            username = arg
         elif opt in ('-q', '--quiet'):
             verbose = 0
 
@@ -195,20 +212,13 @@ def main():
             file = find_pep(pep)
             newfile = make_html(file, verbose=verbose)
             html.append(newfile)
-        if update:
-            os.system("scp %s style.css " % " ".join(html) \
-                      + username + HOST + ":" + HDIR)
     else:
         # do them all
         for file in glob.glob("pep-*.txt"):
             make_html(file, verbose=verbose)
-        if update:
-            os.system("scp pep-*.html style.css " + \
-                      username + HOST + ":" + HDIR)
-
+        html = ["pep-*.html"]
     if update:
-        os.system("ssh " + username + HOST + " chmod 664 " + HDIR + "/*")
-
+        push_html(html, username, verbose)
 
 
 if __name__ == "__main__":
