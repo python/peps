@@ -22,8 +22,8 @@ Options:
         used instead).  Without -i, -u is ignored.
 
     -l/--local
-        Same as -i/--install, except run on the local machine.  Use this when
-        logged in to the python.org machine (creosote).
+        Same as -i/--install, except install on the local machine.  Use this
+        when logged in to the python.org machine (creosote).
 
     -q/--quiet
         Turn off verbose messages.
