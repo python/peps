@@ -10,7 +10,13 @@ to the web pages at source forge.
 
 import cgi, glob, os, re, sys
 
-fixpat = re.compile("((http|ftp):[-_a-zA-Z0-9/.+?~:#$]+)|(pep-\d+(.txt)?)|.")
+# this doesn't validate -- you cannot use <hr> and <h3> inside <pre>
+# tags.  but if I change that, the result doesn't look very nice...
+
+DTD = ('<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN" '
+       '"http://www.w3.org/TR/REC-html40/loose.dtd">')
+
+fixpat = re.compile("((http|ftp):[-_a-zA-Z0-9/.+~:?#$=&]+)|(pep-\d+(.txt)?)|.")
 
 def fixanchor(match):
     text = match.group(0)
@@ -21,16 +27,18 @@ def fixanchor(match):
         link = os.path.splitext(text)[0] + ".html"
     if link:
         return "<a href='%s'>%s</a>" % (link, cgi.escape(link))
-    return cgi.escape(match.group(0))
+    return cgi.escape(match.group(0)) # really slow, but it works...
 
 def fixfile(infile, outfile):
     # convert plain text pep to minimal XHTML markup
     fi = open(infile)
     fo = open(outfile, "w")
-    fo.write("<html>\n")
+    fo.write("%s\n<html>\n" % DTD)
     # head
     header = []
     fo.write("<head>\n")
+    pep = ""
+    title = ""
     while 1:
         line = fi.readline()
         if not line or ":" not in line:
@@ -39,11 +47,22 @@ def fixfile(infile, outfile):
         value = value.strip()
         header.append((key, value))
         if key.lower() == "title":
-            fo.write("<title>%s</title>\n" % cgi.escape(value))
+            title = value
+        if key.lower() == "pep":
+            pep = value
+    if pep:
+        title = "PEP " + pep + " -- " + title
+    if title:
+        fo.write("<title>%s</title>\n" % cgi.escape(title))
     fo.write("</head>\n")
     # body
     fo.write("<body bgcolor='white'>\n")
     fo.write("<pre>\n")
+    fo.write("[<a href='..'>home</a>]")
+    if os.path.basename(file) != "pep-0000.txt":
+        fo.write(" [<a href='.'>index</a>]")
+    fo.write("\n<hr />\n")
+    # fo.write("\n</pre><hr /><pre>\n")
     for k, v in header:
         fo.write("<b>%s:</b> %s\n" % (cgi.escape(k), cgi.escape(v)))
     title = 0
@@ -52,15 +71,20 @@ def fixfile(infile, outfile):
         if not line:
             break
         if line[:1] == "\f":
-            fo.write("<hr />\n")
+            fo.write("\n<hr />\n")
+            # fo.write("\n</pre><hr /><pre>\n")
             title = 1
-        else:
+        elif title >= 0:
             line = fixpat.sub(fixanchor, line)
             if title:
-                fo.write("<h3>%s</h3>\n" % line)
+                if line.strip() == "Local Variables:":
+                    title = -1
+                else:
+                    fo.write("<h3><tt>%s</tt></h3>\n" % line)
+                    # fo.write("</pre><h3><tt>%s</tt></h3><pre>\n" % line)
+                    title = 0
             else:
                 fo.write(line)
-            title = 0
     fo.write("</pre>\n")
     fo.write("</body>\n")
     fo.write("</html>\n")
