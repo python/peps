@@ -91,7 +91,7 @@ def fixfile(infile, outfile):
         if not line:
             break
         if line[0] != "\f":
-            if line[0].strip():
+            if line[0].strip() and line[:3] != '[*]':
                 if line.strip() == LOCALVARS:
                     break
                 fo.write("</pre>\n<h3>%s</h3>\n<pre>" % line.strip())
@@ -109,8 +109,9 @@ def fixfile(infile, outfile):
 def main():
     update = 1
     for file in glob.glob("pep-*.txt"):
-        print file, "..."
-        fixfile(file, os.path.splitext(file)[0] + ".html")
+        newfile = os.path.splitext(file)[0] + ".html"
+        print file, "->", newfile
+        fixfile(file, newfile)
 
     if len(sys.argv) > 1 and sys.argv[1] == "-n":
         update = 0
