@@ -41,7 +41,7 @@ import random
 import time
 
 REQUIRES = {'python': '2.2',
-            'docutils': '0.2.1'}
+            'docutils': '0.2.3'}
 PROGRAM = sys.argv[0]
 RFCURL = 'http://www.faqs.org/rfcs/rfc%d.html'
 PEPURL = 'pep-%04d.html'
