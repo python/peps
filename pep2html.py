@@ -2,9 +2,16 @@
 """
 convert PEP's to (X)HTML - courtesy of /F
 
-Usage: %(PROGRAM)s [options] [sf_username]
+Usage: %(PROGRAM)s [options] [peps]
+
+Notes:
+
+    The optional argument peps can be either pep numbers or .txt files.
 
 Options:
+
+    -u/--user
+        SF username
 
     -i/--install
         After generating the HTML, install it SourceForge.  In that case the
@@ -144,6 +151,19 @@ def fixfile(infile, outfile):
     fo.close()
     os.chmod(outfile, 0664)
 
+
+def find_pep(pep_str):
+    """Find the .txt file indicated by a cmd line argument"""
+    if os.path.exists(pep_str):
+        return pep_str
+    num = int(pep_str)
+    return "pep-%04d.txt" % num
+
+def make_html(file):
+    newfile = os.path.splitext(file)[0] + ".html"
+    print file, "->", newfile
+    fixfile(file, newfile)
+    return newfile
 
 
 def main():
@@ -156,25 +176,31 @@ def main():
     except getopt.error, msg:
         usage(1, msg)
 
-    if args:
-        username = args[0] + '@'
-        del args[0]
-    if args:
-        usage(1, 'unexpected arguments')
-
     for opt, arg in opts:
         if opt in ('-h', '--help'):
             usage(0)
         elif opt in ('-i', '--install'):
             update = 1
+        elif opt in ('-u', '--user'):
+            username = arg + "@"
 
-    for file in glob.glob("pep-*.txt"):
-        newfile = os.path.splitext(file)[0] + ".html"
-        print file, "->", newfile
-        fixfile(file, newfile)
+    if args:
+        html = []
+        for pep in args:
+            file = find_pep(pep)
+            newfile = make_html(file)
+            html.append(newfile)
+        os.system("scp %s style.css " % " ".join(html) \
+                  + username + HOST + ":" + HDIR)
+    else:
+        # do them all
+        for file in glob.glob("pep-*.txt"):
+            make_html(file)
+        if update:
+            os.system("scp pep-*.html style.css " + \
+                      username + HOST + ":" + HDIR)
 
     if update:
-        os.system("scp pep-*.html style.css " + username + HOST + ":" + HDIR)
         os.system("ssh " + username + HOST + " chmod 664 " + HDIR + "/*")
 
 
