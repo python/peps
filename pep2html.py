@@ -118,7 +118,7 @@ def fixfile(infile, outfile):
         if not line:
             break
         if line[0] != "\f":
-            if line[0].strip() and line[:3] != '[*]':
+            if line[0].strip():
                 if line.strip() == LOCALVARS:
                     break
                 fo.write("</pre>\n<h3>%s</h3>\n<pre>" % line.strip())
