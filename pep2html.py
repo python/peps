@@ -47,14 +47,22 @@ def fixfile(infile, outfile):
     title = ""
     while 1:
         line = fi.readline()
-        if not line or ":" not in line:
+        if not line.strip():
             break
-        key, value = line.split(":", 1)
-        value = value.strip()
-        header.append((key, value))
+        if line[0].strip():
+            if ":" not in line:
+                break
+            key, value = line.split(":", 1)
+            value = value.strip()
+            header.append((key, value))
+        else:
+            # continuation line
+            key, value = header[-1]
+            value = value + line
+            header[-1] = key, value
         if key.lower() == "title":
             title = value
-        if key.lower() == "pep":
+        elif key.lower() == "pep":
             pep = value
     if pep:
         title = "PEP " + pep + " -- " + title
