@@ -130,6 +130,9 @@ def fixfile(infile, outfile):
                     mailtos.append(
                         '<a href="mailto:%s?subject=PEP%%20%s">%s</a>' %
                         (addr, pep, addr))
+                elif addr.startswith('http:'):
+                    mailtos.append(
+                        '<a href="%s">%s</a>' % (addr, addr))
                 else:
                     mailtos.append(addr)
             v = ' '.join(mailtos)
