@@ -192,7 +192,6 @@ def fixfile(infile, outfile):
         if k.lower() in ('author', 'discussions-to'):
             mailtos = []
             for part in re.split(',\s*', v):
-                print 'part:', part
                 if '@' in part:
                     realname, addr = parseaddr(part)
                     if k.lower() == 'discussions-to':
@@ -205,7 +204,6 @@ def fixfile(infile, outfile):
                         '<a href="%s">%s</a>' % (part, part))
                 else:
                     mailtos.append(part)
-            print 'mailtos:', mailtos
             v = COMMASPACE.join(mailtos)
         elif k.lower() in ('replaces', 'replaced-by'):
             otherpeps = ''
