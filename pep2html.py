@@ -182,7 +182,7 @@ def fixfile(inpath, input_lines, outfile):
                                '</b>]' % int(pep))
         except ValueError, error:
             print >> sys.stderr, ('ValueError (invalid PEP number): %s'
-	                          % error)
+                                  % error)
     print >> outfile, '</td></tr></table>'
     print >> outfile, '<div class="header">\n<table border="0">'
     for k, v in header:
