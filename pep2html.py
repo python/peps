@@ -23,7 +23,7 @@ Options:
 
 -l, --local
     Same as -i/--install, except install on the local machine.  Use this
-    when logged in to the python.org machine (creosote).
+    when logged in to the python.org machine (dinsdale).
 
 -q, --quiet
     Turn off verbose messages.
@@ -54,7 +54,7 @@ PEPCVSURL = ('http://cvs.sourceforge.net/cgi-bin/viewcvs.cgi/python/python'
 PEPDIRRUL = 'http://www.python.org/peps/'
 
 
-HOST = "www.python.org"                    # host for update
+HOST = "dinsdale.python.org"                    # host for update
 HDIR = "/ftp/ftp.python.org/pub/www.python.org/peps" # target host directory
 LOCALVARS = "Local Variables:"
 
