@@ -55,7 +55,7 @@ PEPDIRRUL = 'http://www.python.org/peps/'
 
 
 HOST = "dinsdale.python.org"                    # host for update
-HDIR = "/ftp/ftp.python.org/pub/www.python.org/peps" # target host directory
+HDIR = "/data/ftp.python.org/pub/www.python.org/peps" # target host directory
 LOCALVARS = "Local Variables:"
 
 COMMENT = """<!--
