@@ -403,9 +403,9 @@ def push_pep(htmlfiles, txtfiles, username, verbose, local=0):
     rc = os.system("%s %s %s %s" % (copy_cmd, quiet, filelist, target))
     if rc:
         sys.exit(rc)
-    rc = os.system("%s 664 %s/*" % (chmod_cmd, HDIR))
-    if rc:
-        sys.exit(rc)
+##    rc = os.system("%s 664 %s/*" % (chmod_cmd, HDIR))
+##    if rc:
+##        sys.exit(rc)
 
 
 PEP_TYPE_DISPATCH = {'text/plain': fixfile,
