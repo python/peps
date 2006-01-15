@@ -17,7 +17,7 @@ all:	$(TARGETS)
 $(TARGETS): pep2html.py
 
 install:
-	$(PEP2HTML) -i
+	echo "Installing is not necessary anymore. It will be done in post-commit."
 
 clean:
 	-rm *.html
