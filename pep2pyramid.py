@@ -149,11 +149,6 @@ def fixfile(inpath, input_lines, outfile):
     from email.Utils import parseaddr
     basename = os.path.basename(inpath)
     infile = iter(input_lines)
-    # convert plaintext pep to minimal XHTML markup
-    print >> outfile, DTD
-    print >> outfile, '<html>'
-    print >> outfile, COMMENT
-    print >> outfile, '<head>'
     # head
     header = []
     pep = ""
@@ -224,6 +219,8 @@ def fixfile(inpath, input_lines, outfile):
                 print >> outfile, '<pre>'
                 need_pre = 0
             outfile.write(line)
+    if not need_pre:
+        print >> outfile, '</pre>'
 
 
 docutils_settings = None
