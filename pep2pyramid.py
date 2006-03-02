@@ -177,6 +177,48 @@ def fixfile(inpath, input_lines, outfile):
     if title:
         print >> outfile, '  <title>%s</title>' % cgi.escape(title)
     r = random.choice(range(64))
+    print >> outfile, '<div class="header">\n<table border="0">'
+    for k, v in header:
+        if k.lower() in ('author', 'discussions-to'):
+            mailtos = []
+            for part in re.split(',\s*', v):
+                if '@' in part:
+                    realname, addr = parseaddr(part)
+                    if k.lower() == 'discussions-to':
+                        m = linkemail(addr, pep)
+                    else:
+                        m = fixemail(addr, pep)
+                    mailtos.append('%s &lt;%s&gt;' % (realname, m))
+                elif part.startswith('http:'):
+                    mailtos.append(
+                        '<a href="%s">%s</a>' % (part, part))
+                else:
+                    mailtos.append(part)
+            v = COMMASPACE.join(mailtos)
+        elif k.lower() in ('replaces', 'replaced-by', 'requires'):
+            otherpeps = ''
+            for otherpep in re.split(',?\s+', v):
+                otherpep = int(otherpep)
+                otherpeps += '<a href="pep-%04d.html">%i</a> ' % (otherpep,
+                                                                  otherpep)
+            v = otherpeps
+        elif k.lower() in ('last-modified',):
+            date = v or time.strftime('%d-%b-%Y',
+                                      time.localtime(os.stat(inpath)[8]))
+            try:
+                url = PEPCVSURL % int(pep)
+                v = '<a href="%s">%s</a> ' % (url, cgi.escape(date))
+            except ValueError, error:
+                v = date
+        elif k.lower() in ('content-type',):
+            url = PEPURL % 9
+            pep_type = v or 'text/plain'
+            v = '<a href="%s">%s</a> ' % (url, cgi.escape(pep_type))
+        else:
+            v = cgi.escape(v)
+        print >> outfile, '  <tr><th>%s:&nbsp;</th><td>%s</td></tr>' \
+              % (cgi.escape(k), v)
+    print >> outfile, '</table>'
     need_pre = 1
     for line in infile:
         if line[0] == '\f':
