@@ -34,6 +34,8 @@ Options:
 The optional arguments ``peps`` are either pep numbers or .txt files.
 """
 
+destDirBase = '/home/jafo/cvs/beta.python.org/build/data/doc/peps/'
+
 import sys
 import os
 import re
@@ -43,6 +45,7 @@ import getopt
 import errno
 import random
 import time
+import shutil
 
 REQUIRES = {'python': '2.2',
             'docutils': '0.2.7'}
@@ -143,36 +146,6 @@ def linkemail(address, pepno):
 
 
 def fixfile(inpath, input_lines, outfile):
-    m = re.search(r'pep-(\d+)\.', inpath)
-    if not m:
-        print "Ugh, can't find PEP number in name"
-        sys.exit(1)
-    pepIn = m.group(1)
-    destDir = '/home/jafo/cvs/beta.python.org/build/data/doc/peps/'
-    destDir = os.path.join(destDir, 'pep-%s' % pepIn)
-
-    if not os.path.exists(destDir):
-        os.mkdir(destDir)
-
-        fp = open(os.path.join(destDir, 'content.html'), 'w')
-        fp.write('<n:invisible n:data="content" n:render="mapping">\n')
-        fp.write('<div id="breadcrumb" n:data="breadcrumb" '
-                'n:render="breadcrumb" />\n')
-        fp.write('<n:slot name="text"></n:slot>\n')
-        fp.write('</n:invisible>\n')
-        fp.close()
-
-        fp = open(os.path.join(destDir, 'content.yml'), 'w')
-        fp.write('--- !fragment\n')
-        fp.write('# Type of template to use\n')
-        fp.write('template: content.html\n')
-        fp.write('\n')
-        fp.write('# The data to pass to the template\n')
-        fp.write('local:\n')
-        fp.write('    content:\n')
-        fp.write('        breadcrumb: !breadcrumb nav.yml nav\n')
-        fp.write('        text: !htmlfile body.html\n')
-
     from email.Utils import parseaddr
     basename = os.path.basename(inpath)
     infile = iter(input_lines)
@@ -203,17 +176,6 @@ def fixfile(inpath, input_lines, outfile):
             title = value
         elif key.lower() == "pep":
             pep = value
-
-    if not pepIn:
-        raise NotImplementedError('You must have a pep number')
-    fp = open(os.path.join(destDir, 'index.yml'), 'w')
-    fp.write('--- !fragment\n')
-    fp.write('template: index.html\n')
-    fp.write('# The data to pass to the template\n')
-    fp.write('local:\n')
-    fp.write('  title: PEP-%d -- %s\n' % ( int(pepIn), title ))
-    fp.write('  content: !fragment content.yml\n')
-    fp.close()
 
     if pep:
         title = "PEP " + pep + " -- " + title
@@ -288,12 +250,6 @@ def fixfile(inpath, input_lines, outfile):
     print >> outfile, '<hr />'
     print >> outfile, '<div class="content">'
     need_pre = 1
-    outfile.close()
-    if pepIn == '0000':
-        bodyFile = os.path.join(destDir, '..', 'body.html')
-    else:
-        bodyFile = os.path.join(destDir, 'body.html')
-    outfile = open(bodyFile, 'w')
     for line in infile:
         if line[0] == '\f':
             continue
@@ -342,61 +298,18 @@ docutils_settings = None
 application when this module is imported."""
 
 def fix_rst_pep(inpath, input_lines, outfile):
-    m = re.search(r'pep-(\d+)\.', inpath)
-    if not m:
-        print "Ugh, can't find PEP number in name"
-        sys.exit(1)
-    pepIn = m.group(1)
-    destDir = '/home/jafo/cvs/beta.python.org/build/data/doc/peps/'
-    destDir = os.path.join(destDir, 'pep-%s' % pepIn)
-
-    if not os.path.exists(destDir):
-        os.mkdir(destDir)
-
-        fp = open(os.path.join(destDir, 'content.html'), 'w')
-        fp.write('<n:invisible n:data="content" n:render="mapping">\n')
-        fp.write('<div id="breadcrumb" n:data="breadcrumb" '
-                'n:render="breadcrumb" />\n')
-        fp.write('<n:slot name="text"></n:slot>\n')
-        fp.write('</n:invisible>\n')
-        fp.close()
-
-        fp = open(os.path.join(destDir, 'content.yml'), 'w')
-        fp.write('--- !fragment\n')
-        fp.write('# Type of template to use\n')
-        fp.write('template: content.html\n')
-        fp.write('\n')
-        fp.write('# The data to pass to the template\n')
-        fp.write('local:\n')
-        fp.write('    content:\n')
-        fp.write('        breadcrumb: !breadcrumb nav.yml nav\n')
-        fp.write('        text: !htmlfile body.html\n')
-
     from docutils import core
     output = core.publish_string(
         source=''.join(input_lines),
         source_path=inpath,
-        destination_path=os.path.join(destDir, 'body.html'),
+        destination_path=outfile.name,
         reader_name='pep',
         parser_name='restructuredtext',
         writer_name='pep_html',
         settings=docutils_settings,
         # Allow Docutils traceback if there's an exception:
         settings_overrides={'traceback': 1})
-
-    fp = open(os.path.join(destDir, 'body.html'), 'w')
-    fp.write(output)
-    fp.close()
-
-    fp = open(os.path.join(destDir, 'index.yml'), 'w')
-    fp.write('--- !fragment\n')
-    fp.write('template: index.html\n')
-    fp.write('# The data to pass to the template\n')
-    fp.write('local:\n')
-    fp.write('  title: PEP-%d -- UNKNOWN TITLE\n' % ( int(pepIn), ))
-    fp.write('  content: !fragment content.yml\n')
-
-    fp.close()
+    outfile.write(output)
 
 
 def get_pep_type(input_lines):
@@ -458,10 +371,87 @@ def make_html(inpath, verbose=0):
     if verbose:
         print inpath, "(%s)" % pep_type, "->", outpath
         sys.stdout.flush()
+
+    #  set up pyramid stuff
+    m = re.search(r'pep-(\d+)\.', inpath)
+    if not m:
+        print "Ugh, can't find PEP number in file name."
+        sys.exit(1)
+    pepIn = m.group(1)
+    destDir = os.path.join(destDirBase, 'pep-%s' % pepIn)
+
+    needSvn = 0
+    if not os.path.exists(destDir):
+        needSvn = 1
+        os.mkdir(destDir)
+
+        #  write content.html
+        foofilename = os.path.join(destDir, 'content.html')
+        fp = open(foofilename, 'w')
+        fp.write('<n:invisible n:data="content" n:render="mapping">\n')
+        fp.write('<div id="breadcrumb" n:data="breadcrumb" '
+                'n:render="breadcrumb" />\n')
+        fp.write('<n:slot name="text"></n:slot>\n')
+        fp.write('</n:invisible>\n')
+        fp.close()
+        os.chmod(foofilename, 0664)
+
+        #  write content.yml
+        foofilename = os.path.join(destDir, 'content.yml')
+        fp = open(foofilename, 'w')
+        fp.write('--- !fragment\n')
+        fp.write('# Type of template to use\n')
+        fp.write('template: content.html\n')
+        fp.write('\n')
+        fp.write('# The data to pass to the template\n')
+        fp.write('local:\n')
+        fp.write('    content:\n')
+        fp.write('        breadcrumb: !breadcrumb nav.yml nav\n')
+        fp.write('        text: !htmlfile body.html\n')
+        os.chmod(foofilename, 0664)
+
+        #  find the title
+        thisPepTile = None
+        fp = open(inpath, 'r')
+        for line in fp.readlines():
+            m = re.match('^Title: (.*)$', line)
+            if not m: continue
+            thisPepTitle = m.group(1).strip()
+            break
+        if not thisPepTitle:
+            print 'Unable to find the PEP title.'
+            sys.exit(1)
+
+        #  write index.yml
+        foofilename = os.path.join(destDir, 'index.yml')
+        fp = open(foofilename, 'w')
+        fp.write('--- !fragment\n')
+        fp.write('template: index.html\n')
+        fp.write('# The data to pass to the template\n')
+        fp.write('local:\n')
+        fp.write('  title: "PEP-%d -- %s"\n' % ( int(pepIn),
+                thisPepTitle.replace('"', '\\"') ))
+        fp.write('  content: !fragment content.yml\n')
+        fp.close()
+        os.chmod(foofilename, 0664)
+
+    outpath = os.path.join(destDir, 'body.html')
     outfile = open(outpath, "w")
     PEP_TYPE_DISPATCH[pep_type](inpath, input_lines, outfile)
     outfile.close()
     os.chmod(outfile.name, 0664)
+
+    #  copy pep-0000 body to parent directory as well
+    if re.search(r'-0000\.', inpath):
+        shutil.copyfile(outpath, os.path.join(destDir, '..', 'body.html'))
+
+    #  add to SVN if necessary
+    if needSvn:
+        ret = os.system('svn add "%s"' % destDir)
+        if ret != 0 and ret != None:
+            print 'SVN returned "%s", expecting 0 or None' % repr(ret)
+            sys.exit(1)
+
     return outpath
 
 def push_pep(htmlfiles, txtfiles, username, verbose, local=0):
