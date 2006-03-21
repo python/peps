@@ -34,7 +34,7 @@ Options:
 The optional arguments ``peps`` are either pep numbers or .txt files.
 """
 
-destDirBase = '/home/jafo/cvs/beta.python.org/build/data/doc/peps/'
+destDirBase = '.'
 
 import sys
 import os
@@ -418,11 +418,11 @@ def make_html(inpath, verbose=0):
         shutil.copyfile(outpath, os.path.join(destDir, '..', 'body.html'))
 
     #  add to SVN if necessary
-    if needSvn:
-        ret = os.system('svn add "%s"' % destDir)
-        if ret != 0 and ret != None:
-            print 'SVN returned "%s", expecting 0 or None' % repr(ret)
-            sys.exit(1)
+    #if needSvn:
+    #    ret = os.system('svn add "%s"' % destDir)
+    #    if ret != 0 and ret != None:
+    #        print 'SVN returned "%s", expecting 0 or None' % repr(ret)
+    #        sys.exit(1)
 
     return outpath
 
