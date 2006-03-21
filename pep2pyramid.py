@@ -34,7 +34,7 @@ Options:
 The optional arguments ``peps`` are either pep numbers or .txt files.
 """
 
-destDirBase = '/data/ftp.python.org/pub/beta.python.org/build/data/doc/peps'
+destDirBase = '/data/ftp.python.org/pub/beta.python.org/build/data/dev/peps'
 
 import sys
 import os
@@ -244,7 +244,7 @@ def fixfile(inpath, input_lines, outfile):
                         need_pre = 0
                     print >> outfile, re.sub(
                         parts[1],
-                        '<a href="/doc/peps/pep-%04d/">%s</a>' % (int(parts[1]),
+                        '<a href="/dev/peps/pep-%04d/">%s</a>' % (int(parts[1]),
                             parts[1]), line, 1),
                     continue
                 elif parts and '@' in parts[-1]:
