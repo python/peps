@@ -34,7 +34,7 @@ Options:
 The optional arguments ``peps`` are either pep numbers or .txt files.
 """
 
-destDirBase = '.'
+destDirBase = '/data/ftp.python.org/pub/beta.python.org/build/data/doc/peps'
 
 import sys
 import os
