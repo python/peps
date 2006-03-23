@@ -36,7 +36,7 @@ REQUIRES = {'python': '2.2',
             'docutils': '0.5'}
 PROGRAM = sys.argv[0]
 RFCURL = 'http://www.faqs.org/rfcs/rfc%d.html'
-PEPURL = '/dev/peps/pep-%04d.html'
+PEPURL = '/dev/peps/pep-%04d'
 PEPCVSURL = 'http://svn.python.org/view/*checkout*/peps/trunk/pep-%04d.txt'
 PEPDIRURL = 'http://www.python.org/dev/peps/'
 
