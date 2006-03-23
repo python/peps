@@ -21,6 +21,7 @@ The optional arguments ``peps`` are either pep numbers or .txt files.
 
 import sys
 import os
+import codecs
 import re
 import cgi
 import glob
@@ -56,6 +57,13 @@ fixpat = re.compile("((https?|ftp):[-_a-zA-Z0-9/.+~:?#$=&,]+)|(pep-\d+(.txt)?)|"
                     "(RFC[- ]?(?P<rfcnum>\d+))|"
                     "(PEP\s+(?P<pepnum>\d+))|"
                     ".")
+
+CONTENT_HTML = """\
+<n:invisible n:data="content" n:render="mapping">
+<div id="breadcrumb" n:data="breadcrumb" :render="breadcrumb" />
+<n:slot name="text"></n:slot>
+</n:invisible>
+"""
 
 CONTENT_YML = """\
 --- !fragment
@@ -311,7 +319,7 @@ def get_pep_type(input_lines):
 
 def get_input_lines(inpath):
     try:
-        infile = open(inpath)
+        infile = codecs.open(inpath, 'r', 'utf-8')
     except IOError, e:
         if e.errno <> errno.ENOENT: raise
         print >> sys.stderr, 'Error: Skipping missing PEP file:', e.filename
@@ -349,7 +357,7 @@ def make_html(inpath, verbose=0):
     if verbose:
         print inpath, "(%s)" % pep_type, "->", outpath
         sys.stdout.flush()
-    outfile = open(outpath, "w")
+    outfile = codecs.open(outpath, "w", "utf-8")
     title = PEP_TYPE_DISPATCH[pep_type](inpath, input_lines, outfile)
     outfile.close()
     os.chmod(outfile.name, 0664)
@@ -374,25 +382,21 @@ def set_up_pyramid(inpath):
 
         #  write content.html
         foofilename = os.path.join(destDir, 'content.html')
-        fp = open(foofilename, 'w')
-        fp.write('<n:invisible n:data="content" n:render="mapping">\n')
-        fp.write('<div id="breadcrumb" n:data="breadcrumb" '
-                'n:render="breadcrumb" />\n')
-        fp.write('<n:slot name="text"></n:slot>\n')
-        fp.write('</n:invisible>\n')
+        fp = codecs.open(foofilename, 'w', 'utf-8')
+        fp.write(CONTENT_HTML)
         fp.close()
         os.chmod(foofilename, 0664)
 
         #  write content.yml
         foofilename = os.path.join(destDir, 'content.yml')
-        fp = open(foofilename, 'w')
+        fp = codecs.open(foofilename, 'w', 'utf-8')
         fp.write(CONTENT_YML)
         os.chmod(foofilename, 0664)
     return destDir, needSvn, pepnum
 
 def write_pyramid_index(destDir, title):
     filename = os.path.join(destDir, 'index.yml')
-    fp = open(filename, 'w')
+    fp = codecs.open(filename, 'w', 'utf-8')
     fp.write(INDEX_YML % title.replace('"', '\\"'))
     fp.close()
     os.chmod(filename, 0664)
