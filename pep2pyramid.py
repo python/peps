@@ -1,29 +1,14 @@
 #!/usr/bin/env python
-"""Convert PEPs to (X)HTML - courtesy of /F
+"""
+Convert PEPs to (X)HTML fragments for Pyramid - courtesy of /F
 
 Usage: %(PROGRAM)s [options] [<peps> ...]
 
 Options:
 
--u, --user
-    python.org username
-
--b, --browse
-    After generating the HTML, direct your web browser to view it
-    (using the Python webbrowser module).  If both -i and -b are
-    given, this will browse the on-line HTML; otherwise it will
-    browse the local HTML.  If no pep arguments are given, this
-    will browse PEP 0.
-
--i, --install
-    After generating the HTML, install it and the plaintext source file
-    (.txt) on python.org.  In that case the user's name is used in the scp
-    and ssh commands, unless "-u username" is given (in which case, it is
-    used instead).  Without -i, -u is ignored.
-
--l, --local
-    Same as -i/--install, except install on the local machine.  Use this
-    when logged in to the python.org machine (dinsdale).
+-d <DIR>, --destdir <DIR>
+    Specify the base destination directory for Pyramid files.
+    Default: /data/ftp.python.org/pub/beta.python.org/build/data/dev/peps
 
 -q, --quiet
     Turn off verbose messages.
@@ -33,8 +18,6 @@ Options:
 
 The optional arguments ``peps`` are either pep numbers or .txt files.
 """
-
-destDirBase = '/data/ftp.python.org/pub/beta.python.org/build/data/dev/peps'
 
 import sys
 import os
@@ -47,17 +30,17 @@ import random
 import time
 import shutil
 
+destDirBase = '/data/ftp.python.org/pub/beta.python.org/build/data/dev/peps'
+
 REQUIRES = {'python': '2.2',
-            'docutils': '0.2.7'}
+            'docutils': '0.5'}
 PROGRAM = sys.argv[0]
 RFCURL = 'http://www.faqs.org/rfcs/rfc%d.html'
-PEPURL = 'pep-%04d.html'
-PEPCVSURL = ('http://svn.python.org/view/peps/trunk/pep-%04d.txt')
-PEPDIRRUL = 'http://www.python.org/peps/'
+PEPURL = '/dev/peps/pep-%04d.html'
+PEPCVSURL = 'http://svn.python.org/view/*checkout*/peps/trunk/pep-%04d.txt'
+PEPDIRURL = 'http://www.python.org/dev/peps/'
 
 
-HOST = "dinsdale.python.org"                    # host for update
-HDIR = "/data/ftp.python.org/pub/www.python.org/peps" # target host directory
 LOCALVARS = "Local Variables:"
 
 COMMENT = """<!--
@@ -75,6 +58,27 @@ fixpat = re.compile("((https?|ftp):[-_a-zA-Z0-9/.+~:?#$=&,]+)|(pep-\d+(.txt)?)|"
                     "(RFC[- ]?(?P<rfcnum>\d+))|"
                     "(PEP\s+(?P<pepnum>\d+))|"
                     ".")
+
+CONTENT_YML = """\
+--- !fragment
+# Type of template to use
+template: content.html
+
+# The data to pass to the template
+local:
+    content:
+        breadcrumb: !breadcrumb nav.yml nav
+        text: !htmlfile body.html
+"""
+
+INDEX_YML = """\
+--- !fragment
+template: index.html
+# The data to pass to the template
+local:
+  title: "%s"
+  content: !fragment content.yml
+"""
 
 EMPTYSTRING = ''
 SPACE = ' '
@@ -174,10 +178,8 @@ def fixfile(inpath, input_lines, outfile):
 
     if pep:
         title = "PEP " + pep + " -- " + title
-    if title:
-        print >> outfile, '  <title>%s</title>' % cgi.escape(title)
     r = random.choice(range(64))
-    print >> outfile, '<div class="header">\n<table border="0">'
+    print >> outfile, '<div class="header">\n<table border="0" class="rfc2822">'
     for k, v in header:
         if k.lower() in ('author', 'discussions-to'):
             mailtos = []
@@ -216,9 +218,10 @@ def fixfile(inpath, input_lines, outfile):
             v = '<a href="%s">%s</a> ' % (url, cgi.escape(pep_type))
         else:
             v = cgi.escape(v)
-        print >> outfile, '  <tr><th>%s:&nbsp;</th><td>%s</td></tr>' \
-              % (cgi.escape(k), v)
+        print >> outfile, ('  <tr><th class="field-name">%s:&nbsp;</th>'
+                           '<td>%s</td></tr>' % (cgi.escape(k), v))
     print >> outfile, '</table>'
+    print >> outfile, '</div>'
     need_pre = 1
     for line in infile:
         if line[0] == '\f':
@@ -263,6 +266,7 @@ def fixfile(inpath, input_lines, outfile):
             outfile.write(line)
     if not need_pre:
         print >> outfile, '</pre>'
+    return title
 
 
 docutils_settings = None
@@ -271,7 +275,7 @@ application when this module is imported."""
 
 def fix_rst_pep(inpath, input_lines, outfile):
     from docutils import core
-    output = core.publish_string(
+    parts = core.publish_parts(
         source=''.join(input_lines),
         source_path=inpath,
         destination_path=outfile.name,
@@ -281,7 +285,9 @@ def fix_rst_pep(inpath, input_lines, outfile):
         settings=docutils_settings,
         # Allow Docutils traceback if there's an exception:
         settings_overrides={'traceback': 1})
-    outfile.write(output)
+    outfile.write(parts['body'])
+    title = 'PEP %s -- %s' % (parts['pepnum'], parts['title'][0])
+    return title
 
 
 def get_pep_type(input_lines):
@@ -339,18 +345,28 @@ def make_html(inpath, verbose=0):
     elif PEP_TYPE_DISPATCH[pep_type] == None:
         pep_type_error(inpath, pep_type)
         return None
-    outpath = os.path.splitext(inpath)[0] + ".html"
+    destDir, needSvn, pepnum = set_up_pyramid(inpath)
+    outpath = os.path.join(destDir, 'body.html')
     if verbose:
         print inpath, "(%s)" % pep_type, "->", outpath
         sys.stdout.flush()
+    outfile = open(outpath, "w")
+    title = PEP_TYPE_DISPATCH[pep_type](inpath, input_lines, outfile)
+    outfile.close()
+    os.chmod(outfile.name, 0664)
+    write_pyramid_index(destDir, title)
+    # for PEP 0, copy body to parent directory as well
+    if pepnum == '0000':
+        shutil.copyfile(outpath, os.path.join(destDir, '..', 'body.html'))
+    return outpath
 
-    #  set up pyramid stuff
+def set_up_pyramid(inpath):
     m = re.search(r'pep-(\d+)\.', inpath)
     if not m:
-        print "Ugh, can't find PEP number in file name."
+        print >>sys.stderr, "Can't find PEP number in file name."
         sys.exit(1)
-    pepIn = m.group(1)
-    destDir = os.path.join(destDirBase, 'pep-%s' % pepIn)
+    pepnum = m.group(1)
+    destDir = os.path.join(destDirBase, 'pep-%s' % pepnum)
 
     needSvn = 0
     if not os.path.exists(destDir):
@@ -371,88 +387,16 @@ def make_html(inpath, verbose=0):
         #  write content.yml
         foofilename = os.path.join(destDir, 'content.yml')
         fp = open(foofilename, 'w')
-        fp.write('--- !fragment\n')
-        fp.write('# Type of template to use\n')
-        fp.write('template: content.html\n')
-        fp.write('\n')
-        fp.write('# The data to pass to the template\n')
-        fp.write('local:\n')
-        fp.write('    content:\n')
-        fp.write('        breadcrumb: !breadcrumb nav.yml nav\n')
-        fp.write('        text: !htmlfile body.html\n')
+        fp.write(CONTENT_YML)
         os.chmod(foofilename, 0664)
+    return destDir, needSvn, pepnum
 
-        #  find the title
-        thisPepTile = None
-        fp = open(inpath, 'r')
-        for line in fp.readlines():
-            m = re.match('^Title: (.*)$', line)
-            if not m: continue
-            thisPepTitle = m.group(1).strip()
-            break
-        if not thisPepTitle:
-            print 'Unable to find the PEP title.'
-            sys.exit(1)
-
-        #  write index.yml
-        foofilename = os.path.join(destDir, 'index.yml')
-        fp = open(foofilename, 'w')
-        fp.write('--- !fragment\n')
-        fp.write('template: index.html\n')
-        fp.write('# The data to pass to the template\n')
-        fp.write('local:\n')
-        fp.write('  title: "PEP-%d -- %s"\n' % ( int(pepIn),
-                thisPepTitle.replace('"', '\\"') ))
-        fp.write('  content: !fragment content.yml\n')
-        fp.close()
-        os.chmod(foofilename, 0664)
-
-    outpath = os.path.join(destDir, 'body.html')
-    outfile = open(outpath, "w")
-    PEP_TYPE_DISPATCH[pep_type](inpath, input_lines, outfile)
-    outfile.close()
-    os.chmod(outfile.name, 0664)
-
-    #  copy pep-0000 body to parent directory as well
-    if re.search(r'-0000\.', inpath):
-        shutil.copyfile(outpath, os.path.join(destDir, '..', 'body.html'))
-
-    #  add to SVN if necessary
-    #if needSvn:
-    #    ret = os.system('svn add "%s"' % destDir)
-    #    if ret != 0 and ret != None:
-    #        print 'SVN returned "%s", expecting 0 or None' % repr(ret)
-    #        sys.exit(1)
-
-    return outpath
-
-def push_pep(htmlfiles, txtfiles, username, verbose, local=0):
-    quiet = ""
-    if local:
-        if verbose:
-            quiet = "-v"
-        target = HDIR
-        copy_cmd = "cp"
-        chmod_cmd = "chmod"
-    else:
-        if not verbose:
-            quiet = "-q"
-        if username:
-            username = username + "@"
-        target = username + HOST + ":" + HDIR
-        copy_cmd = "scp"
-        chmod_cmd = "ssh %s%s chmod" % (username, HOST)
-    files = htmlfiles[:]
-    files.extend(txtfiles)
-    files.append("style.css")
-    files.append("pep.css")
-    filelist = SPACE.join(files)
-    rc = os.system("%s %s %s %s" % (copy_cmd, quiet, filelist, target))
-    if rc:
-        sys.exit(rc)
-##    rc = os.system("%s 664 %s/*" % (chmod_cmd, HDIR))
-##    if rc:
-##        sys.exit(rc)
+def write_pyramid_index(destDir, title):
+    filename = os.path.join(destDir, 'index.yml')
+    fp = open(filename, 'w')
+    fp.write(INDEX_YML % title.replace('"', '\\"'))
+    fp.close()
+    os.chmod(filename, 0664)
 
 
 PEP_TYPE_DISPATCH = {'text/plain': fixfile,
@@ -493,31 +437,9 @@ def pep_type_error(inpath, pep_type):
     sys.stdout.flush()
 
 
-def browse_file(pep):
-    import webbrowser
-    file = find_pep(pep)
-    if file.endswith(".txt"):
-        file = file[:-3] + "html"
-    file = os.path.abspath(file)
-    url = "file:" + file
-    webbrowser.open(url)
-
-def browse_remote(pep):
-    import webbrowser
-    file = find_pep(pep)
-    if file.endswith(".txt"):
-        file = file[:-3] + "html"
-    url = PEPDIRRUL + file
-    webbrowser.open(url)
-
-
 def main(argv=None):
     # defaults
-    update = 0
-    local = 0
-    username = ''
     verbose = 1
-    browse = 0
 
     check_requirements()
 
@@ -526,25 +448,19 @@ def main(argv=None):
 
     try:
         opts, args = getopt.getopt(
-            argv, 'bilhqu:',
-            ['browse', 'install', 'local', 'help', 'quiet', 'user='])
+            argv, 'd:hq',
+            ['destdir=', 'help', 'quiet'])
     except getopt.error, msg:
         usage(1, msg)
 
     for opt, arg in opts:
         if opt in ('-h', '--help'):
             usage(0)
-        elif opt in ('-i', '--install'):
-            update = 1
-        elif opt in ('-l', '--local'):
-            update = 1
-            local = 1
-        elif opt in ('-u', '--user'):
-            username = arg
+        elif opt in ('-d', '--destdir'):
+            global destDirBase
+            destDirBase = arg
         elif opt in ('-q', '--quiet'):
             verbose = 0
-        elif opt in ('-b', '--browse'):
-            browse = 1
 
     if args:
         peptxt = []
@@ -555,8 +471,6 @@ def main(argv=None):
             newfile = make_html(file, verbose=verbose)
             if newfile:
                 html.append(newfile)
-            if browse and not update:
-                browse_file(pep)
     else:
         # do them all
         peptxt = []
@@ -568,17 +482,6 @@ def main(argv=None):
             newfile = make_html(file, verbose=verbose)
             if newfile:
                 html.append(newfile)
-        if browse and not update:
-            browse_file("0")
-
-    if update:
-        push_pep(html, peptxt, username, verbose, local=local)
-        if browse:
-            if args:
-                for pep in args:
-                    browse_remote(pep)
-            else:
-                browse_remote("0")
 
 
 
