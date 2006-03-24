@@ -212,17 +212,22 @@ def fixfile(inpath, input_lines, outfile):
                                                                   otherpep)
             v = otherpeps
         elif k.lower() in ('last-modified',):
-            date = v or time.strftime('%d-%b-%Y',
+            date = v or time.strftime('%Y-%m-%d',
                                       time.localtime(os.stat(inpath)[8]))
+            if date.startswith('$' 'Date: ') and date.endswith(' $'):
+                date = date[6:-2]
             try:
                 url = PEPCVSURL % int(pep)
                 v = '<a href="%s">%s</a> ' % (url, cgi.escape(date))
             except ValueError, error:
                 v = date
-        elif k.lower() in ('content-type',):
+        elif k.lower() == 'content-type':
             url = PEPURL % 9
             pep_type = v or 'text/plain'
             v = '<a href="%s">%s</a> ' % (url, cgi.escape(pep_type))
+        elif k.lower() == 'version':
+            if v.startswith('$' 'Revision: ') and v.endswith(' $'):
+                v = cgi.escape(v[11:-2])
         else:
             v = cgi.escape(v)
         print >> outfile, ('  <tr><th class="field-name">%s:&nbsp;</th>'
@@ -292,7 +297,7 @@ def fix_rst_pep(inpath, input_lines, outfile):
         settings=docutils_settings,
         # Allow Docutils traceback if there's an exception:
         settings_overrides={'traceback': 1})
-    outfile.write(parts['body'])
+    outfile.write(parts['whole'])
     title = 'PEP %s -- %s' % (parts['pepnum'], parts['title'][0])
     return title
 
@@ -365,6 +370,7 @@ def make_html(inpath, verbose=0):
     # for PEP 0, copy body to parent directory as well
     if pepnum == '0000':
         shutil.copyfile(outpath, os.path.join(destDir, '..', 'body.html'))
+    copy_aux_files(inpath, destDir)
     return outpath
 
 def set_up_pyramid(inpath):
@@ -400,6 +406,20 @@ def write_pyramid_index(destDir, title):
     fp.write(INDEX_YML % title.replace('"', '\\"'))
     fp.close()
     os.chmod(filename, 0664)
+
+def copy_aux_files(pep_path, dest_dir):
+    """
+    Copy auxiliary files whose names match 'pep-XXXX-*.*'.
+    """
+    dirname, pepname = os.path.split(pep_path)
+    base, ext = os.path.splitext(pepname)
+    files = glob.glob(os.path.join(dirname, base) + '-*.*')
+    for path in files:
+        filename = os.path.basename(path)
+        dest_path = os.path.join(dest_dir, filename)
+        print '%s -> %s' % (path, dest_path)
+        shutil.copy(path, dest_path)
+
 
 
 PEP_TYPE_DISPATCH = {'text/plain': fixfile,
@@ -466,25 +486,15 @@ def main(argv=None):
             verbose = 0
 
     if args:
-        peptxt = []
-        html = []
         for pep in args:
-            file = find_pep(pep)
-            peptxt.append(file)
-            newfile = make_html(file, verbose=verbose)
-            if newfile:
-                html.append(newfile)
+            filename = find_pep(pep)
+            make_html(filename, verbose=verbose)
     else:
         # do them all
-        peptxt = []
-        html = []
         files = glob.glob("pep-*.txt")
         files.sort()
-        for file in files:
-            peptxt.append(file)
-            newfile = make_html(file, verbose=verbose)
-            if newfile:
-                html.append(newfile)
+        for filename in files:
+            make_html(filename, verbose=verbose)
 
 
 
