@@ -61,7 +61,7 @@ fixpat = re.compile("((https?|ftp):[-_a-zA-Z0-9/.+~:?#$=&,]+)|(pep-\d+(.txt)?)|"
 
 CONTENT_HTML = """\
 <n:invisible n:data="content" n:render="mapping">
-<div id="breadcrumb" n:data="breadcrumb" :render="breadcrumb" />
+<div id="breadcrumb" n:data="breadcrumb" n:render="breadcrumb" />
 <n:slot name="text"></n:slot>
 </n:invisible>
 """
