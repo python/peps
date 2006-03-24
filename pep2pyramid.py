@@ -37,9 +37,10 @@ REQUIRES = {'python': '2.2',
             'docutils': '0.5'}
 PROGRAM = sys.argv[0]
 RFCURL = 'http://www.faqs.org/rfcs/rfc%d.html'
-PEPURL = '/dev/peps/pep-%04d'
 PEPCVSURL = 'http://svn.python.org/view/*checkout*/peps/trunk/pep-%04d.txt'
-PEPDIRURL = 'http://www.python.org/dev/peps/'
+PEPDIRURL = '/dev/peps/'
+PEPURL = PEPDIRURL + 'pep-%04d'
+PEPANCHOR = '<a href="' + PEPURL + '">%i</a>'
 
 
 LOCALVARS = "Local Variables:"
@@ -118,6 +119,8 @@ def fixanchor(current, match):
                 ltext.append(c)
                 break
         link = EMPTYSTRING.join(ltext)
+    elif text.endswith('.txt') and text <> current:
+        link = PEPDIRURL + os.path.splitext(text)[0] + '/' + text 
     elif text.startswith('pep-') and text <> current:
         link = os.path.splitext(text)[0] + ".html"
     elif text.startswith('PEP'):
@@ -208,8 +211,7 @@ def fixfile(inpath, input_lines, outfile):
             otherpeps = ''
             for otherpep in re.split(',?\s+', v):
                 otherpep = int(otherpep)
-                otherpeps += '<a href="pep-%04d.html">%i</a> ' % (otherpep,
-                                                                  otherpep)
+                otherpeps += PEPANCHOR % (otherpep, otherpep)
             v = otherpeps
         elif k.lower() in ('last-modified',):
             date = v or time.strftime('%Y-%m-%d',
