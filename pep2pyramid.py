@@ -361,6 +361,11 @@ def make_html(inpath, verbose=0):
         return None
     destDir, needSvn, pepnum = set_up_pyramid(inpath)
     outpath = os.path.join(destDir, 'body.html')
+    if (os.path.exists(outpath) and 
+            os.stat(inpath).st_mtime <= os.stat(outpath).st_mtime):
+        if verbose:
+            print "Skipping %s (outfile up to date)"%(inpath)
+        return
     if verbose:
         print inpath, "(%s)" % pep_type, "->", outpath
         sys.stdout.flush()
