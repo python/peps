@@ -13,6 +13,9 @@ Options:
 -f, --force
     Force the rebuilding of output files, regardless of modification times.
 
+-k, --keep-going
+    Continue building past errors if possible.
+
 -q, --quiet
     Turn off verbose messages.
 
@@ -518,8 +521,8 @@ def main(argv=None):
 
     try:
         opts, args = getopt.getopt(
-            argv, 'd:fhq',
-            ['destdir=', 'force', 'help', 'quiet'])
+            argv, 'hd:fkq',
+            ['help', 'destdir=', 'force', 'keep-going', 'quiet'])
     except getopt.error, msg:
         usage(1, msg)
 
@@ -529,6 +532,8 @@ def main(argv=None):
         elif opt in ('-d', '--destdir'):
             settings.dest_dir_base = arg
         elif opt in ('-f', '--force'):
+            settings.force_rebuild = True
+        elif opt in ('-k', '--keep-going'):
             settings.force_rebuild = True
         elif opt in ('-q', '--quiet'):
             settings.verbose = False
