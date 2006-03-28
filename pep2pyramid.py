@@ -8,7 +8,10 @@ Options:
 
 -d <DIR>, --destdir <DIR>
     Specify the base destination directory for Pyramid files.
-    Default: /data/ftp.python.org/pub/beta.python.org/build/data/dev/peps
+    Default: %(SERVER_DEST_DIR_BASE)s
+
+-f, --force
+    Force the rebuilding of output files, regardless of modification times.
 
 -q, --quiet
     Turn off verbose messages.
@@ -31,11 +34,11 @@ import random
 import time
 import shutil
 
-destDirBase = '/data/ftp.python.org/pub/beta.python.org/build/data/dev/peps'
-
 REQUIRES = {'python': '2.2',
             'docutils': '0.5'}
 PROGRAM = sys.argv[0]
+SERVER_DEST_DIR_BASE = (
+    '/data/ftp.python.org/pub/beta.python.org/build/data/dev/peps')
 RFCURL = 'http://www.faqs.org/rfcs/rfc%d.html'
 PEPCVSURL = 'http://svn.python.org/view/*checkout*/peps/trunk/pep-%04d.txt'
 PEPDIRURL = '/dev/peps/'
@@ -90,6 +93,17 @@ local:
 EMPTYSTRING = ''
 SPACE = ' '
 COMMASPACE = ', '
+
+
+class Settings:
+
+    # defaults:
+    verbose = True
+    keep_going = False
+    force_rebuild = False
+    dest_dir_base = SERVER_DEST_DIR_BASE
+
+settings = Settings()
 
 
 
@@ -344,7 +358,7 @@ def find_pep(pep_str):
     num = int(pep_str)
     return "pep-%04d.txt" % num
 
-def make_html(inpath, verbose=0):
+def make_html(inpath):
     input_lines = get_input_lines(inpath)
     pep_type = get_pep_type(input_lines)
     if pep_type is None:
@@ -361,12 +375,13 @@ def make_html(inpath, verbose=0):
         return None
     destDir, needSvn, pepnum = set_up_pyramid(inpath)
     outpath = os.path.join(destDir, 'body.html')
-    if (os.path.exists(outpath) and 
-            os.stat(inpath).st_mtime <= os.stat(outpath).st_mtime):
-        if verbose:
+    if ( not settings.force_rebuild
+         and (os.path.exists(outpath) 
+              and os.stat(inpath).st_mtime <= os.stat(outpath).st_mtime)):
+        if settings.verbose:
             print "Skipping %s (outfile up to date)"%(inpath)
         return
-    if verbose:
+    if settings.verbose:
         print inpath, "(%s)" % pep_type, "->", outpath
         sys.stdout.flush()
     outfile = codecs.open(outpath, "w", "utf-8")
@@ -386,7 +401,7 @@ def set_up_pyramid(inpath):
         print >>sys.stderr, "Can't find PEP number in file name."
         sys.exit(1)
     pepnum = m.group(1)
-    destDir = os.path.join(destDirBase, 'pep-%s' % pepnum)
+    destDir = os.path.join(settings.dest_dir_base, 'pep-%s' % pepnum)
 
     needSvn = 0
     if not os.path.exists(destDir):
@@ -467,10 +482,35 @@ def pep_type_error(inpath, pep_type):
     sys.stdout.flush()
 
 
-def main(argv=None):
-    # defaults
-    verbose = 1
+def build_peps(args):
+    if args:
+        filenames = pep_filename_generator(args)
+    else:
+        # do them all
+        filenames = glob.glob("pep-*.txt")
+        filenames.sort()
+    for filename in filenames:
+        try:
+            make_html(filename)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except:
+            print "While building PEPs: %s" % filename
+            if settings.keep_going:
+                ee, ev, et = sys.exc_info()
+                traceback.print_exception(ee, ev, et, file=sys.stdout)
+                print "--keep-going/-k specified, continuing"
+                continue
+            else:
+                raise
 
+def pep_filename_generator(args):
+    for pep in args:
+        filename = find_pep(pep)
+        yield filename
+
+
+def main(argv=None):
     check_requirements()
 
     if argv is None:
@@ -478,8 +518,8 @@ def main(argv=None):
 
     try:
         opts, args = getopt.getopt(
-            argv, 'd:hq',
-            ['destdir=', 'help', 'quiet'])
+            argv, 'd:fhq',
+            ['destdir=', 'force', 'help', 'quiet'])
     except getopt.error, msg:
         usage(1, msg)
 
@@ -487,21 +527,13 @@ def main(argv=None):
         if opt in ('-h', '--help'):
             usage(0)
         elif opt in ('-d', '--destdir'):
-            global destDirBase
-            destDirBase = arg
+            settings.dest_dir_base = arg
+        elif opt in ('-f', '--force'):
+            settings.force_rebuild = True
         elif opt in ('-q', '--quiet'):
-            verbose = 0
+            settings.verbose = False
 
-    if args:
-        for pep in args:
-            filename = find_pep(pep)
-            make_html(filename, verbose=verbose)
-    else:
-        # do them all
-        files = glob.glob("pep-*.txt")
-        files.sort()
-        for filename in files:
-            make_html(filename, verbose=verbose)
+    build_peps(args)
 
 
 
