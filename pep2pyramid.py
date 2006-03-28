@@ -485,7 +485,7 @@ def pep_type_error(inpath, pep_type):
     sys.stdout.flush()
 
 
-def build_peps(args):
+def build_peps(args=None):
     if args:
         filenames = pep_filename_generator(args)
     else:
