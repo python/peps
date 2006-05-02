@@ -409,7 +409,7 @@ def set_up_pyramid(inpath):
     needSvn = 0
     if not os.path.exists(destDir):
         needSvn = 1
-        os.mkdir(destDir)
+        os.makedirs(destDir)
 
         #  write content.html
         foofilename = os.path.join(destDir, 'content.html')
