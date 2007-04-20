@@ -428,6 +428,7 @@ def set_up_pyramid(inpath):
 def write_pyramid_index(destDir, title):
     filename = os.path.join(destDir, 'index.yml')
     fp = codecs.open(filename, 'w', 'utf-8')
+    title = title.replace('\\', '\\\\') # Escape existing backslashes
     fp.write(INDEX_YML % title.replace('"', '\\"'))
     fp.close()
     os.chmod(filename, 0664)
