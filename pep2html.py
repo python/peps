@@ -340,7 +340,7 @@ def get_input_lines(inpath):
         if e.errno <> errno.ENOENT: raise
         print >> sys.stderr, 'Error: Skipping missing PEP file:', e.filename
         sys.stderr.flush()
-        return None, None
+        return None
     lines = infile.read().splitlines(1) # handles x-platform line endings
     infile.close()
     return lines
@@ -355,6 +355,8 @@ def find_pep(pep_str):
 
 def make_html(inpath, verbose=0):
     input_lines = get_input_lines(inpath)
+    if input_lines is None:
+        return None
     pep_type = get_pep_type(input_lines)
     if pep_type is None:
         print >> sys.stderr, 'Error: Input file %s is not a PEP.' % inpath
@@ -507,8 +509,8 @@ def main(argv=None):
             newfile = make_html(file, verbose=verbose)
             if newfile:
                 html.append(newfile)
-            if browse and not update:
-                browse_file(pep)
+                if browse and not update:
+                    browse_file(pep)
     else:
         # do them all
         peptxt = []
