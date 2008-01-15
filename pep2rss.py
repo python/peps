@@ -5,7 +5,6 @@
 
 import os, glob, time, datetime, stat, re, sys
 import codecs
-from subprocess import Popen, PIPE
 import PyRSS2Gen as rssgen
 
 RSS_PATH = os.path.join(sys.argv[1], 'peps.rss')
