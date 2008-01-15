@@ -4,13 +4,14 @@
 # (standard post-commit args)
 
 import os, glob, time, datetime, stat, re, sys
+import codecs
 from subprocess import Popen, PIPE
 import PyRSS2Gen as rssgen
 
 RSS_PATH = os.path.join(sys.argv[1], 'peps.rss')
 
 def firstline_startingwith(full_path, text):
-    for line in file(full_path):
+    for line in codecs.open(full_path, encoding="utf-8"):
         if line.startswith(text):
             return line[len(text):].strip()
     return None
@@ -46,7 +47,7 @@ for dt, full_path in peps_with_dt[-10:]:
         pass
     title = firstline_startingwith(full_path, 'Title:')
     author = firstline_startingwith(full_path, 'Author:')
-    url = 'http://www.python.org/dev/peps/pep-%d' % n
+    url = 'http://www.python.org/dev/peps/pep-%0.4d' % n
     item = rssgen.RSSItem(
         title = 'PEP %d: %s' % (n, title),
         link = url,
