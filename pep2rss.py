@@ -36,11 +36,12 @@ def pep_creation_dt(full_path):
         t = time.strptime(created_str, '%d-%B-%Y')
     return datetime.datetime(*t[:6])
 peps_with_dt = [(pep_creation_dt(full_path), full_path) for full_path in peps]
-peps_with_dt.sort()
+# sort peps by date, newest first
+peps_with_dt.sort(reverse=True)
 
 # generate rss items for 10 most recent peps
 items = []
-for dt, full_path in peps_with_dt[-10:]:
+for dt, full_path in peps_with_dt[:10]:
     try:
         n = int(full_path.split('-')[-1].split('.')[0])
     except ValueError:
