@@ -48,7 +48,7 @@ def main(argv):
     else:
         raise ValueError("argument must be a directory or file path")
 
-    with codecs.open('pep-0.txt', 'w', encoding='UTF-8') as pep0_file:
+    with codecs.open('pep-0000.txt', 'w', encoding='UTF-8') as pep0_file:
         write_pep0(peps, pep0_file)
 
 if __name__ == "__main__":
