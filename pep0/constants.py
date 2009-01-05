@@ -19,10 +19,6 @@ intro = u"""
     known as PEPs.  PEP numbers are assigned by the PEP Editor, and
     once assigned are never changed.  The SVN history[1] of the PEP
     texts represent their historical record.
-
-    The BDFL maintains his own Pronouncements page[2] at
-    http://www.python.org/doc/essays/pepparade.html which contains his
-    musings on the various outstanding PEPs.
 """
 
 references = u"""
