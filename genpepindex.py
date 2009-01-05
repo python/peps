@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python2.5
 """Auto-generate PEP 0 (PEP index).
 
 Generating the PEP index is a multi-step process.  To begin, you must first
