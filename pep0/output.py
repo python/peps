@@ -109,7 +109,7 @@ def write_pep0(peps, output=sys.stdout):
     write_column_headers(output)
     meta, info, accepted, open_, finished, dead = sort_peps(peps)
     print>>output
-    print>>output, u" Meta-PEPs (PEPs about PEPs or Processs)"
+    print>>output, u" Meta-PEPs (PEPs about PEPs or Processes)"
     print>>output
     for pep in meta:
         print>>output, unicode(pep)
