@@ -23,7 +23,7 @@ import codecs
 from operator import attrgetter
 
 from pep0.output import write_pep0
-from pep0.pep import PEP
+from pep0.pep import PEP, PEPError
 
 
 def main(argv):
@@ -40,7 +40,13 @@ def main(argv):
                 continue
             if file_path.startswith("pep-") and file_path.endswith(".txt"):
                 with codecs.open(abs_file_path, 'r', encoding='UTF-8') as pep_file:
-                    peps.append(PEP(pep_file))
+                    try:
+                        peps.append(PEP(pep_file))
+                    except PEPError, e:
+                        errmsg = "Error processing PEP %s, excluding:" % \
+                            (e.number,)
+                        print >>sys.stderr, errmsg, e
+                        sys.exit(1)
         peps.sort(key=attrgetter('number'))
     elif os.path.isfile(path):
         with open(path, 'r') as pep_file:
