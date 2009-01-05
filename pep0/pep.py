@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Code for handling object representation of a PEP."""
 import re
 import textwrap
@@ -94,7 +95,9 @@ class Author(object):
                 break
         else:
             raise ValueError("last name missing a capital letter")
-        return u' '.join(name_parts[index:])
+        # This replace() hack is so people with an umlaut will sort in the right
+        # letter.
+        return u' '.join(name_parts[index:]).replace(u"ö", u"o")
 
     def _last_name(self, full_name):
         """Find the last name (or nickname) of a full name.
