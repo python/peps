@@ -8,7 +8,7 @@ Title: Index of Python Enhancement Proposals (PEPs)
 Version: $Revision$
 Last-Modified: $Date$
 Author: David Goodger <goodger@python.org>,
-        Barry A. Warsaw <barry@python.org>
+        Barry Warsaw <barry@python.org>
 Status: Active
 Type: Informational
 Created: 13-Jul-2000
