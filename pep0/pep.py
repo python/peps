@@ -2,6 +2,7 @@
 """Code for handling object representation of a PEP."""
 import re
 import textwrap
+import unicodedata
 
 from email.parser import HeaderParser
 
@@ -88,17 +89,14 @@ class Author(object):
 
     @property
     def sort_by(self):
-        if u' ' not in self.last:
-            return self.last
         name_parts = self.last.split()
         for index, part in enumerate(name_parts):
             if part[0].isupper():
                 break
         else:
             raise ValueError("last name missing a capital letter")
-        # This replace() hack is so people with an umlaut will sort in the right
-        # letter.
-        return u' '.join(name_parts[index:]).replace(u"ö", u"o")
+        base = u' '.join(name_parts[index:]).lower()
+        return unicodedata.normalize('NFKD', base).encode('ASCII', 'ignore')
 
     def _last_name(self, full_name):
         """Find the last name (or nickname) of a full name.
