@@ -10,13 +10,13 @@ PEP2HTML=./pep2html.py
 .txt.html:
 	$(PEP2HTML) $<
 
-TARGETS=$(patsubst %.txt,%.html,$(wildcard pep-????.txt))
+TARGETS=$(patsubst %.txt,%.html,$(wildcard pep-????.txt)) pep-0000.html
 
 all: pep-0000.txt $(TARGETS)
 
 $(TARGETS): pep2html.py
 
-pep-0000.txt: $(wildcard pep-???[1-9].txt)
+pep-0000.txt: $(wildcard pep-????.txt)
 	./genpepindex.py .
 
 install:
