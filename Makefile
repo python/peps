@@ -3,12 +3,14 @@
 #
 # Not really important, but convenient.
 
-PEP2HTML=./pep2html.py
+PEP2HTML=pep2html.py
+
+PYTHON=python
 
 .SUFFIXES: .txt .html
 
 .txt.html:
-	$(PEP2HTML) $<
+	$(PYTHON) $(PEP2HTML) $<
 
 TARGETS=$(patsubst %.txt,%.html,$(wildcard pep-????.txt)) pep-0000.html
 
@@ -17,7 +19,7 @@ all: pep-0000.txt $(TARGETS)
 $(TARGETS): pep2html.py
 
 pep-0000.txt: $(wildcard pep-????.txt)
-	./genpepindex.py .
+	$(PYTHON) genpepindex.py .
 
 install:
 	echo "Installing is not necessary anymore. It will be done in post-commit."
