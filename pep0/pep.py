@@ -207,8 +207,12 @@ class PEP(object):
         # 'Status'.
         status = metadata['Status']
         if status not in self.status_values:
-            raise PEPError("%r is not a valid Status value" %
-                           (status,), pep_file.name, self.number)
+            if status == "April Fool!":
+                # See PEP 401 :)
+                status = "Rejected"
+            else:
+                raise PEPError("%r is not a valid Status value" %
+                               (status,), pep_file.name, self.number)
         # Special case for Active PEPs.
         if (status == u"Active" and
                 self.type_ not in ("Process", "Informational")):
