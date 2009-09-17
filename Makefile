@@ -10,7 +10,7 @@ PYTHON=python2.5
 .SUFFIXES: .txt .html
 
 .txt.html:
-	$(PYTHON) $(PEP2HTML) $<
+	@$(PYTHON) $(PEP2HTML) $<
 
 TARGETS=$(patsubst %.txt,%.html,$(wildcard pep-????.txt)) pep-0000.html
 
