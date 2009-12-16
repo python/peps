@@ -24,6 +24,11 @@ class PEPError(Exception):
             return "(%s): %r" % (self.filename, error_msg)
 
 
+class PEPParseError(PEPError):
+
+    pass
+
+
 class Author(object):
 
     """Represent PEP authors.
