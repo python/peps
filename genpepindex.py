@@ -41,10 +41,14 @@ def main(argv):
             if file_path.startswith("pep-") and file_path.endswith(".txt"):
                 with codecs.open(abs_file_path, 'r', encoding='UTF-8') as pep_file:
                     try:
-                        peps.append(PEP(pep_file))
+                        pep = PEP(pep_file)
+                        if pep.number != int(file_path[4:-4]):
+                            raise PEPError('PEP number does not match file name',
+                                           file_path, pep.number)
+                        peps.append(pep)
                     except PEPError, e:
-                        errmsg = "Error processing PEP %s, excluding:" % \
-                            (e.number,)
+                        errmsg = "Error processing PEP %s (%s), excluding:" % \
+                            (e.number, e.filename)
                         print >>sys.stderr, errmsg, e
                         sys.exit(1)
         peps.sort(key=attrgetter('number'))
