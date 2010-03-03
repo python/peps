@@ -30,3 +30,6 @@ clean:
 
 update:
 	svn update
+
+propcheck:
+	$(PYTHON) propcheck.py
