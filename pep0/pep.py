@@ -99,7 +99,8 @@ class Author(object):
             if part[0].isupper():
                 break
         else:
-            raise ValueError("last name missing a capital letter")
+            raise ValueError("last name missing a capital letter: %r"
+	                                                       % name_parts)
         base = u' '.join(name_parts[index:]).lower()
         return unicodedata.normalize('NFKD', base).encode('ASCII', 'ignore')
 
