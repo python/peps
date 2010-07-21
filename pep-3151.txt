@@ -1,0 +1,705 @@
+PEP: 3151
+Title: Reworking the OS and IO exception hierarchy
+Version: $Revision$
+Last-Modified: $Date$
+Author: Antoine Pitrou <solipsis@pitrou.net>
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 2010-07-21
+Python-Version: 3.2 or 3.3
+Post-History:
+Resolution: TBD
+
+
+Abstract
+========
+
+The standard exception hierarchy is an important part of the Python
+language.  It has two defining qualities: it is both generic and
+selective.  Generic in that the same exception type can be raised
+- and handled - regardless of the context (for example, whether you are
+trying to add something to an integer, to call a string method, or to write
+an object on a socket, a TypeError will be raised for bad argument types).
+Selective in that it allows the user to easily handle (silence, examine,
+process, store or encapsulate...) specific kinds of error conditions
+while letting other errors bubble up to higher calling contexts.  For
+example, you can choose to catch ZeroDivisionErrors without affecting
+the default handling of other ArithmeticErrors (such as OverflowErrors).
+
+This PEP proposes changes to a part of the exception hierarchy in
+order to better embody the qualities mentioned above: the errors
+related to operating system calls (OSError, IOError, select.error, and
+all their subclasses).
+
+
+Rationale
+=========
+
+Confusing set of OS-related exceptions
+--------------------------------------
+
+OS-related (or system call-related) exceptions are currently a diversity
+of classes, arranged in the following subhierarchies::
+
+    +-- EnvironmentError
+        +-- IOError
+            +-- io.BlockingIOError
+            +-- io.UnsupportedOperation (also inherits from ValueError)
+            +-- socket.error
+        +-- OSError
+            +-- WindowsError
+    +-- select.error
+
+While some of these distinctions can be explained by implementation
+considerations, they are often not very logical at a higher level.  The
+line separating OSError and IOError, for example, is often blurry.  Consider
+the following::
+
+    >>> os.remove("fff")
+    Traceback (most recent call last):
+      File "<stdin>", line 1, in <module>
+    OSError: [Errno 2] No such file or directory: 'fff'
+    >>> open("fff")
+    Traceback (most recent call last):
+      File "<stdin>", line 1, in <module>
+    IOError: [Errno 2] No such file or directory: 'fff'
+
+The same error condition (a non-existing file) gets cast as two different
+exceptions depending on which library function was called.  The reason
+for this is that the `os` module exclusively raises OSError (or its
+subclass WindowsError) while the `io` module mostly raises IOError.
+However, the user is interested in the nature of the error, not in which
+part of the interpreter it comes from (since the latter is obvious from
+reading the traceback message or application source code).
+
+In fact, it is hard to think of any situation where OSError should be
+caught but not IOError, or the reverse.
+
+A further proof of the ambiguity of this segmentation is that the standard
+library itself sometimes has problems deciding.  For example, in the
+``select`` module, similar failures will raise either ``select.error``,
+``OSError`` or ``IOError`` depending on whether you are using select(),
+a poll object, a kqueue object, or an epoll object.  This makes user code
+uselessly complicated since it has to be prepared to catch various
+exception types, depending on which exact implementation of a single
+primitive it chooses to use at runtime.
+
+As for WindowsError, it seems to be a pointless distinction.  First, it
+only exists on Windows systems, which requires tedious compatibility code
+in cross-platform applications.  Second, it inherits from OSError and
+is raised for similar errors as OSError is raised for on other systems.
+Third, the user wanting access to low-level exception specifics has to
+examine the ``errno`` or ``winerror`` attribute anyway.
+
+
+Lack of fine-grained exceptions
+-------------------------------
+
+The current variety of OS-related exceptions doesn't allow the user to filter
+easily for the desired kinds of failures.  As an example, consider the task
+of deleting a file if it exists.  The Look Before You Leap (LBYL) idiom
+suffers from an obvious race condition::
+
+    if os.path.exists(filename):
+        os.remove(filename)
+
+If a file named as `filename` is created by another thread or process
+between the calls to `os.path.exists` and `os.remove`, it won't be deleted.
+This can produce bugs in the application, or even security issues.
+
+Therefore, the solution is to try to remove the file, and ignore the error
+if the file doesn't exist (an idiom known as Easier to Ask Forgiveness
+than to get Permission, or EAFP).  Careful code will read like the following
+(which works under both POSIX and Windows systems)::
+
+    try:
+        os.remove(filename)
+    except OSError as e:
+        if e.errno != errno.ENOENT:
+            raise
+
+or even::
+
+    try:
+        os.remove(filename)
+    except EnvironmentError as e:
+        if e.errno != errno.ENOENT:
+            raise
+
+This is a lot more to type, and also forces the user to remember the various
+cryptic mnemonics from the errno module.  It imposes an additional cognitive
+burden and gets tiresome rather quickly.  Consequently, many programmers
+will instead write the following code, which silences exceptions too
+broadly::
+
+    try:
+        os.remove(filename)
+    except OSError:
+        pass
+
+``os.remove`` can raise an OSError not only when the file doesn't exist,
+but in other possible situations (for example, the filename points to a
+directory, or the current process doesn't have permission to remove
+the file), which all indicate bugs in the application logic and therefore
+shouldn't be silenced.  What the programmer would like to write instead is
+something such as::
+
+    try:
+        os.remove(filename)
+    except FileNotFound:
+        pass
+
+
+Compatibility concerns
+======================
+
+Reworking the exception hierarchy will obviously change the exact semantics
+of at least some existing code.  While it is not possible to improve on the
+current situation without changing exact semantics, it is possible to define
+a narrower type of compatibility, which we will call **useful compatibility**,
+and define as follows:
+
+* *useful compatibility* doesn't make exception catching any narrower, but
+  it can be broader for *naïve* exception-catching code.  Given the following
+  kind of snippet, all exceptions caught before this PEP will also be
+  caught after this PEP, but the reverse may be false::
+  
+      try:
+          os.remove(filename)
+      except OSError:
+          pass
+
+* *useful compatibility* doesn't alter the behaviour of *careful*
+  exception-catching code.  Given the following kind of snippet, the same
+  errors should be silenced or reraised, regardless of whether this PEP
+  has been implemented or not::
+
+      try:
+          os.remove(filename)
+      except OSError as e:
+          if e.errno != errno.ENOENT:
+              raise
+
+The rationale for this compromise is that careless (or "naïve") code
+can't really be helped, but at least code which "works" won't suddenly
+raise errors and crash.  This is important since such code is likely to
+be present in scripts used as cron tasks or automated system administration
+programs.
+
+Careful code should not be penalized.
+
+
+Step 1: coalesce exception types
+================================
+
+The first step of the resolution is to coalesce existing exception types.
+The extent of this step is not yet fully determined.  A number of possible
+changes are listed hereafter:
+
+* alias both socket.error and select.error to IOError
+* alias IOError to OSError
+* alias WindowsError to OSError
+
+Each of these changes doesn't preserve exact compatibility, but it does
+preserve *useful compatibility* (see "compatibility" section above).
+
+Not only does this first step present the user a simpler landscape, but
+it also allows for a better and more complete resolution of step 2
+(see "Prerequisite" below).
+
+Deprecation of names
+--------------------
+
+It is not yet decided whether the old names will be deprecated (then removed)
+or all alternative names will continue living in the root namespace.
+
+
+Step 2: define additional subclasses
+====================================
+
+The second step of the resolution is to extend the hierarchy by defining
+subclasses which will be raised, rather than their parent, for specific
+errno values.  Which errno values is subject to discussion, but a survey
+of existing exception matching practices (see Appendix A) helps us
+propose a reasonable subset of all values.  Trying to map all errno
+mnemonics, indeed, seems foolish, pointless, and would pollute the root
+namespace.
+
+Furthermore, in a couple of cases, different errno values could raise
+the same exception subclass.  For example, EAGAIN, EALREADY, EWOULDBLOCK
+and EINPROGRESS are all used to signal that an operation on a non-blocking
+socket would block (and therefore needs trying again later).  They could
+therefore all raise an identical subclass and let the user examine the
+``errno`` attribute if (s)he so desires (see below "exception
+attributes").
+
+Prerequisite
+------------
+
+Step 1 is a loose prerequisite for this.
+
+Prerequisite, because some errnos can currently be attached to different
+exception classes: for example, EBADF can be attached to both OSError and
+IOError, depending on the context.  If we don't want to break *useful
+compatibility*, we can't make an ``except OSError`` (or IOError) fail to
+match an exception where it would succeed today.
+
+Loose, because we could decide for a partial resolution of step 2
+if existing exception classes are not coalesced: for example, EBADF could
+raise a hypothetical BadFileDescriptor where an IOError was previously
+raised, but continue to raise OSError otherwise.
+
+The dependency on step 1 could be totally removed if the new subclasses
+used multiple inheritance to match with all of the existing superclasses
+(or, at least, OSError and IOError, which are arguable the most prevalent
+ones).  It would, however, make the hierarchy more complicated and
+therefore harder to grasp for the user.
+
+New exception classes
+---------------------
+
+The following tentative list of subclasses, along with a description and
+the list of errnos mapped to them, is submitted to discussion:
+
+* ``FileAlreadyExists``: trying to create a file or directory which already
+  exists (EEXIST)
+
+* ``FileNotFound``: for all circumstances where a file and directory is
+  requested but doesn't exist (ENOENT)
+
+* ``IsADirectory``: file-level operation (open(), os.remove()...) requested
+  on a directory (EISDIR)
+
+* ``NotADirectory``: directory-level operation requested on something else
+  (ENOTDIR)
+
+* ``PermissionDenied``: trying to run an operation without the adequate access
+  rights - for example filesystem permissions (EACCESS, optionally EPERM)
+
+* ``BlockingIOError``: an operation would block on an object (e.g. socket) set
+  for non-blocking operation (EAGAIN, EALREADY, EWOULDBLOCK, EINPROGRESS);
+  this is the existing ``io.BlockingIOError`` with an extended role
+
+* ``BadFileDescriptor``: operation on an invalid file descriptor (EBADF);
+  the default error message could point out that most causes are that
+  an existing file descriptor has been closed
+
+* ``ConnectionAborted``: connection attempt aborted by peer (ECONNABORTED)
+
+* ``ConnectionRefused``: connection reset by peer (ECONNREFUSED)
+
+* ``ConnectionReset``: connection reset by peer (ECONNRESET)
+
+* ``TimeoutError``: connection timed out (ECONNTIMEOUT); this could be re-cast
+  as a generic timeout exception, useful for other types of timeout (for
+  example in Lock.acquire())
+
+This list assumes step 1 is accepted in full; the exception classes
+described above would all derive from the now unified exception type
+OSError.  It will need reworking if a partial version of step 1 is accepted
+instead (again, see appendix A for the current distribution of errnos
+and exception types).
+
+
+Exception attributes
+--------------------
+
+In order to preserve *useful compatibility*, these subclasses should still
+set adequate values for the various exception attributes defined on the
+superclass (for example ``errno``, ``filename``, and optionally
+``winerror``).
+
+Implementation
+--------------
+
+Since it is proposed that the subclasses are raised based purely on the
+value of ``errno``, little or no changes should be required in extension
+modules (either standard or third-party).  As long as they use the
+``PyErr_SetFromErrno()`` family of functions (or the
+``PyErr_SetFromWindowsErr()`` family of functions under Windows), they
+should automatically benefit from the new, finer-grained exception classes.
+
+Library modules written in Python, though, will have to be adapted where
+they currently use the following idiom (seen in ``Lib/tempfile.py``)::
+
+    raise IOError(_errno.EEXIST, "No usable temporary file name found")
+
+Fortunately, such Python code is quite rare since raising OSError or IOError
+with an errno value normally happens when interfacing with system calls,
+which is usually done in C extensions.
+
+If there is popular demand, the subroutine choosing an exception type based
+on the errno value could be exposed for use in pure Python.
+
+
+Possible objections
+===================
+
+Namespace pollution
+-------------------
+
+Making the exception hierarchy finer-grained makes the root (or builtins)
+namespace larger.  This is to be moderated, however, as:
+
+* only a handful of additional classes are proposed; 
+
+* while standard exception types live in the root namespace, they are
+  visually distinguished by the fact that they use the CamelCase convention,
+  while almost all other builtins use lowercase naming (except True, False,
+  None, Ellipsis and NotImplemented)
+
+An alternative would be to provide a separate module containing the
+finer-grained exceptions, but that would defeat the purpose of
+encouraging careful code over careless code, since the user would first
+have to import the new module instead of using names already accessible.
+
+
+Earlier discussion
+==================
+
+While this is the first time such as formal proposal is made, the idea
+has received informal support in the past [1]_; both the introduction
+of finer-grained exception classes and the coalescing of OSError and
+IOError.
+
+The removal of WindowsError alone has been discussed and rejected
+as part of another PEP [2]_, but there seemed to be a consensus that the
+distinction with OSError wasn't meaningful.  This supports at least its
+aliasing with OSError.
+
+
+Moratorium
+==========
+
+The moratorium in effect on language builtins means this PEP has little
+chance to be accepted for Python 3.2.
+
+
+Possible alternative
+====================
+
+Pattern matching
+----------------
+
+Another possibility would be to introduce an advanced pattern matching
+syntax when catching exceptions.  For example::
+
+    try:
+        os.remove(filename)
+    except OSError as e if e.errno == errno.ENOENT:
+        pass
+
+Several problems with this proposal:
+
+* it introduces new syntax, which is perceived by the author to be a heavier
+  change compared to reworking the exception hierarchy
+* it doesn't decrease typing effort significantly
+* it doesn't relieve the programmer from the burden of having to remember
+  errno mnemonics
+
+
+Exceptions ignored by this PEP
+==============================
+
+This PEP ignores ``EOFError``, which signals a truncated input stream in
+various protocol and file format implementations (for example ``GzipFile``).
+``EOFError`` is not OS- or IO-related, it is a logical error raised at
+a higher level.
+
+This PEP also ignores ``SSLError``, which is raised by the ``ssl`` module
+in order to propagate errors signalled by the ``OpenSSL`` library.  Ideally,
+``SSLError`` would benefit from a similar but separate treatment since it
+defines its own constants for error types (``ssl.SSL_ERROR_WANT_READ``,
+etc.).
+
+
+Appendix A: Survey of common errnos
+===================================
+
+This is a quick recension of the various errno mnemonics checked for in
+the standard library and its tests, as part of ``except`` clauses.
+
+Common errnos with OSError
+--------------------------
+
+* ``EBADF``: bad file descriptor (usually means the file descriptor was
+  closed)
+
+* ``EEXIST``: file or directory exists
+
+* ``EINTR``: interrupted function call
+
+* ``EISDIR``: is a directory
+
+* ``ENOTDIR``: not a directory
+
+* ``ENOENT``: no such file or directory
+
+* ``EOPNOTSUPP``: operation not supported on socket
+  (possible confusion with the existing io.UnsupportedOperation)
+
+* ``EPERM``: operation not permitted (when using e.g. os.setuid())
+
+Common errnos with IOError
+--------------------------
+
+* ``EACCES``: permission denied (for filesystem operations)
+
+* ``EBADF``: bad file descriptor (with select.epoll); read operation on a
+  write-only GzipFile, or vice-versa
+
+* ``EBUSY``: device or resource busy
+
+* ``EISDIR``: is a directory (when trying to open())
+
+* ``ENODEV``: no such device
+
+* ``ENOENT``: no such file or directory (when trying to open())
+
+* ``ETIMEDOUT``: connection timed out
+
+Common errnos with socket.error
+-------------------------------
+
+All these errors may also be associated with a plain IOError, for example
+when calling read() on a socket's file descriptor.
+
+* ``EAGAIN``: resource temporarily unavailable (during a non-blocking socket
+  call except connect())
+
+* ``EALREADY``: connection already in progress (during a non-blocking
+  connect())
+
+* ``EINPROGRESS``: operation in progress (during a non-blocking connect())
+
+* ``EINTR``: interrupted function call
+
+* ``EISCONN``: the socket is connected
+
+* ``ECONNABORTED``: connection aborted by peer (during an accept() call)
+
+* ``ECONNREFUSED``: connection refused by peer
+
+* ``ECONNRESET``: connection reset by peer
+
+* ``ENOTCONN``: socket not connected
+
+* ``ESHUTDOWN``: cannot send after transport endpoint shutdown
+
+* ``EWOULDBLOCK``: same reasons as ``EAGAIN``
+
+Common errnos with select.error
+-------------------------------
+
+* ``EINTR``: interrupted function call
+
+
+Appendix B: Survey of raised OS and IO errors
+=============================================
+
+Interpreter core
+----------------
+
+Handling of PYTHONSTARTUP raises IOError (but the error gets discarded)::
+
+    $ PYTHONSTARTUP=foox ./python
+    Python 3.2a0 (py3k:82920M, Jul 16 2010, 22:53:23) 
+    [GCC 4.4.3] on linux2
+    Type "help", "copyright", "credits" or "license" for more information.
+    Could not open PYTHONSTARTUP
+    IOError: [Errno 2] No such file or directory: 'foox'
+
+``PyObject_Print()`` raises IOError when ferror() signals an error on the
+`FILE *` parameter (which, in the source tree, is always either stdout or
+stderr).
+
+Standard library
+----------------
+
+bz2
+'''
+
+Raises IOError throughout (OSError is unused)::
+
+    >>> bz2.BZ2File("foox", "rb")
+    Traceback (most recent call last):
+      File "<stdin>", line 1, in <module>
+    IOError: [Errno 2] No such file or directory
+    >>> bz2.BZ2File("LICENSE", "rb").read()
+    Traceback (most recent call last):
+      File "<stdin>", line 1, in <module>
+    IOError: invalid data stream
+    >>> bz2.BZ2File("/tmp/zzz.bz2", "wb").read()
+    Traceback (most recent call last):
+      File "<stdin>", line 1, in <module>
+    IOError: file is not ready for reading
+
+curses
+''''''
+
+Not examined.
+
+dbm.gnu, dbm.ndbm
+'''''''''''''''''
+
+_dbm.error and _gdbm.error inherit from IOError::
+
+    >>> dbm.gnu.open("foox")
+    Traceback (most recent call last):
+      File "<stdin>", line 1, in <module>
+    _gdbm.error: [Errno 2] No such file or directory
+
+fcntl
+'''''
+
+Raises IOError throughout (OSError is unused).
+
+imp module
+''''''''''
+
+Raises IOError for bad file descriptors::
+
+    >>> imp.load_source("foo", "foo", 123)
+    Traceback (most recent call last):
+      File "<stdin>", line 1, in <module>
+    IOError: [Errno 9] Bad file descriptor
+
+io module
+'''''''''
+
+Raises IOError when trying to open a directory under Unix::
+
+    >>> open("Python/", "r")
+    Traceback (most recent call last):
+      File "<stdin>", line 1, in <module>
+    IOError: [Errno 21] Is a directory: 'Python/'
+
+Raises IOError for unsupported operations::
+
+    >>> open("LICENSE").write("bar")
+    Traceback (most recent call last):
+      File "<stdin>", line 1, in <module>
+    IOError: not writable
+    >>> io.StringIO().fileno()
+    Traceback (most recent call last):
+      File "<stdin>", line 1, in <module>
+    io.UnsupportedOperation: fileno
+    >>> open("LICENSE").seek(1, 1)
+    Traceback (most recent call last):
+      File "<stdin>", line 1, in <module>
+    IOError: can't do nonzero cur-relative seeks
+
+(io.UnsupportedOperation inherits from IOError)
+
+Raises either IOError or TypeError when the inferior I/O layer misbehaves
+(i.e. violates the API it is expected to implement).
+
+Raises IOError when the underlying OS resource becomes invalid::
+
+    >>> f = open("LICENSE")
+    >>> os.close(f.fileno())
+    >>> f.read()
+    Traceback (most recent call last):
+      File "<stdin>", line 1, in <module>
+    IOError: [Errno 9] Bad file descriptor
+
+...or for implementation-specific optimizations::
+
+    >>> f = open("LICENSE")
+    >>> next(f)
+    'A. HISTORY OF THE SOFTWARE\n'
+    >>> f.tell()
+    Traceback (most recent call last):
+      File "<stdin>", line 1, in <module>
+    IOError: telling position disabled by next() call
+
+Raises BlockingIOError (inherited from IOError) when a call on a non-blocking
+object would block.
+
+multiprocessing
+'''''''''''''''
+
+Not examined.
+
+ossaudiodev
+'''''''''''
+
+Raises IOError throughout (OSError is unused)::
+
+    >>> ossaudiodev.open("foo", "r")
+    Traceback (most recent call last):
+      File "<stdin>", line 1, in <module>
+    IOError: [Errno 2] No such file or directory: 'foo'
+
+readline
+''''''''
+
+Raises IOError in various file-handling functions::
+
+    >>> readline.read_history_file("foo")
+    Traceback (most recent call last):
+      File "<stdin>", line 1, in <module>
+    IOError: [Errno 2] No such file or directory
+    >>> readline.read_init_file("foo")
+    Traceback (most recent call last):
+      File "<stdin>", line 1, in <module>
+    IOError: [Errno 2] No such file or directory
+    >>> readline.write_history_file("/dev/nonexistent")
+    Traceback (most recent call last):
+      File "<stdin>", line 1, in <module>
+    IOError: [Errno 13] Permission denied
+
+select
+''''''
+
+select() and poll objects raise select.error, which doesn't inherit from
+anything (but poll.modify() which raises IOError).
+epoll objects raise IOError.
+kqueue objects raise both OSError and IOError.
+
+signal
+''''''
+
+signal.ItimerError inherits from IOError.
+
+socket
+''''''
+
+socket.error inherits from IOError.
+
+time
+''''
+
+Raises IOError for internal errors in time.time() and time.sleep().
+
+zipimport
+'''''''''
+
+zipimporter.get_data() can raise IOError.
+
+
+References
+==========
+
+.. [1] "IO module precisions and exception hierarchy"
+   http://mail.python.org/pipermail/python-dev/2009-September/092130.html
+
+.. [2] Discussion of "Removing WindowsError" in PEP 348
+   http://www.python.org/dev/peps/pep-0348/#removing-windowserror
+
+Copyright
+=========
+
+This document has been placed in the public domain.
+
+
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   coding: utf-8
+   End:
