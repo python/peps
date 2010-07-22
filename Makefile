@@ -5,7 +5,7 @@
 
 PEP2HTML=pep2html.py
 
-PYTHON=python2.5
+PYTHON=python
 
 .SUFFIXES: .txt .html
 
