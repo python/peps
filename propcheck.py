@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 """Perform an integrity check upon all PEPs to make sure the needed svn
 properties are set."""
 
