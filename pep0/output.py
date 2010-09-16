@@ -1,4 +1,5 @@
 """Code to handle the output of PEP 0."""
+import datetime
 import sys
 import unicodedata
 
@@ -99,7 +100,8 @@ def normalized_last_first(name):
 
 
 def write_pep0(peps, output=sys.stdout):
-    print>>output, constants.header
+    today = datetime.date.today().strftime("%Y-%m-%d")
+    print>>output, constants.header % today
     print>>output
     print>>output, u"Introduction"
     print>>output, constants.intro

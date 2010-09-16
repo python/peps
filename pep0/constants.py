@@ -5,8 +5,7 @@ column_format = (u' %(type)1s%(status)1s %(number)4s  %(title)-' +
 
 header = u"""PEP: 0
 Title: Index of Python Enhancement Proposals (PEPs)
-Version: $Revision$
-Last-Modified: $Date$
+Last-Modified: %s
 Author: David Goodger <goodger@python.org>,
         Barry Warsaw <barry@python.org>
 Status: Active
