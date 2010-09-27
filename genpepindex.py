@@ -35,6 +35,8 @@ def main(argv):
     peps = []
     if os.path.isdir(path):
         for file_path in os.listdir(path):
+            if file_path == 'pep-0000.txt':
+                continue
             abs_file_path = os.path.join(path, file_path)
             if not os.path.isfile(abs_file_path):
                 continue
