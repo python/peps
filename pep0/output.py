@@ -30,19 +30,32 @@ def sort_peps(peps):
     accepted = []
     open_ = []
     finished = []
+    historical = []
     dead = []
     for pep in peps:
         # Order of 'if' statement important.  Key Status values take precedence
         # over Type value, and vice-versa.
         if pep.type_ == 'Process':
-            meta.append(pep)
+            if pep.status in ("Active", "Draft"):
+                meta.append(pep)
+            elif pep.status in ("Withdrawn", "Rejected"):
+                dead.append(pep)
+            else:
+                historical.append(pep)
         elif pep.status == 'Draft':
             open_.append(pep)
         elif pep.status in ('Rejected', 'Withdrawn', 'Deferred',
                 'Incomplete', 'Replaced'):
             dead.append(pep)
         elif pep.type_ == 'Informational':
-            info.append(pep)
+            # Hack until the conflict between the use of "Final"
+            # for both API definition PEPs and other (actually
+            # obsolete) PEPs is addressed
+            if (pep.status == "Active" or
+                "Release Schedule" not in pep.title):
+                info.append(pep)
+            else:
+                historical.append(pep)
         elif pep.status in ('Accepted', 'Active'):
             accepted.append(pep)
         elif pep.status == 'Final':
@@ -51,7 +64,7 @@ def sort_peps(peps):
             raise PEPError("unsorted (%s/%s)" %
                            (pep.type_, pep.status),
                            pep.filename, pep.number)
-    return meta, info, accepted, open_, finished, dead
+    return meta, info, accepted, open_, finished, historical, dead
 
 
 def verify_email_addresses(peps):
@@ -109,7 +122,7 @@ def write_pep0(peps, output=sys.stdout):
     print>>output, u"Index by Category"
     print>>output
     write_column_headers(output)
-    meta, info, accepted, open_, finished, dead = sort_peps(peps)
+    meta, info, accepted, open_, finished, historical, dead = sort_peps(peps)
     print>>output
     print>>output, u" Meta-PEPs (PEPs about PEPs or Processes)"
     print>>output
@@ -134,6 +147,11 @@ def write_pep0(peps, output=sys.stdout):
     print>>output, u" Finished PEPs (done, implemented in code repository)"
     print>>output
     for pep in finished:
+        print>>output, unicode(pep)
+    print>>output
+    print>>output, u" Historical Meta-PEPs and Informational PEPs"
+    print>>output
+    for pep in historical:
         print>>output, unicode(pep)
     print>>output
     print>>output, u" Deferred, Abandoned, Withdrawn, and Rejected PEPs"
