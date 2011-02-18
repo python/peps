@@ -16,7 +16,7 @@ http://www.python.org/2.1.1/license.html
 
 import re
 
-#Define exceptions
+# Define exceptions
 class RomanError(Exception): pass
 class OutOfRangeError(RomanError): pass
 class NotIntegerError(RomanError): pass
