@@ -1,0 +1,257 @@
+PEP: 395
+Title: Module Aliasing
+Version: $Revision$
+Last-Modified: $Date$
+Author: Nick Coghlan <ncoghlan@gmail.com>
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 4-Mar-2011
+Python-Version: 3.3
+Post-History: N/A
+
+
+Abstract
+========
+
+This PEP proposes new mechanisms that eliminate some longstanding traps for
+the unwary when dealing with Python's import system, the pickle module and
+introspection interfaces.
+
+<This will be fleshed out into a better summary once the PEP has been
+discussed further>
+
+
+What's in a ``__name__``?
+=========================
+
+Over time, a module's ``__name__`` attribute has come to be used to handle a
+number of different tasks.
+
+The key use cases identified for this module attribute are:
+
+1. Flagging the main module in a program, using the ``if __name__ ==
+   "__main__":`` convention.
+2. As the starting point for relative imports
+3. To identify the location of function and class definitions within the
+   running application
+4. To identify the location of classes for serialisation into pickle objects
+   which may be shared with other interpreter instances
+
+
+Traps for the Unwary
+====================
+
+The overloading of the semantics of ``__name__`` have resulted in several
+traps for the unwary. These traps can be quite annoying in practice, as
+they are highly unobvious and can cause quite confusing behaviour. A lot of
+the time, you won't even notice them, which just makes them all the more
+surprising when they do come up.
+
+
+Importing the main module twice
+-------------------------------
+
+The most venerable of these traps is the issue of (effectively) importing
+``__main__`` twice. This occurs when the main module is also imported under
+its real name, effectively creating two instances of the same module under
+different names.
+
+This problem used to be significantly worse due to implicit relative imports
+from the main module, but the switch to allowing only absolute imports and
+explicit relative imports means this issue is now restricted to affecting the
+main module itself.
+
+
+Why are my relative imports broken?
+-----------------------------------
+
+PEP 366 defines a mechanism that allows relative imports to work correctly
+when a module inside a package is executed via the ``-m`` switch.
+
+Unfortunately, many users still attempt to directly execute scripts inside
+packages. While this no longer silently does the wrong thing by
+creating duplicate copies of peer modules due to implicit relative imports, it
+now fails noisily at the first explicit relative import, even though the
+interpreter actually has sufficient information available on the filesystem to
+make it work properly.
+
+<TODO: Anyone want to place bets on how many StackOverflow links I could find
+to put here if I really went looking?>
+
+
+In a bit of a pickle
+--------------------
+
+Something many users may not realise is that the ``pickle`` module serialises
+objects based on the ``__name__`` of the containing module. So objects
+defined in ``__main__`` are pickled that way, and won't be unpickled
+correctly by another python instance that only imported that module instead
+of running it directly. Thus the advice from many Python veterans to do as
+little as possible in the ``__main__`` module in any application that
+involves any form of object serialisation and persistence.
+
+Similarly, when creating a pseudo-module\*, pickles rely on the name of the
+module where a class is actually defined, rather than the officially
+documented location for that class in the module hierarchy.
+
+While this PEP focuses specifically on ``pickle`` as the principal
+serialisation scheme in the standard library, this issue may also affect
+other mechanisms that support serialisation of arbitrary class instances.
+
+\*For the purposes of this PEP, a "pseudo-module" is a package designed like
+the Python 3.2 ``unittest`` and ``concurrent.futures`` packages. These
+packages are documented as if they were single modules, but are in fact
+internally implemented as a package. This is *supposed* to be an
+implementation detail that users and other implementations don't need to worry
+about, but, thanks to ``pickle``, the details are exposed and effectively
+become part of the public API.
+
+
+Where's the source?
+-------------------
+
+Some sophisticated users of the pseudo-module technique described
+above recognise the problem with implementation details leaking out via the
+``pickle`` module, and choose to address it by altering ``__name__`` to refer
+to the public location for the module before defining any functions or classes
+(or else by modifying the ``__module__`` attributes of those objects after
+they have been defined).
+
+This approach is effective at eliminating the leakage of information via
+pickling, but comes at the cost of breaking introspection for functions and
+classes (as their ``__module__`` attribute now points to the wrong place).
+
+
+Forkless Windows
+----------------
+
+To get around the lack of ``os.fork`` on Windows, the ``multiprocessing``
+module attempts to re-execute Python with the same main module, but skipping
+over any code guarded by ``if __name__ == "__main__":`` checks. It does the
+best it can with the information it has, but is forced to make assumptions
+that simply aren't valid whenever the main module isn't an ordinary directly
+executed script or top-level module. Packages and non-top-level modules
+executed via the ``-m`` switch, as well as directly executed zipfiles or
+directories, are likely to make multiprocessing on Windows do the wrong thing
+(either quietly or noisily) when spawning a new process.
+
+
+Proposed Changes
+================
+
+The following changes are interrelated and make the most sense when
+considered together. They collectively either completely eliminate the traps
+for the unwary noted above, or else provide straightforward mechanisms for
+dealing with them.
+
+A rough draft of some of the concepts presented here was first posted on the
+python-ideas list [1], but they have evolved considerably since first being
+discussed in that thread.
+
+
+Fixing dual imports of the main module
+--------------------------------------
+
+Two simple changes are proposed to fix this problem:
+
+1. In ``runpy``, modify the implementation of the ``-m`` switch handling to
+   install the specified module in ``sys.modules`` under both its real name
+   and the name ``__main__``. (Currently it is only installed as the latter)
+2. When directly executing a module, install it in ``sys.modules`` under
+   ``os.path.splitext(os.path.basename(__file__))[0]`` as well as under
+   ``__main__``.
+
+With the main module also stored under its "real" name, imports will pick it
+up from the ``sys.modules`` cache rather than reimporting it under a new name.
+
+
+Fixing direct execution inside packages
+---------------------------------------
+
+To fix this problem, it is proposed that an additional filesystem check be
+performed before proceeding with direct execution of a ``PY_SOURCE`` or
+``PY_COMPILED`` file that has been named on the command line.
+
+This additional check would look for an ``__init__`` file that is a peer to
+the specified file with a matching extension (either ``.py``, ``.pyc`` or
+``.pyo``, depending what was passed on the command line).
+
+If this check fails to find anything, direct execution proceeds as usual.
+
+If, however, it finds something, execution is handed over to a
+helper function in the ``runpy`` module that ``runpy.run_path`` also invokes
+in the same circumstances. That function will walk back up the
+directory hierarchy from the supplied path, looking for the first directory
+that doesn't contain an ``__init__`` file. Once that directory is found, it
+will be set to ``sys.path[0]``, ``sys.argv[0]`` will be set to ``-m`` and
+``runpy._run_module_as_main`` will be invoked with the appropriate module
+name (as calculated based on the original filename and the directories
+traversed while looking for a directory without an ``__init__`` file.
+
+
+Fixing pickling without breaking introspection
+----------------------------------------------
+
+To fix this problem, it is proposed to add two optional module level
+attributes: ``__source_name__`` and ``__pickle_name__``.
+
+When setting the ``__module__`` attribute on a function or class, the
+interpreter will be updated to use ``__source_name__`` if defined, falling
+back to ``__name__`` otherwise.
+
+``__source_name__`` will automatically be set to the main module's "real" name
+(as described above under the fix to prevent duplicate imports of the main
+module) by the interpreter. This will fix both pickling and introspection for
+the main module.
+
+It is also proposed that the pickling mechanism for classes and functions be
+updated to use an optional ``__pickle_module__`` attribute when deciding how
+to pickle these objects (falling back to the existing ``__module__``
+attribute if the optional attribute is not defined). When a class or function
+is defined, this optional attribute will be defined if ``__pickle_name__`` is
+defined at the module level, and left out otherwise. This will allow
+pseudo-modules to fix pickling without breaking introspection.
+
+Other serialisation schemes could add support for this new attribute
+relatively easily by replacing ``x.__module__`` with ``getattr(x,
+"__pickle_module__", x.__module__)``.
+
+``pydoc`` and ``inspect`` would also be updated to make appropriate use of
+the new attributes for any cases not already covered by the above rules for
+setting ``__module__``.
+
+Fixing multiprocessing on Windows
+---------------------------------
+
+With ``__source_name__`` now available to tell ``multiprocessing`` the real
+name of the main module, it should be able to simply include it in the
+serialised information passed to the child process, eliminating the dubious
+reverse engineering of the ``__file__`` attribute.
+
+
+Reference Implementation
+========================
+
+None as yet. I'll probably be sprinting on this after Pycon.
+
+
+References
+==========
+
+.. [1] Module aliases and/or "real names"
+   (http://mail.python.org/pipermail/python-ideas/2011-January/008983.html)
+
+
+Copyright
+=========
+
+This document has been placed in the public domain.
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   End:
