@@ -160,14 +160,14 @@ class PEP(object):
                ('Content-Type', False), ('Requires', False),
                ('Created', True), ('Python-Version', False),
                ('Post-History', False), ('Replaces', False),
-               ('Replaced-By', False), ('Resolution', False),
+               ('Superseded-By', False), ('Resolution', False),
                )
     # Valid values for the Type header.
     type_values = (u"Standards Track", u"Informational", u"Process")
     # Valid values for the Status header.
     # Active PEPs can only be for Informational or Process PEPs.
     status_values = (u"Accepted", u"Rejected", u"Withdrawn", u"Deferred",
-                     u"Final", u"Active", u"Draft", u"Replaced")
+                     u"Final", u"Active", u"Draft", u"Superseded")
 
     def __init__(self, pep_file):
         """Init object from an open PEP file object."""
