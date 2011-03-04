@@ -45,7 +45,7 @@ def sort_peps(peps):
         elif pep.status == 'Draft':
             open_.append(pep)
         elif pep.status in ('Rejected', 'Withdrawn', 'Deferred',
-                'Incomplete', 'Superseeded'):
+                'Incomplete', 'Superseded'):
             dead.append(pep)
         elif pep.type_ == 'Informational':
             # Hack until the conflict between the use of "Final"
