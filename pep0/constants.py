@@ -17,13 +17,13 @@ Created: 13-Jul-2000
 intro = u"""
     The PEP contains the index of all Python Enhancement Proposals,
     known as PEPs.  PEP numbers are assigned by the PEP Editor, and
-    once assigned are never changed.  The SVN history[1] of the PEP
-    texts represent their historical record.
+    once assigned are never changed.  The Mercurial history[1] of
+    the PEP texts represent their historical record.
 """
 
 references = u"""
     [1] View PEP history online
-        http://svn.python.org/projects/peps/trunk/
+        http://hg.python.org/peps/
 """
 
 footer = u"""

@@ -43,7 +43,7 @@ PROGRAM = sys.argv[0]
 SERVER_DEST_DIR_BASE = (
     '/data/ftp.python.org/pub/beta.python.org/build/data/dev/peps')
 RFCURL = 'http://www.faqs.org/rfcs/rfc%d.html'
-PEPCVSURL = 'http://svn.python.org/view/*checkout*/peps/trunk/pep-%04d.txt'
+PEPCVSURL = 'http://hg.python.org/peps/file/tip/pep-%04d.txt'
 PEPDIRURL = '/dev/peps/'
 PEPURL = PEPDIRURL + 'pep-%04d'
 PEPANCHOR = '<a href="' + PEPURL + '">%i</a>'
