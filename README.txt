@@ -6,9 +6,7 @@ mildly idiomatic plaintext format and the reStructuredText format
 (also, technically plaintext).  These two formats are described in PEP
 9 and PEP 12 respectively.  The pep2html.py processing and
 installation script knows how to produce the HTML for either PEP
-format.  A local copy of the Docutils package is included for
-processing reStructuredText PEPs.
+format.
 
-Please report any problems or questions to
-docutils-develop@lists.sourceforge.net or to David Goodger
-(goodger@python.org).
+For processing reStructuredText format PEPs, you need the docutils
+package, which is available from PyPI.
