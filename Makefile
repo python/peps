@@ -31,5 +31,3 @@ clean:
 update:
 	hg pull --update http://hg.python.org/peps
 
-propcheck:
-	$(PYTHON) propcheck.py
