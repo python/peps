@@ -47,52 +47,88 @@ of exposing strings to C code.
 For many strings (e.g. ASCII), multiple representations may actually
 share memory (e.g. the shortest form may be shared with the UTF-8 form
 if all characters are ASCII). With such sharing, the overhead of
-compatibility representations is reduced.
+compatibility representations is reduced. If representations do share
+data, it is also possible to omit structure fields, reducing the base
+size of string objects.
 
 Specification
 =============
 
-The Unicode object structure is changed to this definition::
+Unicode structures are now defined as a hierarchy of structures,
+namely::
 
   typedef struct {
     PyObject_HEAD
     Py_ssize_t length;
+    Py_hash_t hash;
+    struct {
+        unsigned int interned:2;
+        unsigned int kind:2;
+        unsigned int compact:1;
+        unsigned int ascii:1;
+        unsigned int ready:1;
+    } state;
+    wchar_t *wstr;
+  } PyASCIIObject;
+
+  typedef struct {
+    PyASCIIObject _base;
+    Py_ssize_t utf8_length;
+    char *utf8;
+    Py_ssize_t wstr_length;
+  } PyCompactUnicodeObject;
+
+  typedef struct {
+    PyCompactUnicodeObject _base;
     union {
         void *any;
         Py_UCS1 *latin1;
         Py_UCS2 *ucs2;
         Py_UCS4 *ucs4;
     } data;
-    Py_hash_t hash;
-    int state;
-    Py_ssize_t utf8_length;
-    void *utf8;
-    Py_ssize_t wstr_length;
-    void *wstr;
   } PyUnicodeObject;
 
-These fields have the following interpretations:
+Objects for which both size and maximum character are known at
+creation time are called "compact" unicode objects; character data
+immediately follow the base structure. If the maximum character is
+less than 128, they use the PyASCIIObject structure, and the UTF-8
+data, the UTF-8 length and the wstr length are the same as the length
+and the ASCII data. For non-ASCII strings, the PyCompactObject
+structure is used. Resizing compact objects is not supported.
+
+Objects for which the maximum character is not given at creation time
+are called "legacy" objects, created through
+PyUnicode_FromStringAndSize(NULL, length). They use the
+PyUnicodeObject structure. Initially, their data is only in the wstr
+pointer; when PyUnicode_READY is called, the data pointer (union) is
+allocated. Resizing is possible as long PyUnicode_READY has not been
+called.
+
+The fields have the following interpretations:
 
 - length: number of code points in the string (result of sq_length)
-- data: shortest-form representation of the unicode string.
-  The string is null-terminated (in its respective representation).
-- hash: same as in Python 3.2
-- state:
-
-  * lowest 2 bits (mask 0x03) - interned-state (SSTATE_*) as in 3.2
-  * next 2 bits (mask 0x0C) - form of str:
-
+- interned: interned-state (SSTATE_*) as in 3.2
+- kind: form of string
     + 00 => str is not initialized (data are in wstr)
     + 01 => 1 byte (Latin-1)
     + 10 => 2 byte (UCS-2)
     + 11 => 4 byte (UCS-4);
-
-  * next bit (mask 0x10): 1 if str memory follows PyUnicodeObject  
-
-- utf8_length, utf8: UTF-8 representation (null-terminated)
+- compact: the object uses one of the compact representations
+  (implies ready)
+- ascii: the object uses the PyASCIIObject representation
+  (implies compact and ready)
+- ready: the canonical represenation is ready to be accessed through
+  PyUnicode_DATA and PyUnicode_GET_LENGTH. This is set either if the
+  object is compact, or the data pointer and length have been
+  initialized.
 - wstr_length, wstr: representation in platform's wchar_t
   (null-terminated). If wchar_t is 16-bit, this form may use surrogate
   pairs (in which cast wstr_length differs form length).
+  wstr_length differs from length only if there are surrogate pairs
+  in the representation.
+- utf8_length, utf8: UTF-8 representation (null-terminated).
+- data: shortest-form representation of the unicode string.
+  The string is null-terminated (in its respective representation).
 
 All three representations are optional, although the data form is
 considered the canonical representation which can be absent only
@@ -110,10 +146,6 @@ and wstr pointers point to the same memory if the string happens to
 fit exactly to the wchar_t type of the platform (i.e. uses some
 BMP-not-Latin-1 characters if sizeof(wchar_t) is 2, and uses some
 non-BMP characters if sizeof(wchar_t) is 4).
-
-If the string is created directly with the canonical representation
-(see below), this representation doesn't take a separate memory block,
-but is allocated right after the PyUnicodeObject struct.
 
 String Creation
 ---------------
@@ -140,12 +172,11 @@ which can be modified until PyUnicode_Ready() is called (explicitly
 or implicitly). Resizing a Unicode string remains possible until it
 is finalized.
 
-PyUnicode_Ready() converts a string containing only a wstr
+PyUnicode_READY() converts a string containing only a wstr
 representation into the canonical representation. Unless wstr and data
 can share the memory, the wstr representation is discarded after the
-conversion. PyUnicode_FAST_READY() is a wrapper that avoids the 
-function call if the string is already ready. Both APIs return 0
-on success and -1 on failure.
+conversion. The macro returns 0 on success and -1 on failure, which
+happens in particular if the memory allocation fails.
 
 String Access
 -------------
@@ -175,9 +206,6 @@ should use the existing PyUnicode_AsUTF8String where possible
 converts a string to a char* (such as the ParseTuple functions) will
 use PyUnicode_AsUTF8 to compute a conversion.
 
-PyUnicode_AsUnicode is deprecated; it computes the wstr representation
-on first use.
-
 Stable ABI
 ----------
 
@@ -189,26 +217,36 @@ Tools/gdb/libpython.py contains debugging hooks that embed knowledge
 about the internals of CPython's data types, include PyUnicodeObject
 instances.  It will need to be slightly updated to track the change.
 
+Deprecations, Removals, and Incompatibilities
+---------------------------------------------
+
+While the Py_UNICODE representation and APIs are deprecated with this
+PEP, no removal of the respective APIs is scheduled. The APIs should
+remain available at least five years after the PEP is accepted; before
+they are removed, existing extension modules should be studied to find
+out whether a sufficient majority of the open-source code on PyPI has
+been ported to the new API. A reasonable motivation for using the
+deprecated API even in new code is for code that shall work both on
+Python 2 and Python 3.
+
+_PyUnicode_AsDefaultEncodedString is removed. It previously returned a
+borrowed reference to an UTF-8-encoded bytes object. Since the unicode
+object cannot anymore cache such a reference, implementing it without
+leaking memory is not possible. No deprecation phase is provided,
+since it was an API for internal use only.
+
+Extension modules using the legacy API may inadvertently call
+PyUnicode_READY, by calling some API that requires that the object is
+ready, and then continue accessing the (now invalid) Py_UNICODE
+pointer. Such code will break with this PEP. The code was already
+flawed in 3.2, as there is was no explicit guarantee that the
+PyUnicode_AS_UNICODE result would stay valid after an API call (due to
+the possiblity of string resizing). Modules that face this issue
+need to re-fetch the Py_UNICODE pointer after API calls; doing
+so will continue to work correctly in earlier Python versions.
+
 Open Issues
 ===========
-
-- When an application uses the legacy API, it may hold onto
-  the Py_UNICODE* representation, and yet start calling Unicode
-  APIs, which would call PyUnicode_Ready, invalidating the 
-  Py_UNICODE* representation; this would be an incompatible change.
-  The following solutions can be considered:
-
-  * accept it as an incompatible change. Applications using the
-    legacy API will have to fill out the Py_UNICODE buffer completely
-    before calling any API on the string under construction.
-  * require explicit PyUnicode_Ready calls in such applications;
-    fail with a fatal error if a non-ready string is ever read.
-    This would also be an incompatible change, but one that is
-    more easily detected during testing.
-  * as a compromise between these approaches, implicit PyUnicode_Ready
-    calls (i.e. those not deliberately following the construction of
-    a PyUnicode object) could produce a warning if they convert an
-    object.
 
 - Which of the APIs created during the development of the PEP should
   be public?
@@ -226,11 +264,6 @@ slowing down applications that request it. While this is also true,
 applications that care about this problem can be rewritten to use the
 data representation.
 
-The question was raised whether the wchar_t representation is
-discouraged, or scheduled for removal. This is not the intent of this
-PEP; applications that use them will see a performance penalty,
-though. Future versions of Python may consider to remove them.
-
 Performance
 -----------
 
@@ -240,31 +273,31 @@ expectation is that applications that have many large strings will see
 a reduction in memory usage. For small strings, the effects depend on
 the pointer size of the system, and the size of the Py_UNICODE/wchar_t
 type. The following table demonstrates this for various small ASCII
-string sizes and platforms.
+and Latin-1 string sizes and platforms.
 
-+-------+---------------------------------+----------------+
-|string | Python 3.2                      | This PEP       |
-|size   +----------------+----------------+                |
-|       | 16-bit wchar_t | 32-bit wchar_t |                |
-|       +---------+------+--------+-------+--------+-------+
-|       | 32-bit  |64-bit| 32-bit |64-bit | 32-bit |64-bit |
-+-------+---------+------+--------+-------+--------+-------+
-|1      | 40      | 64   | 40     |  64   | 48     | 88    |
-+-------+---------+------+--------+-------+--------+-------+
-|2      | 40      | 64   | 48     |  72   | 48     | 88    |
-+-------+---------+------+--------+-------+--------+-------+
-|3      | 40      | 64   | 48     |  72   | 48     | 88    |
-+-------+---------+------+--------+-------+--------+-------+
-|4      | 48      | 72   | 56     |  80   | 48     | 88    |
-+-------+---------+------+--------+-------+--------+-------+
-|5      | 48      | 72   | 56     |  80   | 48     | 88    |
-+-------+---------+------+--------+-------+--------+-------+
-|6      | 48      | 72   | 64     |  88   | 48     | 88    |
-+-------+---------+------+--------+-------+--------+-------+
-|7      | 48      | 72   | 64     |  88   | 48     | 88    |
-+-------+---------+------+--------+-------+--------+-------+
-|8      | 56      | 80   | 72     |  96   | 56     | 88    |
-+-------+---------+------+--------+-------+--------+-------+
++-------+---------------------------------+---------------------------------+
+|string | Python 3.2                      | This PEP                        |
+|size   +----------------+----------------+----------------+----------------+
+|       | 16-bit wchar_t | 32-bit wchar_t |   ASCII        |   Latin-1      |
+|       +---------+------+--------+-------+--------+-------+--------+-------+
+|       | 32-bit  |64-bit| 32-bit |64-bit | 32-bit |64-bit | 32-bit |64-bit |
++-------+---------+------+--------+-------+--------+-------+--------+-------+
+|1      | 32      | 64   | 40     |  64   | 32     | 56    | 40     | 80    |
++-------+---------+------+--------+-------+--------+-------+--------+-------+
+|2      | 40      | 64   | 40     |  72   | 32     | 56    | 40     | 80    |
++-------+---------+------+--------+-------+--------+-------+--------+-------+
+|3      | 40      | 64   | 48     |  72   | 32     | 56    | 40     | 80    |
++-------+---------+------+--------+-------+--------+-------+--------+-------+
+|4      | 40      | 72   | 48     |  80   | 32     | 56    | 48     | 80    |
++-------+---------+------+--------+-------+--------+-------+--------+-------+
+|5      | 40      | 72   | 56     |  80   | 32     | 56    | 48     | 80    |
++-------+---------+------+--------+-------+--------+-------+--------+-------+
+|6      | 48      | 72   | 56     |  88   | 32     | 56    | 48     | 80    |
++-------+---------+------+--------+-------+--------+-------+--------+-------+
+|7      | 48      | 72   | 64     |  88   | 32     | 56    | 48     | 80    |
++-------+---------+------+--------+-------+--------+-------+--------+-------+
+|8      | 48      | 80   | 64     |  96   | 40     | 64    | 48     | 88    |
++-------+---------+------+--------+-------+--------+-------+--------+-------+
 
 The runtime effect is significantly affected by the API being
 used. After porting the relevant pieces of code to the new API,
