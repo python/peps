@@ -169,7 +169,7 @@ def write_pep0(peps, output=sys.stdout):
         print>>output, unicode(pep)
     print>>output
     print>>output
-    print>>output, u" Numerical Index"
+    print>>output, u"Numerical Index"
     print>>output
     write_column_headers(output)
     prev_pep = 0
