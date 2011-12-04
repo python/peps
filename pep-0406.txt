@@ -3,11 +3,12 @@ Title: Improved Encapsulation of Import State
 Version: $Revision$
 Last-Modified: $Date$
 Author: Nick Coghlan <ncoghlan@gmail.com>, Greg Slodkowicz <jergosh@gmail.com>
-Status: Draft
+Status: Deferred
 Type: Standards Track
 Content-Type: text/x-rst
 Created: 4-Jul-2011
-Post-History: 31-Jul-2011, 13-Nov-2011
+Python-Version: 3.4
+Post-History: 31-Jul-2011, 13-Nov-2011, 4-Dec-2011
 
 Abstract
 ========
@@ -18,17 +19,27 @@ into a single object. Creating new instances of this object would then provide
 an alternative to completely replacing the built-in implementation of the
 import statement, by overriding the ``__import__()`` function. To work with
 the builtin import functionality and importing via import engine objects,
-module importers and loaders must accept an optional ``engine`` parameter. In
-that sense, this PEP constitutes a revision of finder and loader interfaces
-described in PEP 302 [1]_. However, the standard import process will not
-supply the additional argument, so this proposal remains fully backwards
-compatible.
+this PEP proposes a context management based approach to temporarily replacing
+the global import state.
 
 The PEP also proposes inclusion of a ``GlobalImportEngine`` subclass and a
 globally accessible instance of that class, which "writes through" to the
-process global state and invokes importers and loaders without the additional
-``engine`` argument. This provides a backwards compatible bridge between the
-proposed encapsulated API and the legacy process global state.
+process global state. This provides a backwards compatible bridge between the
+proposed encapsulated API and the legacy process global state, and allows
+straightforward support for related state updates (e.g. selectively
+invalidating path cache entries when ``sys.path`` is modified).
+
+
+PEP Deferral
+============
+
+The import system is already seeing substantial changes in Python 3.3, to
+natively handle packages split across multiple directories (PEP 382) and
+(potentially) to make the import semantics in the main module better match
+those in other modules (PEP 395).
+
+Accordingly, the proposal in this PEP will not be seriously considered until
+Python 3.4 at the earliest.
 
 
 Rationale
@@ -58,6 +69,10 @@ The namespace PEPs (especially PEP 402) raise a potential need for
 *additional* process global state, in order to correctly update package paths
 as ``sys.path`` is modified.
 
+Finally, providing a coherent object for all this state makes it feasible to
+also provide context management features that allow the import state to be
+temporarily substituted.
+
 
 Proposal
 ========
@@ -68,11 +83,10 @@ be used as an alternative to the built-in ``__import__()`` when
 desired and also an ``import_module()`` method, equivalent to
 ``importlib.import_module()`` [3]_.
 
-Since the new style finders and loaders should also have the option to
-modify the global import state, we introduce a ``GlobalImportState``
-class with an interface identical to ``ImportEngine`` but taking
-advantage of the global state. This can be easily implemented using
-class properties.
+Since there are global import state invariants that are assumed and should be
+maintained, we introduce a ``GlobalImportState`` class with an interface
+identical to ``ImportEngine`` but directly accessing the current global import
+state. This can be easily implemented using class properties.
 
 
 Specification
@@ -121,6 +135,14 @@ The proposed extension consists of the following objects:
     methods like ``ImportEngine`` but writes through to the global state
     in ``sys``.
 
+To support various namespace package mechanisms, when ``sys.path`` is altered,
+tools like ``pkgutil.extend_path`` should be used to also modify other parts
+of the import state (in this case, package ``__path__`` attributes). The path
+importer cache should also be invalidated when a variety of changes are made.
+
+The ``ImportEngine`` API will provide convenience methods that automatically
+make related import state updates as part of a single operation.
+
 
 Global variables
 ~~~~~~~~~~~~~~~~
@@ -133,24 +155,26 @@ Global variables
     a copy of the process global import state.
 
 
-Necessary changes to finder/loader interfaces:
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+No changes to finder/loader interfaces
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``find_module (cls, fullname, path=None, engine=None)``
+Rather than attempting to update the PEP 302 APIs to accept additional state,
+this PEP proposes that ``ImportEngine`` support the content management
+protocol (similar to the context substitution mechanisms in the ``decimal``
+module).
 
-``load_module (cls, fullname, path=None, engine=None)``
+The context management mechanism for ``ImportEngine`` would:
 
-The only difference between engine compatible and PEP 302 compatible
-finders/loaders is the presence of an additional ``engine`` parameter.
-This is intended to specify an ImportEngine instance or subclass thereof. 
-This parameter is optional so that engine compatible finders and
-loaders can be made backwards compatible with PEP 302 calling conventions by
-falling back on ``engine.sysengine`` with the following simple pattern::
+* On entry:
+  * Acquire the import lock
+  * Substitute the global import state with the import engine's own state
+* On exit:
+  * Restore the previous global import state
+  * Release the import lock
 
-    def find_module(cls, fullname, path=None, engine=None):
-        if not engine:
-            engine = importlib.engine.sysengine
-        ...
+The precise API for this is TBD (but will probably use a distinct context
+management object, along the lines of that created by
+``decimal.localcontext``).
 
 
 Open Issues
@@ -185,35 +209,38 @@ normally.
 cache - it's only loading them directly which causes problems.
 
 
-Nested imports
-~~~~~~~~~~~~~~
+Scope of substitution
+~~~~~~~~~~~~~~~~~~~~~
 
-The reference implementation currently applies only to the outermost import.
-Any imports by the module being imported will be handled using the standard
-import machinery.
+Related to the previous open issue is the question of what state to substitute
+when using the context management API. It is currently the case that replacing
+``sys.modules`` can be unreliable due to cached references and there's the
+underlying fact that having independent copies of some modules is simply
+impossible due to platform limitations.
 
-One way to handle this is to place the burden on the implementation of module
-loaders to set ``module.__dict__["__import__"] = engine.__import__`` before
-running the module's code. The ``importlib`` design facilities this by
-allowing the change to be made in one place (``_LoaderBasics._load_module``).
+As part of this PEP, it will be necessary to document explicitly:
 
-
-Scope of API updates
-~~~~~~~~~~~~~~~~~~~~
-
-The reference implementation focuses on finding and loading modules. There
-may be other PEP 302 APIs that should also be updated to accept an optional
-``engine`` parameter.
+* Which parts of the global import state can be substituted (and declare code
+  which caches references to that state without dealing with the substitution
+  case buggy)
+* Which parts must be modified in-place (and hence are not substituted by the
+  ``ImportEngine`` context management API, or otherwise scoped to
+  ``ImportEngine`` instances)
 
 
 Reference Implementation
 ========================
 
-A reference implementation [4]_ based on Brett Cannon's importlib has been
-developed by Greg Slodkowicz as part of the 2011 Google Summer of Code. Note
-that the current implementation avoids modifying existing code, and hence
-duplicates a lot of things unnecessarily. An actual implementation would just
-modify any such affected code in place.
+A reference implementation [4]_ for an earlier draft of this PEP, based on
+Brett Cannon's importlib has been developed by Greg Slodkowicz as part of the
+2011 Google Summer of Code. Note that the current implementation avoids
+modifying existing code, and hence duplicates a lot of things unnecessarily.
+An actual implementation would just modify any such affected code in place.
+
+That earlier draft of the PEP proposed change the PEP 302 APIs to support passing
+in an optional engine instance. This had the (serious) downside of not correctly
+affecting further imports from the imported module, hence the change to the
+context management based proposal for substituting the global state.
 
 
 References
