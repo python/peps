@@ -18,7 +18,7 @@ all: pep-0000.txt $(TARGETS)
 
 $(TARGETS): pep2html.py
 
-pep-0000.txt: $(wildcard pep-????.txt)
+pep-0000.txt: $(wildcard pep-????.txt) $(wildcard pep0/*.py)
 	$(PYTHON) genpepindex.py .
 
 install:

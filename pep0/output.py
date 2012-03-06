@@ -36,15 +36,15 @@ def sort_peps(peps):
     for pep in peps:
         # Order of 'if' statement important.  Key Status values take precedence
         # over Type value, and vice-versa.
-        if pep.type_ == 'Process':
-            if pep.status in ("Active", "Draft"):
+        if pep.status == 'Draft':
+            open_.append(pep)
+        elif pep.type_ == 'Process':
+            if pep.status == "Active":
                 meta.append(pep)
             elif pep.status in ("Withdrawn", "Rejected"):
                 dead.append(pep)
             else:
                 historical.append(pep)
-        elif pep.status == 'Draft':
-            open_.append(pep)
         elif pep.status == 'Deferred':
             deferred.append(pep)
         elif pep.status in ('Rejected', 'Withdrawn',
@@ -169,7 +169,7 @@ def write_pep0(peps, output=sys.stdout):
         print>>output, unicode(pep)
     print>>output
     print>>output
-    print>>output, u" Numerical Index"
+    print>>output, u"Numerical Index"
     print>>output
     write_column_headers(output)
     prev_pep = 0

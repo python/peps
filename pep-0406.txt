@@ -1,0 +1,274 @@
+PEP: 406
+Title: Improved Encapsulation of Import State
+Version: $Revision$
+Last-Modified: $Date$
+Author: Nick Coghlan <ncoghlan@gmail.com>, Greg Slodkowicz <jergosh@gmail.com>
+Status: Deferred
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 4-Jul-2011
+Python-Version: 3.4
+Post-History: 31-Jul-2011, 13-Nov-2011, 4-Dec-2011
+
+Abstract
+========
+
+This PEP proposes the introduction of a new 'ImportEngine' class as part of
+``importlib`` which would encapsulate all state related to importing modules
+into a single object. Creating new instances of this object would then provide
+an alternative to completely replacing the built-in implementation of the
+import statement, by overriding the ``__import__()`` function. To work with
+the builtin import functionality and importing via import engine objects,
+this PEP proposes a context management based approach to temporarily replacing
+the global import state.
+
+The PEP also proposes inclusion of a ``GlobalImportEngine`` subclass and a
+globally accessible instance of that class, which "writes through" to the
+process global state. This provides a backwards compatible bridge between the
+proposed encapsulated API and the legacy process global state, and allows
+straightforward support for related state updates (e.g. selectively
+invalidating path cache entries when ``sys.path`` is modified).
+
+
+PEP Deferral
+============
+
+The import system is already seeing substantial changes in Python 3.3, to
+natively handle packages split across multiple directories (PEP 382) and
+(potentially) to make the import semantics in the main module better match
+those in other modules (PEP 395).
+
+Accordingly, the proposal in this PEP will not be seriously considered until
+Python 3.4 at the earliest.
+
+
+Rationale
+=========
+
+Currently, most state related to the import system is stored as module level
+attributes in the ``sys`` module. The one exception is the import lock, which
+is not accessible directly, but only via the related functions in the ``imp``
+module. The current process global import state comprises:
+
+* sys.modules
+* sys.path
+* sys.path_hooks
+* sys.meta_path
+* sys.path_importer_cache
+* the import lock (imp.lock_held()/acquire_lock()/release_lock())
+
+Isolating this state would allow multiple import states to be
+conveniently stored within a process. Placing the import functionality
+in a self-contained object would also allow subclassing to add additional
+features (e.g. module import notifications or fine-grained control
+over which modules can be imported). The engine would also be
+subclassed to make it possible to use the import engine API to
+interact with the existing process-global state.
+
+The namespace PEPs (especially PEP 402) raise a potential need for
+*additional* process global state, in order to correctly update package paths
+as ``sys.path`` is modified.
+
+Finally, providing a coherent object for all this state makes it feasible to
+also provide context management features that allow the import state to be
+temporarily substituted.
+
+
+Proposal
+========
+
+We propose introducing an ImportEngine class to encapsulate import
+functionality. This includes an ``__import__()`` method which can
+be used as an alternative to the built-in ``__import__()`` when
+desired and also an ``import_module()`` method, equivalent to
+``importlib.import_module()`` [3]_.
+
+Since there are global import state invariants that are assumed and should be
+maintained, we introduce a ``GlobalImportState`` class with an interface
+identical to ``ImportEngine`` but directly accessing the current global import
+state. This can be easily implemented using class properties.
+
+
+Specification
+=============
+
+ImportEngine API
+~~~~~~~~~~~~~~~~
+
+The proposed extension consists of the following objects:
+
+``importlib.engine.ImportEngine``
+
+    ``from_engine(self, other)``
+
+        Create a new import object from another ImportEngine instance. The
+        new object is initialised with a copy of the state in ``other``. When
+        called on ``importlib engine.sysengine``, ``from_engine()`` can be
+        used to create an ``ImportEngine`` object with a **copy** of the
+        global import state.
+
+    ``__import__(self, name, globals={}, locals={}, fromlist=[], level=0)``
+
+        Reimplementation of the builtin ``__import__()`` function. The
+        import of a module will proceed using the state stored in the
+        ImportEngine instance rather than the global import state. For full
+        documentation of ``__import__`` funtionality, see [2]_ .
+        ``__import__()`` from ``ImportEngine`` and its subclasses can be used
+        to customise the behaviour of the ``import`` statement by replacing
+        ``__builtin__.__import__`` with ``ImportEngine().__import__``.
+
+    ``import_module(name, package=None)``
+
+        A reimplementation of ``importlib.import_module()`` which uses the
+        import state stored in the ImportEngine instance. See [3]_ for a full
+        reference.
+
+    ``modules, path, path_hooks, meta_path, path_importer_cache``
+
+        Instance-specific versions of their process global ``sys`` equivalents
+
+
+``importlib.engine.GlobalImportEngine(ImportEngine)``
+
+    Convenience class to provide engine-like access to the global state.
+    Provides ``__import__()``, ``import_module()`` and ``from_engine()``
+    methods like ``ImportEngine`` but writes through to the global state
+    in ``sys``.
+
+To support various namespace package mechanisms, when ``sys.path`` is altered,
+tools like ``pkgutil.extend_path`` should be used to also modify other parts
+of the import state (in this case, package ``__path__`` attributes). The path
+importer cache should also be invalidated when a variety of changes are made.
+
+The ``ImportEngine`` API will provide convenience methods that automatically
+make related import state updates as part of a single operation.
+
+
+Global variables
+~~~~~~~~~~~~~~~~
+
+``importlib.engine.sysengine``
+
+    A precreated instance of ``GlobalImportEngine``. Intended for use by
+    importers and loaders that have been updated to accept optional ``engine``
+    parameters and with ``ImportEngine.from_engine(sysengine)`` to start with
+    a copy of the process global import state.
+
+
+No changes to finder/loader interfaces
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Rather than attempting to update the PEP 302 APIs to accept additional state,
+this PEP proposes that ``ImportEngine`` support the content management
+protocol (similar to the context substitution mechanisms in the ``decimal``
+module).
+
+The context management mechanism for ``ImportEngine`` would:
+
+* On entry:
+  * Acquire the import lock
+  * Substitute the global import state with the import engine's own state
+* On exit:
+  * Restore the previous global import state
+  * Release the import lock
+
+The precise API for this is TBD (but will probably use a distinct context
+management object, along the lines of that created by
+``decimal.localcontext``).
+
+
+Open Issues
+===========
+
+
+API design for falling back to global import state
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The current proposal relies on the ``from_engine()`` API to fall back to the
+global import state. It may be desirable to offer a variant that instead falls
+back to the global import state dynamically.
+
+However, one big advantage of starting with an "as isolated as possible"
+design is that it becomes possible to experiment with subclasses that blur
+the boundaries between the engine instance state and the process global state
+in various ways.
+
+
+Builtin and extension modules must be process global
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Due to platform limitations, only one copy of each builtin and extension
+module can readily exist in each process. Accordingly, it is impossible for
+each ``ImportEngine`` instance to load such modules independently.
+
+The simplest solution is for ``ImportEngine`` to refuse to load such modules,
+raising ``ImportError``. ``GlobalImportEngine`` would be able to load them
+normally.
+
+``ImportEngine`` will still return such modules from a prepopulated module
+cache - it's only loading them directly which causes problems.
+
+
+Scope of substitution
+~~~~~~~~~~~~~~~~~~~~~
+
+Related to the previous open issue is the question of what state to substitute
+when using the context management API. It is currently the case that replacing
+``sys.modules`` can be unreliable due to cached references and there's the
+underlying fact that having independent copies of some modules is simply
+impossible due to platform limitations.
+
+As part of this PEP, it will be necessary to document explicitly:
+
+* Which parts of the global import state can be substituted (and declare code
+  which caches references to that state without dealing with the substitution
+  case buggy)
+* Which parts must be modified in-place (and hence are not substituted by the
+  ``ImportEngine`` context management API, or otherwise scoped to
+  ``ImportEngine`` instances)
+
+
+Reference Implementation
+========================
+
+A reference implementation [4]_ for an earlier draft of this PEP, based on
+Brett Cannon's importlib has been developed by Greg Slodkowicz as part of the
+2011 Google Summer of Code. Note that the current implementation avoids
+modifying existing code, and hence duplicates a lot of things unnecessarily.
+An actual implementation would just modify any such affected code in place.
+
+That earlier draft of the PEP proposed change the PEP 302 APIs to support passing
+in an optional engine instance. This had the (serious) downside of not correctly
+affecting further imports from the imported module, hence the change to the
+context management based proposal for substituting the global state.
+
+
+References
+==========
+
+.. [1] PEP 302, New Import Hooks, J van Rossum, Moore
+  (http://www.python.org/dev/peps/pep-0302)
+
+.. [2] __import__() builtin function, The Python Standard Library documentation
+  (http://docs.python.org/library/functions.html#__import__)
+
+.. [3] Importlib documentation, Cannon
+  (http://docs.python.org/dev/library/importlib)
+
+.. [4] Reference implentation
+  (https://bitbucket.org/jergosh/gsoc_import_engine/src/default/Lib/importlib/engine.py)
+
+
+Copyright
+=========
+
+This document has been placed in the public domain.
+
+..
+  Local Variables:
+  mode: indented-text
+  indent-tabs-mode: nil
+  sentence-end-double-space: t
+  fill-column: 70
+  coding: utf-8
+  End:
