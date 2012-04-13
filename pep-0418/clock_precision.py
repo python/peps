@@ -24,11 +24,11 @@ def compute_precision(func):
 
 def format_duration(dt):
     if dt >= 1e-3:
-        return "%.1f ms" % (dt * 1e3)
+        return "%.0f ms" % (dt * 1e3)
     if dt >= 1e-6:
-        return "%.1f µs" % (dt * 1e6)
+        return "%.0f µs" % (dt * 1e6)
     else:
-        return "%.1f ns" % (dt * 1e9)
+        return "%.0f ns" % (dt * 1e9)
 
 def test_clock(name, func):
     precision = compute_precision(func)
@@ -42,7 +42,7 @@ for name in ('clock', 'perf_counter', 'process_time', 'monotonic', 'time'):
     info = time.get_clock_info(name)
     if 'precision' in info:
         print("- announced precision: %s" % format_duration(info['precision']))
-    print("- function: %s" % info['function'])
+    print("- implementation: %s" % info['implementation'])
     print("- resolution: %s" % format_duration(info['resolution']))
 
 clock_ids = [name for name in dir(time) if name.startswith("CLOCK_")]
