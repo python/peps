@@ -52,4 +52,6 @@ for clock_id_text in clock_ids:
     def gettime():
         return time.clock_gettime(clock_id)
     test_clock(name, gettime)
+    precision = time.clock_getres(clock_id)
+    print("- announced precision: %s" % format_duration(precision))
 
