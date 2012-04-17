@@ -51,6 +51,11 @@ for clock_id_text in clock_ids:
     name = 'clock_gettime(%s)' % clock_id_text
     def gettime():
         return time.clock_gettime(clock_id)
+    try:
+        gettime()
+    except OSError as err:
+        print("%s failed: %s" % (name, err))
+        continue
     test_clock(name, gettime)
     precision = time.clock_getres(clock_id)
     print("- announced precision: %s" % format_duration(precision))
