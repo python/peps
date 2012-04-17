@@ -26,7 +26,7 @@ def format_duration(dt):
     if dt >= 1e-3:
         return "%.0f ms" % (dt * 1e3)
     if dt >= 1e-6:
-        return "%.0f µs" % (dt * 1e6)
+        return "%.0f us" % (dt * 1e6)
     else:
         return "%.0f ns" % (dt * 1e9)
 
