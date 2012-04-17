@@ -36,7 +36,7 @@ def test_clock(name, func):
     print("- precision in Python: %s" % format_duration(precision))
 
 
-clocks = ('clock', 'perf_counter', 'process_time')
+clocks = ['clock', 'perf_counter', 'process_time']
 if hasattr(time, 'monotonic'):
     clocks.append('monotonic')
 clocks.append('time')
