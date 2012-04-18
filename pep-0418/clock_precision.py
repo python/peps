@@ -1,26 +1,33 @@
 import time
 
+try:
+    from time import timeout_time
+except ImportError:
+    from time import time as timeout_time
+
 def compute_precision(func):
-    previous = func()
     precision = None
     points = 0
-    min_points = 100
-    while points < min_points:
-        value = func()
-        if value == previous:
-            continue
-        dt = value - previous
-        previous = value
+    timeout = timeout_time() + 1.0
+    previous = func()
+    while timeout_time() < timeout or points < 3:
+        for loop in range(10):
+            t1 = func()
+            t2 = func()
+            dt = t2 - t1
+            if 0 < dt:
+                break
+        else:
+            dt = t2 - previous
+            if dt <= 0.0:
+                continue
         if precision is not None:
             precision = min(precision, dt)
         else:
             precision = dt
-        if precision < 10e-6:
-            min_points = 5000
-        elif precision < 1e-3:
-            min_points = 1000
         points += 1
-    return dt
+        previous = func()
+    return precision
 
 def format_duration(dt):
     if dt >= 1e-3:
@@ -31,8 +38,8 @@ def format_duration(dt):
         return "%.0f ns" % (dt * 1e9)
 
 def test_clock(name, func):
-    precision = compute_precision(func)
     print("%s:" % name)
+    precision = compute_precision(func)
     print("- precision in Python: %s" % format_duration(precision))
 
 
@@ -50,6 +57,7 @@ for name in clocks:
     print("- resolution: %s" % format_duration(info['resolution']))
 
 clock_ids = [name for name in dir(time) if name.startswith("CLOCK_")]
+clock_ids.sort()
 for clock_id_text in clock_ids:
     clock_id = getattr(time, clock_id_text)
     name = 'clock_gettime(%s)' % clock_id_text
