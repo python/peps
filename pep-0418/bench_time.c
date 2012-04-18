@@ -131,8 +131,7 @@ void benchmark(const char *name, void (*func) (clockid_t clkid), clockid_t clkid
             dt += (after.tv_nsec - before.tv_nsec) * 1e-9;
         else
         {
-            dt -= 1.0;
-            dt += (before.tv_nsec - after.tv_nsec) * 1e-9;
+            dt -= (before.tv_nsec - after.tv_nsec) * 1e-9;
         }
         dt *= (double)1e9 / NLOOP / NUNROLL;
 
