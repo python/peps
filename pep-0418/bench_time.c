@@ -8,11 +8,19 @@
 #include <stdio.h>
 #include <sys/time.h>
 
+#ifdef CLOCK_REALTIME
+#  define HAVE_CLOCK_GETTIME
+#else
+typedef int clockid_t;
+#endif
+
 #define NRUN 5
-#define NLOOP 1000000
+#define NLOOP 100000
 #define UNROLL(expr) \
     expr; expr; expr; expr; expr; expr; expr; expr; expr; expr
 #define NUNROLL 10
+
+#ifdef HAVE_CLOCK_GETTIME
 
 typedef struct {
     const char *name;
@@ -80,6 +88,8 @@ void bench_clock_gettime(clockid_t clkid)
     }
 }
 
+#endif   /* HAVE_CLOCK_GETTIME */
+
 void bench_time(clockid_t clkid)
 {
     unsigned long loop;
@@ -117,25 +127,40 @@ void benchmark(const char *name, void (*func) (clockid_t clkid), clockid_t clkid
 {
     unsigned int run;
     double dt, best;
-    struct timespec before, after, tmpspec;
+#ifdef HAVE_CLOCK_GETTIME
+    struct timespec before, after;
+#else
+    struct timeval before, after;
+#endif
     struct timeval tmpval;
 
-    best = 0;
+    best = -1.0;
     for (run=0; run<NRUN; run++) {
+#ifdef HAVE_CLOCK_GETTIME
         clock_gettime(CLOCK_MONOTONIC, &before);
         (*func) (clkid);
         clock_gettime(CLOCK_MONOTONIC, &after);
 
-        dt = after.tv_sec - before.tv_sec;
+        dt = (after.tv_sec - before.tv_sec) * 1e9;
         if (after.tv_nsec >= before.tv_nsec)
-            dt += (after.tv_nsec - before.tv_nsec) * 1e-9;
+            dt += (after.tv_nsec - before.tv_nsec);
         else
-        {
-            dt -= (before.tv_nsec - after.tv_nsec) * 1e-9;
-        }
-        dt *= (double)1e9 / NLOOP / NUNROLL;
+            dt -= (before.tv_nsec - after.tv_nsec);
+#else
+        gettimeofday(&before, NULL);
+        (*func) (clkid);
+        gettimeofday(&after, NULL);
 
-        if (best != 0.0) {
+        dt = (after.tv_sec - before.tv_sec) * 1e9;
+        if (after.tv_usec >= before.tv_usec)
+            dt += (after.tv_usec - before.tv_usec) * 1e3;
+        else
+            dt -= (before.tv_usec - after.tv_usec) * 1e3;
+#endif
+        dt /= NLOOP;
+        dt /= NUNROLL;
+
+        if (best != -1.0) {
             if (dt < best)
                 best = dt;
         }
@@ -147,12 +172,14 @@ void benchmark(const char *name, void (*func) (clockid_t clkid), clockid_t clkid
 
 int main()
 {
+#ifdef HAVE_CLOCK_GETTIME
     clockid_t clkid;
     int i;
 
     for (i=0; i<NCLOCKS; i++) {
         benchmark(clocks[i].name, bench_clock_gettime, clocks[i].identifier);
     }
+#endif
     benchmark("clock()", bench_clock, 0);
     benchmark("gettimeofday()", bench_gettimeofday, 0);
     benchmark("time()", bench_time, 0);
