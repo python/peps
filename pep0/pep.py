@@ -156,6 +156,7 @@ class PEP(object):
     # required or not.
     headers = (('PEP', True), ('Title', True), ('Version', True),
                ('Last-Modified', True), ('Author', True),
+               ('BDFL-Delegate', False),
                ('Discussions-To', False), ('Status', True), ('Type', True),
                ('Content-Type', False), ('Requires', False),
                ('Created', True), ('Python-Version', False),
