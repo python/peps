@@ -1,0 +1,354 @@
+PEP: 422
+Title: Simple class initialisation hook
+Version: $Revision$
+Last-Modified: $Date$
+Author: Nick Coghlan <ncoghlan@gmail.com>
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 5-Jun-2012
+Python-Version: 3.4
+Post-History: 5-Jun-2012
+
+
+Abstract
+========
+
+In Python 2, the body of a class definition could modify the way a class
+was created (or simply arrange to run other code after the class was created)
+by setting the ``__metaclass__`` attribute in the class body. While doing
+this implicitly from called code required the use of an implementation detail
+(specifically, ``sys._getframes()``), it could also be done explicitly in a
+fully supported fashion (for example, by passing ``locals()`` to an
+function that calculated a suitable ``__metaclass__`` value)
+
+There is currently no corresponding mechanism in Python 3 that allows the
+code executed in the class body to directly influence how the class object
+is created. Instead, the class creation process is fully defined by the
+class header, before the class body even begins executing.
+
+This PEP proposes a mechanism that will once again allow the body of a
+class definition to more directly influence the way a class is created
+(albeit in a more constrained fashion), as well as replacing some current
+uses of metaclasses with a simpler, easier to understand alternative.
+
+
+Background
+==========
+
+For an already created class ``cls``, the term "metaclass" has a clear
+meaning: it is the value of ``type(cls)``.
+
+*During* class creation, it has another meaning: it is also used to refer to
+the metaclass hint that may be provided as part of the class definition.
+While in many cases these two meanings end up referring to one and the same
+object, there are two situations where that is not the case:
+
+* If the metaclass hint refers to a subclass of ``type``, then it is
+  considered as a candidate metaclass along with the metaclasses of all of
+  the parents of the class being defined. If a more appropriate metaclass is
+  found amongst the candidates, then it will be used instead of the one
+  given in the metaclass hint.
+* Otherwise, an explicit metaclass hint is assumed to be a factory function
+  and is called directly to create the class object. In this case, the final
+  metaclass will be determined by the factory function definition. In the
+  typical case (where the factory functions just calls ``type``, or, in
+  Python 3.3 or later, ``types.new_class``) the actual metaclass is then
+  determined based on the parent classes.
+
+It is notable that only the actual metaclass is inherited - a factory
+function used as a metaclass hook sees only the class currently being
+defined, and is not invoked for any subclasses.
+
+In Python 3, the metaclass hint is provided using the ``metaclass=Meta``
+keyword syntax in the class header. This allows the ``__prepare__`` method
+on the metaclass to be used to create the ``locals()`` namespace used during
+execution of the class body (for example, specifying the use of
+``collections.OrderedDict`` instead of a regular ``dict``).
+
+In Python 2, there was no ``__prepare__`` method (that API was added for
+Python 3 by PEP 3115). Instead, a class body could set the ``__metaclass__``
+attribute, and the class creation process would extract that value from the
+class namespace to use as the metaclass hint. There is `published code`_ that
+makes use of this feature.
+
+Another new feature in Python 3 is the zero-argument form of the ``super()``
+builtin, introduced by PEP 3135. This feature uses an implicit ``__class__``
+reference to the class being defined to replace the "by name" references
+required in Python 2. Just as code invoked during execution of a Python 2
+metaclass could not call methods that referenced the class by name (as the
+name had not yet been bound in the containing scope), similarly, Python 3
+metaclasses cannot call methods that rely on the implicit ``__class__``
+reference (as it is not populated until after the metaclass has returned
+control to the class creation machiner).
+
+
+Proposal
+========
+
+This PEP proposes that a mechanism be added to Python 3 that meets the
+following criteria:
+
+1. Restores the ability for class namespaces to have some influence on the
+   class creation process (above and beyond populating the namespace itself),
+   but potentially without the full flexibility of the Python 2 style
+   ``__metaclass__`` hook
+2. Integrates nicely with class inheritance structures (including mixins and
+   multiple inheritance)
+3. Integrates nicely with the implicit ``__class__`` reference and
+   zero-argument ``super()`` syntax introduced by PEP 3135
+4. Can be added to an existing base class without a significant risk of
+   introducing backwards compatibility problems
+
+One mechanism that can achieve this goal is to add a new class
+initialisation hook, modelled directly on the existing instance
+initialisation hook, but with the signature constrained to match that
+of an ordinary class decorator.
+
+Specifically, it is proposed that class definitions be able to provide a
+class initialisation hook as follows::
+
+   class Example:
+       @classmethod
+       def __init_class__(cls):
+           # This is invoked after the class is created, but before any
+           # explicit decorators are called
+           # The usual super() mechanisms are used to correctly support
+           # multiple inheritance. The decorator style invocation helps
+           # ensure that invoking the parent class is as simple as possible.
+
+If present on the created object, this new hook will be called by the class
+creation machinery *after* the ``__class__`` reference has been initialised.
+For ``types.new_class()``, it will be called as the last step before
+returning the created class object.
+
+If a metaclass wishes to block class initialisation for some reason, it
+must arrange for ``cls.__init_class__`` to trigger ``AttributeError``.
+
+This general proposal is not a new idea (it was first suggested for
+inclusion in the language definition `more than 10 years ago`_, and a
+similar mechanism has long been supported by `Zope's ExtensionClass`_),
+but I believe the situation has changed sufficiently in recent years that
+the idea is worth reconsidering.
+
+
+Key Benefits
+============
+
+
+Replaces many use cases for dynamic setting of ``__metaclass__``
+-----------------------------------------------------------------
+
+For use cases that don't involve completely replacing the defined class,
+Python 2 code that dynamically set ``__metaclass__`` can now dynamically
+set ``__init_class__`` instead. For more advanced use cases, introduction of
+an explicit metaclass (possibly made available as a required base class) will
+still be necessary in order to support Python 3.
+
+
+Easier inheritance of definition time behaviour
+-----------------------------------------------
+
+Understanding Python's metaclasses requires a deep understanding of
+the type system and the class construction process. This is legitimately
+seen as challenging, due to the need to keep multiple moving parts (the code,
+the metaclass hint, the actual metaclass, the class object, instances of the
+class object) clearly distinct in your mind. Even when you know the rules,
+it's still easy to make a mistake if you're not being extremely careful.
+An earlier version of this PEP actually included such a mistake: it
+stated "instance of type" for a constraint that is actually "subclass of
+type".
+
+Understanding the proposed class initialisation hook only requires
+understanding decorators and ordinary method inheritance, which isn't
+quite as daunting a task. The new hook provides a more gradual path
+towards understanding all of the phases involved in the class definition
+process.
+
+
+Reduced chance of metaclass conflicts
+-------------------------------------
+
+One of the big issues that makes library authors reluctant to use metaclasses
+(even when they would be appropriate) is the risk of metaclass conflicts.
+These occur whenever two unrelated metaclasses are used by the desired
+parents of a class definition. This risk also makes it very difficult to
+*add* a metaclass to a class that has previously been published without one.
+
+By contrast, adding an ``__init_class__`` method to an existing type poses
+a similar level of risk to adding an ``__init__`` method: technically, there
+is a risk of breaking poorly implemented subclasses, but when that occurs,
+it is recognised as a bug in the subclass rather than the library author
+breaching backwards compatibility guarantees. In fact, due to the constrained
+signature of ``__init_class__``, the risk in this case is actually even
+lower than in the case of ``__init__``.
+
+
+Integrates cleanly with \PEP 3135
+---------------------------------
+
+Unlike code that runs as part of the metaclass, code that runs as part of
+the new hook will be able to freely invoke class methods that rely on the
+implicit ``__class__`` reference introduced by PEP 3135, including methods
+that use the zero argument form of ``super()``.
+
+
+Alternatives
+============
+
+
+The Python 3 Status Quo
+-----------------------
+
+The Python 3 status quo already offers a great deal of flexibility. For
+changes which only affect a single class definition and which can be
+specified at the time the code is written, then class decorators can be
+used to modify a class explicitly. Class decorators largely ignore class
+inheritance and can make full use of methods that rely on the ``__class__``
+reference being populated.
+
+Using a custom metaclass provides the same level of power as it did in
+Python 2. However, it's notable that, unlike class decorators, a metaclass
+cannot call any methods that rely on the ``__class__`` reference, as that
+reference is not populated until after the metaclass constructor returns
+control to the class creation code.
+
+One major use case for metaclasses actually closely resembles the use of
+class decorators. It occurs whenever a metaclass has an implementation that
+uses the following pattern::
+
+    class Metaclass(type):
+        def __new__(meta, *args, **kwds):
+            cls = super(Metaclass, meta).__new__(meta, *args, **kwds)
+            # Do something with cls
+            return cls
+
+The key difference between this pattern and a class decorator is that it
+is automatically inherited by subclasses. However, it also comes with a
+major disadvantage: Python does not allow you to inherit from classes with
+unrelated metaclasses.
+
+Thus, the status quo requires that developers choose between the following
+two alternatives:
+
+* Use a class decorator, meaning that behaviour is not inherited and must be
+  requested explicitly on every subclass
+* Use a metaclass, meaning that behaviour is inherited, but metaclass
+  conflicts may make integration with other libraries and frameworks more
+  difficult than it otherwise would be
+
+If this PEP is ultimately rejected, then this is the existing design that
+will remain in place by default.
+
+
+Restoring the Python 2 metaclass hook
+-------------------------------------
+
+One simple alternative would be to restore support for a Python 2 style
+``metaclass`` hook in the class body. This would be checked after the class
+body was executed, potentially overwriting the metaclass hint provided in the
+class header.
+
+The main attraction of such an approach is that it would simplify porting
+Python 2 applications that make use of this hook (especially those that do
+so dynamically).
+
+However, this approach does nothing to simplify the process of adding
+*inherited* class definition time behaviour, nor does it interoperate
+cleanly with the PEP 3135 ``__class__`` and ``super()`` semantics (as with
+any metaclass based solution, the ``__metaclass__`` hook would have to run
+before the ``__class__`` reference has been populated.
+
+
+Dynamic class decorators
+------------------------
+
+The original version of this PEP was called "Dynamic class decorators" and
+focused solely on a significantly more complicated proposal than that
+presented in the current version.
+
+As with the current version, it proposed that a new step be added to the
+class creation process, after the metaclass invocation to construct the
+class instance and before the application of lexical decorators. However,
+instead of a simple process of calling a single class method that relies
+on normal inheritance mechanisms, it proposed a far more complicated
+procedure that walked the class MRO looking for decorators stored in
+iterable ``__decorators__`` attributes.
+
+Using the current version of the PEP, the scheme originally proposed could
+be implemented as::
+
+   class DynamicDecorators:
+       @classmethod
+       def __init_class__(cls):
+           super(DynamicDecorators, cls).__init_class__()
+           for entry in reversed(cls.mro()):
+               decorators = entry.__dict__.get("__decorators__", ())
+               for deco in reversed(decorators):
+                   cls = deco(cls)
+
+Any subclasses of this type would automatically have the contents of any
+``__decorators__`` attributes processed and invoked.
+
+The mechanism in the current PEP is considered superior, as many issues
+to do with ordering and the same decorator being invoked multiple times
+just go away, as that kind of thing is taken care of through the use of an
+ordinary class method invocation.
+
+
+Automatic metaclass derivation
+------------------------------
+
+When no appropriate metaclass is found, it's theoretically possible to
+automatically derive a metaclass for a new type based on the metaclass hint
+and the metaclasses of the bases.
+
+While adding such a mechanism would reduce the risk of spurious metaclass
+conflicts, it would do nothing to improve integration with PEP 3135, would
+not help with porting Python 2 code that set ``__metaclass__`` dynamically
+and would not provide a more straightforward inherited mechanism for invoking
+additional operations after the class invocation is complete.
+
+In addition, there would still be a risk of metaclass conflicts in cases
+where the base metaclasses were not written with multiple inheritance in
+mind. In such situations, there's a chance of introducing latent defects
+if one or more metaclasses are not invoked correctly.
+
+
+Calling the new hook from ``type.__init__``
+-------------------------------------------
+
+Calling the new hook automatically from ``type.__init__``, would achieve most
+of the goals of this PEP. However, using that approach would mean that
+``__init_class__`` implementations would be unable to call any methods that
+relied on the ``__class__`` reference (or used the zero-argument form of
+``super()``), and could not make use of those features themselves.
+
+
+References
+==========
+
+.. _published code:
+   http://mail.python.org/pipermail/python-dev/2012-June/119878.html
+
+.. _more than 10 years ago:
+   http://mail.python.org/pipermail/python-dev/2001-November/018651.html
+
+.. _Zope's ExtensionClass:
+   http://docs.zope.org/zope_secrets/extensionclass.html
+
+Copyright
+=========
+
+This document has been placed in the public domain.
+
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   coding: utf-8
+   End:
+
