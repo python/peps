@@ -38,6 +38,8 @@ def sort_peps(peps):
         # over Type value, and vice-versa.
         if pep.status == 'Draft':
             open_.append(pep)
+        elif pep.status == 'Deferred':
+            deferred.append(pep)
         elif pep.type_ == 'Process':
             if pep.status == "Active":
                 meta.append(pep)
@@ -45,8 +47,6 @@ def sort_peps(peps):
                 dead.append(pep)
             else:
                 historical.append(pep)
-        elif pep.status == 'Deferred':
-            deferred.append(pep)
         elif pep.status in ('Rejected', 'Withdrawn',
                             'Incomplete', 'Superseded'):
             dead.append(pep)
