@@ -397,6 +397,9 @@ def make_html(inpath):
     # for PEP 0, copy body to parent directory as well
     if pepnum == '0000':
         shutil.copyfile(outpath, os.path.join(destDir, '..', 'body.html'))
+        # apparently we need the index.yml as well to generate <title> right
+        shutil.copyfile(os.path.join(destDir, 'index.yml'),
+                        os.path.join(destDir, '..', 'index.yml'))
     copy_aux_files(inpath, destDir)
     return outpath
 
