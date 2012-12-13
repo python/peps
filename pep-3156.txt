@@ -319,6 +319,22 @@ implementation should run only one callback at a time, so callbacks
 can assume automatic mutual exclusion with other callbacks scheduled
 in the same event loop.
 
+Exceptions
+----------
+
+There are two categories of exceptions in Python: those that derive
+from the ``Exception`` class and those that derive from
+``BaseException``.  Exceptions deriving from ``Exception`` will
+generally be caught and handled appropriately; for example, they will
+be passed through by Futures, and they will be logged and ignored when
+they occur in a callback.
+
+However, exceptions deriving only from ``BaseException`` are never
+caught, and will usually cause the program to terminate with a
+traceback.  (Examples of this category include ``KeyboardInterrupt``
+and ``SystemExit``; it is usually unwise to treat these the same as
+most other exceptions.)
+
 The DelayedCall Class
 ---------------------
 
@@ -381,7 +397,8 @@ indicating the differences with PEP 3148:
   is never called immediately, and always in the context of the
   caller.  (Typically, a context is a thread.)  You can think of this
   as calling the callback through ``call_soon_threadsafe()``.  Note
-  that the callback (unlike all other callbacks defined in this PEP)
+  that the callback (unlike all other callbacks defined in this PEP,
+  and ignoring the convention from the section "Callback Style" below)
   is always called with a single argument, the Future object.
 
 The internal methods defined in PEP 3148 are not supported.
@@ -396,12 +413,143 @@ Scheduler" below.
 Transports
 ----------
 
-TBD.
+A transport is an abstraction on top of a socket or something similar
+(for example, a UNIX pipe or an SSL connection).  Transports are
+strongly influenced by Twisted and PEP 3153.  Users rarely implement
+or instantiate transports -- rather, event loops offer utility methods
+to set up transports.
+
+Transports work in conjunction with protocols.  Protocols are
+typically written without knowing or caring about the exact type of
+transport used, and transports can be used with a wide variety of
+protocols.  For example, an HTTP client protocol implementation may be
+used with either a plain socket transport or an SSL transport.  The
+plain socket transport can be used with many different protocols
+besides HTTP (e.g. SMTP, IMAP, POP, FTP, IRC, SPDY).
+
+Most connections have an asymmetric nature: the client and server
+usually have very different roles and behaviors.  Hence, the interface
+between transport and protocol is also asymmetric.  From the
+protocol's point of view, *writing* data is done by calling the
+``write()`` method on the transport object; this buffers the data and
+returns immediately.  However, the transport takes a more active role
+in *reading* data: whenever some data is read from the socket (or
+other data source), the transport calls the protocol's
+``data_received()`` method.
+
+Transports have the following public methods:
+
+- ``write(data)``.  Write some bytes.  The argument must be a bytes
+  object.  Returns ``None``.  The transport is free to buffer the
+  bytes, but it must eventually cause the bytes to be transferred to
+  the entity at the other end, and it must maintain stream behavior.
+  That is, ``t.write(b'abc'); t.write(b'def')`` is equivalent to
+  ``t.write(b'abcdef')``, as well as to::
+
+    t.write(b'a')
+    t.write(b'b')
+    t.write(b'c')
+    t.write(b'd')
+    t.write(b'e')
+    t.write(b'f')
+
+  (TBD: What about datagram transports?)
+
+- ``writelines(iterable)``.  Equivalent to::
+
+    for data in iterable:
+      self.write(data)
+
+- ``write_eof()``.  Close the writing end of the connection.
+  Subsequent calls to ``write()`` are not allowed.  Once all buffered
+  data is transferred, the transport signals to the other end that no
+  more data will be received.  Some protocols don't support this
+  operation; in that case, calling ``write_eof()`` will raise an
+  exception.  (Note: This used to be called ``half_close()``, but
+  unless you already know what it is for, that name doesn't indicate
+  *which* end is closed.)
+
+- ``can_write_eof()``.  Return ``True`` if the protocol supports
+  ``write_eof()``, ``False`` if it does not.  (This method is needed
+  because some protocols need to change their behavior when
+  ``write_eof()`` is unavailable.  For example, in HTTP, to send data
+  whose size is not known ahead of time, the end of the data is
+  typically indicated using ``write_eof()``; however, SSL does not
+  support this, and an HTTP protocol implementation would have to use
+  the "chunked" transfer encoding in this case.  But if the data size
+  is known ahead of time, the best approach in both cases is to use
+  the Content-Length header.)
+
+- ``pause()``.  Suspend delivery of data to the protocol until a
+  subsequent ``resume()`` call.  Between ``pause()`` and ``resume()``,
+  the protocol's ``data_received()`` method will not be called.  This
+  has no effect on ``write()``.
+
+- ``resume()``.  Restart delivery of data to the protocol via
+  ``data_received()``.
+
+- ``close()``.  Sever the connection with the entity at the other end.
+  Any data buffered by ``write()`` will (eventually) be transferred
+  before the connection is actually closed.  The protocol's
+  ``data_received()`` method will not be called again.  Once all
+  buffered data has been flushed, the protocol's ``connection_lost()``
+  method will be called with ``None`` as the argument.  Note that
+  this method does not wait for all that to happen.
+
+- ``abort()``.  Immediately sever the connection.  Any data still
+  buffered by the transport is thrown away.  Soon, the protocol's
+  ``connection_lost()`` method will be called with ``None`` as
+  argument.  (TBD: Distinguish in the ``connection_lost()`` argument
+  between ``close()``, ``abort()`` or a close initated by the other
+  end?  Or add a transport method to inquire about this?  Glyph's
+  proposal was to pass different exceptions for this purpose.)
+
+TBD: Provide flow control the other way -- the transport may need to
+suspend the protocol if the amount of data buffered becomes a burden.
+One option: let the transport call ``protocol.pause()`` and
+``protocol.resume()`` if they exist; if they don't exist, the protocol
+doesn't support flow control.
 
 Protocols
 ---------
 
-TBD.
+Protocols are always used in conjunction with transports.  While a few
+common protocols are provided (e.g. decent though not necessary
+excellent HTTP client and server implementations), most protocols will
+be implemented by user code or third-party libraries.
+
+A protocol must implement the following methods, which will be called
+by the transport.  Consider these callbacks that are always called by
+the event loop in the right context.  (See the "Context" section
+above.)
+
+- ``connection_made(transport)``.  Indicates that the transport is
+  ready and connected to the entity at the other end.  The protocol
+  should probably save the transport reference as an instance variable
+  (so it can call its ``write()`` and other methods later), and may
+  write an initial greeting or request at this point.
+
+- ``data_received(data)``.  The transport has read some bytes from the
+  connection.  The argument is always a non-empty bytes object.  There
+  are no guarantees about the minimum or maximum size of the data
+  passed along this way.  ``p.data_received(b'abcdef')`` should be
+  treated exactly equivalent to::
+
+    p.data_received(b'abc')
+    p.data_received(b'def')
+
+  (TBD: What about datagram transports?)
+
+- ``connection_lost(exc)``.  The transport has been closed or aborted,
+  has detected that the other end has closed the connection cleanly,
+  or has encountered an unexpected error.  In the first three cases
+  the argument is ``None``; for an unexpected error, the argument is
+  the exception that caused the transport to give up.  (TBD: Do we
+  need to distinguish between the first three cases?)
+
+TBD: How do we detect a half-close (``write_eof()`` in our parlance)
+initiated by the other end?  Does this call connection_lost()?  Is the
+protocol then allowed to write more?  (I think it should be!)
 
 Coroutines and the Scheduler
 ----------------------------
