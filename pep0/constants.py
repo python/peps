@@ -15,14 +15,15 @@ Created: 13-Jul-2000
 """
 
 intro = u"""
-    The PEP contains the index of all Python Enhancement Proposals,
-    known as PEPs.  PEP numbers are assigned by the PEP Editor, and
-    once assigned are never changed.  The Mercurial history[1] of
+    This PEP contains the index of all Python Enhancement Proposals,
+    known as PEPs.  PEP numbers are assigned by the PEP editors, and
+    once assigned are never changed[1].  The Mercurial history[2] of
     the PEP texts represent their historical record.
 """
 
 references = u"""
-    [1] View PEP history online
+    [1] PEP 1: PEP Purpose and Guidelines
+    [2] View PEP history online
         http://hg.python.org/peps/
 """
 
