@@ -1,0 +1,395 @@
+PEP: 432
+Title: Simplifying the CPython startup sequence
+Version: $Revision$
+Last-Modified: $Date$
+Author: Nick Coghlan <ncoghlan@gmail.com>
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 28-Dec-2012
+
+
+Abstract
+========
+
+This PEP proposes a mechanism for simplifying the startup sequence for
+CPython, making it easier to modify the initialisation behaviour of the
+reference interpreter executable, as well as making it easier to control
+CPython's startup behaviour when creating an alternate executable or
+embedding it as a Python execution engine inside a larger application.
+
+
+Proposal Summary
+================
+
+This PEP proposes that CPython move to an explicit 2-phase initialisation
+process, where a preliminary interpreter is put in place with limited OS
+interaction capabilities early in the startup sequence. This essential core
+remains in place while all of the configuration settings are determined,
+until a final configuration call takes those settings and finishes
+bootstrapping the interpreter immediately before executing the main module.
+
+As a concrete use case to help guide any design changes, and to solve a known
+problem where the appropriate defaults for system utilities differ from those
+for running user scripts, this PEP also proposes the creation and
+distribution of a separate system Python (``spython``) executable which, by
+default, ignores user site directories and environment variables, and does
+not implicitly set ``sys.path[0]`` based on the current directory or the
+script being executed.
+
+
+Background
+==========
+
+Over time, CPython's initialisation sequence has become progressively more
+complicated, offering more options, as well as performing more complex tasks
+(such as configuring the Unicode settings for OS interfaces in Python 3 as
+well as bootstrapping a pure Python implementation of the import system).
+
+Much of this complexity is accessible only through the ``Py_Main`` and
+``Py_Initialize`` APIs, offering embedding applications little opportunity
+for customisation. This creeping complexity also makes life difficult for
+maintainers, as much of the configuration needs to take place prior to the
+``Py_Initialize`` call, meaning much of the Python C API cannot be used
+safely.
+
+A number of proposals are on the table for even *more* sophisticated
+startup behaviour, such as better control over ``sys.path`` initialisation
+(easily adding additional directories on the command line in a cross-platform
+fashion, as well as controlling the configuration of ``sys.path[0]``), easier
+configuration of utilities like coverage tracing when launching Python
+subprocesses, and easier control of the encoding used for the standard IO
+streams when embedding CPython in a larger application.
+
+Rather than attempting to bolt such behaviour onto an already complicated
+system, this PEP proposes to instead simplify the status quo *first*, with
+the aim of making these further feature requests easier to implement.
+
+
+Key Concerns
+============
+
+There are a couple of key concerns that any change to the startup sequence
+needs to take into account.
+
+
+Maintainability
+---------------
+
+The current CPython startup sequence is difficult to understand, and even
+more difficult to modify. It is not clear what state the interpreter is in
+while much of the initialisation code executes, leading to behaviour such
+as lists, dictionaries and Unicode values being created prior to the call
+to ``Py_Initialize`` when the ``-X`` or ``-W`` options are used [1_].
+
+By moving to a 2-phase startup sequence, developers should only need to
+understand which features are not available in the core bootstrapping state,
+as the vast majority of the configuration process will now take place in
+that state.
+
+By basing the new design on a combination of C structures and Python
+dictionaries, it should also be easier to modify the system in the
+future to add new configuration options.
+
+
+Performance
+-----------
+
+CPython is used heavily to run short scripts where the runtime is dominated
+by the interpreter initialisation time. Any changes to the startup sequence
+should minimise their impact on the startup overhead. (Given that the
+overhead is dominated by IO operations, this is not currently expected to
+cause any significant problems).
+
+
+The Status Quo
+==============
+
+Much of the configuration of CPython is currently handled through C level
+global variables::
+
+    Py_IgnoreEnvironmentFlag
+    Py_HashRandomizationFlag
+    _Py_HashSecretInitialized
+    _Py_HashSecret
+    Py_BytesWarningFlag
+    Py_DebugFlag
+    Py_InspectFlag
+    Py_InteractiveFlag
+    Py_OptimizeFlag
+    Py_DontWriteBytecodeFlag
+    Py_NoUserSiteDirectory
+    Py_NoSiteFlag
+    Py_UnbufferedStdioFlag
+    Py_VerboseFlag
+
+For the above variables, the conversion of command line options and
+environment variables to C global variables is handled by ``Py_Main``,
+so each embedding application must set those appropriately in order to
+change them from their defaults.
+
+Some configuration can only be provided as OS level environment variables::
+
+    PYTHONHASHSEED
+    PYTHONSTARTUP
+    PYTHONPATH
+    PYTHONHOME
+    PYTHONCASEOK
+    PYTHONIOENCODING
+
+Additional configuration is handled via separate API calls::
+
+    Py_SetProgramName() (call before Py_Initialize())
+    Py_SetPath() (optional, call before Py_Initialize())
+    Py_SetPythonHome() (optional, call before Py_Initialize()???)
+    Py_SetArgv[Ex]() (call after Py_Initialize())
+
+The ``Py_InitializeEx()`` API also accepts a boolean flag to indicate
+whether or not CPython's signal handlers should be installed.
+
+Finally, some interactive behaviour (such as printing the introductory
+banner) is triggered only when standard input is reported as a terminal
+connection by the operating system.
+
+Also see more detailed notes at [1_]
+
+
+Proposal
+========
+
+(Note: details here are still very much in flux, but preliminary feedback
+is appreciated anyway)
+
+Core Interpreter Initialisation
+-------------------------------
+
+The only configuration that currently absolutely needs to be in place
+before even the interpreter core can be initialised is the seed for the
+randomised hash algorithm. However, there are a couple of settings needed
+there: whether or not hash randomisation is enabled at all, and if it's
+enabled, whether or not to use a specific seed value.
+
+The proposed API for this step in the startup sequence is::
+
+    void Py_BeginInitialization(Py_CoreConfig *config);
+
+Like Py_Initialize, this part of the new API treats initialisation failures
+as fatal errors. While that's still not particularly embedding friendly,
+the operations in this step *really* shouldn't be failing, and changing them
+to return error codes instead of aborting would be an even larger task than
+the one already being proposed.
+
+The new Py_CoreConfig struct holds the settings required for preliminary
+configuration::
+
+    typedef struct {
+        int use_hash_seed;
+        size_t hash_seed;
+    } Py_CoreConfig;
+
+To "disable" hash randomisation, set "use_hash_seed" and pass a hash seed of
+zero. (This seems reasonable to me, but there may be security implications
+I'm overlooking. If so, adding a separate flag or switching to a 3-valued
+"no randomisation", "fixed hash seed" and "randomised hash" option is easy)
+
+The core configuration settings pointer may be NULL, in which case the
+default behaviour of randomised hashes with a random seed will be used.
+
+A new query API will allow code to determine if the interpreter is in the
+bootstrapping state between core initialisation and the completion of the
+initialisation process::
+
+    int Py_IsInitializing();
+
+While in the initialising state, the interpreter should be fully functional
+except that:
+
+* compilation is not allowed (as the parser is not yet configured properly)
+* The following attributes in the ``sys`` module are all either missing or
+  ``None``:
+  * ``sys.path``
+  * ``sys.argv``
+  * ``sys.executable``
+  * ``sys.base_exec_prefix``
+  * ``sys.base_prefix``
+  * ``sys.exec_prefix``
+  * ``sys.prefix``
+  * ``sys.warnoptions``
+  * ``sys.flags``
+  * ``sys.dont_write_bytecode``
+  * ``sys.stdin``
+  * ``sys.stdout``
+* The filesystem encoding is not yet defined
+* The IO encoding is not yet defined
+* CPython signal handlers are not yet installed
+* only builtin and frozen modules may be imported (due to above limitations)
+* ``sys.stderr`` is set to a temporary IO object using unbuffered binary
+  mode
+* The ``warnings`` module is not yet initialised
+* The ``__main__`` module does not yet exist
+
+<TBD: identify any other notable missing functionality>
+
+The main things made available by this step will be the core Python
+datatypes, in particular dictionaries, lists and strings. This allows them
+to be used safely for all of the remaining configuration steps (unlike the
+status quo).
+
+In addition, the current thread will possess a valid Python thread state,
+allow any further configuration data to be stored.
+
+Any call to Py_InitStart() must have a matching call to Py_Finalize(). It
+is acceptable to skip calling Py_InitFinish() in between (e.g. if
+attempting to read the configuration settings fails)
+
+
+Determining the remaining configuration settings
+------------------------------------------------
+
+The next step in the initialisation sequence is to determine the full
+settings needed to complete the process. No changes are made to the
+interpreter state at this point. The core API for this step is::
+
+    int Py_ReadConfiguration(PyObject *config);
+
+The config argument should be a pointer to a Python dictionary. For any
+supported configuration setting already in the dictionary, CPython will
+sanity check the supplied value, but otherwise accept it as correct.
+
+Unlike Py_Initialize and Py_BeginInitialization, this call will raise an
+exception and report an error return rather than exhibiting fatal errors if
+a problem is found with the config data.
+
+Any supported configuration setting which is not already set will be
+populated appropriately. The default configuration can be overridden
+entirely by setting the value *before* calling Py_ReadConfiguration. The
+provided value will then also be used in calculating any settings derived
+from that value.
+
+Alternatively, settings may be overridden *after* the Py_ReadConfiguration
+call (this can be useful if an embedding application wants to adjust
+a setting rather than replace it completely, such as removing
+``sys.path[0]``).
+
+
+Supported configuration settings
+--------------------------------
+
+At least the following configuration settings will be supported::
+
+    raw_argv (list of str, default = retrieved from OS APIs)
+
+    argv (list of str, default = derived from raw_argv)
+    warnoptions (list of str, default = derived from raw_argv and environment)
+    xoptions (list of str, default = derived from raw_argv and environment)
+
+    program_name (str, default = retrieved from OS APIs)
+    executable (str, default = derived from program_name)
+    home (str, default = complicated!)
+    prefix (str, default = complicated!)
+    exec_prefix (str, default = complicated!)
+    base_prefix (str, default = complicated!)
+    base_exec_prefix (str, default = complicated!)
+    path (list of str, default = complicated!)
+
+    io_encoding (str, default = derived from environment or OS APIs)
+    fs_encoding (str, default = derived from OS APIs)
+
+    skip_signal_handlers (boolean, default = derived from environment or False)
+    ignore_environment (boolean, default = derived from environment or False)
+    dont_write_bytecode (boolean, default = derived from environment or False)
+    no_site (boolean, default = derived from environment or False)
+    no_user_site (boolean, default = derived from environment or False)
+    <TBD: at least more from sys.flags need to go here>
+
+
+
+Completing the interpreter initialisation
+-----------------------------------------
+
+The final step in the process is to actually put the configuration settings
+into effect and finish bootstrapping the interpreter up to full operation::
+
+    int Py_EndInitialization(PyObject *config);
+
+Like Py_ReadConfiguration, this call will raise an exception and report an
+error return rather than exhibiting fatal errors if a problem is found with
+the config data.
+
+After a successful call, Py_IsInitializing() will be false, while
+Py_IsInitialized() will become true. The caveats described above for the
+interpreter during the initialisation phase will no longer hold.
+
+
+Stable ABI
+----------
+
+All of the APIs proposed in this PEP are excluded from the stable ABI, as
+embedding a Python interpreter involves a much higher degree of coupling
+than merely writing an extension.
+
+
+Backwards Compatibility
+-----------------------
+
+Backwards compatibility will be preserved primarily by ensuring that
+Py_ReadConfiguration() interrogates all the previously defined configuration
+settings stored in global variables and environment variables.
+
+One acknowledged incompatiblity is that some environment variables which
+are currently read lazily may instead be read once during interpreter
+initialisation. As the PEP matures, these will be discussed in more detail
+on a case by case basis.
+
+
+A System Python Executable
+==========================
+
+When executing system utilities with administrative access to a system, many
+of the default behaviours of CPython are undesirable, as they may allow
+untrusted code to execute with elevated privileges. The most problematic
+aspects are the fact that user site directories are enabled,
+environment variables are trusted and that the directory containing the
+executed file is placed at the beginning of the import path.
+
+Currently, providing a separate executable with different default behaviour
+would be prohibitively hard to maintain. One of the goals of this PEP is to
+make it possible to replace much of the hard to maintain bootstrapping code
+with more normal CPython code, as well as making it easier for a separate
+application to make use of key components of ``Py_Main``. Including this
+change in the PEP is designed to help avoid acceptance of a design that
+sounds good in theory but proves to be problematic in practice.
+
+One final aspect not addressed by the general embedding changes above is
+the current inaccessibility of the core logic for deciding between the
+different execution modes supported by CPython::
+
+    * script execution
+    * directory/zipfile execution
+    * command execution ("-c" switch)
+    * module or package execution ("-m" switch)
+    * execution from stdin (non-interactive)
+    * interactive stdin
+
+<TBD: concrete proposal for better exposing the __main__ execution step>
+
+Implementation
+==============
+
+None as yet. Once I have a reasonably solid plan of attack, I intend to work
+on a reference implementation as a feature branch in my BitBucket sandbox [2_]
+
+
+References
+==========
+
+.. [1] CPython interpreter initialization notes
+   (http://wiki.python.org/moin/CPythonInterpreterInitialization)
+
+.. [2] BitBucket Sandbox
+   (https://bitbucket.org/ncoghlan/cpython_sandbox)
+
+
+Copyright
+===========
+This document has been placed in the public domain.
