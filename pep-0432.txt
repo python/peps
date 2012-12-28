@@ -20,6 +20,10 @@ reference interpreter executable, as well as making it easier to control
 CPython's startup behaviour when creating an alternate executable or
 embedding it as a Python execution engine inside a larger application.
 
+Note: TBC = To Be Confirmed, TBD = To Be Determined. The appropriate
+resolution for most of these should become clearer as the reference
+implementation is developed.
+
 
 Proposal Summary
 ================
@@ -38,6 +42,18 @@ distribution of a separate system Python (``spython``) executable which, by
 default, ignores user site directories and environment variables, and does
 not implicitly set ``sys.path[0]`` based on the current directory or the
 script being executed.
+
+To keep the implementation complexity under control, this PEP does *not*
+propose wholesale changes to the way the interpreter state is accessed at
+runtime, nor does it propose changes to the way subinterpreters are
+created after the main interpreter has already been initialised. Changing
+the order in which the existing initialisation steps occur to make the
+startup sequence easier to maintain is already a substantial change, and
+attempting to make those other changes at the same time will make the
+change significantly more invasive and much harder to review. However, such
+proposals may be suitable topics for follow-on PEPs or patches - one key
+benefit of this PEP is decreasing the coupling between the internal storage
+model and the configuration interface.
 
 
 Background
@@ -99,21 +115,290 @@ Performance
 
 CPython is used heavily to run short scripts where the runtime is dominated
 by the interpreter initialisation time. Any changes to the startup sequence
-should minimise their impact on the startup overhead. (Given that the
-overhead is dominated by IO operations, this is not currently expected to
-cause any significant problems).
+should minimise their impact on the startup overhead.
+
+Experience with the importlib migration suggests that the startup time is
+dominated by IO operations. However, to monitor the impact of any changes,
+a simple benchmark can be used to check how long it takes to start and then
+tear down the interpreter::
+
+   python3 -m timeit -s "from subprocess import call" "call(['./python', '-c', 'pass'])"
+
+If this simple check suggests that any changes may pose a performance
+problem, then a more sophisticated microbenchmark will be developed to assist
+in investigation.
+
+
+Required Configuration Settings
+===============================
+
+A comprehensive configuration scheme requires that an embedding application
+be able to control the following aspects of the final interpreter state:
+
+* Whether or not to use randomised hashes (and if used, potentially specify
+  a specific random seed)
+* The "Where is Python located?" elements in the ``sys`` module:
+  * ``sys.executable``
+  * ``sys.base_exec_prefix``
+  * ``sys.base_prefix``
+  * ``sys.exec_prefix``
+  * ``sys.prefix``
+* The path searched for imports from the filesystem (and other path hooks):
+  * ``sys.path``
+* The command line arguments seen by the interpeter:
+  * ``sys.argv``
+* The filesystem encoding used by:
+  * ``sys.getfsencoding``
+  * ``os.fsencode``
+  * ``os.fsdecode``
+* The IO encoding used by:
+  * ``sys.stdin``
+  * ``sys.stdout``
+  * ``sys.stderr``
+* The initial warning system state:
+  * ``sys.warnoptions``
+* Arbitrary extended options (e.g. to automatically enable ``faulthandler``):
+  * ``sys._xoptions``
+* Whether or not to implicitly cache bytecode files:
+  * ``sys.dont_write_bytecode``
+* Whether or not to enforce correct case in filenames on case-insensitive
+  platforms
+  * ``os.environ["PYTHONCASEOK"]``
+* The other settings exposed to Python code in ``sys.flags``:
+
+  * ``debug`` (Enable debugging output in the pgen parser)
+  * ``inspect`` (Enter interactive interpreter after __main__ terminates)
+  * ``interactive`` (Treat stdin as a tty)
+  * ``optimize`` (__debug__ status, write .pyc or .pyo, strip doc strings)
+  * ``no_user_site`` (don't add the user site directory to sys.path)
+  * ``no_site`` (don't implicitly import site during startup)
+  * ``ignore_environment`` (whether environment vars are used during config)
+  * ``verbose`` (enable all sorts of random output)
+  * ``bytes_warning``
+  * ``quiet`` (disable banner output even if verbose is also enabled or
+    stdin is a tty and the interpreter is launched in interactive mode)
+
+* Whether or not CPython's signal handlers should be installed
+* What code (if any) should be executed as ``__main__``:
+
+  * Nothing (just create an empty module)
+  * A filesystem path referring to a Python script (source or bytecode)
+  * A filesystem path referring to a valid ``sys.path`` entry (typically
+    a directory or zipfile)
+  * A given string (equivalent to the "-c" option)
+  * A module or package (equivalent to the "-m" option)
+  * Standard input as a script (i.e. a non-interactive stream)
+  * Standard input as an interactive interpreter session
+
+<TBD: Did I miss anything?>
+
+Note that this just covers settings that are currently configurable in some
+manner when using the main CPython executable. While this PEP aims to make
+adding additional configuration settings easier in the future, it
+deliberately avoids any new settings of its own.
 
 
 The Status Quo
 ==============
 
+The current mechanisms for configuring the interpreter have accumulated in
+a fairly ad hoc fashion over the past 20+ years, leading to a rather
+inconsistent interface with varying levels of documentation.
+
+(Note: some of the info below could probably be cleaned up and added to the
+C API documentation - it's all CPython specific, so it doesn't belong in
+the language reference)
+
+
+Ignoring Environment Variables
+------------------------------
+
+The ``-E`` command line option allows all environment variables to be
+ignored when initialising the Python interpreter. An embedding application
+can enable this behaviour by setting ``Py_IgnoreEnvironmentFlag`` before
+calling ``Py_Initialize()``.
+
+In the CPython source code, the ``Py_GETENV`` macro implicitly checks this
+flag, and always produces ``NULL`` if it is set.
+
+<TBD: Does -E also ignore Windows registry keys? >
+
+
+Randomised Hashing
+------------------
+
+The randomised hashing is controlled via the ``-R`` command line option (in
+releases prior to 3.3), as well as the ``PYTHONHASHSEED`` environment
+variable.
+
+In Python 3.3, only the environment variable remains relevant. It can be
+used to disable randomised hashing (by using a seed value of 0) or else
+to force a specific hash value (e.g. for repeatability of testing, or
+to share hash values between processes)
+
+However, embedding applications must use the ``Py_HashRandomizationFlag``
+to explicitly request hash randomisation (CPython sets it in ``Py_Main()``
+rather than in ``Py_Initialize()``).
+
+The new configuration API should make it straightforward for an
+embedding application to reuse the ``PYTHONHASHSEED`` processing with
+a text based configuration setting provided by other means.
+
+
+Locating Python and the standard library
+----------------------------------------
+
+The location of the Python binary and the standard library is influenced
+by several elements. The algorithm used to perform the calculation is
+not documented anywhere other than in the source code [3_,4_]. Even that
+description is incomplete, as it failed to be updated for the virtual
+environment support added in Python 3.3 (detailed in PEP 420).
+
+These calculations are affected by the following function calls (made
+prior to calling ``Py_Initialize()``) and environment variables:
+
+* ``Py_SetProgramName()``
+* ``Py_SetPythonHome()``
+* ``PYTHONHOME``
+
+The filesystem is also inspected for ``pyvenv.cfg`` files (see PEP 420) or,
+failing that, a ``lib/os.py`` (Windows) or ``lib/python$VERSION/os.py``
+file.
+
+The build time settings for PREFIX and EXEC_PREFIX are also relevant,
+as are some registry settings on Windows. The hardcoded fallbacks are
+based on the layout of the CPython source tree and build output when
+working in a source checkout.
+
+
+Configuring ``sys.path``
+------------------------
+
+An embedding application may call ``Py_SetPath()`` prior to
+``Py_Initialize()`` to completely override the calculation of
+``sys.path``. It is not straightforward to only allow *some* of the
+calculations, as modifying ``sys.path`` after initialisation is
+already complete means those modifications will not be in effect
+when standard library modules are imported during the startup sequence.
+
+If ``Py_SetPath()`` is not used prior to the first call to ``Py_GetPath()``
+(implicit in ``Py_Initialize()``), then it builds on the location data
+calculations above to calculate suitable path entries, along with
+the ``PYTHONPATH`` environment variable.
+
+<TBD: On Windows, there's also a bunch of stuff to do with the registry>
+
+The ``site`` module, which is implicitly imported at startup (unless
+disabled via the ``-S`` option) adds additional paths to this initial
+set of paths, as described in its documentation [5_].
+
+The ``-s`` command line option can be used to exclude the user site
+directory from the list of directories added. Embedding applications
+can control this by setting the ``Py_NoUserSiteDirectory`` global variable.
+
+The following commands can be used to check the default path configurations
+for a given Python executable on a given system (after passing the entries
+through ``os.path.abspath``):
+
+* ``./python -m site`` - standard configuration
+* ``./python -s -m site`` - user site directory disabled
+* ``./python -S -m site`` - all site path modifications disabled
+
+(Note: on Python versions prior to 3.3, the last command won't have the
+desired effect, as the explicit import of the site module will still make
+the implicit path modifications that should have been disabled by the ``-S``
+option. The command
+``./python -S -c "import sys, pprint; pprint.pprint(sys.path)"`` will
+display the desired information. That command can also be used to see
+the raw path entries without the ``os.path.abspath`` calls)
+
+The calculation of ``sys.path[0]`` is comparatively straightforward:
+
+* For an ordinary script (Python source or compiled bytecode),
+  ``sys.path[0]`` will be the directory containing the script.
+* For a valid ``sys.path`` entry (typically a zipfile or directory),
+  ``sys.path[0]`` will be that path
+* For an interactive session, running from stdin or when using the ``-c`` or
+  ``-m`` switches, ``sys.path[0]`` will be the empty string, which the import
+  system interprets as allowing imports from the current directory
+
+
+Configuring ``sys.argv``
+------------------------
+
+Unlike most other settings discussed in this PEP, ``sys.argv`` is not
+set implicitly by ``Py_Initialize()``. Instead, it must be set via an
+explicitly call to ``Py_SetArgv()``.
+
+CPython calls this in ``Py_Main()`` after calling ``Py_Initialize()``. The
+calculation of ``sys.argv[1:]`` is straightforward: they're the command line
+arguments passed after the script name or the argument to the ``-c`` or
+``-m`` options.
+
+The calculation of ``sys.argv[0]`` is a little more complicated:
+
+* For an ordinary script (source or bytecode), it will be the script name
+* For a ``sys.path`` entry (typically a zipfile or directory) it will
+  initially be the zipfile or directory name, but will later be changed by
+  the ``runpy`` module to the full path to the imported ``__main__`` module.
+* For a module specified with the ``-m`` switch, it will initially be the
+  string ``"-m"``, but will later be changed by the ``runpy`` module to the
+  full path to the executed module.
+* For a package specified with the ``-m`` switch, it will initially be the
+  string ``"-m"``, but will later be changed by the ``runpy`` module to the
+  full path to the executed ``__main__`` submodule of the package.
+* For a command executed with ``-c``, it will be the string ``"-c"``
+* For explicitly requested input from stdin, it will be the string ``"-"``
+* Otherwise, it will be the empty string
+
+Embedding applications must call Py_SetArgv themselves. The CPython logic
+for doing so is part of ``Py_Main()`` and is not exposed separately.
+However, the ``runpy`` module does provide roughly equivalent logic in
+``runpy.run_module`` and ``runpy.run_path``.
+
+
+
+Other configuration settings
+----------------------------
+
+TBD: Cover the initialisation of the following in more detail:
+
+* The initial warning system state:
+  * ``sys.warnoptions``
+* Arbitrary extended options (e.g. to automatically enable ``faulthandler``):
+  * ``sys._xoptions``
+* The filesystem encoding used by:
+  * ``sys.getfsencoding``
+  * ``os.fsencode``
+  * ``os.fsdecode``
+* The IO encoding used by:
+  * ``sys.stdin``
+  * ``sys.stdout``
+  * ``sys.stderr``
+* Whether or not to implicitly cache bytecode files:
+  * ``sys.dont_write_bytecode``
+* Whether or not to enforce correct case in filenames on case-insensitive
+  platforms
+  * ``os.environ["PYTHONCASEOK"]``
+* The other settings exposed to Python code in ``sys.flags``:
+
+  * ``debug`` (Enable debugging output in the pgen parser)
+  * ``inspect`` (Enter interactive interpreter after __main__ terminates)
+  * ``interactive`` (Treat stdin as a tty)
+  * ``optimize`` (__debug__ status, write .pyc or .pyo, strip doc strings)
+  * ``no_user_site`` (don't add the user site directory to sys.path)
+  * ``no_site`` (don't implicitly import site during startup)
+  * ``ignore_environment`` (whether environment vars are used during config)
+  * ``verbose`` (enable all sorts of random output)
+  * ``bytes_warning`` (This may be obsolete in Py3k...)
+  * ``quiet`` (disable banner output even if verbose is also enabled or
+    stdin is a tty and the interpreter is launched in interactive mode)
+
+* Whether or not CPython's signal handlers should be installed
+
 Much of the configuration of CPython is currently handled through C level
 global variables::
 
-    Py_IgnoreEnvironmentFlag
-    Py_HashRandomizationFlag
-    _Py_HashSecretInitialized
-    _Py_HashSecret
     Py_BytesWarningFlag
     Py_DebugFlag
     Py_InspectFlag
@@ -132,19 +417,9 @@ change them from their defaults.
 
 Some configuration can only be provided as OS level environment variables::
 
-    PYTHONHASHSEED
     PYTHONSTARTUP
-    PYTHONPATH
-    PYTHONHOME
     PYTHONCASEOK
     PYTHONIOENCODING
-
-Additional configuration is handled via separate API calls::
-
-    Py_SetProgramName() (call before Py_Initialize())
-    Py_SetPath() (optional, call before Py_Initialize())
-    Py_SetPythonHome() (optional, call before Py_Initialize()???)
-    Py_SetArgv[Ex]() (call after Py_Initialize())
 
 The ``Py_InitializeEx()`` API also accepts a boolean flag to indicate
 whether or not CPython's signal handlers should be installed.
@@ -153,7 +428,7 @@ Finally, some interactive behaviour (such as printing the introductory
 banner) is triggered only when standard input is reported as a terminal
 connection by the operating system.
 
-Also see more detailed notes at [1_]
+Also see detailed sequence of operations notes at [1_]
 
 
 Proposal
@@ -162,14 +437,22 @@ Proposal
 (Note: details here are still very much in flux, but preliminary feedback
 is appreciated anyway)
 
+The main theme of this proposal is to create the interpreter state for
+the main interpreter *much* earlier in the startup process. This will allow
+most of the CPython API to be used during the remainder of the initialisation
+process, potentially simplifying a number of operations that currently need
+to rely on basic C functionality rather than being able to use the richer
+data structures provided by the CPython C API.
+
+
 Core Interpreter Initialisation
 -------------------------------
 
 The only configuration that currently absolutely needs to be in place
-before even the interpreter core can be initialised is the seed for the
-randomised hash algorithm. However, there are a couple of settings needed
-there: whether or not hash randomisation is enabled at all, and if it's
-enabled, whether or not to use a specific seed value.
+before even the interpreter core can be initialised is a flag indicating
+whether or not to use a specific seed value for the randomised hashes, and
+if so, the specific value for the seed (a seed value of zero disables
+randomised hashing).
 
 The proposed API for this step in the startup sequence is::
 
@@ -186,27 +469,36 @@ configuration::
 
     typedef struct {
         int use_hash_seed;
-        size_t hash_seed;
+        unsigned long hash_seed;
     } Py_CoreConfig;
 
-To "disable" hash randomisation, set "use_hash_seed" and pass a hash seed of
-zero. (This seems reasonable to me, but there may be security implications
-I'm overlooking. If so, adding a separate flag or switching to a 3-valued
-"no randomisation", "fixed hash seed" and "randomised hash" option is easy)
+To disable hash randomisation, set "use_hash_seed" and pass a hash seed of
+zero. (This is the same approach already used when interpreting the
+``PYTHONHASHSEED`` environment variable)
 
 The core configuration settings pointer may be NULL, in which case the
 default behaviour of randomised hashes with a random seed will be used.
 
+The aim is to keep this initial level of configuration as small as possible
+in order to keep the bootstrapping environment consistent across
+different embedding applications. If we can create a valid interpreter state
+without the setting, then the setting should go in the config dict passed
+to ``Py_EndInitialization()`` rather than in the core configuration.
+
 A new query API will allow code to determine if the interpreter is in the
-bootstrapping state between core initialisation and the completion of the
-initialisation process::
+bootstrapping state between the creation of the interpreter state and the
+completion of the bulk of the initialisation process::
 
     int Py_IsInitializing();
+
+Attempting to call ``Py_BeginInitialization()`` again when
+``Py_IsInitializing()`` or ``Py_IsInitialized()`` is true is a fatal error.
 
 While in the initialising state, the interpreter should be fully functional
 except that:
 
-* compilation is not allowed (as the parser is not yet configured properly)
+* compilation is not allowed (as the parser and compiler are not yet
+  configured properly)
 * The following attributes in the ``sys`` module are all either missing or
   ``None``:
   * ``sys.path``
@@ -306,7 +598,6 @@ At least the following configuration settings will be supported::
     <TBD: at least more from sys.flags need to go here>
 
 
-
 Completing the interpreter initialisation
 -----------------------------------------
 
@@ -318,6 +609,10 @@ into effect and finish bootstrapping the interpreter up to full operation::
 Like Py_ReadConfiguration, this call will raise an exception and report an
 error return rather than exhibiting fatal errors if a problem is found with
 the config data.
+
+All configuration settings are required - the configuration dictionary
+should always be passed through ``Py_ReadConfiguration()`` to ensure it
+is fully populated.
 
 After a successful call, Py_IsInitializing() will be false, while
 Py_IsInitialized() will become true. The caveats described above for the
@@ -337,17 +632,34 @@ Backwards Compatibility
 
 Backwards compatibility will be preserved primarily by ensuring that
 Py_ReadConfiguration() interrogates all the previously defined configuration
-settings stored in global variables and environment variables.
+settings stored in global variables and environment variables, and that
+Py_EndInitialization() writes affected settings back to the relevant
+locations.
 
 One acknowledged incompatiblity is that some environment variables which
 are currently read lazily may instead be read once during interpreter
 initialisation. As the PEP matures, these will be discussed in more detail
-on a case by case basis.
+on a case by case basis. The environment variables which are currently
+known to be looked up dynamically are:
 
-The Py_Initialize() style of initialisation will continue to be supported. It
-will use the new API internally, but will continue to exhibit the same
-behaviour as it does today, ensuring that sys.argv is not set until a
-subsequent PySys_SetArgv call.
+* ``PYTHONCASEOK``: writing to ``os.environ['PYTHONCASEOK']`` will no longer
+  dynamically alter the interpreter's handling of filename case differences
+  on import (TBC)
+* ``PYTHONINSPECT``: ``os.environ['PYTHONINSPECT']`` will still be checked
+  after execution of the ``__main__`` module terminates
+
+The ``Py_Initialize()`` style of initialisation will continue to be
+supported. It will use (at least some elements of) the new API
+internally, but will continue to exhibit the same behaviour as it
+does today, ensuring that ``sys.argv`` is not populated until a subsequent
+``PySys_SetArgv`` call. All APIs that currently support being called
+prior to ``Py_Initialize()`` will
+continue to do so, and will also support being called prior to
+``Py_BeginInitialization()``.
+
+To minimise unnecessary code churn, and to ensure the backwards compatibility
+is well tested, the main CPython executable may continue to use some elements
+of the old style initialisation API. (very much TBC)
 
 
 A System Python Executable
@@ -397,6 +709,14 @@ References
 .. [2] BitBucket Sandbox
    (https://bitbucket.org/ncoghlan/cpython_sandbox)
 
+.. [3] \*nix getpath implementation
+   (http://hg.python.org/cpython/file/default/Modules/getpath.c)
+
+.. [4] Windows getpath implementation
+   (http://hg.python.org/cpython/file/default/PC/getpathp.c)
+
+.. [5] Site module documentation
+   (http://docs.python.org/3/library/site.html)
 
 Copyright
 ===========
