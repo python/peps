@@ -8,7 +8,7 @@ Type: Standards Track
 Content-Type: text/x-rst
 Created: 28-Dec-2012
 Python-Version: 3.4
-Post-History: 28-Dec-2012
+Post-History: 28-Dec-2012, 2-Jan-2013
 
 
 Abstract
@@ -40,9 +40,11 @@ In the new design, the interpreter will move through the following
 well-defined phases during the startup sequence:
 
 * Pre-Initialization - no interpreter available
-* Initialization - limited interpreter available
-* Pre-Main - full interpreter available, __main__ related metadata incomplete
-* Main Execution - normal interpreter operation
+* Initialization - interpreter partially available
+* Initialized - full interpreter available, __main__ related metadata
+  incomplete
+* Main Execution - optional state, __main__ related metadata populated,
+  bytecode executing in the __main__ module namespace
 
 As a concrete use case to help guide any design changes, and to solve a known
 problem where the appropriate defaults for system utilities differ from those
@@ -116,7 +118,7 @@ bootstrapping state, as the vast majority of the configuration process
 will now take place in that state.
 
 By basing the new design on a combination of C structures and Python
-dictionaries, it should also be easier to modify the system in the
+data types, it should also be easier to modify the system in the
 future to add new configuration options.
 
 
@@ -492,26 +494,57 @@ In the following, the term "embedding application" also covers the standard
 CPython command line application.
 
 
-Startup Phases
---------------
+Interpreter Initialization Phases
+---------------------------------
 
 Four distinct phases are proposed:
 
-* Pre-Initialization: no interpreter is available. Embedding application
-  determines the settings required to create the core interpreter and
-  moves to the next phase by calling ``Py_BeginInitialization``.
-* Initialization - a limited interpreter is available. Embedding application
-  determines and applies the settings required to complete the initialization
-  process by calling ``Py_ReadConfiguration`` and ``Py_EndInitialization``.
-* Pre-Main - the full interpreter is available, but ``__main__`` related
-  metadata is incomplete.
-* Main Execution - normal interpreter operation
+* Pre-Initialization:
+
+  * no interpreter is available.
+  * ``Py_IsInitializing()`` returns ``0``
+  * ``Py_IsInitialized()`` returns ``0``
+  * ``Py_IsRunningMain()`` returns ``0``
+  * The embedding application determines the settings required to create the
+    main interpreter and moves to the next phase by calling
+    ``Py_BeginInitialization``.
+
+* Initialization:
+
+  * the main interpreter is available, but only partially configured.
+  * ``Py_IsInitializing()`` returns ``1``
+  * ``Py_IsInitialized()`` returns ``0``
+  * ``Py_RunningMain()`` returns ``0``
+  * The embedding application determines and applies the settings
+    required to complete the initialization process by calling
+    ``Py_ReadConfiguration`` and ``Py_EndInitialization``.
+
+* Initialized:
+
+  * the main interpreter is available and fully operational, but
+    ``__main__`` related metadata is incomplete.
+  * ``Py_IsInitializing()`` returns ``0``
+  * ``Py_IsInitialized()`` returns ``1``
+  * ``Py_IsRunningMain()`` returns ``0``
+  * Optionally, the embedding application may identify and begin
+    executing code in the ``__main__`` module namespace by calling
+    ``Py_RunPathAsMain``, ``Py_RunModuleAsMain`` or ``Py_RunStreamAsMain``.
+
+* Main Execution:
+
+  * bytecode is being executed in the ``__main__`` namespace
+  * ``Py_IsInitializing()`` returns ``0``
+  * ``Py_IsInitialized()`` returns ``1``
+  * ``Py_IsRunningMain()`` returns ``1``
+
+As indicated by the phase reporting functions, main module execution is
+an optional subphase of Initialized rather than a completely distinct phase.
 
 All 4 phases will be used by the standard CPython interpreter and the
 proposed System Python interpreter. Other embedding applications may
-choose to skip the step of executing code in the ``__main__`` module.
+choose to skip the step of executing code in the ``__main__`` namespace.
 
-An embedding application may still continue to leave the second phase
+An embedding application may still continue to leave initialization almost
 entirely under CPython's control by using the existing ``Py_Initialize``
 API. Alternatively, if an embedding application wants greater control
 over CPython's initial state, it will be able to use the new, finer
@@ -520,20 +553,18 @@ over the initialization process::
 
     /* Phase 1: Pre-Initialization */
     Py_CoreConfig core_config = Py_CoreConfig_INIT;
-    PyObject *full_config = NULL;
+    Py_Config config = Py_Config_INIT;
     /* Easily control the core configuration */
     core_config.ignore_environment = 1; /* Ignore environment variables */
-    core_config.use_hash_seed = 0; /* Full hash randomisation */
+    core_config.use_hash_seed = 0;      /* Full hash randomisation */
     Py_BeginInitialization(&core_config);
     /* Phase 2: Initialization */
-    full_config = PyDict_New();
-    /* Can preconfigure settings here - they will then be
+    /* Optionally preconfigure some settings here - they will then be
      * used to derive other settings */
-    Py_ReadConfiguration(full_config);
+    Py_ReadConfiguration(&config);
     /* Can completely override derived settings here */
-    Py_EndInitialization(full_config);
-    /* Phase 3: Pre-Main */
-    Py_DECREF(full_config);
+    Py_EndInitialization(&config);
+    /* Phase 3: Initialized */
     /* If an embedding application has no real concept of a main module
      * it can leave the interpreter in this state indefinitely.
      * Otherwise, it can launch __main__ via the Py_Run*AsMain functions.
@@ -553,12 +584,13 @@ must be in place before the core interpreter is created.
 The specific settings needed are a flag indicating whether or not to use a
 specific seed value for the randomised hashes, and if so, the specific value
 for the seed (a seed value of zero disables randomised hashing). In addition,
-the question of whether or not to consider environment variables must be
-addressed early.
+due to the possible use of ``PYTHONHASHSEED`` in configuring the hash
+randomisation, the question of whether or not to consider environment
+variables must also be addressed early.
 
 The proposed API for this step in the startup sequence is::
 
-    void Py_BeginInitialization(Py_CoreConfig *config);
+    void Py_BeginInitialization(const Py_CoreConfig *config);
 
 Like Py_Initialize, this part of the new API treats initialization failures
 as fatal errors. While that's still not particularly embedding friendly,
@@ -566,13 +598,15 @@ the operations in this step *really* shouldn't be failing, and changing them
 to return error codes instead of aborting would be an even larger task than
 the one already being proposed.
 
-The new Py_CoreConfig struct holds the settings required for preliminary
+The new ``Py_CoreConfig`` struct holds the settings required for preliminary
 configuration::
 
+    /* Note: if changing anything in Py_CoreConfig, also update
+     * Py_CoreConfig_INIT */
     typedef struct {
-        int ignore_environment;
-        int use_hash_seed;
-        unsigned long hash_seed;
+        int ignore_environment;   /* -E switch */
+        int use_hash_seed;        /* PYTHONHASHSEED */
+        unsigned long hash_seed;  /* PYTHONHASHSEED */
     } Py_CoreConfig;
 
     #define Py_CoreConfig_INIT {0, -1, 0}
@@ -642,6 +676,8 @@ except that:
 
 * compilation is not allowed (as the parser and compiler are not yet
   configured properly)
+* creation of subinterpreters is not allowed
+* creation of additional thread states is not allowed
 * The following attributes in the ``sys`` module are all either missing or
   ``None``:
   * ``sys.path``
@@ -676,8 +712,8 @@ In addition, the current thread will possess a valid Python thread state,
 allow any further configuration data to be stored on the interpreter object
 rather than in C process globals.
 
-Any call to Py_BeginInitialization() must have a matching call to
-Py_Finalize(). It is acceptable to skip calling Py_EndInitialization() in
+Any call to ``Py_BeginInitialization()`` must have a matching call to
+``Py_Finalize()``. It is acceptable to skip calling Py_EndInitialization() in
 between (e.g. if attempting to read the configuration settings fails)
 
 
@@ -688,57 +724,112 @@ The next step in the initialization sequence is to determine the full
 settings needed to complete the process. No changes are made to the
 interpreter state at this point. The core API for this step is::
 
-    int Py_ReadConfiguration(PyObject *config);
+    int Py_ReadConfiguration(PyConfig *config);
 
 The config argument should be a pointer to a Python dictionary. For any
 supported configuration setting already in the dictionary, CPython will
 sanity check the supplied value, but otherwise accept it as correct.
 
-Unlike Py_Initialize and Py_BeginInitialization, this call will raise an
-exception and report an error return rather than exhibiting fatal errors if
-a problem is found with the config data.
+Unlike ``Py_Initialize`` and ``Py_BeginInitialization``, this call will raise
+an exception and report an error return rather than exhibiting fatal errors
+if a problem is found with the config data.
 
 Any supported configuration setting which is not already set will be
 populated appropriately. The default configuration can be overridden
-entirely by setting the value *before* calling Py_ReadConfiguration. The
+entirely by setting the value *before* calling ``Py_ReadConfiguration``. The
 provided value will then also be used in calculating any settings derived
 from that value.
 
-Alternatively, settings may be overridden *after* the Py_ReadConfiguration
-call (this can be useful if an embedding application wants to adjust
-a setting rather than replace it completely, such as removing
-``sys.path[0]``).
+Alternatively, settings may be overridden *after* the
+``Py_ReadConfiguration`` call (this can be useful if an embedding
+application wants to adjust a setting rather than replace it completely,
+such as removing ``sys.path[0]``).
 
 
 Supported configuration settings
 --------------------------------
 
-At least the following configuration settings will be supported::
+The new ``Py_Config`` struct holds the settings required to complete the
+interpreter configuration. All fields are either pointers to Python
+data types (not set == ``NULL``) or numeric flags (not set == ``-1``)::
 
-    raw_argv (list of str, default = retrieved from OS APIs)
+    /* Note: if changing anything in Py_Config, also update Py_Config_INIT */
+    typedef struct {
+        /* Argument processing */
+        PyList *raw_argv;
+        PyList *argv;
+        PyList *warnoptions; /* -W switch, PYTHONWARNINGS */
+        PyDict *xoptions;    /* -X switch */
 
-    argv (list of str, default = derived from raw_argv)
-    warnoptions (list of str, default = derived from raw_argv and environment)
-    xoptions (list of str, default = derived from raw_argv and environment)
+        /* Filesystem locations */
+        PyUnicode *program_name;
+        PyUnicode *executable;
+        PyUnicode *prefix;           /* PYTHONHOME */
+        PyUnicode *exec_prefix;      /* PYTHONHOME */
+        PyUnicode *base_prefix;      /* pyvenv.cfg */
+        PyUnicode *base_exec_prefix; /* pyvenv.cfg */
 
-    program_name (str, default = retrieved from OS APIs)
-    executable (str, default = derived from program_name)
-    home (str, default = complicated!)
-    prefix (str, default = complicated!)
-    exec_prefix (str, default = complicated!)
-    base_prefix (str, default = complicated!)
-    base_exec_prefix (str, default = complicated!)
-    path (list of str, default = complicated!)
+        /* Site module */
+        int no_site;       /* -S switch */
+        int no_user_site;  /* -s switch, PYTHONNOUSERSITE */
 
-    io_encoding (str, default = derived from environment or OS APIs)
-    fs_encoding (str, default = derived from OS APIs)
+        /* Import configuration */
+        int dont_write_bytecode;  /* -B switch, PYTHONDONTWRITEBYTECODE */
+        int ignore_module_case;   /* PYTHONCASEOK */
+        PyList    *import_path;   /* PYTHONPATH (etc) */
 
-    skip_signal_handlers (boolean, default = derived from environment or False)
-    ignore_environment (boolean, default = derived from environment or False)
-    dont_write_bytecode (boolean, default = derived from environment or False)
-    no_site (boolean, default = derived from environment or False)
-    no_user_site (boolean, default = derived from environment or False)
-    <TBD: at least more from sys.flags need to go here>
+        /* Standard streams */
+        int use_unbuffered_io;      /* -u switch, PYTHONUNBUFFEREDIO */
+        PyUnicode *stdin_encoding;  /* PYTHONIOENCODING */
+        PyUnicode *stdin_errors;    /* PYTHONIOENCODING */
+        PyUnicode *stdout_encoding; /* PYTHONIOENCODING */
+        PyUnicode *stdout_errors;   /* PYTHONIOENCODING */
+        PyUnicode *stderr_encoding; /* PYTHONIOENCODING */
+        PyUnicode *stderr_errors;   /* PYTHONIOENCODING */
+
+        /* Filesystem access */
+        PyUnicode *fs_encoding;
+
+        /* Interactive interpreter */
+        int stdin_is_interactive; /* Force interactive behaviour */
+        int inspect_main;         /* -i switch, PYTHONINSPECT */
+        PyUnicode *startup_file;  /* PYTHONSTARTUP */
+
+        /* Debugging output */
+        int debug_parser;    /* -d switch, PYTHONDEBUG */
+        int verbosity;       /* -v switch */
+        int suppress_banner; /* -q switch */
+
+        /* Code generation */
+        int bytes_warnings;  /* -b switch */
+        int optimize;        /* -O switch */
+
+        /* Signal handling */
+        int install_sig_handlers;
+    } Py_Config;
+
+
+    /* Struct initialization is pretty ugly in C89. Avoiding this mess would
+     * be the most attractive aspect of using a PyDict* instead... */
+    #define _Py_ArgConfig_INIT  NULL, NULL, NULL, NULL
+    #define _Py_LocationConfig_INIT  NULL, NULL, NULL, NULL, NULL, NULL
+    #define _Py_SiteConfig_INIT  -1, -1
+    #define _Py_ImportConfig_INIT  -1, -1, NULL
+    #define _Py_StreamConfig_INIT  -1, NULL, NULL, NULL, NULL, NULL, NULL
+    #define _Py_FilesystemConfig_INIT  NULL
+    #define _Py_InteractiveConfig_INIT  -1, -1, NULL
+    #define _Py_DebuggingConfig_INIT  -1, -1, -1
+    #define _Py_CodeGenConfig_INIT  -1, -1
+    #define _Py_SignalConfig_INIT  -1
+
+    #define Py_Config_INIT {_Py_ArgConfig_INIT, _Py_LocationConfig_INIT,
+                            _Py_SiteConfig_INIT, _Py_ImportConfig_INIT,
+                            _Py_StreamConfig_INIT, _Py_FilesystemConfig_INIT,
+                            _Py_InteractiveConfig_INIT,
+                            _Py_DebuggingConfig_INIT, _Py_CodeGenConfig_INIT,
+                            _Py_SignalConfig_INIT}
+
+<TBD: did I miss anything?>
 
 
 Completing the interpreter initialization
@@ -748,18 +839,18 @@ The final step in the initialization process is to actually put the
 configuration settings into effect and finish bootstrapping the interpreter
 up to full operation::
 
-    int Py_EndInitialization(PyObject *config);
+    int Py_EndInitialization(const PyConfig *config);
 
 Like Py_ReadConfiguration, this call will raise an exception and report an
 error return rather than exhibiting fatal errors if a problem is found with
 the config data.
 
-All configuration settings are required - the configuration dictionary
+All configuration settings are required - the configuration struct
 should always be passed through ``Py_ReadConfiguration()`` to ensure it
 is fully populated.
 
-After a successful call, Py_IsInitializing() will be false, while
-Py_IsInitialized() will become true. The caveats described above for the
+After a successful call, ``Py_IsInitializing()`` will be false, while
+``Py_IsInitialized()`` will become true. The caveats described above for the
 interpreter during the initialization phase will no longer hold.
 
 However, some metadata related to the ``__main__`` module may still be
@@ -788,19 +879,22 @@ would make that API too complicated, so 3 separate APIs is more likely::
     Py_RunModuleAsMain
     Py_RunStreamAsMain
 
+Query API to indicate that ``sys.argv[0]`` is fully populated::
+
+    Py_IsRunningMain()
 
 Internal Storage of Configuration Data
 --------------------------------------
 
 The interpreter state will be updated to include details of the configuration
 settings supplied during initialization by extending the interpreter state
-object with an embedded copy of the ``Py_CoreConfig`` struct and an
-additional ``PyObject`` pointer to hold a reference to a copy of the
-supplied configuration dictionary.
+object with an embedded copy of the ``Py_CoreConfig`` and ``Py_Config``
+structs.
 
-For debugging purposes, the copied configuration dictionary will be
-exposed as ``sys._configuration``. It will include additional keys for
-the fields in the ``Py_CoreConfig`` struct.
+For debugging purposes, the configuration settings will be exposed as
+a ``sys._configuration`` simple namespace (similar to ``sys.flags`` and
+``sys.implementation``. Field names will match those in the configuration
+structs, exception for ``hash_seed``, which will be deliberately excluded.
 
 These are *snapshots* of the initial configuration settings. They are not
 consulted by the interpreter during runtime.
@@ -849,6 +943,19 @@ is well tested, the main CPython executable may continue to use some elements
 of the old style initialization API. (very much TBC)
 
 
+Open Questions
+==============
+
+* Is ``Py_IsRunningMain()`` worth keeping?
+* Should the answers to ``Py_IsInitialized()`` and ``Py_RunningMain()`` be
+  exposed via the ``sys`` module?
+* Is the ``Py_Config`` struct too unwieldy to be practical? Would a Python
+  dictionary be a better choice?
+* Would it be better to manage the flag variables in ``Py_Config`` as
+  Python integers so the struct can be initialized with a simple
+  ``memset(&config, 0, sizeof(*config))``?
+
+
 A System Python Executable
 ==========================
 
@@ -867,7 +974,7 @@ application to make use of key components of ``Py_Main``. Including this
 change in the PEP is designed to help avoid acceptance of a design that
 sounds good in theory but proves to be problematic in practice.
 
-Better supporting this kind of "alternate CLI" is the main reason for the
+Cleanly supporting this kind of "alternate CLI" is the main reason for the
 proposed changes to better expose the core logic for deciding between the
 different execution modes supported by CPython:
 
