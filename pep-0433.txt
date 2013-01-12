@@ -1,0 +1,519 @@
+PEP: 433
+Title: Add cloexec argument to functions creating file descriptors
+Version: $Revision$
+Last-Modified: $Date$
+Author: Victor Stinner <victor.stinner@gmail.com>
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 10-January-2013
+Python-Version: 3.4
+
+
+Abstract
+========
+
+This PEP proposes to add a new optional argument ``cloexec`` on functions
+creating file descriptors in the Python standard library. If the argument is
+``True``, the close-on-exec flag will be set on the new file descriptor.
+
+
+Rationale
+=========
+
+On UNIX, subprocess closes file descriptors greater than 2 by default since
+Python 3.2 [#subprocess_close]_. All file descriptors created by the parent
+process are automatically closed.
+
+There are other cases creating a subprocess or executing a new program where
+file descriptors are not closed: functions of the os.spawn*() family and third
+party modules calling ``exec()`` or ``fork()`` + ``exec()``. In this case, file
+descriptors are shared between the parent and the child processes which is
+usually unexpected and causes various issues.
+
+
+Inherited file descriptors issues
+---------------------------------
+
+Closing the file descriptor in the parent process does not close the related
+resource (file, socket, ...) because it is still open in the child process.
+
+The listening socket of TCPServer is not closed on ``exec()``: the child
+process is able to get connection from new clients; if the parent closes the
+listening socket and create a new listening socket on the same address, it
+would get an "address already is used" error.
+
+Not closing file descriptors can lead to resource exhaustion: even if the
+parent closes all files, creating a new file descriptor may fail with "too many
+files" because files are still open in the child process.
+
+
+Security
+--------
+
+Leaking file descriptors is a major security vulnerability. An untrusted child
+process can read sensitive data like passwords and take control of the parent
+process though leaked file descriptors. It is for example a known vulnerability
+to escape from a chroot.
+
+
+Atomicity
+---------
+
+Using ``fcntl()`` to set the close-on-exec flag is not safe in a multithreaded
+application. If a thread calls ``fork()`` and ``exec()`` between the creation
+of the file descriptor and the call to ``fcntl(fd, F_SETFD, new_flags)``: the
+file descriptor will be inherited by the child process. Modern operating
+systems offer functions to set the flag during the creation of the file
+descriptor, which avoids the race condition.
+
+
+Portability
+-----------
+
+Python 3.2 added ``socket.SOCK_CLOEXEC`` flag, Python 3.3 added
+``os.O_CLOEXEC`` flag and ``os.pipe2()`` function. It is already possible to
+set atomically close-on-exec flag in Python 3.3 when opening a file and
+creating a pipe or socket.
+
+The problem is that these flags and functions are not portable: only recent
+versions of operating systems support them. ``O_CLOEXEC`` and ``SOCK_CLOEXEC``
+flags are ignored by old Linux versions and so ``FD_CLOEXEC`` flag must be
+checked using ``fcntl(fd, F_GETFD)``.  If the kernel ignores ``O_CLOEXEC`` or
+``SOCK_CLOEXEC`` flag, a call to ``fcntl(fd, F_SETFD, flags)`` is required to
+set close-on-exec flag.
+
+Note: OpenBSD older 5.2 does not close the file descriptor with close-on-exec
+flag set if ``fork()`` is used before ``exec()``, but it works correctly if
+``exec()`` is called without ``fork()``.
+
+
+Scope
+-----
+
+Applications still have to close explicitly file descriptors after a
+``fork()``.  The close-on-exec flag only closes file descriptors after
+``exec()``, and so after ``fork()`` + ``exec()``.
+
+Many functions of the Python standard library creating file descriptors are not
+changed by the PEP, and so will not have the close-on-exec flag set. Some
+examples:
+
+ * ``os.urandom()``: on UNIX, it creates a file descriptor on UNIX to read
+   ``/dev/urandom``. Adding an ``cloexec`` argument to ``os.urandom()`` does
+   not make sense on Windows.
+ * ``curses.windows.getwin()`` and ``curses.windows.putwin()`` creates a temporary file using ``fdopen(fd, "wb+");``
+ * ``mmap.mmap()`` opens ``/dev/null`` using ``open("/dev/zero", O_RDWR);`` if
+   ``MAP_ANONYMOUS`` is not defined.
+ * If the ``PYTHONSTARTUP`` environment variable is set, the corresponding file
+   is opened using ``fopen(startup, "r");``
+ * ``python script.py`` opens ``script.py`` using ``fopen(filename, "r");``
+ * etc.
+
+Third party modules creating file descriptors may not set close-on-exec flag.
+
+Impacted functions:
+
+ * ``os.forkpty()``
+ * ``http.server.CGIHTTPRequestHandler.run_cgi()``
+
+Impacted modules:
+
+ * ``multiprocessing``
+ * ``socketserver``
+ * ``subprocess``
+ * ``tempfile``
+ * ``xmlrpc.server``
+ * Maybe: ``signal``, ``threading``
+
+XXX Should ``subprocess.Popen`` set the close-on-exec flag on file XXX
+XXX descriptors of the constructor the ``pass_fds`` argument?      XXX
+
+
+Proposition
+===========
+
+This PEP proposes to add a new optional argument ``cloexec`` on functions
+creating file descriptors in the Python standard library. If the argument is
+``True``, the close-on-exec flag will be set on the new file descriptor.
+
+Add a new function:
+
+ * ``os.set_cloexec(fd: int, cloexec: bool)``: set or unset the close-on-exec
+   flag of a file descriptor
+
+Add a new optional ``cloexec`` argument to:
+
+ * ``open()``: ``os.fdopen()`` is indirectly modified
+ * ``os.dup()``, ``os.dup2()``
+ * ``os.pipe()``
+ * ``socket.socket()``, ``socket.socketpair()`` ``socket.socket.accept()``
+ * Maybe also: ``os.open()``, ``os.openpty()``
+ * TODO:
+
+   * ``select.devpoll()``
+   * ``select.poll()``
+   * ``select.epoll()``
+   * ``select.kqueue()``
+   * ``socket.socket.recvmsg()``: use ``MSG_CMSG_CLOEXEC``, or ``os.set_cloexec()``
+
+The default value of the ``cloexec`` argument is ``False`` to keep the backward
+compatibility.
+
+
+
+
+
+
+Applications using inherance of file descriptors
+================================================
+
+Network servers using fork may want to pass the client socket to the child
+process. For example, a CGI server pass the socket client through file
+descriptors 0 (stdin) and 1 (stdout) using ``dup2()``.
+
+Example of programs taking file descriptors from the parent process:
+
+ * valgrind: ``--log-fd=<fd>``, ``--input-fd=<fd>``, etc.
+ * qemu: ``-add-fd <fd>`` command line option
+ * GnuPG: ``--status-fd <fd>``, ``--logger-fd <fd>``, etc.
+ * openssl command: ``-pass fd:<fd>``
+ * xterm: ``-S <fd>``
+
+On Linux, it is possible to use ``/dev/fd/<fd>`` filename to pass a file
+descriptor to a program expecting a filename. It can be used to pass a password
+for example.
+
+These applications only pass a few file descriptors, usually only one.
+Fixing these applications to unset close-on-exec flag should be easy.
+
+If the ``subprocess`` module is used, inherited file descriptors must be specified
+using the ``pass_fds`` argument (except if the ``close_fds`` argument is set
+explicitly to ``False``). So the ``subprocess`` module knows the list of file
+descriptors on which close-on-exec flag must be unset.
+
+File descriptors 0 (stdin), 1 (stdout) and 2 (stderr) are expected to be
+inherited and so should not have the close-on-exec flag. So a CGI server should
+not be impacted by this PEP.
+
+
+Performances
+============
+
+Setting close-on-exec flag may require additional system calls for each
+creation of new file descriptors. The number of additional system calls
+depends on the method used to set the flag:
+
+ * ``O_NOINHERIT``: no additionnal system call
+ * ``O_CLOEXEC``: one addition system call, but only at the creation of the
+   first file descriptor, to check if the flag is supported. If no, Python has
+   to fallback to the next method.
+ * ``ioctl(fd, FIOCLEX)``: one addition system call per file descriptor
+ * ``fcntl(fd, F_SETFD, flags)``: two addition system calls per file
+   descriptor, one to get old flags and one to set new flags
+
+XXX Benchmark the overhead for these 4 methods. XXX
+
+
+Implementation
+==============
+
+os.set_cloexec(fd, cloexec)
+---------------------------
+
+Best-effort by definition. Pseudo-code::
+
+    if os.name == 'nt':
+        def set_cloexec(fd, cloexec=True):
+            SetHandleInformation(fd, HANDLE_FLAG_INHERIT, int(cloexec))
+    else:
+        fnctl = None
+        ioctl = None
+        try:
+            import ioctl
+        except ImportError:
+            try:
+                import fcntl
+            except ImportError:
+                pass
+        if ioctl is not None and hasattr('FIOCLEX', ioctl):
+            def set_cloexec(fd, cloexec=True):
+                if cloexec:
+                    ioctl.ioctl(fd, ioctl.FIOCLEX)
+                else:
+                    ioctl.ioctl(fd, ioctl.FIONCLEX)
+        elif fnctl is not None:
+            def set_cloexec(fd, cloexec=True):
+                flags = fcntl.fcntl(fd, fcntl.F_GETFD)
+                if cloexec:
+                    flags |= FD_CLOEXEC
+                else:
+                    flags &= ~FD_CLOEXEC
+                fcntl.fcntl(fd, fcntl.F_SETFD, flags)
+        else:
+            def set_cloexec(fd, cloexec=True):
+                raise NotImplementedError("close-on-exec flag is not supported on your platform")
+
+ioctl is preferred over fcntl because it requires only one syscall, instead of
+two syscalls for fcntl.
+
+Note: ``fcntl(fd, F_SETFD, flags)`` only supports one flag (``FD_CLOEXEC``), so
+it would be possible to avoid ``fcntl(fd, F_GETFD)``. But it may drop other
+flags in the future, and so it is safer to keep the two functions calls.
+
+open()
+------
+
+ * Windows: ``open()`` with ``O_NOINHERIT`` flag [atomic]
+ * ``open()`` with ``O_CLOEXEC flag`` [atomic]
+ * ``open()`` + ``os.set_cloexec(fd, True)`` [best-effort]
+
+os.dup()
+--------
+
+ * ``fcntl(fd, F_DUPFD_CLOEXEC)`` [atomic]
+ * ``dup()`` + ``os.set_cloexec(fd, True)`` [best-effort]
+
+os.dup2()
+---------
+
+ * ``dup3()`` with ``O_CLOEXEC`` flag [atomic]
+ * ``dup2()`` + ``os.set_cloexec(fd, True)`` [best-effort]
+
+os.pipe()
+---------
+
+ * Windows: ``_pipe()`` with ``O_NOINHERIT`` flag [atomic]
+ * ``pipe2()`` with ``O_CLOEXEC`` flag [atomic]
+ * ``pipe()`` + ``os.set_cloexec(fd, True)`` [best-effort]
+
+socket.socket()
+---------------
+
+ * ``socket()`` with ``SOCK_CLOEXEC`` flag [atomic]
+ * ``socket()`` + ``os.set_cloexec(fd, True)`` [best-effort]
+
+socket.socketpair()
+-------------------
+
+ * ``socketpair()`` with ``SOCK_CLOEXEC`` flag [atomic]
+ * ``socketpair()`` + ``os.set_cloexec(fd, True)`` [best-effort]
+
+socket.socket.accept()
+----------------------
+
+ * ``accept4()`` with ``SOCK_CLOEXEC`` flag [atomic]
+ * ``accept()`` + ``os.set_cloexec(fd, True)`` [best-effort]
+
+
+Backward compatibility
+======================
+
+There is no backward incompatible change. The default behaviour is unchanged:
+the close-on-exec flag is not set by default.
+
+
+Alternatives
+============
+
+Always set close-on-exec flag
+-----------------------------
+
+Always set close-on-exec flag on new file descriptors created by Python. This
+alternative just changes the default value of the new ``cloexec`` argument.
+
+``subprocess.Popen`` constructor has an ``pass_fds`` argument to specify which
+file descriptors must be inherited. The close-on-exec flag of these file
+descriptors must be changed with ``os.set_cloexec()``.
+
+If the close-on-exec flag must not be set, ``cloexec=False`` can be specified.
+
+Advantages of setting close-on-exec flag by default:
+
+ * There are far more programs that are bitten by FD inheritance upon
+   exec (see `Inherited file descriptors issues`_ and `Security`_) than
+   programs relying on it.
+ * Checking if a module creates file descriptors is difficult. For example,
+   ``os.urandom()`` creates a file descriptor on UNIX to read ``/dev/urandom``
+   (and closes it at exit), whereas it is implemented using a function call on
+   Windows. It is not possible to control close-on-exec flag of the file
+   descriptor used by ``os.urandom()``, because ``os.urandom()`` API does not
+   allow it.
+ * No need to add a new ``cloexec`` argument everywhere: functions creating
+   file descriptors will read ``sys.getdefaultcloexec()`` to decide if the
+   close-on-exec must be set or not. For example, adding an ``cloexec``
+   argument to ``os.urandom()`` does not make sense on Windows.
+
+Drawbacks of setting close-on-exec flag by default:
+
+ * The os module is written as a thin wrapper to system calls (to functions of
+   the C standard library). If atomic flags are not supported, a single Python
+   function call may now call 2 or 3 system calls (see `Performances`_
+   section).
+ * Extra system calls, if any, may slow down Python: see `Performances`_.
+ * It violates the principle of least surprise.  Developers using the os module
+   may expect that Python respects the POSIX standard and so that close-on-exec
+   flag is not set by default.
+ * Only file descriptors created by the Python standard library will comply to
+   ``sys.setdefaultcloexec()``. The close-on-exec flag is unchanged for file
+   descriptors created by third party modules calling directly C functions.
+   Third party modules will have to be modified to read
+   ``sys.getdefaultcloexec()`` to make them comply to this PEP.
+
+
+Add a function to set close-on-exec flag by default
+---------------------------------------------------
+
+An alternative is to add also a function to change globally the default
+behaviour. It would be possible to set close-on-exec flag for the whole
+application including all modules and the Python standard library.  This
+alternative is based on the PEP but adds extra changes.
+
+Add new functions:
+
+ * ``sys.getdefaultcloexec() -> bool``: get the default value of the
+   close-on-exec flag for new file descriptor
+ * ``sys.setdefaultcloexec(cloexec: bool)``: enable or disable close-on-exec
+   flag, the state of the flag can be overriden in each function creating a
+   file descriptor
+
+The major change is that the default value of the ``cloexec`` argument is
+``sys.getdefaultcloexec()``, instead of ``False``.
+
+When ``sys.setdefaultcloexec(True)`` is called to set close-on-exec by default,
+we have the same drawbacks than `Always set close-on-exec
+flag`_ alternative.
+
+There are additionnal drawbacks of having two behaviours depending on
+``sys.getdefaultcloexec()`` value:
+
+ * It is not more possible to know if the close-on-exec flag will be set or not
+   just by reading the source code.
+
+
+open(): add "e" flag to mode
+----------------------------
+
+A new "e" mode would set close-on-exec flag (best-effort).
+
+This API does not allow to disable explictly close-on-exec flag if it was
+enabled globally with ``sys.setdefaultcloexec()``.
+
+Note: Since its version 2.7, the GNU libc supports ``"e"`` flag for ``fopen()``.
+It uses ``O_CLOEXEC`` if available, or use ``fcntl(fd, F_SETFD, FD_CLOEXEC)``.
+
+
+Appendix: Operating system support
+==================================
+
+Windows
+-------
+
+Windows has an ``O_NOINHERIT`` flag: "Do not inherit in child processes".
+
+For example, it is supported by ``open()`` and ``_pipe()``.
+
+The value of the flag can be modified using:
+``SetHandleInformation(fd, HANDLE_FLAG_INHERIT, 1)``.
+
+``CreateProcess()`` has an ``bInheritHandles`` argument: if it is FALSE, the
+handles are not inherited. It is used by ``subprocess.Popen`` with
+``close_fds`` option.
+
+fcntl
+-----
+
+Functions:
+
+ * ``fcntl(fd, F_GETFD)``
+ * ``fcntl(fd, F_SETFD, flags | FD_CLOEXEC)``
+
+Availability: AIX, Digital UNIX, FreeBSD, HP-UX, IRIX, Linux, Mac OS X,
+OpenBSD, Solaris, SunOS, Unicos.
+
+ioctl
+-----
+
+Functions:
+
+ * ``ioctl(fd, FIOCLEX, 0)`` sets close-on-exec flag
+ * ``ioctl(fd, FIONCLEX, 0)`` unsets close-on-exec flag
+
+Availability: Linux, Mac OS X, QNX, NetBSD, OpenBSD, FreeBSD.
+
+
+Atomic flags
+------------
+
+New flags:
+
+ * ``O_CLOEXEC``: available on Linux (2.6.23+), FreeBSD (8.3+), OpenBSD 5.0,
+   will be part of the next NetBSD release (6.1?).  This flag is part of
+   POSIX.1-2008.
+ * ``socket()``: ``SOCK_CLOEXEC`` flag, available on Linux 2.6.27+,
+   OpenBSD 5.2, NetBSD 6.0.
+ * ``fcntl()``: ``F_DUPFD_CLOEXEC`` flag, available on Linux 2.6.24+,
+   OpenBSD 5.0, FreeBSD 9.1, NetBSD 6.0. This flag is part of POSIX.1-2008.
+ * ``recvmsg()``: ``MSG_CMSG_CLOEXEC``, available on Linux 2.6.23+, NetBSD 6.0.
+
+On Linux older than 2.6.23, ``O_CLOEXEC`` flag is simply ignored. So we have to
+check that the flag is supported by calling ``fcntl()``. If it does not work,
+we have to set the flag using ``fcntl()``.
+
+XXX what is the behaviour on Linux older than 2.6.27 with SOCK_CLOEXEC? XXX
+
+New functions:
+
+ * ``dup3()``: available on Linux 2.6.27+ (and glibc 2.9)
+ * ``pipe2()``: available on Linux 2.6.27+ (and glibc 2.9)
+ * ``accept4()``: available on Linux 2.6.28+ (and glibc 2.10)
+
+If ``accept4()`` is called on Linux older than 2.6.28, ``accept4()`` returns
+``-1`` (fail) and errno is set to ``ENOSYS``.
+
+
+Links
+=====
+
+Links:
+
+ * `Secure File Descriptor Handling
+   <http://udrepper.livejournal.com/20407.html>`_ (Ulrich Drepper, 2008)
+ * `win32_support.py of the Tornado project
+   <https://bitbucket.org/pvl/gaeseries-tornado/src/c2671cea1842/tornado/win32_support.py>`_:
+   emulate fcntl(fd, F_SETFD, FD_CLOEXEC) using
+   ``SetHandleInformation(fd, HANDLE_FLAG_INHERIT, 1)``
+
+Python issues:
+
+ * `open() does not able to set flags, such as O_CLOEXEC
+   <http://bugs.python.org/issue12105>`_
+ * `Add "e" mode to open(): close-and-exec (O_CLOEXEC) / O_NOINHERIT
+   <http://bugs.python.org/issue16850>`_
+ * `TCP listening sockets created without FD_CLOEXEC flag
+   <http://bugs.python.org/issue12107>`_
+ * `Use O_CLOEXEC in the tempfile module
+   <http://bugs.python.org/issue16860>`_
+ * `Support accept4() for atomic setting of flags at socket creation
+   <http://bugs.python.org/issue10115>`_
+ * `Add an 'afterfork' module
+   <http://bugs.python.org/issue16500>`_
+
+Ruby:
+
+ * `Set FD_CLOEXEC for all fds (except 0, 1, 2)
+   <http://bugs.ruby-lang.org/issues/5041>`_
+ * `O_CLOEXEC flag missing for Kernel::open
+   <http://bugs.ruby-lang.org/issues/1291>`_:
+   `commit reverted
+   <http://bugs.ruby-lang.org/projects/ruby-trunk/repository/revisions/31643>`_ later
+
+Footnotes
+=========
+
+.. [#subprocess_close] On UNIX since Python 3.2, subprocess.Popen() closes all file descriptors by
+   default: ``close_fds=True``. It closes file descriptors in range 3 inclusive
+   to ``local_max_fd`` exclusive, where ``local_max_fd`` is ``fcntl(0,
+   F_MAXFD)`` on NetBSD, or ``sysconf(_SC_OPEN_MAX)`` otherwise. If the error
+   pipe has a descriptor smaller than 3, ``ValueError`` is raised.
+
