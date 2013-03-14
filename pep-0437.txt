@@ -1,0 +1,359 @@
+PEP: 0437
+Title: A DSL for specifying signatures, annotations and argument converters
+Version: $Revision$
+Last-Modified: $Date$
+Author: Stefan Krah <skrah@bytereef.org>
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 2013-03-11
+Python-Version: 3.4
+Post-History:
+Resolution:
+
+Abstract
+========
+
+The Python C-API currently has no mechanism for specifying and auto-generating
+function signatures, annotations or custom argument converters.
+
+There are several possible approaches to the problem. Cython uses *cdef*
+definitions in *.pyx* files to generate the required information. However,
+CPython's C-API functions often require additional initialization and
+cleanup snippets that would be hard to specify in a *cdef*.
+
+PEP 436 proposes a domain specific language (DSL) enclosed in C comments
+that largely resembles a per-parameter configuration file. A preprocessor
+reads the comment and emits an argument parsing function, docstrings and
+a header for the function that utilizes the results of the parsing step.
+
+The latter function is subsequently referred to as the *implementation
+function*.
+
+
+Rationale
+=========
+
+Opinions differ regarding the suitability of the PEP 436 DSL in the context
+of a C file. This PEP proposes an alternative DSL. The specific issues with
+PEP 436 that spurred the counter proposal will be explained in the final
+section of this PEP.
+
+
+Scope
+=====
+
+The PEP focuses exclusively on the DSL. Topics like the location of docstrings
+are outside the scope of this PEP. It is however vital that the DSL is suitable
+for generating custom argument parsers, a feature that is already implemented
+in Cython.  Therefore, one of the goals of this PEP is to keep the DSL close
+to existing solutions, thus facilitating a possible inclusion of the relevant
+parts of Cython into the CPython source tree.
+
+
+DSL overview
+============
+
+Type safety and annotations
+---------------------------
+
+A conversion from a Python to a C value is fully defined by the type of
+the converter function.  The PyArg_Parse* family of functions accepts
+custom converters in addition to the well-known default converters "i",
+"f", etc.
+
+This PEP views the default converters as abstract functions, regardless
+of how they are actually implemented.
+
+
+Include/converters.h
+--------------------
+
+Converter functions must be forward-declared. All converter functions
+shall be entered into the file Include/converters.h. The file is read
+by the preprocessor prior to translating .c files. This is an excerpt::
+
+    /*[converter]
+    ##### Default converters #####
+    "s":  str                                -> const char *res;
+    "s*": [str, bytes, bytearray, rw_buffer] -> Py_buffer &res;
+    [...]
+    "es#": str -> (const char *res_encoding, char **res, Py_ssize_t *res_length);
+    [...]
+    ##### Custom converters #####
+    path_converter:           [str, bytes, int]  -> path_t &res;
+    OS_STAT_DIR_FD_CONVERTER: [int, None]        -> int res;
+    [converter_end]*/
+
+
+Converters are specified by their name, Python input type(s) and C output
+type(s).  Default converters must be have quoted names, custom converters
+must have regular names.  A Python type is given by its name. If a function
+accepts multiple Python types, the set is written in list form.
+
+Since the default converters may have multiple implicit return values,
+the C output type(s) are written according to the following convention:
+
+The main return value must be named *res*. This is a placeholder for
+the actual variable name given later in the DSL. Additional implicit
+return values must be prefixed by *res_*.
+
+By default the variables are passed by value to the implementation function.
+If the address should be passed instead, *res* must be prefixed with an
+ampersand.
+
+
+Additional declarations may be placed into .c files. Duplicate declarations
+are allowed as long as the function types are identical.
+
+
+TBD: Make a list of fantasy types like *rw_buffer*.
+
+
+Function specifications
+-----------------------
+
+Keyword arguments
+^^^^^^^^^^^^^^^^^
+
+This example contains the definition of os.stat. The individual sections
+will be explained in detail. Grammatically, the whole define block consists
+of a function specification and an output section. The function specification
+in turn consists of a declaration section, a C-declaration section and a
+cleanup code section.  Sections within the function specification are
+separated in yacc style by '%%'::
+
+
+    /*[define posix_stat]
+    def os.stat(path: path_converter, *, dir_fd: OS_STAT_DIR_FD_CONVERTER = None,
+                follow_symlinks: "p" = True) -> os.stat_result: pass
+    %%
+    path_t path = PATH_T_INITIALIZE("stat", 0, 1);
+    int dir_fd = DEFAULT_DIR_FD;
+    int follow_symlinks = 1;
+    %%
+    path_cleanup(&path);
+    [define_end]*/
+
+    <literal C output>
+
+    /*[define_output_end]*/
+
+
+Define block
+~~~~~~~~~~~~
+
+The function specification block starts with a ``/*[define`` token, followed
+by an optional C function name, followed by a right bracket. If the C function
+name is not given, it is generated from the declaration name. In the example,
+omitting the name *posix_stat* would result in a C function name of *os_stat*.
+
+
+Declaration
+~~~~~~~~~~~
+
+The required declaration is (almost) a valid Python function definition. The
+'def' keyword and the function body are redundant, but the author of this PEP
+finds the definition more readable if they are present.
+
+The function name may be a path instead of a plain identifier. Each argument
+is annotated with the name of the converter function that will be applied to it.
+
+Default values are given in the usual Python manner and may be any valid
+Python expression.
+
+The return value may be any Python expression. Usually it will be the name
+of an object, but alternative return values could be specified in list form.
+
+
+C-declarations
+~~~~~~~~~~~~~~
+
+This section contains C variable declarations. Since the converter functions
+have been declared beforehand, the preprocessor can type-check the declarations.
+
+
+Cleanup
+~~~~~~~
+
+The cleanup section contains literal C code that will be inserted unmodified
+after the implementation function.
+
+
+Output
+~~~~~~
+
+The output section contains the code emitted by the preprocessor.
+
+
+Positional-only arguments
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Functions that do not take keyword arguments are indicated by the presence
+of the *slash* special parameter::
+
+    /*[define stat_float_times]
+    def os.stat_float_times(/, newval: "i") -> os.stat_result: pass
+    %%
+    int newval = -1;
+    [define_end]*/
+
+The preprocessor translates this definition to a PyArg_ParseTuple() call.
+All arguments to the right of the slash are optional arguments.
+
+
+Left and right optional arguments
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Some legacy functions contain optional arguments groups both to the left and
+right of a central parameter. It is debatable whether a new tool should support
+such functions.  For completeness' sake, this is the proposed syntax::
+
+    /*[define]
+    def curses.window.addch(y: "i", x: "i", ch: "O", attr: "l") -> None
+    where groups = [[ch], [ch, attr], [y, x, ch], [y, x, ch, attr]]
+    %%
+    int newval = -1;
+    [define_end]*/
+
+Here *ch* is the central parameter, *attr* can optionally be added on the
+right, and the group [y, x] can optionally be added on the left.
+
+Essentially the rule is that all ordered combinations of the central
+parameter and the optional groups must be possible such that no two
+combinations have the same length.
+
+This is concisely expressed by putting the central parameter first in
+the list and subsequently adding the optional arguments groups to the
+left and right.
+
+
+Flexibility in formatting
+=========================
+
+If the above os.stat example is considered too compact, it can easily be
+formatted this way::
+
+    /*[define posix_stat]
+    def os.stat(path: path_converter,
+                *,
+                dir_fd: OS_STAT_DIR_FD_CONVERTER = None,
+                follow_symlinks: "p" = True)
+    -> os.stat_result: pass
+    %%
+    path_t path = PATH_T_INITIALIZE("stat", 0, 1);
+    int dir_fd = DEFAULT_DIR_FD;
+    int follow_symlinks = 1;
+    %%
+    path_cleanup(&path);
+    [define_end]*/
+
+    <literal C output>
+
+    /*[define_output_end]*/
+
+
+Easy validation of the definition
+=================================
+
+How can an inexperienced user validate a definition like os.stat? Simply
+by changing os.stat to os_stat, defining missing converters and pasting
+the definition into the Python interactive interpreter!
+
+In fact, a converters.py module could be auto-generated from converters.h.
+
+
+Reference implementation
+========================
+
+A reference implementation is available at `issue 16612`_. Since this PEP
+was written under time constraints and the author is unfamiliar with the
+PLY toolchain, the software is written in Standard ML and utilizes the
+ml-yacc/ml-lex toolchain.
+
+The grammar is conflict-free and available in ml-yacc readable BNF form.
+
+Two tools are available:
+
+  * *printsemant* reads a converter header and a .c file and dumps
+    the semantically checked parse tree to stdout.
+
+  * *preprocess* reads a converter header and a .c file and dumps
+    the preprocessed .c file to stdout.
+
+
+Known deficiencies:
+
+  * The Python 'test' expression is not semantically checked. The syntax
+    however is checked since it is part of the grammar.
+
+  * The lexer does not handle triple quoted strings.
+
+  * The *preprocess* tool does not emit code for the left-and-right optional
+    arguments case. The *printsemant* tool can deal with this case.
+
+  * Since the *preprocess* tool generates the output from the parse
+    tree, the original indentation of the define block is lost.
+
+
+Grammar
+=======
+
+  TBD: The grammar exists in ml-yacc readable form, but should probably be
+  included here in EBNF notation.
+
+
+Comparison with PEP 436
+=======================
+
+The author of this PEP has the following concerns about the DSL proposed
+in PEP 436:
+
+  * The whitespace sensitive configuration file like syntax looks out
+    of place in a C file.
+
+  * The structure of the function definition gets lost in the per-parameter
+    specifications. Keywords like positional-only, required and keyword-only
+    are scattered across too many different places.
+
+    By contrast, in the alternative DSL the structure of the function
+    definition can be understood at a single glance.
+
+  * The PEP 436 DSL has 14 documented flags and at least one undocumented
+    (allow_fd) flag. Figuring out which of the 2**15 possible combinations
+    are valid places an unnecessary burden on the user.
+
+    Experience with the PEP-3118 buffer flags has shown that sorting out
+    (and exhaustively testing!) valid combinations is an extremely tedious
+    task. The PEP-3118 flags are still not well understood by many people.
+
+    By contrast, the alternative DSL has a central file Include/converters.h
+    that can be quickly searched for the desired converter. Many of the
+    converters are already known, perhaps even memorized by people (due
+    to frequent use).
+
+  * The PEP 436 DSL allows too much freedom. Types can apparently be omitted,
+    the preprocessor accepts (and ignores) unknown keywords, sometimes adding
+    white space after a docstring results in an assertion error.
+
+    The alternative DSL on the other hand allows no such freedoms. Omitting
+    converter or return value annotations is plainly a syntax error. The
+    LALR(1) grammar is unambiguous and specified for the complete translation
+    unit.
+
+
+Copyright
+=========
+
+This document is licensed under the `Open Publication License`_.
+
+
+References and Footnotes
+========================
+
+.. _issue 16612: http://bugs.python.org/issue16612
+
+.. _Open Publication License: http://www.opencontent.org/openpub/
+
+
+
