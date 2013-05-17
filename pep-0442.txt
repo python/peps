@@ -1,0 +1,284 @@
+PEP: 442
+Title: Safe object finalization
+Version: $Revision$
+Last-Modified: $Date$
+Author: Antoine Pitrou <solipsis@pitrou.net>
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 2013-04-18
+Python-Version: 3.4
+Post-History:
+Resolution: TBD
+
+
+Abstract
+========
+
+This PEP proposes to deal with the current limitations of object
+finalization.  The goal is to be able to define and run finalizers
+for any object, regardless of their position in the object graph.
+
+This PEP doesn't call for any change in Python code.  Objects
+with existing finalizers will benefit automatically.
+
+
+Definitions
+===========
+
+Reference
+    A directional link from an object to another.  The target of the
+    reference is kept alive by the reference, as long as the source is
+    itself alive and the reference isn't cleared.
+
+Weak reference
+    A directional link from an object to another, which doesn't keep
+    alive its target.  This PEP focusses on non-weak references.
+
+Reference cycle
+    A cyclic subgraph of directional links between objects, which keeps
+    those objects from being collected in a pure reference-counting
+    scheme.
+
+Cyclic isolate (CI)
+    A reference cycle in which no object is referenced from outside the
+    cycle *and* whose objects are still in a usable, non-broken state:
+    they can access each other from their respective finalizers.
+
+Cyclic garbage collector (GC)
+    A device able to detect cyclic isolates and turn them into cyclic
+    trash.  Objects in cyclic trash are eventually disposed of by
+    the natural effect of the references being cleared and their
+    reference counts dropping to zero.
+
+Cyclic trash (CT)
+    A reference cycle, or former reference cycle, in which no object
+    is referenced from outside the cycle *and* whose objects have
+    started being cleared by the GC.  Objects in cyclic trash are potential
+    zombies; if they are accessed by Python code, the symptoms can vary
+    from weird AttributeErrors to crashes.
+
+Zombie / broken object
+    An object part of cyclic trash.  The term stresses that the object
+    is not safe: its outgoing references may have been cleared, or one
+    of the objects it references may be zombie.  Therefore,
+    it should not be accessed by arbitrary code (such as finalizers).
+
+Finalizer
+    A function or method called when an object is intended to be
+    disposed of.  The finalizer can access the object and release any
+    resource held by the object (for example mutexes or file descriptors).
+    An example is a ``__del__`` method.
+
+Resurrection
+    The process by which a finalizer creates a new reference to an
+    object in a CI.  This can happen as a quirky but supported side-effect
+    of ``__del__`` methods.
+
+
+Impact
+======
+
+While this PEP discusses CPython-specific implementation details, the
+change in finalization semantics is expected to affect the Python
+ecosystem as a whole.  In particular, this PEP obsoletes the current
+guideline that "objects with a __del__ method should not be part of a
+reference cycle".
+
+
+Benefits
+========
+
+The primary benefits of this PEP regard objects with finalizers, such
+as objects with a ``__del__`` method and generators with a ``finally``
+block.  Those objects can now be reclaimed when they are part of a
+reference cycle.
+
+The PEP also paves the way for further benefits:
+
+* The module shutdown procedure may not need to set global variables to
+  None anymore.  This could solve a well-known class of irritating issues.
+
+The PEP doesn't change the semantics of:
+
+* Weak references caught in reference cycles.
+
+* C extension types with a custom ``tp_dealloc`` function.
+
+
+Description
+===========
+
+Reference-counted disposal
+--------------------------
+
+In normal reference-counted disposal, an object's finalizer is called
+just before the object is deallocated.  If the finalizer resurrects
+the object, deallocation is aborted.
+
+*However*, if the object was already finalized, then the finalizer isn't
+called.  This prevents us from finalizing zombies (see below).
+
+Disposal of cyclic isolates
+---------------------------
+
+Cyclic isolates are first detected by the garbage collector, and then
+disposed of.  The detection phase doesn't change and won't be described here.
+Disposal of a CI traditionally works in the following order:
+
+1. Weakrefs to CI objects are cleared, and their callbacks called. At this
+   point, the objects are still safe to use.
+
+2. The CI becomes a CT as the GC systematically breaks all
+   known references inside it (using the ``tp_clear`` function).
+
+3. Nothing.  All CT objects should have been disposed of in step 2
+   (as a side-effect of clearing references); this collection is finished.
+
+This PEP proposes to turn CI disposal into the following sequence (new
+steps are in bold):
+
+1. Weakrefs to CI objects are cleared, and their callbacks called. At this
+   point, the objects are still safe to use.
+
+2. **The finalizers of all CI objects are called.**
+
+3. **The CI is traversed again to determine if it is still isolated.
+   If it is determined that at least one object in CI is now reachable
+   from outside the CI, this collection is aborted and the whole CI
+   is resurrected.  Otherwise, proceed.**
+
+4. The CI becomes a CT as the GC systematically breaks all
+   known references inside it (using the ``tp_clear`` function).
+
+5. Nothing.  All CT objects should have been disposed of in step 4
+   (as a side-effect of clearing references); this collection is finished.
+
+
+C-level changes
+===============
+
+Type objects get a new ``tp_finalize`` slot to which ``__del__`` methods
+are bound.  Generators are also modified to use this slot, rather than
+``tp_del``.  At the C level, a ``tp_finalize`` function is a normal
+function which will be called with a regular, alive object as its only
+argument.  It should not attempt to revive or collect the object.
+
+For compatibility, ``tp_del`` is kept in the type structure.  Handling
+of objects with a non-NULL ``tp_del`` is unchanged: when part of a CI,
+they are not finalized and end up in ``gc.garbage``.  However, a non-NULL
+``tp_del`` is not encountered anymore in the CPython source tree (except
+for testing purposes).
+
+
+Discussion
+==========
+
+Predictability
+--------------
+
+Following this scheme, an object's finalizer is always called exactly
+once.  The only exception is if an object is resurrected: the finalizer
+will be called again later.
+
+For CI objects, the order in which finalizers are called (step 2 above)
+is undefined.
+
+Safety
+------
+
+It is important to explain why the proposed change is safe.  There
+are two aspects to be discussed:
+
+* Can a finalizer access zombie objects (including the object being
+  finalized)?
+
+* What happens if a finalizer mutates the object graph so as to impact
+  the CI?
+
+Let's discuss the first issue.  We will divide possible cases in two
+categories:
+
+* If the object being finalized is part of the CI: by construction, no
+  objects in CI are zombies yet, since CI finalizers are called before
+  any reference breaking is done.  Therefore, the finalizer cannot
+  access zombie objects, which don't exist.
+
+* If the object being finalized is not part of the CI/CT: by definition,
+  objects in the CI/CT don't have any references pointing to them from
+  outside the CI/CT.  Therefore, the finalizer cannot reach any zombie
+  object (that is, even if the object being finalized was itself
+  referenced from a zombie object).
+
+Now for the second issue.  There are three potential cases:
+
+* The finalizer clears an existing reference to a CI object.  The CI
+  object may be disposed of before the GC tries to break it, which
+  is fine (the GC simply has to be aware of this possibility).
+
+* The finalizer creates a new reference to a CI object.  This can only
+  happen from a CI object's finalizer (see above why).  Therefore, the
+  new reference will be detected by the GC after all CI finalizers are
+  called (step 3 above), and collection will be aborted without any
+  objects being broken.
+
+* The finalizer clears or creates a reference to a non-CI object.  By
+  construction, this is not a problem.
+
+
+Implementation
+==============
+
+An implementation is available in branch ``finalize`` of the repository
+at http://hg.python.org/features/finalize/.
+
+
+Validation
+==========
+
+Besides running the normal Python test suite, the implementation adds
+test cases for various finalization possibilities including reference cycles,
+object resurrection and legacy ``tp_del`` slots.
+
+The implementation has also been checked to not produce any regressions on
+the following test suites:
+
+* `Tulip <http://code.google.com/p/tulip/>`_, which makes an extensive
+  use of generators
+
+* `Tornado <http://www.tornadoweb.org>`_
+
+* `SQLAlchemy <http://www.sqlalchemy.org/>`_
+
+* `Django <https://www.djangoproject.com/>`_
+
+* `zope.interface <http://pypi.python.org/pypi/zope.interface>`_
+
+
+References
+==========
+
+Notes about reference cycle collection and weak reference callbacks:
+http://hg.python.org/cpython/file/4e687d53b645/Modules/gc_weakref.txt
+
+Generator memory leak: http://bugs.python.org/issue17468
+
+Allow objects to decide if they can be collected by GC:
+http://bugs.python.org/issue9141
+
+Module shutdown procedure based on GC
+http://bugs.python.org/issue812369
+
+Copyright
+=========
+
+This document has been placed in the public domain.
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   coding: utf-8
+   End:
