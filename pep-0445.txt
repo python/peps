@@ -1,0 +1,773 @@
+PEP: 445
+Title: Add new APIs to customize Python memory allocators
+Version: $Revision$
+Last-Modified: $Date$
+Author: Victor Stinner <victor.stinner@gmail.com>
+BDFL-Delegate: Antoine Pitrou <solipsis@pitrou.net>
+Status: Accepted
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 15-june-2013
+Python-Version: 3.4
+Resolution: http://mail.python.org/pipermail/python-dev/2013-July/127222.html
+
+Abstract
+========
+
+This PEP proposes new Application Programming Interfaces (API) to customize
+Python memory allocators.  The only implementation required to conform to
+this PEP is CPython, but other implementations may choose to be compatible,
+or to re-use a similar scheme.
+
+
+Rationale
+=========
+
+Use cases:
+
+* Applications embedding Python which want to isolate Python memory from
+  the memory of the application, or want to use a different memory
+  allocator optimized for its Python usage
+* Python running on embedded devices with low memory and slow CPU.
+  A custom memory allocator can be used for efficiency and/or to get
+  access all the memory of the device.
+* Debug tools for memory allocators:
+
+  - track the memory usage (find memory leaks)
+  - get the location of a memory allocation: Python filename and line
+    number, and the size of a memory block
+  - detect buffer underflow, buffer overflow and misuse of Python
+    allocator APIs (see `Redesign Debug Checks on Memory Block
+    Allocators as Hooks`_)
+  - force memory allocations to fail to test handling of the
+    ``MemoryError`` exception
+
+
+Proposal
+========
+
+New Functions and Structures
+----------------------------
+
+* Add a new GIL-free (no need to hold the GIL) memory allocator:
+
+  - ``void* PyMem_RawMalloc(size_t size)``
+  - ``void* PyMem_RawRealloc(void *ptr, size_t new_size)``
+  - ``void PyMem_RawFree(void *ptr)``
+  - The newly allocated memory will not have been initialized in any
+    way.
+  - Requesting zero bytes returns a distinct non-*NULL* pointer if
+    possible, as if ``PyMem_Malloc(1)`` had been called instead.
+
+* Add a new ``PyMemAllocator`` structure::
+
+    typedef struct {
+        /* user context passed as the first argument to the 3 functions */
+        void *ctx;
+
+        /* allocate a memory block */
+        void* (*malloc) (void *ctx, size_t size);
+
+        /* allocate or resize a memory block */
+        void* (*realloc) (void *ctx, void *ptr, size_t new_size);
+
+        /* release a memory block */
+        void (*free) (void *ctx, void *ptr);
+    } PyMemAllocator;
+
+* Add a new ``PyMemAllocatorDomain`` enum to choose the Python
+  allocator domain. Domains:
+
+  - ``PYMEM_DOMAIN_RAW``: ``PyMem_RawMalloc()``, ``PyMem_RawRealloc()``
+    and ``PyMem_RawFree()``
+
+  - ``PYMEM_DOMAIN_MEM``: ``PyMem_Malloc()``, ``PyMem_Realloc()`` and
+    ``PyMem_Free()``
+
+  - ``PYMEM_DOMAIN_OBJ``: ``PyObject_Malloc()``, ``PyObject_Realloc()``
+    and ``PyObject_Free()``
+
+* Add new functions to get and set memory block allocators:
+
+  - ``void PyMem_GetAllocator(PyMemAllocatorDomain domain, PyMemAllocator *allocator)``
+  - ``void PyMem_SetAllocator(PyMemAllocatorDomain domain, PyMemAllocator *allocator)``
+  - The new allocator must return a distinct non-*NULL* pointer when
+    requesting zero bytes
+  - For the ``PYMEM_DOMAIN_RAW`` domain, the allocator must be
+    thread-safe: the GIL is not held when the allocator is called.
+
+* Add a new ``PyObjectArenaAllocator`` structure::
+
+    typedef struct {
+        /* user context passed as the first argument to the 2 functions */
+        void *ctx;
+
+        /* allocate an arena */
+        void* (*alloc) (void *ctx, size_t size);
+
+        /* release an arena */
+        void (*free) (void *ctx, void *ptr, size_t size);
+    } PyObjectArenaAllocator;
+
+* Add new functions to get and set the arena allocator used by
+  *pymalloc*:
+
+  - ``void PyObject_GetArenaAllocator(PyObjectArenaAllocator *allocator)``
+  - ``void PyObject_SetArenaAllocator(PyObjectArenaAllocator *allocator)``
+
+* Add a new function to reinstall the debug checks on memory allocators when
+  a memory allocator is replaced with ``PyMem_SetAllocator()``:
+
+  - ``void PyMem_SetupDebugHooks(void)``
+  - Install the debug hooks on all memory block allocators. The function can be
+    called more than once, hooks are only installed once.
+  - The function does nothing is Python is not compiled in debug mode.
+
+* Memory block allocators always return *NULL* if *size* is greater than
+  ``PY_SSIZE_T_MAX``. The check is done before calling the inner
+  function.
+
+.. note::
+    The *pymalloc* allocator is optimized for objects smaller than 512 bytes
+    with a short lifetime. It uses memory mappings with a fixed size of 256
+    KB called "arenas".
+
+Here is how the allocators are set up by default:
+
+* ``PYMEM_DOMAIN_RAW``, ``PYMEM_DOMAIN_MEM``: ``malloc()``,
+  ``realloc()`` and ``free()``; call ``malloc(1)`` when requesting zero
+  bytes
+* ``PYMEM_DOMAIN_OBJ``: *pymalloc* allocator which falls back on
+  ``PyMem_Malloc()`` for allocations larger than 512 bytes
+* *pymalloc* arena allocator: ``VirtualAlloc()`` and ``VirtualFree()`` on
+  Windows, ``mmap()`` and ``munmap()`` when available, or ``malloc()``
+  and ``free()``
+
+
+Redesign Debug Checks on Memory Block Allocators as Hooks
+---------------------------------------------------------
+
+Since Python 2.3, Python implements different checks on memory
+allocators in debug mode:
+
+* Newly allocated memory is filled with the byte ``0xCB``, freed memory
+  is filled with the byte ``0xDB``.
+* Detect API violations, ex: ``PyObject_Free()`` called on a memory
+  block allocated by ``PyMem_Malloc()``
+* Detect write before the start of the buffer (buffer underflow)
+* Detect write after the end of the buffer (buffer overflow)
+
+In Python 3.3, the checks are installed by replacing ``PyMem_Malloc()``,
+``PyMem_Realloc()``, ``PyMem_Free()``, ``PyObject_Malloc()``,
+``PyObject_Realloc()`` and ``PyObject_Free()`` using macros. The new
+allocator allocates a larger buffer and writes a pattern to detect buffer
+underflow, buffer overflow and use after free (by filling the buffer with
+the byte ``0xDB``). It uses the original ``PyObject_Malloc()``
+function to allocate memory. So ``PyMem_Malloc()`` and
+``PyMem_Realloc()`` indirectly call``PyObject_Malloc()`` and
+``PyObject_Realloc()``.
+
+This PEP redesigns the debug checks as hooks on the existing allocators
+in debug mode. Examples of call traces without the hooks:
+
+* ``PyMem_RawMalloc()`` => ``_PyMem_RawMalloc()`` => ``malloc()``
+* ``PyMem_Realloc()`` => ``_PyMem_RawRealloc()`` => ``realloc()``
+* ``PyObject_Free()`` => ``_PyObject_Free()``
+
+Call traces when the hooks are installed (debug mode):
+
+* ``PyMem_RawMalloc()`` => ``_PyMem_DebugMalloc()``
+  => ``_PyMem_RawMalloc()`` => ``malloc()``
+* ``PyMem_Realloc()`` => ``_PyMem_DebugRealloc()``
+  => ``_PyMem_RawRealloc()`` => ``realloc()``
+* ``PyObject_Free()`` => ``_PyMem_DebugFree()``
+  => ``_PyObject_Free()``
+
+As a result, ``PyMem_Malloc()`` and ``PyMem_Realloc()`` now call
+``malloc()`` and ``realloc()`` in both release mode and debug mode,
+instead of calling ``PyObject_Malloc()`` and ``PyObject_Realloc()`` in
+debug mode.
+
+When at least one memory allocator is replaced with
+``PyMem_SetAllocator()``, the ``PyMem_SetupDebugHooks()`` function must
+be called to reinstall the debug hooks on top on the new allocator.
+
+
+Don't call malloc() directly anymore
+------------------------------------
+
+``PyObject_Malloc()`` falls back on ``PyMem_Malloc()`` instead of
+``malloc()`` if size is greater or equal than 512 bytes, and
+``PyObject_Realloc()`` falls back on ``PyMem_Realloc()`` instead of
+``realloc()``
+
+Direct calls to ``malloc()`` are replaced with ``PyMem_Malloc()``, or
+``PyMem_RawMalloc()`` if the GIL is not held.
+
+External libraries like zlib or OpenSSL can be configured to allocate memory
+using ``PyMem_Malloc()`` or ``PyMem_RawMalloc()``. If the allocator of a
+library can only be replaced globally (rather than on an object-by-object
+basis), it shouldn't be replaced when Python is embedded in an application.
+
+For the "track memory usage" use case, it is important to track memory
+allocated in external libraries to have accurate reports, because these
+allocations can be large (e.g. they can raise a ``MemoryError`` exception)
+and would otherwise be missed in memory usage reports.
+
+
+Examples
+========
+
+Use case 1: Replace Memory Allocators, keep pymalloc
+----------------------------------------------------
+
+Dummy example wasting 2 bytes per memory block,
+and 10 bytes per *pymalloc* arena::
+
+    #include <stdlib.h>
+
+    size_t alloc_padding = 2;
+    size_t arena_padding = 10;
+
+    void* my_malloc(void *ctx, size_t size)
+    {
+        int padding = *(int *)ctx;
+        return malloc(size + padding);
+    }
+
+    void* my_realloc(void *ctx, void *ptr, size_t new_size)
+    {
+        int padding = *(int *)ctx;
+        return realloc(ptr, new_size + padding);
+    }
+
+    void my_free(void *ctx, void *ptr)
+    {
+        free(ptr);
+    }
+
+    void* my_alloc_arena(void *ctx, size_t size)
+    {
+        int padding = *(int *)ctx;
+        return malloc(size + padding);
+    }
+
+    void my_free_arena(void *ctx, void *ptr, size_t size)
+    {
+        free(ptr);
+    }
+
+    void setup_custom_allocator(void)
+    {
+        PyMemAllocator alloc;
+        PyObjectArenaAllocator arena;
+
+        alloc.ctx = &alloc_padding;
+        alloc.malloc = my_malloc;
+        alloc.realloc = my_realloc;
+        alloc.free = my_free;
+
+        PyMem_SetAllocator(PYMEM_DOMAIN_RAW, &alloc);
+        PyMem_SetAllocator(PYMEM_DOMAIN_MEM, &alloc);
+        /* leave PYMEM_DOMAIN_OBJ unchanged, use pymalloc */
+
+        arena.ctx = &arena_padding;
+        arena.alloc = my_alloc_arena;
+        arena.free = my_free_arena;
+        PyObject_SetArenaAllocator(&arena);
+
+        PyMem_SetupDebugHooks();
+    }
+
+
+Use case 2: Replace Memory Allocators, override pymalloc
+--------------------------------------------------------
+
+If you have a dedicated allocator optimized for allocations of objects
+smaller than 512 bytes with a short lifetime, pymalloc can be overriden
+(replace ``PyObject_Malloc()``).
+
+Dummy example wasting 2 bytes per memory block::
+
+    #include <stdlib.h>
+
+    size_t padding = 2;
+
+    void* my_malloc(void *ctx, size_t size)
+    {
+        int padding = *(int *)ctx;
+        return malloc(size + padding);
+    }
+
+    void* my_realloc(void *ctx, void *ptr, size_t new_size)
+    {
+        int padding = *(int *)ctx;
+        return realloc(ptr, new_size + padding);
+    }
+
+    void my_free(void *ctx, void *ptr)
+    {
+        free(ptr);
+    }
+
+    void setup_custom_allocator(void)
+    {
+        PyMemAllocator alloc;
+        alloc.ctx = &padding;
+        alloc.malloc = my_malloc;
+        alloc.realloc = my_realloc;
+        alloc.free = my_free;
+
+        PyMem_SetAllocator(PYMEM_DOMAIN_RAW, &alloc);
+        PyMem_SetAllocator(PYMEM_DOMAIN_MEM, &alloc);
+        PyMem_SetAllocator(PYMEM_DOMAIN_OBJ, &alloc);
+
+        PyMem_SetupDebugHooks();
+    }
+
+The *pymalloc* arena does not need to be replaced, because it is no more
+used by the new allocator.
+
+
+Use case 3: Setup Hooks On Memory Block Allocators
+--------------------------------------------------
+
+Example to setup hooks on all memory block allocators::
+
+    struct {
+        PyMemAllocator raw;
+        PyMemAllocator mem;
+        PyMemAllocator obj;
+        /* ... */
+    } hook;
+
+    static void* hook_malloc(void *ctx, size_t size)
+    {
+        PyMemAllocator *alloc = (PyMemAllocator *)ctx;
+        void *ptr;
+        /* ... */
+        ptr = alloc->malloc(alloc->ctx, size);
+        /* ... */
+        return ptr;
+    }
+
+    static void* hook_realloc(void *ctx, void *ptr, size_t new_size)
+    {
+        PyMemAllocator *alloc = (PyMemAllocator *)ctx;
+        void *ptr2;
+        /* ... */
+        ptr2 = alloc->realloc(alloc->ctx, ptr, new_size);
+        /* ... */
+        return ptr2;
+    }
+
+    static void hook_free(void *ctx, void *ptr)
+    {
+        PyMemAllocator *alloc = (PyMemAllocator *)ctx;
+        /* ... */
+        alloc->free(alloc->ctx, ptr);
+        /* ... */
+    }
+
+    void setup_hooks(void)
+    {
+        PyMemAllocator alloc;
+        static int installed = 0;
+
+        if (installed)
+            return;
+        installed = 1;
+
+        alloc.malloc = hook_malloc;
+        alloc.realloc = hook_realloc;
+        alloc.free = hook_free;
+        PyMem_GetAllocator(PYMEM_DOMAIN_RAW, &hook.raw);
+        PyMem_GetAllocator(PYMEM_DOMAIN_MEM, &hook.mem);
+        PyMem_GetAllocator(PYMEM_DOMAIN_OBJ, &hook.obj);
+
+        alloc.ctx = &hook.raw;
+        PyMem_SetAllocator(PYMEM_DOMAIN_RAW, &alloc);
+
+        alloc.ctx = &hook.mem;
+        PyMem_SetAllocator(PYMEM_DOMAIN_MEM, &alloc);
+
+        alloc.ctx = &hook.obj;
+        PyMem_SetAllocator(PYMEM_DOMAIN_OBJ, &alloc);
+    }
+
+.. note::
+   ``PyMem_SetupDebugHooks()`` does not need to be called because
+   memory allocator are not replaced: the debug checks on memory
+   block allocators are installed automatically at startup.
+
+
+Performances
+============
+
+The implementation of this PEP (issue #3329) has no visible overhead on
+the Python benchmark suite.
+
+Results of the `Python benchmarks suite
+<http://hg.python.org/benchmarks>`_ (-b 2n3): some tests are 1.04x
+faster, some tests are 1.04 slower. Results of pybench microbenchmark:
+"+0.1%" slower globally (diff between -4.9% and +5.6%).
+
+The full output of benchmarks is attached to the issue #3329.
+
+
+Rejected Alternatives
+=====================
+
+More specific functions to get/set memory allocators
+----------------------------------------------------
+
+It was originally proposed a larger set of C API functions, with one pair
+of functions for each allocator domain:
+
+* ``void PyMem_GetRawAllocator(PyMemAllocator *allocator)``
+* ``void PyMem_GetAllocator(PyMemAllocator *allocator)``
+* ``void PyObject_GetAllocator(PyMemAllocator *allocator)``
+* ``void PyMem_SetRawAllocator(PyMemAllocator *allocator)``
+* ``void PyMem_SetAllocator(PyMemAllocator *allocator)``
+* ``void PyObject_SetAllocator(PyMemAllocator *allocator)``
+
+This alternative was rejected because it is not possible to write
+generic code with more specific functions: code must be duplicated for
+each memory allocator domain.
+
+
+Make PyMem_Malloc() reuse PyMem_RawMalloc() by default
+------------------------------------------------------
+
+If ``PyMem_Malloc()`` called ``PyMem_RawMalloc()`` by default,
+calling ``PyMem_SetAllocator(PYMEM_DOMAIN_RAW, alloc)`` would also
+patch ``PyMem_Malloc()`` indirectly.
+
+This alternative was rejected because ``PyMem_SetAllocator()`` would
+have a different behaviour depending on the domain. Always having the
+same behaviour is less error-prone.
+
+
+Add a new PYDEBUGMALLOC environment variable
+--------------------------------------------
+
+It was proposed to add a new ``PYDEBUGMALLOC`` environment variable to
+enable debug checks on memory block allocators. It would have had the same
+effect as calling the ``PyMem_SetupDebugHooks()``, without the need
+to write any C code.  Another advantage is to allow to enable debug checks
+even in release mode: debug checks would always be compiled in, but only
+enabled when the environment variable is present and non-empty.
+
+This alternative was rejected because a new environment variable would
+make Python initialization even more complex. `PEP 432
+<http://www.python.org/dev/peps/pep-0432/>`_ tries to simplify the
+CPython startup sequence.
+
+
+Use macros to get customizable allocators
+-----------------------------------------
+
+To have no overhead in the default configuration, customizable
+allocators would be an optional feature enabled by a configuration
+option or by macros.
+
+This alternative was rejected because the use of macros implies having
+to recompile extensions modules to use the new allocator and allocator
+hooks. Not having to recompile Python nor extension modules makes debug
+hooks easier to use in practice.
+
+
+Pass the C filename and line number
+-----------------------------------
+
+Define allocator functions as macros using ``__FILE__`` and ``__LINE__``
+to get the C filename and line number of a memory allocation.
+
+Example of ``PyMem_Malloc`` macro with the modified
+``PyMemAllocator`` structure::
+
+    typedef struct {
+        /* user context passed as the first argument
+           to the 3 functions */
+        void *ctx;
+
+        /* allocate a memory block */
+        void* (*malloc) (void *ctx, const char *filename, int lineno,
+                         size_t size);
+
+        /* allocate or resize a memory block */
+        void* (*realloc) (void *ctx, const char *filename, int lineno,
+                          void *ptr, size_t new_size);
+
+        /* release a memory block */
+        void (*free) (void *ctx, const char *filename, int lineno,
+                      void *ptr);
+    } PyMemAllocator;
+
+    void* _PyMem_MallocTrace(const char *filename, int lineno,
+                             size_t size);
+
+    /* the function is still needed for the Python stable ABI */
+    void* PyMem_Malloc(size_t size);
+
+    #define PyMem_Malloc(size) \
+            _PyMem_MallocTrace(__FILE__, __LINE__, size)
+
+The GC allocator functions would also have to be patched. For example,
+``_PyObject_GC_Malloc()`` is used in many C functions and so objects of
+different types would have the same allocation location.
+
+This alternative was rejected because passing a filename and a line
+number to each allocator makes the API more complex: pass 3 new
+arguments (ctx, filename, lineno) to each allocator function, instead of
+just a context argument (ctx). Having to also modify GC allocator
+functions adds too much complexity for a little gain.
+
+
+GIL-free PyMem_Malloc()
+-----------------------
+
+In Python 3.3, when Python is compiled in debug mode, ``PyMem_Malloc()``
+indirectly calls ``PyObject_Malloc()`` which requires the GIL to be
+held (it isn't thread-safe).  That's why ``PyMem_Malloc()`` must be called
+with the GIL held.
+
+This PEP changes ``PyMem_Malloc()``: it now always calls ``malloc()``
+rather than ``PyObject_Malloc()``.  The "GIL must be held" restriction
+could therefore be removed from ``PyMem_Malloc()``.
+
+This alternative was rejected because allowing to call
+``PyMem_Malloc()`` without holding the GIL can break applications
+which setup their own allocators or allocator hooks.  Holding the GIL is
+convenient to develop a custom allocator: no need to care about other
+threads.  It is also convenient for a debug allocator hook: Python
+objects can be safely inspected, and the C API may be used for reporting.
+
+Moreover, calling ``PyGILState_Ensure()`` in a memory allocator has
+unexpected behaviour, especially at Python startup and when creating of a
+new Python thread state.  It is better to free custom allocators of
+the responsibility of acquiring the GIL.
+
+
+Don't add PyMem_RawMalloc()
+---------------------------
+
+Replace ``malloc()`` with ``PyMem_Malloc()``, but only if the GIL is
+held.  Otherwise, keep ``malloc()`` unchanged.
+
+The ``PyMem_Malloc()`` is used without the GIL held in some Python
+functions.  For example, the ``main()`` and ``Py_Main()`` functions of
+Python call ``PyMem_Malloc()`` whereas the GIL do not exist yet. In this
+case, ``PyMem_Malloc()`` would be replaced with ``malloc()`` (or
+``PyMem_RawMalloc()``).
+
+This alternative was rejected because ``PyMem_RawMalloc()`` is required
+for accurate reports of the memory usage. When a debug hook is used to
+track the memory usage, the memory allocated by direct calls to
+``malloc()`` cannot be tracked. ``PyMem_RawMalloc()`` can be hooked and
+so all the memory allocated by Python can be tracked, including
+memory allocated without holding the GIL.
+
+
+Use existing debug tools to analyze memory use
+----------------------------------------------
+
+There are many existing debug tools to analyze memory use. Some
+examples: `Valgrind <http://valgrind.org/>`_, `Purify
+<http://ibm.com/software/awdtools/purify/>`_, `Clang AddressSanitizer
+<http://code.google.com/p/address-sanitizer/>`_, `failmalloc
+<http://www.nongnu.org/failmalloc/>`_, etc.
+
+The problem is to retrieve the Python object related to a memory pointer
+to read its type and/or its content. Another issue is to retrieve the
+source of the memory allocation: the C backtrace is usually useless
+(same reasoning than macros using ``__FILE__`` and ``__LINE__``, see
+`Pass the C filename and line number`_), the Python filename and line
+number (or even the Python traceback) is more useful.
+
+This alternative was rejected because classic tools are unable to
+introspect Python internals to collect such information. Being able to
+setup a hook on allocators called with the GIL held allows to collect a
+lot of useful data from Python internals.
+
+
+Add a msize() function
+----------------------
+
+Add another function to ``PyMemAllocator`` and
+``PyObjectArenaAllocator`` structures::
+
+    size_t msize(void *ptr);
+
+This function returns the size of a memory block or a memory mapping.
+Return (size_t)-1 if the function is not implemented or if the pointer
+is unknown (ex: NULL pointer).
+
+On Windows, this function can be implemented using ``_msize()`` and
+``VirtualQuery()``.
+
+The function can be used to implement a hook tracking the memory usage.
+The ``free()`` method of an allocator only gets the address of a memory
+block, whereas the size of the memory block is required to update the
+memory usage.
+
+The additional ``msize()`` function was rejected because only few
+platforms implement it. For example, Linux with the GNU libc does not
+provide a function to get the size of a memory block. ``msize()`` is not
+currently used in the Python source code. The function would only be
+used to track memory use, and make the API more complex. A debug hook
+can implement the function internally, there is no need to add it to
+``PyMemAllocator`` and ``PyObjectArenaAllocator`` structures.
+
+
+No context argument
+-------------------
+
+Simplify the signature of allocator functions, remove the context
+argument:
+
+* ``void* malloc(size_t size)``
+* ``void* realloc(void *ptr, size_t new_size)``
+* ``void free(void *ptr)``
+
+It is likely for an allocator hook to be reused for
+``PyMem_SetAllocator()`` and ``PyObject_SetAllocator()``, or even
+``PyMem_SetRawAllocator()``, but the hook must call a different function
+depending on the allocator. The context is a convenient way to reuse the
+same custom allocator or hook for different Python allocators.
+
+In C++, the context can be used to pass *this*.
+
+
+External Libraries
+==================
+
+Examples of API used to customize memory allocators.
+
+Libraries used by Python:
+
+* OpenSSL: `CRYPTO_set_mem_functions()
+  <http://git.openssl.org/gitweb/?p=openssl.git;a=blob;f=crypto/mem.c;h=f7984fa958eb1edd6c61f6667f3f2b29753be662;hb=HEAD#l124>`_
+  to set memory management functions globally
+* expat: `parserCreate()
+  <http://hg.python.org/cpython/file/cc27d50bd91a/Modules/expat/xmlparse.c#l724>`_
+  has a per-instance memory handler
+* zlib: `zlib 1.2.8 Manual <http://www.zlib.net/manual.html#Usage>`_,
+  pass an opaque pointer
+* bz2: `bzip2 and libbzip2, version 1.0.5
+  <http://www.bzip.org/1.0.5/bzip2-manual-1.0.5.html>`_,
+  pass an opaque pointer
+* lzma: `LZMA SDK - How to Use
+  <http://www.asawicki.info/news_1368_lzma_sdk_-_how_to_use.html>`_,
+  pass an opaque pointer
+* lipmpdec: no opaque pointer (classic malloc API)
+
+Other libraries:
+
+* glib: `g_mem_set_vtable()
+  <http://developer.gnome.org/glib/unstable/glib-Memory-Allocation.html#g-mem-set-vtable>`_
+* libxml2:
+  `xmlGcMemSetup() <http://xmlsoft.org/html/libxml-xmlmemory.html>`_,
+  global
+* Oracle's OCI: `Oracle Call Interface Programmer's Guide,
+  Release 2 (9.2)
+  <http://docs.oracle.com/cd/B10501_01/appdev.920/a96584/oci15re4.htm>`_,
+  pass an opaque pointer
+
+The new *ctx* parameter of this PEP was inspired by the API of zlib and
+Oracle's OCI libraries.
+
+See also the `GNU libc: Memory Allocation Hooks
+<http://www.gnu.org/software/libc/manual/html_node/Hooks-for-Malloc.html>`_
+which uses a different approach to hook memory allocators.
+
+
+Memory Allocators
+=================
+
+The C standard library provides the well known ``malloc()`` function.
+Its implementation depends on the platform and of the C library. The GNU
+C library uses a modified ptmalloc2, based on "Doug Lea's Malloc"
+(dlmalloc). FreeBSD uses `jemalloc
+<http://www.canonware.com/jemalloc/>`_. Google provides *tcmalloc* which
+is part of `gperftools <http://code.google.com/p/gperftools/>`_.
+
+``malloc()`` uses two kinds of memory: heap and memory mappings. Memory
+mappings are usually used for large allocations (ex: larger than 256
+KB), whereas the heap is used for small allocations.
+
+On UNIX, the heap is handled by ``brk()`` and ``sbrk()`` system calls,
+and it is contiguous.  On Windows, the heap is handled by
+``HeapAlloc()`` and can be discontiguous. Memory mappings are handled by
+``mmap()`` on UNIX and ``VirtualAlloc()`` on Windows, they can be
+discontiguous.
+
+Releasing a memory mapping gives back immediatly the memory to the
+system. On UNIX, the heap memory is only given back to the system if the
+released block is located at the end of the heap. Otherwise, the memory
+will only be given back to the system when all the memory located after
+the released memory is also released.
+
+To allocate memory on the heap, an allocator tries to reuse free space.
+If there is no contiguous space big enough, the heap must be enlarged,
+even if there is more free space than required size.  This issue is
+called the "memory fragmentation": the memory usage seen by the system
+is higher than real usage. On Windows, ``HeapAlloc()`` creates
+a new memory mapping with ``VirtualAlloc()`` if there is not enough free
+contiguous memory.
+
+CPython has a *pymalloc* allocator for allocations smaller than 512
+bytes. This allocator is optimized for small objects with a short
+lifetime. It uses memory mappings called "arenas" with a fixed size of
+256 KB.
+
+Other allocators:
+
+* Windows provides a `Low-fragmentation Heap
+  <http://msdn.microsoft.com/en-us/library/windows/desktop/aa366750%28v=vs.85%29.aspx>`_.
+
+* The Linux kernel uses `slab allocation
+  <http://en.wikipedia.org/wiki/Slab_allocation>`_.
+
+* The glib library has a `Memory Slice API
+  <https://developer.gnome.org/glib/unstable/glib-Memory-Slices.html>`_:
+  efficient way to allocate groups of equal-sized chunks of memory
+
+This PEP allows to choose exactly which memory allocator is used for your
+application depending on its usage of the memory (number of allocations,
+size of allocations, lifetime of objects, etc.).
+
+
+Links
+=====
+
+CPython issues related to memory allocation:
+
+* `Issue #3329: Add new APIs to customize memory allocators
+  <http://bugs.python.org/issue3329>`_
+* `Issue #13483: Use VirtualAlloc to allocate memory arenas
+  <http://bugs.python.org/issue13483>`_
+* `Issue #16742: PyOS_Readline drops GIL and calls PyOS_StdioReadline,
+  which isn't thread safe <http://bugs.python.org/issue16742>`_
+* `Issue #18203: Replace calls to malloc() with PyMem_Malloc() or
+  PyMem_RawMalloc() <http://bugs.python.org/issue18203>`_
+* `Issue #18227: Use Python memory allocators in external libraries like
+  zlib or OpenSSL <http://bugs.python.org/issue18227>`_
+
+Projects analyzing the memory usage of Python applications:
+
+* `pytracemalloc
+  <https://pypi.python.org/pypi/pytracemalloc>`_
+* `Meliae: Python Memory Usage Analyzer
+  <https://pypi.python.org/pypi/meliae>`_
+* `Guppy-PE: umbrella package combining Heapy and GSL
+  <http://guppy-pe.sourceforge.net/>`_
+* `PySizer (developed for Python 2.4)
+  <http://pysizer.8325.org/>`_
+
+
+Copyright
+=========
+
+This document has been placed into the public domain.
+
