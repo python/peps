@@ -26,67 +26,92 @@ Peeking in the class ``__dict__`` works for regular classes, but can
 cause problems when a class dynamicly looks up attributes in a
 ``__getattribute__`` method.
 
-The new hook makes it possible to introduce the same customization for
-attribute lookup through the `super class`_.
+This new hook makes it possible to affect attribute lookup for both normal
+attribute lookup and lookup through the `super class`_.
 
 
 The superclass attribute lookup hook
 ====================================
 
-In C code
----------
-
-A new slot ``tp_getattro_super`` is added to the ``PyTypeObject`` struct. The
-``tp_getattro`` slot for super will call this slot when it is not ``NULL``,
-and will raise an exception when it is not set (which shouldn't happen because
-the method is implemented for :class:`object`).
-
-The slot has the following prototype::
-
-    PyObject* (*getattrosuperfunc)(PyTypeObject* cls, PyObject* name,
-        PyObject* object, PyObject* owner);
-
-The function should perform attribute lookup on *object* for *name*, but only
-looking in type *tp* (which will be one of the types on the MRO for *self*)
-and without looking in the instance *__dict__*.
-
-The function returns ``NULL`` when the attribute cannot be found, and raises and
-exception. Exception other than ``AttributeError`` will cause failure of super's
-attribute resolution.
-
-The implementation of the slot for the :class:`object` type is
-``PyObject_GenericGetAttrSuper``, which peeks in the ``tp_dict`` for *cls*.
-
-Note that *owner* and *object* will be the same object when using a
-class-mode super.
-
+Both ``super.__getattribute__`` and ``object.__getattribute__`` (or
+`PyObject_GenericGetAttr`_ in C code) walk an object's MRO and peek in the
+class' ``__dict__`` to look up attributes. A way to affect this lookup is
+using a method on the meta class for the type, that by default looks up
+the name in the class ``__dict__``.
 
 In Python code
 --------------
 
-A Python class can contain a definition for a static method
-``__getattribute_super__`` with the following prototype::
+A meta type can define a method ``__locallookup__`` that is called during
+attribute resolution by both ``super.__getattribute__`` and ``object.__getattribute``::
 
-   def __getattribute_super__(cls, name, object, owner): pass
+    class MetaType (type):
 
-The method should perform attribute lookup for *name* on instance *self* while
-only looking at *cls* (it should not look in super classes or the instance
-*__dict__*
+        def __locallookup__(cls, name):
+            try:
+                return cls.__dict__[name]
+            except KeyError:
+                raise AttributeError(name) from None
 
-XXX: I haven't got a clue at the moment if the method should be an
-instance-, class- or staticmethod. The prototype uses a staticmethod.
+The example method above is pseudo code for the implementation of this method on
+`type`_ (the actual implementation is in C, and doesn't suffer from the recursion
+problem in this example).
 
-XXX: My prototype automagicly makes this a static method, just like __new__ is
-made into a static method. That's more convenient, but also (too?) magical.
+The ``__locallookup__`` method has as its arguments a class and the name of the attribute
+that is looked up. It should return the value of the attribute without invoking descriptors,
+or raise `AttributeError`_ when the name cannot be found.
 
-XXX: Should this raise AttributeError or return a magic value to signal that
-an attribute cannot be found (such as NotImplemented, used in the comparison
-operators)? I'm currently using an exception, a magical return value would
-be slightly more efficient because the exception machinery is not invoked.
+
+In C code
+---------
+
+A new slot ``tp_locallookup`` is added to the ``PyTypeObject`` struct, this slot
+corresponds to the ``__locallookup__`` method on `type`_.
+
+The slot has the following prototype::
+
+    PyObject* (*locallookupfunc)(PyTypeObject* cls, PyObject* name);
+
+This method should lookup *name* in the namespace of *cls*, without looking at superclasses,
+and should not invoke descriptors. The method returns ``NULL`` without setting an exception
+when the *name* cannot be found, and returns a new reference otherwise (not a borrowed reference).
+
+
+Usage of this hook
+------------------
+
+The new method will be defined for `type`_, and will peek in the class dictionary::
+
+    static PyObject*
+    type_locallookup(PyTypeObject* cls, PyObject* name)
+    {
+        PyObject* res;
+        if (!cls->tp_dict) {
+	    return NULL;
+	}
+
+	res = PyDict_GetItem(cls, name);
+	Py_XINCREF(res);
+	return res;
+    }
+
+The new method will be used by both `PyObject_GenericGetAttr`_ and
+``super.__getattribute__`` instead of peeking in a type's ``tp_dict``.
 
 
 Alternative proposals
 ---------------------
+
+``__getattribute_super__``
+..........................
+
+An earlier version of this PEP used the following static method on classes::
+
+    def __getattribute_super__(cls, name, object, owner): pass
+
+This method performed name lookup as well as invoking descriptors and was necessarily
+limited to working only with ``super.__getattribute__``.
+
 
 Reuse ``tp_getattro``
 .....................
@@ -96,7 +121,7 @@ easier to understand.  A comment on `Issue 18181`_ asked about reusing the
 ``tp_getattro`` slot, that is super could call the ``tp_getattro`` slot of all
 methods along the MRO.
 
-AFAIK that won't work because ``tp_getattro`` will look in the instance
+That won't work because ``tp_getattro`` will look in the instance
 ``__dict__`` before it tries to resolve attributes using classes in the MRO.
 This would mean that using ``tp_getattro`` instead of peeking the class
 dictionaries changes the semantics of the `super class`_.
@@ -107,28 +132,16 @@ Open Issues
 
 * The names of the new slot and magic method are far from settled.
 
-* I'm not too happy with the prototype for the new hook.
-
-* Should ``__getattribute_super__`` be a class method instead?
-
-  -> Yes? The method looks up a named attribute name of an object in
-     a specific class. Is also likely needed to deal with @classmethod
-     and super(Class, Class)
-
-* Should ``__getattribute_super__`` be defined on object?
-
-  -> Yes: makes it easier to delegate to the default implementation
-
-* This doesn't necessarily work for class method super class
-   (e.g. super(object, object))...
+* Should the python method raise an exception or return a magic value (such as the
+  `NotImplemented`_ return value used by comparison operators). The latter could be
+  slightly faster because it doesn't have to overhead of setting up exception state, but
+  makes it impossible to use that value as an attribute on a class.
 
 
 References
 ==========
 
-* `Issue 18181`_ contains a prototype implementation
-
-  The prototype uses different names than this proposal.
+* `Issue 18181`_ contains a prototype implementation (for an older version of this proposal)
 
 
 Copyright
@@ -138,24 +151,12 @@ This document has been placed in the public domain.
 
 .. _`Issue 18181`: http://bugs.python.org/issue18181
 
-.. _`super class`: http://docs.python.org/3/library/functions.html?highlight=super#super
+.. _`super class`: http://docs.python.org/3/library/functions.html#super
 
-Changes
-=======
+.. _`NotImplemented`: http://docs.python.org/3/library/constants.html#NotImplemented
 
-* 3-jul-2013:
+.. _`PyObject_GenericGetAttr`: http://docs.python.org/3/c-api/object.html#PyObject_GenericGetAttr
 
-  + added note question about having object.__getattribute_super__
+.. _`type`: http://docs.python.org/3/library/functions.html#type
 
-  + added note about class super (super(Cls, Cls).classmethod)
-
-  + changed to API for the python and C functions:
-
-    - argument order
-
-    - now a class method
-
-    - added 'owner' argument (same as object.__get__)
-
- + added PyObject_GenericGetAttroSuper
-
+.. _`AttributeError`: http://docs.python.org/3/library/exceptions.html#AttributeError
