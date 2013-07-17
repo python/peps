@@ -1,5 +1,5 @@
 PEP: 447
-Title: Hooking into super attribute resolution
+Title: Add __locallookup__ method to metaclass
 Version: $Revision$
 Last-Modified: $Date$
 Author: Ronald Oussoren <ronaldoussoren@mac.com>
@@ -13,21 +13,39 @@ Post-History: 2-Jul-2013, 15-Jul-2013
 Abstract
 ========
 
-In current python releases the attribute resolution of the `super class`_
-peeks in the ``__dict__`` attribute of classes on the MRO to look
-for attributes. This PEP introduces a hook that classes can use
-to override that behavior for specific classes.
-
+Currently ``object.__getattribute__`` and ``super.__getattribute__`` peek
+in the ``__dict__`` of classes on the MRO for a class when looking for
+an attribute. This PEP adds an optional ``__locallookup__`` method to
+a metaclass that can be used to override this behavior.
 
 Rationale
 =========
 
-Peeking in the class ``__dict__`` works for regular classes, but can
-cause problems when a class dynamically looks up attributes in a
-``__getattribute__`` method.
+It is currently not possible to influence how the `super class`_ looks
+up attributes (that is, ``super.__getattribute__`` unconditionally
+peeks in the class ``__dict__``), and that can be problematic for
+dynamic classes that can grow new methods on demand.
 
-This new hook makes it possible to affect attribute lookup for both normal
-attribute lookup and lookup through the `super class`_.
+The ``__locallookup__`` method makes it possible to dynamicly add
+attributes even when looking them up using the `super class`_.
+
+The new method affects ``object.__getattribute__`` (and
+`PyObject_GenericGetAttr`_) as well for consistency.
+
+Background
+----------
+
+The current behavior of ``super.__getattribute__`` causes problems for
+classes that are dynamic proxies for other (non-Python) classes or types,
+an example of which is `PyObjC`_. PyObjC creates a Python class for every
+class in the Objective-C runtime, and looks up methods in the Objective-C
+runtime when they are used. This works fine for normal access, but doesn't
+work for access with ``super`` objects. Because of this PyObjC currently
+includes a custom ``super`` that must be used with its classes.
+
+The API in this PEP makes it possible to remove the custom ``super`` and
+simplifies the implementation because the custom lookup behavior can be
+added in a central location.
 
 
 The superclass attribute lookup hook
@@ -53,13 +71,33 @@ attribute resolution by both ``super.__getattribute__`` and ``object.__getattrib
             except KeyError:
                 raise AttributeError(name) from None
 
-The example method above is pseudocode for the implementation of this method on
-`type`_ (the actual implementation is in C, and doesn't suffer from the recursion
-problem in this example).
-
 The ``__locallookup__`` method has as its arguments a class and the name of the attribute
 that is looked up. It should return the value of the attribute without invoking descriptors,
 or raise `AttributeError`_ when the name cannot be found.
+
+The `type`_ class does not provide an implementation for ``__locallookup__``, primarily
+to enable some optimizations in the Python implementation.
+
+Example usage
+.............
+
+The code below implements a silly metaclass that redirects attribute lookup to uppercase
+versions of names::
+
+    class UpperCaseAccess (type):
+
+        def __locallookup__(cls, name):
+	    return cls.__dict__[name.upper()]
+
+    class SillyObject (metaclass=UpperCaseAccess):
+        def m(self):
+	    return 42
+
+	def M(self):
+	    return "fourtytwo"
+
+    obj = SillyObject()
+    assert obj.m() == "fortytwo"
 
 
 In C code
@@ -80,23 +118,27 @@ when the *name* cannot be found, and returns a new reference otherwise (not a bo
 Usage of this hook
 ------------------
 
-The new method will be defined for `type`_, and will peek in the class dictionary::
+The new method is optional and will not be defined on `type`_. Both ``super.__getattribute__``
+and ``object.__getattribute__``/`PyObject_GenericGetAttr`_ (through ``_PyType_Lookup``) will use the
+the ``__locallookup__`` method when it is present in the meta type of a type on the MRO and will
+continue to peek in the type's ``__dict__`` when the meta type does not have a ``__locallookup``
+method.
 
-    static PyObject*
-    type_locallookup(PyTypeObject* cls, PyObject* name)
-    {
-        PyObject* res;
-        if (!cls->tp_dict) {
-	    return NULL;
-	}
+Other changes to the implementation
+...................................
 
-	res = PyDict_GetItem(cls, name);
-	Py_XINCREF(res);
-	return res;
-    }
+The change for `PyObject_GenericGetAttr`_ will be done by changing the private function
+``_PyType_Lookup``. This currently returns a borrowed reference, but must return a new
+reference when the ``__locallookup__`` method is present. Because of this ``_PyType_Lookup``
+will be renamed to ``_PyType_LookupName``, this will cause compile-time errors for all out-of-tree
+users of this private API.
 
-The new method will be used by both `PyObject_GenericGetAttr`_ and
-``super.__getattribute__`` instead of peeking in a type's ``tp_dict``.
+By making ``__locallookup_`` optional the implementation can continue to use the type attribute
+lookup cache for types that don't have a metaclass with this new method, which should minimize the
+performance impact of the change.
+
+**TODO**: run pybench, an possibly the full speedtest,  with and without this change and insert
+the results.
 
 
 Alternative proposals
@@ -127,32 +169,10 @@ This would mean that using ``tp_getattro`` instead of peeking the class
 dictionaries changes the semantics of the `super class`_.
 
 
-Open Issues
-===========
-
-* The names of the new slot and magic method are far from settled.
-
-* Should the python method raise an exception or return a magic value (such as the
-  `NotImplemented`_ return value used by comparison operators). The latter could be
-  slightly faster because it doesn't have to overhead of setting up exception state, but
-  makes it impossible to use that value as an attribute on a class.
-
-* The proposed change to `PyObject_GenericGetAttr`_ will probably cause problems with the
-  attribute lookup cache (MCACHE):
-
-  1. That code stores borrowed references, which won't work when the hook is present. That
-     is mostly fixable, but at the cost of possibly keeping garbage alive.
-
-  2. Caching isn't an option when a hook might execute arbitrary code (and there hence is
-     no reason to assume that the hooks return value won't change later on).
-
-     The only workaround I could find for this is to make the hook a fallback (that is,
-     more like ``__getattr__`` than ``__getattribute__``).
-
 References
 ==========
 
-* `Issue 18181`_ contains a partial prototype implementation
+* `Issue 18181`_ contains a prototype implementation
 
 
 Copyright
@@ -171,3 +191,7 @@ This document has been placed in the public domain.
 .. _`type`: http://docs.python.org/3/library/functions.html#type
 
 .. _`AttributeError`: http://docs.python.org/3/library/exceptions.html#AttributeError
+
+.. _`PyObjC`: http://pyobjc.sourceforge.net/
+
+.. _`classmethod`: http://docs.python.org/3/library/functions.html#classmethod
