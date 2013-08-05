@@ -1,162 +1,369 @@
 PEP: 446
-Title: Add new parameters to configure the inheritance of files and for non-blocking sockets
+Title: Make newly created file descriptors non-inheritable
 Version: $Revision$
 Last-Modified: $Date$
 Author: Victor Stinner <victor.stinner@gmail.com>
 Status: Draft
 Type: Standards Track
 Content-Type: text/x-rst
-Created: 3-July-2013
+Created: 5-August-2013
 Python-Version: 3.4
 
 
 Abstract
 ========
 
-This PEP proposes new portable parameters and functions to configure the
-inheritance of file descriptors and the non-blocking flag of sockets.
+Leaking file descriptors in child processes causes various annoying
+issues and is a known major security vulnerability. This PEP proposes to
+make all file descriptors created by Python non-inheritable by default
+to have a well defined and portable behaviour and reduce the risk of
+these issues. This PEP fixes also a race condition
+in multithreaded applications on operating systems supporting atomic
+flags to create non-inheritable file descriptors.
 
 
 Rationale
 =========
 
-Inheritance of file descriptors
+Inheritance of File Descriptors
 -------------------------------
 
-The inheritance of file descriptors in child processes can be configured
-on each file descriptor using a *close-on-exec* flag. By default, the
-close-on-exec flag is not set.
+Each operating system handles the inheritance of file descriptors
+differently. Windows creates non-inheritable file descriptors by
+default, whereas UNIX creates inheritable file descriptors. Python
+prefers the POSIX API over the native Windows API to have a single code
+base, and so creates inheritable file descriptors.
 
-On Windows, the close-on-exec flag is the inverse of ``HANDLE_FLAG_INHERIT``. File
-descriptors are not inherited if the ``bInheritHandles`` parameter of
-the ``CreateProcess()`` function is ``FALSE``, even if the
-``HANDLE_FLAG_INHERIT`` flag is set. If ``bInheritHandles`` is ``TRUE``,
-only file descriptors with ``HANDLE_FLAG_INHERIT`` flag set are
-inherited, others are not.
-
-On UNIX, the close-on-exec flag is ``O_CLOEXEC``. File descriptors with
-the ``O_CLOEXEC`` flag set are closed at the execution of a new program
-(ex: when calling ``execv()``).
-
-The ``O_CLOEXEC`` flag has no effect on ``fork()``, all file descriptors
-are inherited by the child process. Futhermore, most properties file
-descriptors are shared between the parent and the child processes,
-except file attributes which are duplicated (``O_CLOEXEC`` is the only
-file attribute).  Setting ``O_CLOEXEC`` flag of a file descriptor in the
-child process does not change the ``O_CLOEXEC`` flag of the file
-descriptor in the parent process.
+There is one exception: ``os.pipe()`` creates non-inheritable pipes on
+Windows, whereas it creates inheritable pipes on UNIX.  The reason comes
+from an implementation artifact: ``os.pipe()`` calls ``CreatePipe()`` on
+Windows, whereas it calls ``pipe()`` on UNIX. The call to
+``CreatePipe()`` was added in 1994, before the introduction of
+``pipe()`` in the POSIX API in Windows 98. The `issue #4708
+<http://bugs.python.org/issue4708>`_ proposes to change ``os.pipe()`` on
+Windows to create inheritable pipes.
 
 
-Issues of the inheritance of file descriptors
----------------------------------------------
+Inheritance of File Descriptors on Windows
+------------------------------------------
 
-Inheritance of file descriptors causes issues. For example, closing a
-file descriptor in the parent process does not release the resource
-(file, socket, ...), because the file descriptor is still open in the
-child process.
+On Windows, the native type of file objects are handles (C type
+``HANDLE``). These handles have a ``HANDLE_FLAG_INHERIT`` flag which
+defines if a handle can be inherited in a child process or not. For the
+POSIX API, the C runtime (CRT) provides also file descriptors (C type
+``int``). The handle of a file descriptor can be retrieved using
+``_get_osfhandle(fd)``. A file descriptor can be created from a handle
+using ``_open_osfhandle(handle)``.
 
-Leaking file descriptors is also a major security vulnerability. An
-untrusted child process can read sensitive data like passwords and take
-control of the parent process though leaked file descriptors. It is for
-example a known vulnerability to escape from a chroot.
+Handles are only inherited if their inheritable flag
+(``HANDLE_FLAG_INHERIT``) is set and if the ``bInheritHandles``
+parameter of `CreateProcess()
+<http://msdn.microsoft.com/en-us/library/windows/desktop/ms682425%28v=vs.85%29.aspx>`_
+is ``TRUE``. Using ``CreateProcess()``, all file descriptors except
+standard streams (0, 1, 2) are closed in the child process, even if
+``bInheritHandles`` is ``TRUE``. Using the ``spawnv()`` function, all
+inheritable file descriptors are inherited in the child process. This
+function uses the undocumented fields *cbReserved2* and *lpReserved2* of
+the `STARTUPINFO
+<http://msdn.microsoft.com/en-us/library/windows/desktop/ms686331%28v=vs.85%29.aspx>`_
+structure to pass an array of file descriptors.
+
+To replace standard streams (stdin, stdout, stderr), the
+``STARTF_USESTDHANDLES`` flag must be set in the *dwFlags* field of the
+``STARTUPINFO`` structure and the *bInheritHandles* parameter of
+``CreateProcess()`` must be set to ``TRUE``. So when at least one
+standard stream is replaced, all inheritable handles are inherited by
+the child process.
+
+See also:
+
+* `Handle Inheritance
+  <http://msdn.microsoft.com/en-us/library/windows/desktop/ms724466%28v=vs.85%29.aspx>`_
+* `Q315939: PRB: Child Inherits Unintended Handles During
+  CreateProcess Call <http://support.microsoft.com/kb/315939/en-us>`_
 
 
-Non-blocking sockets
+Inheritance of File Descriptors on UNIX
+---------------------------------------
+
+POSIX provides a *close-on-exec* flag on file descriptors to close
+automatically a file descriptor when the C function ``execv()`` is
+called. File descriptors with the *close-on-exec* flag unset are
+inherited in the child process, file descriptros with the flag set are
+closed in the child process.
+
+The flag can be set in two syscalls (one to get current flags, a second
+to set new flags) using ``fcntl()``::
+
+    int flags, res;
+    flags = fcntl(fd, F_GETFD);
+    if (flags == -1) { /* handle the error */ }
+    flags |= FD_CLOEXEC;
+    /* or "flags &= ~FD_CLOEXEC;" to clear the flag */
+    res = fcntl(fd, F_SETFD, flags);
+    if (res == -1) { /* handle the error */ }
+
+FreeBSD, Linux, Mac OS X, NetBSD, OpenBSD and QNX support also setting
+the flag in a single syscall using ioctl()::
+
+    int res;
+    res = ioctl(fd, FIOCLEX, 0);
+    if (!res) { /* handle the error */ }
+
+The *close-on-exec* flag has no effect on ``fork()``: all file
+descriptors are inherited by the child process. The `Python issue #16500
+"Add an atfork module" <http://bugs.python.org/issue16500>`_ proposes to
+add a new ``atfork`` module to execute code at fork. It may be used to
+close automatically file descriptors at fork.
+
+
+Issues with Inheritable File Descriptors
+----------------------------------------
+
+Most of the time, inheritable file descriptors "leaked" in child
+processes are not noticed, because they don't cause major bugs. It does
+not mean that these bugs must not be fixed.
+
+Two example of common issues with inherited file descriptors:
+
+* On Windows, a directory cannot be removed until all file handles open
+  in the directory are closed. It may explain why a temporary directory
+  cannot be removed. The same issue can be seen with files, except if
+  the file is temporary and was created with the ``FILE_SHARE_DELETE``
+  flag (``O_TEMPORARY`` mode for ``open()``).
+* If a listening socket is leaked in a child process, the socket address
+  cannot be reused until the parent and child processes terminated. For
+  example, if a web server spawn a new program to handle a process, and
+  the server restarts while the program is not done: the server cannot
+  start because the TCP port is still in use.
+
+Leaking file descriptors is also a well known security vulnerability:
+read
+`FIO42-C. Ensure files are properly closed when they are no longer
+needed
+<https://www.securecoding.cert.org/confluence/display/seccode/FIO42-C.+Ensure+files+are+properly+closed+when+they+are+no+longer+needed>`_
+of the CERT.
+
+An untrusted child process can read sensitive data like passwords and
+take control of the parent process though leaked file descriptors. It is
+for example a known vulnerability to escape from a chroot. With a leaked
+listening socket, a child process can accept new connections to read
+sensitive data.
+
+
+Atomic Creation of non-inheritable File Descriptors
+---------------------------------------------------
+
+In a multithreaded application, a inheritable file descriptor can be
+created just before a new program is spawn, before the file descriptor
+is made non-inheritable. In this case, fhe file descriptor is leaked to
+the child process. This race condition could be avoided if the file
+descriptor is created directly non-inheritable.
+
+FreeBSD, Linux, Mac OS X, Windows and many other operating systems
+support creating non-inheritable file descriptors with the inheritable
+flag cleared atomically at the creating of the file descriptor.
+
+On Windows, since at least Windows XP, the `SECURITY_ATTRIBUTES
+<http://msdn.microsoft.com/en-us/library/windows/desktop/aa379560%28v=vs.85%29.aspx>`_
+structure can be used to clear the ``HANDLE_FLAG_INHERIT`` flag: set
+*bInheritHandle* field to ``FALSE``. This structure cannot be used with
+sockets: a new ``WSA_FLAG_NO_HANDLE_INHERIT`` flag was added in Windows
+7 SP1 and Windows Server 2008 R2 SP1 for ``WSASocket()``. If this flag
+is used on an older Windows verison (ex: Windows XP SP3),
+``WSASocket()`` fails with ``WSAEPROTOTYPE``.
+
+On UNIX, new flags were added for files and sockets:
+
+ * ``O_CLOEXEC``: available on Linux (2.6.23), FreeBSD (8.3),
+   OpenBSD 5.0, Solaris 11, QNX, BeOS, next NetBSD release (6.1?).
+   This flag is part of POSIX.1-2008.
+ * ``SOCK_CLOEXEC`` flag for ``socket()`` and ``socketpair()``,
+   available on Linux 2.6.27, OpenBSD 5.2, NetBSD 6.0.
+ * ``fcntl()``: ``F_DUPFD_CLOEXEC`` flag, available on Linux 2.6.24,
+   OpenBSD 5.0, FreeBSD 9.1, NetBSD 6.0, Solaris 11. This flag is part
+   of POSIX.1-2008.
+ * ``fcntl()``: ``F_DUP2FD_CLOEXEC`` flag, available on FreeBSD 9.1
+   and Solaris 11.
+ * ``recvmsg()``: ``MSG_CMSG_CLOEXEC``, available on Linux 2.6.23,
+   NetBSD 6.0.
+
+On Linux older than 2.6.23, ``O_CLOEXEC`` flag is simply ignored. So
+``fcntl()`` must be called to check if the file descriptor is
+non-inheritable: ``O_CLOEXEC`` is not supported if the ``FD_CLOEXEC``
+flag is missing. On Linux older than 2.6.27, ``socket()`` or
+``socketpair()`` fail with ``errno`` set to ``EINVAL`` if the
+``SOCK_CLOEXEC`` flag is set in the socket type.
+
+New functions:
+
+ * ``dup3()``: available on Linux 2.6.27 (and glibc 2.9)
+ * ``pipe2()``: available on Linux 2.6.27 (and glibc 2.9)
+ * ``accept4()``: available on Linux 2.6.28 (and glibc 2.10)
+
+On Linux older than 2.6.28, ``accept4()`` fails with ``errno`` set to
+``ENOSYS``.
+
+Summary:
+
+===========================  ===============  ====================================
+Operating System             Atomic File      Atomic Socket
+===========================  ===============  ====================================
+FreeBSD                      8.3 (2012)       X
+Linux                        2.6.23 (2007)    2.6.27 (2008)
+Mac OS X                     10.8 (2012)      X
+NetBSD                       6.1 (?)          6.0 (2012)
+OpenBSD                      5.0 (2011)       5.2 (2012)
+Solaris                      11 (2011)        X
+Windows                      XP (2001)        Seven SP1 (2011), 2008 R2 SP1 (2011)
+===========================  ===============  ====================================
+
+Legend:
+
+* "Atomic File": first version of the operating system supporting
+  creating atomatically a non-inheritable file descriptor using
+  ``open()``
+* "Atomic Socket": first version of the operating system supporting
+  creating atomatically a non-inheritable socket
+* "X": not supported yet
+
+
+Status in Python 3.3
 --------------------
 
-To handle multiple network clients in a single thread, a multiplexing
-function like ``select()`` can be used. For best performances, sockets
-must be configured as non-blocking. Operations like ``send()`` and
-``recv()`` return an ``EAGAIN`` or ``EWOULDBLOCK`` error if the
-operation would block.
+Python 3.3 creates inheritable file descriptors on all platforms, except
+``os.pipe()`` which creates non-inheritable file descriptors on Windows.
 
-By default, newly created sockets are blocking. Setting the non-blocking
-mode requires additional system calls.
+New constants and functions related to the atomic creation of
+non-inheritable file descriptors were added to Python 3.3:
+``os.O_CLOEXEC``, ``os.pipe2()`` and ``socket.SOCK_CLOEXEC``.
 
-On UNIX, the blocking flag is ``O_NONBLOCK``: a pipe and a socket are
-non-blocking if the ``O_NONBLOCK`` flag is set.
+On UNIX, the ``subprocess`` module closes all file descriptors in the
+child process, except standard streams (0, 1, 2) and file descriptors of
+the *pass_fds* parameter. If the *close_fds* parameter is set to
+``False``, all inheritable file descriptors are inherited in the child
+process.
 
+On Windows, the ``subprocess`` closes all handles and file descriptors
+in the child process by default. If at least one standard stream (stdin,
+stdout or stderr) is replaced (ex: redirected into a pipe), all
+inheritable handles are inherited in the child process
 
-Setting flags at the creation of the file descriptor
-----------------------------------------------------
+All inheritable file descriptors are inherited by the child process
+using the functions of the ``os.execv*()`` and ``os.spawn*()`` families.
 
-Windows and recent versions of other operating systems like Linux
-support setting the close-on-exec flag directly at the creation of file
-descriptors, and close-on-exec and blocking flags at the creation of
-sockets.
+On UNIX, the ``multiprocessing`` module uses ``os.fork()`` and so all
+file descriptors are inherited by child processes.
 
-Setting these flags at the creation is atomic and avoids additional
-system calls.
+On Windows, all inheritable handles are inherited by the child process
+using the ``multiprocessing`` module, all file descriptors except
+standard streams are closed.
+
+Summary:
+
+===========================  =============  ==================  =============
+Module                       FD on UNIX     Handles on Windows  FD on Windows
+===========================  =============  ==================  =============
+subprocess, default          STD, pass_fds  none                STD
+subprocess, close_fds=False  all            all                 STD
+os.execv(), os.spawn()       all            all                 all
+multiprocessing              all            all                 STD
+===========================  =============  ==================  =============
+
+Legend:
+
+* "all": all *inheritable* file descriptors or handles are inherited in
+  the child process
+* "none": all handles are closed in the child process
+* "STD": only file descriptors 0 (stdin), 1 (stdout) and 2 (stderr) are
+  inherited in the child process
+* "pass_fds": file descriptors of the *pass_fds* parameter of the
+  subprocess are inherited
 
 
 Proposal
 ========
 
-New cloexec And blocking Parameters
------------------------------------
+Non-inheritable File Descriptors
+--------------------------------
 
-Add a new optional *cloexec* on functions creating file descriptors:
+The following functions are modified to make newly created file
+descriptors as non-inheritable by default:
 
-* ``io.FileIO``
-* ``io.open()``
-* ``open()``
-* ``os.dup()``
-* ``os.dup2()``
-* ``os.fdopen()``
-* ``os.open()``
-* ``os.openpty()``
-* ``os.pipe()``
-* ``select.devpoll()``
-* ``select.epoll()``
-* ``select.kqueue()``
-
-Add new optional *cloexec* and *blocking* parameters to functions
-creating sockets:
-
-* ``asyncore.dispatcher.create_socket()``
-* ``socket.socket()``
-* ``socket.socket.accept()``
-* ``socket.socket.dup()``
-* ``socket.socket.fromfd``
-* ``socket.socketpair()``
-
-The default value of *cloexec* is ``False`` and the default value of
-*blocking* is ``True``.
-
-The atomicity is not guaranteed. If the platform does not support
-setting close-on-exec and blocking flags at the creation of the file
-descriptor or socket, the flags are set using additional system calls.
+ * ``asyncore.dispatcher.create_socket()``
+ * ``io.FileIO``
+ * ``io.open()``
+ * ``open()``
+ * ``os.dup()``
+ * ``os.dup2()``
+ * ``os.fdopen()``
+ * ``os.open()``
+ * ``os.openpty()``
+ * ``os.pipe()``
+ * ``select.devpoll()``
+ * ``select.epoll()``
+ * ``select.kqueue()``
+ * ``socket.socket()``
+ * ``socket.socket.accept()``
+ * ``socket.socket.dup()``
+ * ``socket.socket.fromfd``
+ * ``socket.socketpair()``
 
 
 New Functions
 -------------
 
-Add new functions the get and set the close-on-exec flag of a file
-descriptor, available on all platforms:
+* ``os.get_inheritable(fd: int)``: return ``True`` if the file
+  descriptor can be inherited by child processes, ``False`` otherwise.
+* ``os.set_inheritable(fd: int, inheritable: bool)``: set the
+  inheritable flag of the specified file descriptor.
 
-* ``os.get_cloexec(fd:int) -> bool``
-* ``os.set_cloexec(fd:int, cloexec: bool)``
+These new functions are available on all platforms.
 
-Add new functions the get and set the blocking flag of a file
-descriptor, only available on UNIX:
-
-* ``os.get_blocking(fd:int) -> bool``
-* ``os.set_blocking(fd:int, blocking: bool)``
+On Windows, these functions accept also "file descriptors" of sockets:
+the result of ``sockobj.fileno()``.
 
 
 Other Changes
 -------------
 
-The ``subprocess.Popen`` class must clear the close-on-exec flag of file
-descriptors of the ``pass_fds`` parameter. The flag is cleared in the
-child process before executing the program; the change does not change
-the flag in the parent process.
+* On UNIX, subprocess makes file descriptors of the *pass_fds* parameter
+  inheritable. The file descriptor is made inheritable in the child
+  process after the ``fork()`` and before ``execv()``, the inheritable
+  flag of file descriptors is unchanged in the parent process.
 
-The close-on-exec flag must also be set on private file descriptors and
-sockets in the Python standard library. For example, on UNIX,
-os.urandom() opens ``/dev/urandom`` to read some random bytes and the
-file descriptor is closed at function exit. The file descriptor is not
-expected to be inherited by child processes.
+* ``os.dup2(fd, fd2)`` makes *fd2* inheritable if *fd2* is ``0``
+  (stdin), ``1`` (stdout) or ``2`` (stderr) and *fd2* is different than
+  *fd*.
+
+
+Backward Compatibility
+======================
+
+This PEP break applications relying on inheritance of file descriptors.
+Developers are encouraged to reuse the high-level Python module
+``subprocess`` which handle the inheritance of file descriptors in a
+portable way.
+
+Applications using the ``subprocess`` module with the *pass_fds*
+parameter or using ``os.dup2()`` to redirect standard streams should not
+be affected.
+
+Python does no more conform to POSIX, since file descriptors are made
+non-inheritable by default. Python was not designed to conform to POSIX,
+Python is designed to develop portable applications.
+
+
+Previous Work
+=============
+
+The programming languages Go, Perl and Ruby make newly created file
+descriptors non-inheritable: since Go 1.0, Perl 1.0 and Ruby 2.0.
+
+The SCons project overrides builtin functions ``file()`` and ``open()``
+to make files non-inheritable on Windows:
+see `win32.py
+<https://bitbucket.org/scons/scons/src/c8dbbaa4598e7119ae80f72068386be105b5ad98/src/engine/SCons/Platform/win32.py?at=default#cl-68>`_.
 
 
 Rejected Alternatives
@@ -169,45 +376,27 @@ The PEP 433 entitled "Easier suppression of file descriptor inheritance"
 is a previous attempt proposing various other alternatives, but no
 consensus could be reached.
 
-This PEP has a well defined behaviour (the default value of the new
-*cloexec* parameter is not configurable), is more conservative (no
-backward compatibility issue), and is much simpler.
+No special case for standard streams
+------------------------------------
 
+Functions handling file descriptors should not handle standard streams
+(file descriptors ``0``, ``1``, ``2``) differently.
 
-Add blocking parameter for file descriptors and use Windows overlapped I/O
---------------------------------------------------------------------------
+This option does not work on Windows. On Windows,
+``os.set_inheritable(fd, inheritable)`` (calling
+``SetHandleInformation()`` to set or clear ``HANDLE_FLAG_INHERIT`` flag)
+on file descriptor ``0`` (stdin), ``1`` (stdout) or ``2`` (stderr) fails
+with ``OSError(87, 'invalid argument')``. If ``os.dup2(fd, fd2)`` would
+always make *fd2* non-inheritable, the function would raise an exception
+when used to redirect standard streams.
 
-Windows supports non-blocking operations on files using an extension of
-the Windows API called "Overlapped I/O". Using this extension requires
-to modify the Python standard library and applications to pass a
-``OVERLAPPED`` structure and an event loop to wait for the completion of
-operations.
+Another option is to add a new *inheritable* parameter to ``os.dup2()``.
 
-This PEP only tries to expose portable flags on file descriptors and
-sockets. Supporting overlapped I/O requires an abstraction providing a
-high-level and portable API for asynchronous operations on files and
-sockets. Overlapped I/O are out of the scope of this PEP.
-
-UNIX supports non-blocking files, moreover recent versions of operating
-systems support setting the non-blocking flag at the creation of a file
-descriptor. It would be possible to add a new optional *blocking*
-parameter to Python functions creating file descriptors. On Windows,
-creating a file descriptor with ``blocking=False``  would raise a
-``NotImplementedError``. This behaviour is not acceptable for the ``os``
-module which is designed as a thin wrapper on the C functions of the
-operating system. If a platform does not support a function, the
-function should not be available on the platform. For example,
-the ``os.fork()`` function is not available on Windows.
-
-UNIX has more flag on file descriptors: ``O_DSYNC``, ``O_SYNC``,
-``O_DIRECT``, etc.  Adding all these flags complicates the signature and
-the implementation of functions creating file descriptor like open().
-Moreover, these flags do not work on any file type, and are not
-portable.
-
-For all these reasons, this alternative was rejected. The PEP 3156
-proposes an abstraction for asynchronous I/O supporting non-blocking
-files on Windows.
+This PEP has a special-case for ``os.dup2()`` to not break backward
+compatibility on applications redirection standard streams before
+calling the C function ``execv()``. Examples in the Python standard
+library: ``CGIHTTPRequestHandler.run_cgi()`` and ``pty.fork()`` use
+``os.dup2()`` to redict stdin, stdout and stderr.
 
 
 Links
@@ -230,6 +419,8 @@ Python issues:
   <http://bugs.python.org/issue16946>`_
 * `#17070: Use the new cloexec to improve security and avoid bugs
   <http://bugs.python.org/issue17070>`_
+* `#18571: Implementation of the PEP 446: non-inheriable file
+  descriptors <http://bugs.python.org/issue18571>`_
 
 Other links:
 
@@ -245,4 +436,5 @@ Copyright
 =========
 
 This document has been placed into the public domain.
+
 
