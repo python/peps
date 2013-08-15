@@ -1,0 +1,611 @@
+PEP: 451
+Title: A ModuleSpec Type for the Import System
+Version: $Revision$
+Last-Modified: $Date$
+Author: Eric Snow <ericsnowcurrently@gmail.com>
+Discussions-To: import-sig@python.org
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 8-Aug-2013
+Python-Version: 3.4
+Post-History: 8-Aug-2013
+Resolution:
+
+
+Abstract
+========
+
+This PEP proposes to add a new class to ``importlib.machinery`` called
+``ModuleSpec``.  It will contain all the import-related information
+about a module without needing to load the module first.  Finders will
+now return a module's spec rather than a loader.  The import system will
+use the spec to load the module.
+
+
+Motivation
+==========
+
+The import system has evolved over the lifetime of Python.  In late 2002
+PEP 302 introduced standardized import hooks via ``finders`` and
+``loaders`` and ``sys.meta_path``.  The ``importlib`` module, introduced
+with Python 3.1, now exposes a pure Python implementation of the APIs
+described by PEP 302, as well as of the full import system.  It is now
+much easier to understand and extend the import system.  While a benefit
+to the Python community, this greater accessibilty also presents a
+challenge.
+
+As more developers come to understand and customize the import system,
+any weaknesses in the finder and loader APIs will be more impactful.  So
+the sooner we can address any such weaknesses the import system, the
+better...and there are a couple we can take care of with this proposal.
+
+Firstly, any time the import system needs to save information about a
+module we end up with more attributes on module objects that are
+generally only meaningful to the import system and occasionally to some
+people.  It would be nice to have a per-module namespace to put future
+import-related information.  Secondly, there's an API void between
+finders and loaders that causes undue complexity when encountered.
+
+Currently finders are strictly responsible for providing the loader
+which the import system will use to load the module.  The loader is then
+responsible for doing some checks, creating the module object, setting
+import-related attributes, "installing" the module to ``sys.modules``,
+and loading the module, along with some cleanup.  This all takes place
+during the import system's call to ``Loader.load_module()``.  Loaders
+also provide some APIs for accessing data associated with a module.
+
+Loaders are not required to provide any of the functionality of
+``load_module()`` through other methods.  Thus, though the import-
+related information about a module is likely available without loading
+the module, it is not otherwise exposed.
+
+Furthermore, the requirements assocated with ``load_module()`` are
+common to all loaders and mostly are implemented in exactly the same
+way.  This means every loader has to duplicate the same boilerplate
+code.  ``importlib.util`` provides some tools that help with this, but
+it would be more helpful if the import system simply took charge of
+these responsibilities.  The trouble is that this would limit the degree
+of customization that ``load_module()`` facilitates.  This is a gap
+between finders and loaders which this proposal aims to fill.
+
+Finally, when the import system calls a finder's ``find_module()``, the
+finder makes use of a variety of information about the module that is
+useful outside the context of the method.  Currently the options are
+limited for persisting that per-module information past the method call,
+since it only returns the loader.  Popular options for this limitation
+are to store the information in a module-to-info mapping somewhere on
+the finder itself, or store it on the loader.
+
+Unfortunately, loaders are not required to be module-specific.  On top
+of that, some of the useful information finders could provide is
+common to all finders, so ideally the import system could take care of
+that.  This is the same gap as before between finders and loaders.
+
+As an example of complexity attributable to this flaw, the
+implementation of namespace packages in Python 3.3 (see PEP 420) added
+``FileFinder.find_loader()`` because there was no good way for
+``find_module()`` to provide the namespace path.
+
+The answer to this gap is a ``ModuleSpec`` object that contains the
+per-module information and takes care of the boilerplate functionality
+of loading the module.
+
+(The idea gained momentum during discussions related to another PEP.[1])
+
+
+Specification
+=============
+
+The goal is to address the gap between finders and loaders while
+changing as little of their semantics as possible.  Though some
+functionality and information is moved to the new ``ModuleSpec`` type,
+their semantics should remain the same.  However, for the sake of
+clarity, those semantics will be explicitly identified.
+
+ModuleSpec
+----------
+
+A new class which defines the import-related values to use when loading
+the module.  It closely corresponds to the import-related attributes of
+module objects.  ``ModuleSpec`` objects may also be used by finders and
+loaders and other import-related APIs to hold extra import-related
+state about the module.  This greatly reduces the need to add any new
+new import-related attributes to module objects, and loader ``__init__``
+methods won't need to accommodate such per-module state.
+
+Creating a ModuleSpec:
+
+``ModuleSpec(name, loader, *, origin=None, filename=None, cached=None,
+path=None)``
+
+Passed in parameter values are assigned directly to the corresponding
+attributes below.  Other attributes not listed as parameters (such as
+``package``) are read-only properties that are automatically derived
+from these values.
+
+The ``ModuleSpec.from_loader()`` class method allows a suitable
+ModuleSpec instance to be easily created from a PEP 302 loader object.
+
+ModuleSpec Attributes
+---------------------
+
+Each of the following names is an attribute on ``ModuleSpec`` objects.
+A value of ``None`` indicates "not set".  This contrasts with module
+objects where the attribute simply doesn't exist.
+
+While ``package`` and ``is_package`` are read-only properties, the
+remaining attributes can be replaced after the module spec is created
+and after import is complete.  This allows for unusual cases where
+modifying the spec is the best option.  However, typical use should not
+involve changing the state of a module's spec.
+
+Most of the attributes correspond to the import-related attributes of
+modules.  Here is the mapping, followed by a description of the
+attributes.  The reverse of this mapping is used by
+``init_module_attrs()``.
+
+============= ===========
+On ModuleSpec On Modules
+============= ===========
+name          __name__
+loader        __loader__
+package       __package__
+is_package    -
+origin        -
+filename      __file__
+cached        __cached__
+path          __path__
+============= ===========
+
+``name``
+
+The module's fully resolved and absolute name.  It must be set.
+
+``loader``
+
+The loader to use during loading and for module data.  These specific
+functionalities do not change for loaders.  Finders are still
+responsible for creating the loader and this attribute is where it is
+stored.  The loader must be set.
+
+``package``
+
+The name of the module's parent.  This is a dynamic attribute with a
+value derived from ``name`` and ``is_package``.  For packages it is the
+value of ``name``.  Otherwise it is equivalent to
+``name.rpartition('.')[0]``.  Consequently, a top-level module will have
+the empty string for ``package``.
+
+
+``is_package``
+
+Whether or not the module is a package.  This dynamic attribute is True
+if ``path`` is not None (e.g. the empty list is a "true" value), else it
+is false.
+
+``origin``
+
+A string for the location from which the module originates.  If
+``filename`` is set, ``origin`` should be set to the same value unless
+some other value is more appropriate.  ``origin`` is used in
+``module_repr()`` if it does not match the value of ``filename``.
+
+Using ``filename`` for this meaning would be inaccurate, since not all
+modules have path-based locations.  For instance, built-in modules do
+not have ``__file__`` set.  Yet it is useful to have a descriptive
+string indicating that it originated from the interpreter as a built-in
+module.  So built-in modules will have ``origin`` set to ``"built-in"``.
+
+Path-based attributes:
+
+If any of these is set, it indicates that the module is path-based.  For
+reference, a path entry is a string for a location where the import
+system will look for modules, e.g. the path entries in ``sys.path`` or a
+package's ``__path__``).
+
+``filename``
+
+Like ``origin``, but limited to a path-based location.  If ``filename``
+is set, ``origin`` should be set to the same string, unless origin is
+explicitly set to something else.  ``filename`` is not necessarily an
+actual file name, but could be any location string based on a path
+entry.  Regarding the attribute name, while it is potentially
+inaccurate, it is both consistent with the equivalent module attribute
+and generally accurate.
+
+.. XXX Would a different name be better?  ``path_location``?
+
+``cached``
+
+The path-based location where the compiled code for a module should be
+stored.  If ``filename`` is set to a source file, this should be set to
+corresponding path that PEP 3147 specifies.  The
+``importlib.util.source_to_cache()`` function facilitates getting the
+correct value.
+
+``path``
+
+The list of path entries in which to search for submodules if this
+module is a package.  Otherwise it is ``None``.
+
+.. XXX add a path-based subclass?
+
+ModuleSpec Methods
+------------------
+
+``from_loader(name, loader, *, is_package=None, origin=None, filename=None, cached=None, path=None)``
+
+.. XXX use a different name?
+
+A factory classmethod that returns a new ``ModuleSpec`` derived from the
+arguments.  ``is_package`` is used inside the method to indicate that
+the module is a package.  If not explicitly passed in, it is set to
+``True`` if ``path`` is passed in.  It falls back to using the result of
+the loader's ``is_package()``, if available.  Finally it defaults to
+False.  The remaining parameters have the same meaning as the
+corresponding ``ModuleSpec`` attributes.
+
+In contrast to ``ModuleSpec.__init__()``, which takes the arguments
+as-is, ``from_loader()`` calculates missing values from the ones passed
+in, as much as possible.  This replaces the behavior that is currently
+provided by several ``importlib.util`` functions as well as the optional
+``init_module_attrs()`` method of loaders.  Just to be clear, here is a
+more detailed description of those calculations::
+
+   If not passed in, ``filename`` is to the result of calling the
+   loader's ``get_filename()``, if available.  Otherwise it stays
+   unset (``None``).
+
+   If not passed in, ``path`` is set to an empty list if
+   ``is_package`` is true.  Then the directory from ``filename`` is
+   appended to it, if possible.  If ``is_package`` is false, ``path``
+   stays unset.
+
+   If ``cached`` is not passed in and ``filename`` is passed in,
+   ``cached`` is derived from it.  For filenames with a source suffix,
+   it set to the result of calling
+   ``importlib.util.cache_from_source()``.  For bytecode suffixes (e.g.
+   ``.pyc``), ``cached`` is set to the value of ``filename``.  If
+   ``filename`` is not passed in or ``cache_from_source()`` raises
+   ``NotImplementedError``, ``cached`` stays unset.
+
+   If not passed in, ``origin`` is set to ``filename``.  Thus if
+   ``filename`` is unset, ``origin`` stays unset.
+
+``module_repr()``
+
+Returns a repr string for the module if ``origin`` is set and
+``filename`` is not set.  The string refers to the value of ``origin``.
+Otherwise ``module_repr()`` returns None.  This indicates to the module
+type's ``__repr__()`` that it should fall back to the default repr.
+
+We could also have ``module_repr()`` produce the repr for the case where
+``filename`` is set or where ``origin`` is not set, mirroring the repr
+that the module type produces directly.  However, the repr string is
+derived from the import-related module attributes, which might be out of
+sync with the spec.
+
+.. XXX Is using the spec close enough?  Probably not.
+
+The implementation of the module type's ``__repr__()`` will change to
+accommodate this PEP.  However, the current functionality will remain to
+handle the case where a module does not have a ``__spec__`` attribute.
+
+.. XXX Clarify the above justification.
+
+``init_module_attrs(module)``
+
+Sets the module's import-related attributes to the corresponding values
+in the module spec.  If a path-based attribute is not set on the spec,
+it is not set on the module.  For the rest, a ``None`` value on the spec
+(aka "not set") means ``None`` will be set on the module.  If any of the
+attributes are already set on the module, the existing values are
+replaced.  The module's own ``__spec__`` is not consulted but does get
+replaced with the spec on which ``init_module_attrs()`` was called.
+The earlier mapping of ``ModuleSpec`` attributes to module attributes
+indicates which attributes are involved on both sides.
+
+``load(module=None, *, is_reload=False)``
+
+This method captures the current functionality of and requirements on
+``Loader.load_module()`` without any semantic changes, except one.
+Reloading a module when ``exec_module()`` is available actually uses
+``module`` rather than ignoring it in favor of the one in
+``sys.modules``, as ``Loader.load_module()`` does.
+
+``module`` is only allowed when ``is_reload`` is true.  This means that
+``is_reload`` could be dropped as a parameter.  However, doing so would
+mean we could not use ``None`` to indicate that the module should be
+pulled from ``sys.modules``.  Furthermore, ``is_reload`` makes the
+intent of the call clear.
+
+There are two parts to what happens in ``load()``.  First, the module is
+prepared, loaded, updated appropriately, and left available for the
+second part.  This is described in more detail shortly.
+
+Second, in the case of error during a normal load (not reload) the
+module is removed from ``sys.modules``.  If no error happened, the
+module is pulled from ``sys.modules``.  This the module returned by
+``load()``.  Before it is returned, if it is a different object than the
+one produced by the first part, attributes of the module from
+``sys.modules`` are updated to reflect the spec.
+
+Returning the module from ``sys.modules`` accommodates the ability of
+the module to replace itself there while it is executing (during load).
+
+As already noted, this is what already happens in the import system.
+``load()`` is not meant to change any of this behavior.
+
+Regarding the first part of ``load()``, the following describes what
+happens.  It depends on if ``is_reload`` is true and if the loader has
+``exec_module()``.
+
+For normal load with ``exec_module()`` available::
+
+   A new module is created, ``init_module_attrs()`` is called to set
+   its attributes, and it is set on sys.modules.  At that point
+   the loader's ``exec_module()`` is called, after which the module
+   is ready for the second part of loading.
+
+.. XXX What if the module already exists in sys.modules?
+
+For normal load without ``exec_module()`` available::
+
+   The loader's ``load_module()`` is called and the attributes of the
+   module it returns are updated to match the spec.
+
+For reload with ``exec_module()`` available::
+
+   If ``module`` is ``None``, it is pulled from ``sys.modules``.  If
+   still ``None``, ImportError is raised.  Otherwise ``exec_module()``
+   is called, passing in the module-to-be-reloaded.
+
+For reload without ``exec_module()`` available::
+
+   The loader's ``load_module()`` is called and the attributes of the
+   module it returns are updated to match the spec.
+
+There is some boilerplate involved when ``exec_module()`` is available,
+but only the boilerplate that the import system uses currently.
+
+If ``loader`` is not set (``None``), ``load()`` raises a ValueError.  If
+``module`` is passed in but ``is_reload`` is false, a ValueError is also
+raises to indicate that ``load()`` was called incorrectly.  There may be
+use cases for calling ``load()`` in that way, but they are outside the
+scope of this PEP
+
+.. XXX add reload(module=None) and drop load()'s parameters entirely?
+.. XXX add more of importlib.reload()'s boilerplate to load()/reload()?
+
+Omitted Attributes and Methods
+------------------------------
+
+``ModuleSpec`` does not have a ``from_module()`` factory method since
+all modules should already have a spec.
+
+Additionally, there is no ``PathModuleSpec`` subclass of ``ModuleSpec``
+that provides the ``filename``, ``cached``, and ``path`` functionality.
+While that might make the separation cleaner, module objects don't have
+that distinction.  ``ModuleSpec`` will support both cases equally well.
+
+Backward Compatibility
+----------------------
+
+Since ``Finder.find_module()`` methods would now return a module spec
+instead of loader, specs must act like the loader that would have been
+returned instead.  This is relatively simple to solve since the loader
+is available as an attribute of the spec.  We will use ``__getattr__()``
+to do it.
+
+However, ``ModuleSpec.is_package`` (an attribute) conflicts with
+``InspectLoader.is_package()`` (a method).  Working around this requires
+a more complicated solution but is not a large obstacle.  Simply making
+``ModuleSpec.is_package`` a method does not reflect that is a relatively
+static piece of data.  ``module_repr()`` also conflicts with the same
+method on loaders, but that workaround is not complicated since both are
+methods.
+
+Unfortunately, the ability to proxy does not extend to ``id()``
+comparisons and ``isinstance()`` tests.  In the case of the return value
+of ``find_module()``, we accept that break in backward compatibility.
+However, we will mitigate the problem with ``isinstance()`` somewhat by
+registering ``ModuleSpec`` on the loaders in ``importlib.abc``.
+
+Subclassing
+-----------
+
+Subclasses of ModuleSpec are allowed, but should not be necessary.
+Adding functionality to a custom finder or loader will likely be a
+better fit and should be tried first.  However, as long as a subclass
+still fulfills the requirements of the import system, objects of that
+type are completely fine as the return value of ``find_module()``.
+
+Module Objects
+--------------
+
+Module objects will now have a ``__spec__`` attribute to which the
+module's spec will be bound.  None of the other import-related module
+attributes will be changed or deprecated, though some of them could be;
+any such deprecation can wait until Python 4.
+
+``ModuleSpec`` objects will not be kept in sync with the corresponding
+module object's import-related attributes.  Though they may differ, in
+practice they will typically be the same.
+
+One notable exception is that case where a module is run as a script by
+using the ``-m`` flag.  In that case ``module.__spec__.name`` will
+reflect the actual module name while ``module.__name__`` will be
+``__main__``.
+
+The ``__file__`` attribute will be set where applicable in the same way
+it is now.  For instance, zip imports will still have it set for
+backward-compatibility reasons.  However, the recommendation will be to
+have ``__file__`` set only for actual filenames from now on.
+
+Finders
+-------
+
+Finders will now return ModuleSpec objects when ``find_module()`` is
+called rather than loaders.  For backward compatility, ``Modulespec``
+objects proxy the attributes of their ``loader`` attribute.
+
+Adding another similar method to avoid backward-compatibility issues
+is undersireable if avoidable.  The import APIs have suffered enough,
+especially considering ``PathEntryFinder.find_loader()`` was just
+added in Python 3.3.  The approach taken by this PEP should be
+sufficient to address backward-compatibility issues for
+``find_module()``.
+
+The change to ``find_module()`` applies to both ``MetaPathFinder`` and
+``PathEntryFinder``.  ``PathEntryFinder.find_loader()`` will be
+deprecated and, for backward compatibility, implicitly special-cased if
+the method exists on a finder.
+
+Finders are still responsible for creating the loader.  That loader will
+now be stored in the module spec returned by ``find_module()`` rather
+than returned directly.  As is currently the case without the PEP, if a
+loader would be costly to create, that loader can be designed to defer
+the cost until later.
+
+Loaders
+-------
+
+Loaders will have a new method, ``exec_module(module)``.  Its only job
+is to "exec" the module and consequently populate the module's
+namespace.  It is not responsible for creating or preparing the module
+object, nor for any cleanup afterward.  It has no return value.
+
+The ``load_module()`` of loaders will still work and be an active part
+of the loader API.  It is still useful for cases where the default
+module creation/prepartion/cleanup is not appropriate for the loader.
+
+For example, the C API for extension modules only supports the full
+control of ``load_module()``.  As such, ``ExtensionFileLoader`` will not
+implement ``exec_module()``.  In the future it may be appropriate to
+produce a second C API that would support an ``exec_module()``
+implementation for ``ExtensionFileLoader``.  Such a change is outside
+the scope of this PEP.
+
+A loader must define either ``exec_module()`` or ``load_module()``.  If
+both exist on the loader, ``ModuleSpec.load()`` uses ``exec_module()``
+and ignores ``load_module()``.
+
+PEP 420 introduced the optional ``module_repr()`` loader method to limit
+the amount of special-casing in the module type's ``__repr__()``.  Since
+this method is part of ``ModuleSpec``, it will be deprecated on loaders.
+However, if it exists on a loader it will be used exclusively.
+
+``Loader.init_module_attr()`` method, added prior to Python 3.4's
+release , will be removed in favor of the same method on ``ModuleSpec``.
+
+However, ``InspectLoader.is_package()`` will not be deprecated even
+though the same information is found on ``ModuleSpec``.  ``ModuleSpec``
+can use it to populate its own ``is_package`` if that information is
+not otherwise available.  Still, it will be made optional.
+
+The path-based loaders in ``importlib`` take arguments in their
+``__init__()`` and have corresponding attributes.  However, the need for
+those values is eliminated.  The only exception is
+``FileLoader.get_filename()``, which uses ``self.path``.  The signatures
+for these loaders and the accompanying attributes will be deprecated.
+
+In addition to executing a module during loading, loaders will still be
+directly responsible for providing APIs concerning module-related data.
+
+Other Changes
+-------------
+
+* The various finders and loaders provided by ``importlib`` will be
+  updated to comply with this proposal.
+
+* The spec for the ``__main__`` module will reflect how the interpreter
+  was started.  For instance, with ``-m`` the spec's name will be that
+  of the run module, while ``__main__.__name__`` will still be
+  "__main__".
+
+* We add ``importlib.find_module()`` to mirror
+  ``importlib.find_loader()`` (which becomes deprecated).
+
+* Deprecations in ``importlib.util``: ``set_package()``,
+  ``set_loader()``, and ``module_for_loader()``.  ``module_to_load()``
+  (introduced prior to Python 3.4's release) can be removed.
+
+* ``importlib.reload()`` is changed to use ``ModuleSpec.load()``.
+
+* ``ModuleSpec.load()`` and ``importlib.reload()`` will now make use of
+  the per-module import lock, whereas ``Loader.load_module()`` did not.
+
+Reference Implementation
+------------------------
+
+A reference implementation is available at <TBD>.
+
+
+Open Questions
+==============
+
+* How to avoid having custom ModuleSpec attributes conflict with future
+  normal attributes?
+
+This could be done with a sub-namespace bound to a single ModuleSpec
+attribute.  It could also be done by reserving names with a single
+leading underscore for custom attributes.  Or we could just not worry
+about it.
+
+* Get rid of the ``is_package`` property?
+
+It duplicates information
+both in the ``ModuleSpec()`` signature and in attributes.  It is
+technically unncessary in light of the path attribute and it conflicts
+with ``InspectLoader.is_package()``, which makes the implementation more
+complicated.  However, it also provides an explicit indicator of
+package-ness, which helps those less familiar with the import system.
+
+* Deprecate the use of ``__file__`` for anything except actual files?
+
+* Introduce a new extension module API that takes advantage of
+  ``ModuleSpec``?  I'd rather that be part of a separate proposal.
+
+* Add ``create_module()`` to loaders?
+
+It would take a ``ModuleSpec``
+and return the module that should be passed to ``spec.exec()``.  This
+method would be helpful for new extension module import APIs.
+
+* Have ``ModuleSpec.module_repr()`` replace more of the module type's
+  ``__repr__()`` implementation?
+
+A compliant module is required to have
+``__spec__`` set so that should work.  However, currently the repr uses
+the module attributes.  Using the spec attributes would give precedence
+to the spec in the case that they differ, which would be
+backward-incompatible.
+
+* Factor the path-based attributes/functionality into a subclass--
+  something like ``PathModuleSpec``?
+
+It looks like there just isn't enough benefit to doing so.
+
+
+References
+==========
+
+[1] http://mail.python.org/pipermail/import-sig/2013-August/000658.html
+
+
+Copyright
+=========
+
+This document has been placed in the public domain.
+
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   coding: utf-8
+   End:
+
