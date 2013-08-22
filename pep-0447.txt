@@ -18,6 +18,28 @@ in the ``__dict__`` of classes on the MRO for a class when looking for
 an attribute. This PEP adds an optional ``__locallookup__`` method to
 a metaclass that can be used to override this behavior.
 
+That is, the MRO walking loop in ``_PyType_Lookup`` and
+``super.__getattribute__`` gets changed from::
+
+     def lookup(mro_list, name):
+         for cls in mro_list:
+             if name in cls.__dict__:
+                 return cls.__dict__
+
+         return NotFound
+
+to::
+
+     def lookup(mro_list, name):
+         for cls in mro_list:
+             try:
+                 return cls.__locallookup__(name)
+             except AttributeError:
+                 pass
+
+         return NotFound
+
+
 Rationale
 =========
 
@@ -30,7 +52,8 @@ The ``__locallookup__`` method makes it possible to dynamicly add
 attributes even when looking them up using the `super class`_.
 
 The new method affects ``object.__getattribute__`` (and
-`PyObject_GenericGetAttr`_) as well for consistency.
+`PyObject_GenericGetAttr`_) as well for consistency and to have a single
+place to implement dynamic attribute resolution for classes.
 
 Background
 ----------
@@ -52,16 +75,22 @@ The superclass attribute lookup hook
 ====================================
 
 Both ``super.__getattribute__`` and ``object.__getattribute__`` (or
-`PyObject_GenericGetAttr`_ in C code) walk an object's MRO and peek in the
-class' ``__dict__`` to look up attributes. A way to affect this lookup is
-using a method on the meta class for the type, that by default looks up
-the name in the class ``__dict__``.
+`PyObject_GenericGetAttr`_ and in particular ``_PyType_Lookup`` in C code)
+walk an object's MRO and currently peek in the class' ``__dict__`` to look up
+attributes.
+
+With this proposal both lookup methods no longer peek in the class ``__dict__``
+but call the special method ``__locallookup__``, which is a slot defined
+on the metaclass. The default implementation of that method looks
+up the name the class ``__dict__``, which means that attribute lookup is
+unchanged unless a metatype actually defines the new special method.
 
 In Python code
 --------------
 
 A meta type can define a method ``__locallookup__`` that is called during
-attribute resolution by both ``super.__getattribute__`` and ``object.__getattribute``::
+attribute resolution by both ``super.__getattribute__``
+and ``object.__getattribute``::
 
     class MetaType(type):
         def __locallookup__(cls, name):
@@ -70,29 +99,30 @@ attribute resolution by both ``super.__getattribute__`` and ``object.__getattrib
             except KeyError:
                 raise AttributeError(name) from None
 
-The ``__locallookup__`` method has as its arguments a class and the name of the attribute
-that is looked up. It should return the value of the attribute without invoking descriptors,
-or raise `AttributeError`_ when the name cannot be found.
+The ``__locallookup__`` method has as its arguments a class (which is an
+instance of the meta type) and the name of the attribute that is looked up.
+It should return the value of the attribute without invoking descriptors,
+and should raise `AttributeError`_ when the name cannot be found.
 
-The `type`_ class provides a default implementation for ``__locallookup__``, that
-looks up the name in the class dictionary.
+The `type`_ class provides a default implementation for ``__locallookup__``,
+that looks up the name in the class dictionary.
 
 Example usage
 .............
 
-The code below implements a silly metaclass that redirects attribute lookup to uppercase
-versions of names::
+The code below implements a silly metaclass that redirects attribute lookup to
+uppercase versions of names::
 
     class UpperCaseAccess (type):
         def __locallookup__(cls, name):
-	    return cls.__dict__[name.upper()]
+            return cls.__dict__[name.upper()]
 
     class SillyObject (metaclass=UpperCaseAccess):
         def m(self):
-	    return 42
+            return 42
 
-	def M(self):
-	    return "fourtytwo"
+        def M(self):
+            return "fourtytwo"
 
     obj = SillyObject()
     assert obj.m() == "fortytwo"
@@ -101,44 +131,46 @@ versions of names::
 In C code
 ---------
 
-A new slot ``tp_locallookup`` is added to the ``PyTypeObject`` struct, this slot
-corresponds to the ``__locallookup__`` method on `type`_.
+A new slot ``tp_locallookup`` is added to the ``PyTypeObject`` struct, this
+slot corresponds to the ``__locallookup__`` method on `type`_.
 
 The slot has the following prototype::
 
     PyObject* (*locallookupfunc)(PyTypeObject* cls, PyObject* name);
 
-This method should lookup *name* in the namespace of *cls*, without looking at superclasses,
-and should not invoke descriptors. The method returns ``NULL`` without setting an exception
-when the *name* cannot be found, and returns a new reference otherwise (not a borrowed reference).
+This method should lookup *name* in the namespace of *cls*, without looking
+at superclasses, and should not invoke descriptors. The method returns ``NULL`` without setting an exception when the *name* cannot be found, and returns a
+new reference otherwise (not a borrowed reference).
 
 Use of this hook by the interpreter
 -----------------------------------
 
-The new method is required for metatypes and as such is defined on `type_`.  Both
-``super.__getattribute__`` and ``object.__getattribute__``/`PyObject_GenericGetAttr`_
-(through ``_PyType_Lookup``) use the this ``__locallookup__`` method when walking
-the MRO.
+The new method is required for metatypes and as such is defined on `type_`.
+Both ``super.__getattribute__`` and
+``object.__getattribute__``/`PyObject_GenericGetAttr`_
+(through ``_PyType_Lookup``) use the this ``__locallookup__`` method when
+walking the MRO.
 
 Other changes to the implementation
 -----------------------------------
 
-The change for `PyObject_GenericGetAttr`_ will be done by changing the private function
-``_PyType_Lookup``. This currently returns a borrowed reference, but must return a new
-reference when the ``__locallookup__`` method is present. Because of this ``_PyType_Lookup``
-will be renamed to ``_PyType_LookupName``, this will cause compile-time errors for all out-of-tree
-users of this private API.
+The change for `PyObject_GenericGetAttr`_ will be done by changing the private
+function ``_PyType_Lookup``. This currently returns a borrowed reference, but
+must return a new reference when the ``__locallookup__`` method is present.
+Because of this ``_PyType_Lookup`` will be renamed to ``_PyType_LookupName``,
+this will cause compile-time errors for all out-of-tree users of this
+private API.
 
-The attribute lookup cache in ``Objects/typeobject.c`` is disabled for classes that have a
-metaclass that overrides ``__locallookup__``, because using the cache might not be valid
-for such classes.
+The attribute lookup cache in ``Objects/typeobject.c`` is disabled for classes
+that have a metaclass that overrides ``__locallookup__``, because using the
+cache might not be valid for such classes.
 
 Performance impact
 ------------------
 
-The pybench output below compares an implementation of this PEP with the regular
-source tree, both based on changeset a5681f50bae2, run on an idle machine an
-Core i7 processor running Centos 6.4.
+The pybench output below compares an implementation of this PEP with the
+regular source tree, both based on changeset a5681f50bae2, run on an idle
+machine an Core i7 processor running Centos 6.4.
 
 Even though the machine was idle there were clear differences between runs,
 I've seen difference in "minimum time" vary from -0.1% to +1.5%, with simular
@@ -146,211 +178,211 @@ I've seen difference in "minimum time" vary from -0.1% to +1.5%, with simular
 
 ::
 
-	-------------------------------------------------------------------------------
-	PYBENCH 2.1
-	-------------------------------------------------------------------------------
-	* using CPython 3.4.0a0 (default, Jul 29 2013, 13:01:34) [GCC 4.4.7 20120313 (Red Hat 4.4.7-3)]
-	* disabled garbage collection
-	* system check interval set to maximum: 2147483647
-	* using timer: time.perf_counter
-	* timer: resolution=1e-09, implementation=clock_gettime(CLOCK_MONOTONIC)
+        -------------------------------------------------------------------------------
+        PYBENCH 2.1
+        -------------------------------------------------------------------------------
+        * using CPython 3.4.0a0 (default, Jul 29 2013, 13:01:34) [GCC 4.4.7 20120313 (Red Hat 4.4.7-3)]
+        * disabled garbage collection
+        * system check interval set to maximum: 2147483647
+        * using timer: time.perf_counter
+        * timer: resolution=1e-09, implementation=clock_gettime(CLOCK_MONOTONIC)
 
-	-------------------------------------------------------------------------------
-	Benchmark: pep447.pybench
-	-------------------------------------------------------------------------------
+        -------------------------------------------------------------------------------
+        Benchmark: pep447.pybench
+        -------------------------------------------------------------------------------
 
-	    Rounds: 10
-	    Warp:   10
-	    Timer:  time.perf_counter
+            Rounds: 10
+            Warp:   10
+            Timer:  time.perf_counter
 
-	    Machine Details:
-	       Platform ID:    Linux-2.6.32-358.114.1.openstack.el6.x86_64-x86_64-with-centos-6.4-Final
-	       Processor:      x86_64
+            Machine Details:
+               Platform ID:    Linux-2.6.32-358.114.1.openstack.el6.x86_64-x86_64-with-centos-6.4-Final
+               Processor:      x86_64
 
-	    Python:
-	       Implementation: CPython
-	       Executable:     /tmp/default-pep447/bin/python3
-	       Version:        3.4.0a0
-	       Compiler:       GCC 4.4.7 20120313 (Red Hat 4.4.7-3)
-	       Bits:           64bit
-	       Build:          Jul 29 2013 14:09:12 (#default)
-	       Unicode:        UCS4
-
-
-	-------------------------------------------------------------------------------
-	Comparing with: default.pybench
-	-------------------------------------------------------------------------------
-
-	    Rounds: 10
-	    Warp:   10
-	    Timer:  time.perf_counter
-
-	    Machine Details:
-	       Platform ID:    Linux-2.6.32-358.114.1.openstack.el6.x86_64-x86_64-with-centos-6.4-Final
-	       Processor:      x86_64
-
-	    Python:
-	       Implementation: CPython
-	       Executable:     /tmp/default/bin/python3
-	       Version:        3.4.0a0
-	       Compiler:       GCC 4.4.7 20120313 (Red Hat 4.4.7-3)
-	       Bits:           64bit
-	       Build:          Jul 29 2013 13:01:34 (#default)
-	       Unicode:        UCS4
+            Python:
+               Implementation: CPython
+               Executable:     /tmp/default-pep447/bin/python3
+               Version:        3.4.0a0
+               Compiler:       GCC 4.4.7 20120313 (Red Hat 4.4.7-3)
+               Bits:           64bit
+               Build:          Jul 29 2013 14:09:12 (#default)
+               Unicode:        UCS4
 
 
-	Test                             minimum run-time        average  run-time
-					 this    other   diff    this    other   diff
-	-------------------------------------------------------------------------------
-		  BuiltinFunctionCalls:    45ms    44ms   +1.3%    45ms    44ms   +1.3%
-		   BuiltinMethodLookup:    26ms    27ms   -2.4%    27ms    27ms   -2.2%
-			 CompareFloats:    33ms    34ms   -0.7%    33ms    34ms   -1.1%
-		 CompareFloatsIntegers:    66ms    67ms   -0.9%    66ms    67ms   -0.8%
-		       CompareIntegers:    51ms    50ms   +0.9%    51ms    50ms   +0.8%
-		CompareInternedStrings:    34ms    33ms   +0.4%    34ms    34ms   -0.4%
-			  CompareLongs:    29ms    29ms   -0.1%    29ms    29ms   -0.0%
-			CompareStrings:    43ms    44ms   -1.8%    44ms    44ms   -1.8%
-	    ComplexPythonFunctionCalls:    44ms    42ms   +3.9%    44ms    42ms   +4.1%
-			 ConcatStrings:    33ms    33ms   -0.4%    33ms    33ms   -1.0%
-		       CreateInstances:    47ms    48ms   -2.9%    47ms    49ms   -3.4%
-		    CreateNewInstances:    35ms    36ms   -2.5%    36ms    36ms   -2.5%
-	       CreateStringsWithConcat:    69ms    70ms   -0.7%    69ms    70ms   -0.9%
-			  DictCreation:    52ms    50ms   +3.1%    52ms    50ms   +3.0%
-		     DictWithFloatKeys:    40ms    44ms  -10.1%    43ms    45ms   -5.8%
-		   DictWithIntegerKeys:    32ms    36ms  -11.2%    35ms    37ms   -4.6%
-		    DictWithStringKeys:    29ms    34ms  -15.7%    35ms    40ms  -11.0%
-			      ForLoops:    30ms    29ms   +2.2%    30ms    29ms   +2.2%
-			    IfThenElse:    38ms    41ms   -6.7%    38ms    41ms   -6.9%
-			   ListSlicing:    36ms    36ms   -0.7%    36ms    37ms   -1.3%
-			NestedForLoops:    43ms    45ms   -3.1%    43ms    45ms   -3.2%
-	      NestedListComprehensions:    39ms    40ms   -1.7%    39ms    40ms   -2.1%
-		  NormalClassAttribute:    86ms    82ms   +5.1%    86ms    82ms   +5.0%
-	       NormalInstanceAttribute:    42ms    42ms   +0.3%    42ms    42ms   +0.0%
-		   PythonFunctionCalls:    39ms    38ms   +3.5%    39ms    38ms   +2.8%
-		     PythonMethodCalls:    51ms    49ms   +3.0%    51ms    50ms   +2.8%
-			     Recursion:    67ms    68ms   -1.4%    67ms    68ms   -1.4%
-			  SecondImport:    41ms    36ms  +12.5%    41ms    36ms  +12.6%
-		   SecondPackageImport:    45ms    40ms  +13.1%    45ms    40ms  +13.2%
-		 SecondSubmoduleImport:    92ms    95ms   -2.4%    95ms    98ms   -3.6%
-	       SimpleComplexArithmetic:    28ms    28ms   -0.1%    28ms    28ms   -0.2%
-		SimpleDictManipulation:    57ms    57ms   -1.0%    57ms    58ms   -1.0%
-		 SimpleFloatArithmetic:    29ms    28ms   +4.7%    29ms    28ms   +4.9%
-	      SimpleIntFloatArithmetic:    37ms    41ms   -8.5%    37ms    41ms   -8.7%
-	       SimpleIntegerArithmetic:    37ms    41ms   -9.4%    37ms    42ms  -10.2%
-	      SimpleListComprehensions:    33ms    33ms   -1.9%    33ms    34ms   -2.9%
-		SimpleListManipulation:    28ms    30ms   -4.3%    29ms    30ms   -4.1%
-		  SimpleLongArithmetic:    26ms    26ms   +0.5%    26ms    26ms   +0.5%
-			    SmallLists:    40ms    40ms   +0.1%    40ms    40ms   +0.1%
-			   SmallTuples:    46ms    47ms   -2.4%    46ms    48ms   -3.0%
-		 SpecialClassAttribute:   126ms   120ms   +4.7%   126ms   121ms   +4.4%
-	      SpecialInstanceAttribute:    42ms    42ms   +0.6%    42ms    42ms   +0.8%
-			StringMappings:    94ms    91ms   +3.9%    94ms    91ms   +3.8%
-		      StringPredicates:    48ms    49ms   -1.7%    48ms    49ms   -2.1%
-			 StringSlicing:    45ms    45ms   +1.4%    46ms    45ms   +1.5%
-			     TryExcept:    23ms    22ms   +4.9%    23ms    22ms   +4.8%
-			    TryFinally:    32ms    32ms   -0.1%    32ms    32ms   +0.1%
-			TryRaiseExcept:    17ms    17ms   +0.9%    17ms    17ms   +0.5%
-			  TupleSlicing:    49ms    48ms   +1.1%    49ms    49ms   +1.0%
-			   WithFinally:    48ms    47ms   +2.3%    48ms    47ms   +2.4%
-		       WithRaiseExcept:    45ms    44ms   +0.8%    45ms    45ms   +0.5%
-	-------------------------------------------------------------------------------
-	Totals:                          2284ms  2287ms   -0.1%  2306ms  2308ms   -0.1%
+        -------------------------------------------------------------------------------
+        Comparing with: default.pybench
+        -------------------------------------------------------------------------------
 
-	(this=pep447.pybench, other=default.pybench)
+            Rounds: 10
+            Warp:   10
+            Timer:  time.perf_counter
+
+            Machine Details:
+               Platform ID:    Linux-2.6.32-358.114.1.openstack.el6.x86_64-x86_64-with-centos-6.4-Final
+               Processor:      x86_64
+
+            Python:
+               Implementation: CPython
+               Executable:     /tmp/default/bin/python3
+               Version:        3.4.0a0
+               Compiler:       GCC 4.4.7 20120313 (Red Hat 4.4.7-3)
+               Bits:           64bit
+               Build:          Jul 29 2013 13:01:34 (#default)
+               Unicode:        UCS4
+
+
+        Test                             minimum run-time        average  run-time
+                                         this    other   diff    this    other   diff
+        -------------------------------------------------------------------------------
+                  BuiltinFunctionCalls:    45ms    44ms   +1.3%    45ms    44ms   +1.3%
+                   BuiltinMethodLookup:    26ms    27ms   -2.4%    27ms    27ms   -2.2%
+                         CompareFloats:    33ms    34ms   -0.7%    33ms    34ms   -1.1%
+                 CompareFloatsIntegers:    66ms    67ms   -0.9%    66ms    67ms   -0.8%
+                       CompareIntegers:    51ms    50ms   +0.9%    51ms    50ms   +0.8%
+                CompareInternedStrings:    34ms    33ms   +0.4%    34ms    34ms   -0.4%
+                          CompareLongs:    29ms    29ms   -0.1%    29ms    29ms   -0.0%
+                        CompareStrings:    43ms    44ms   -1.8%    44ms    44ms   -1.8%
+            ComplexPythonFunctionCalls:    44ms    42ms   +3.9%    44ms    42ms   +4.1%
+                         ConcatStrings:    33ms    33ms   -0.4%    33ms    33ms   -1.0%
+                       CreateInstances:    47ms    48ms   -2.9%    47ms    49ms   -3.4%
+                    CreateNewInstances:    35ms    36ms   -2.5%    36ms    36ms   -2.5%
+               CreateStringsWithConcat:    69ms    70ms   -0.7%    69ms    70ms   -0.9%
+                          DictCreation:    52ms    50ms   +3.1%    52ms    50ms   +3.0%
+                     DictWithFloatKeys:    40ms    44ms  -10.1%    43ms    45ms   -5.8%
+                   DictWithIntegerKeys:    32ms    36ms  -11.2%    35ms    37ms   -4.6%
+                    DictWithStringKeys:    29ms    34ms  -15.7%    35ms    40ms  -11.0%
+                              ForLoops:    30ms    29ms   +2.2%    30ms    29ms   +2.2%
+                            IfThenElse:    38ms    41ms   -6.7%    38ms    41ms   -6.9%
+                           ListSlicing:    36ms    36ms   -0.7%    36ms    37ms   -1.3%
+                        NestedForLoops:    43ms    45ms   -3.1%    43ms    45ms   -3.2%
+              NestedListComprehensions:    39ms    40ms   -1.7%    39ms    40ms   -2.1%
+                  NormalClassAttribute:    86ms    82ms   +5.1%    86ms    82ms   +5.0%
+               NormalInstanceAttribute:    42ms    42ms   +0.3%    42ms    42ms   +0.0%
+                   PythonFunctionCalls:    39ms    38ms   +3.5%    39ms    38ms   +2.8%
+                     PythonMethodCalls:    51ms    49ms   +3.0%    51ms    50ms   +2.8%
+                             Recursion:    67ms    68ms   -1.4%    67ms    68ms   -1.4%
+                          SecondImport:    41ms    36ms  +12.5%    41ms    36ms  +12.6%
+                   SecondPackageImport:    45ms    40ms  +13.1%    45ms    40ms  +13.2%
+                 SecondSubmoduleImport:    92ms    95ms   -2.4%    95ms    98ms   -3.6%
+               SimpleComplexArithmetic:    28ms    28ms   -0.1%    28ms    28ms   -0.2%
+                SimpleDictManipulation:    57ms    57ms   -1.0%    57ms    58ms   -1.0%
+                 SimpleFloatArithmetic:    29ms    28ms   +4.7%    29ms    28ms   +4.9%
+              SimpleIntFloatArithmetic:    37ms    41ms   -8.5%    37ms    41ms   -8.7%
+               SimpleIntegerArithmetic:    37ms    41ms   -9.4%    37ms    42ms  -10.2%
+              SimpleListComprehensions:    33ms    33ms   -1.9%    33ms    34ms   -2.9%
+                SimpleListManipulation:    28ms    30ms   -4.3%    29ms    30ms   -4.1%
+                  SimpleLongArithmetic:    26ms    26ms   +0.5%    26ms    26ms   +0.5%
+                            SmallLists:    40ms    40ms   +0.1%    40ms    40ms   +0.1%
+                           SmallTuples:    46ms    47ms   -2.4%    46ms    48ms   -3.0%
+                 SpecialClassAttribute:   126ms   120ms   +4.7%   126ms   121ms   +4.4%
+              SpecialInstanceAttribute:    42ms    42ms   +0.6%    42ms    42ms   +0.8%
+                        StringMappings:    94ms    91ms   +3.9%    94ms    91ms   +3.8%
+                      StringPredicates:    48ms    49ms   -1.7%    48ms    49ms   -2.1%
+                         StringSlicing:    45ms    45ms   +1.4%    46ms    45ms   +1.5%
+                             TryExcept:    23ms    22ms   +4.9%    23ms    22ms   +4.8%
+                            TryFinally:    32ms    32ms   -0.1%    32ms    32ms   +0.1%
+                        TryRaiseExcept:    17ms    17ms   +0.9%    17ms    17ms   +0.5%
+                          TupleSlicing:    49ms    48ms   +1.1%    49ms    49ms   +1.0%
+                           WithFinally:    48ms    47ms   +2.3%    48ms    47ms   +2.4%
+                       WithRaiseExcept:    45ms    44ms   +0.8%    45ms    45ms   +0.5%
+        -------------------------------------------------------------------------------
+        Totals:                          2284ms  2287ms   -0.1%  2306ms  2308ms   -0.1%
+
+        (this=pep447.pybench, other=default.pybench)
 
 
 A run of the benchmark suite (with option "-b 2n3") also seems to indicate that
 the performance impact is minimal::
 
-	Report on Linux fangorn.local 2.6.32-358.114.1.openstack.el6.x86_64 #1 SMP Wed Jul 3 02:11:25 EDT 2013 x86_64 x86_64
-	Total CPU cores: 8
+        Report on Linux fangorn.local 2.6.32-358.114.1.openstack.el6.x86_64 #1 SMP Wed Jul 3 02:11:25 EDT 2013 x86_64 x86_64
+        Total CPU cores: 8
 
-	### call_method_slots ###
-	Min: 0.304120 -> 0.282791: 1.08x faster
-	Avg: 0.304394 -> 0.282906: 1.08x faster
-	Significant (t=2329.92)
-	Stddev: 0.00016 -> 0.00004: 4.1814x smaller
+        ### call_method_slots ###
+        Min: 0.304120 -> 0.282791: 1.08x faster
+        Avg: 0.304394 -> 0.282906: 1.08x faster
+        Significant (t=2329.92)
+        Stddev: 0.00016 -> 0.00004: 4.1814x smaller
 
-	### call_simple ###
-	Min: 0.249268 -> 0.221175: 1.13x faster
-	Avg: 0.249789 -> 0.221387: 1.13x faster
-	Significant (t=2770.11)
-	Stddev: 0.00012 -> 0.00013: 1.1101x larger
+        ### call_simple ###
+        Min: 0.249268 -> 0.221175: 1.13x faster
+        Avg: 0.249789 -> 0.221387: 1.13x faster
+        Significant (t=2770.11)
+        Stddev: 0.00012 -> 0.00013: 1.1101x larger
 
-	### django_v2 ###
-	Min: 0.632590 -> 0.601519: 1.05x faster
-	Avg: 0.635085 -> 0.602653: 1.05x faster
-	Significant (t=321.32)
-	Stddev: 0.00087 -> 0.00051: 1.6933x smaller
+        ### django_v2 ###
+        Min: 0.632590 -> 0.601519: 1.05x faster
+        Avg: 0.635085 -> 0.602653: 1.05x faster
+        Significant (t=321.32)
+        Stddev: 0.00087 -> 0.00051: 1.6933x smaller
 
-	### fannkuch ###
-	Min: 1.033181 -> 0.999779: 1.03x faster
-	Avg: 1.036457 -> 1.001840: 1.03x faster
-	Significant (t=260.31)
-	Stddev: 0.00113 -> 0.00070: 1.6112x smaller
+        ### fannkuch ###
+        Min: 1.033181 -> 0.999779: 1.03x faster
+        Avg: 1.036457 -> 1.001840: 1.03x faster
+        Significant (t=260.31)
+        Stddev: 0.00113 -> 0.00070: 1.6112x smaller
 
-	### go ###
-	Min: 0.526714 -> 0.544428: 1.03x slower
-	Avg: 0.529649 -> 0.547626: 1.03x slower
-	Significant (t=-93.32)
-	Stddev: 0.00136 -> 0.00136: 1.0028x smaller
+        ### go ###
+        Min: 0.526714 -> 0.544428: 1.03x slower
+        Avg: 0.529649 -> 0.547626: 1.03x slower
+        Significant (t=-93.32)
+        Stddev: 0.00136 -> 0.00136: 1.0028x smaller
 
-	### iterative_count ###
-	Min: 0.109748 -> 0.116513: 1.06x slower
-	Avg: 0.109816 -> 0.117202: 1.07x slower
-	Significant (t=-357.08)
-	Stddev: 0.00008 -> 0.00019: 2.3664x larger
+        ### iterative_count ###
+        Min: 0.109748 -> 0.116513: 1.06x slower
+        Avg: 0.109816 -> 0.117202: 1.07x slower
+        Significant (t=-357.08)
+        Stddev: 0.00008 -> 0.00019: 2.3664x larger
 
-	### json_dump_v2 ###
-	Min: 2.554462 -> 2.609141: 1.02x slower
-	Avg: 2.564472 -> 2.620013: 1.02x slower
-	Significant (t=-76.93)
-	Stddev: 0.00538 -> 0.00481: 1.1194x smaller
+        ### json_dump_v2 ###
+        Min: 2.554462 -> 2.609141: 1.02x slower
+        Avg: 2.564472 -> 2.620013: 1.02x slower
+        Significant (t=-76.93)
+        Stddev: 0.00538 -> 0.00481: 1.1194x smaller
 
-	### meteor_contest ###
-	Min: 0.196336 -> 0.191925: 1.02x faster
-	Avg: 0.196878 -> 0.192698: 1.02x faster
-	Significant (t=61.86)
-	Stddev: 0.00053 -> 0.00041: 1.2925x smaller
+        ### meteor_contest ###
+        Min: 0.196336 -> 0.191925: 1.02x faster
+        Avg: 0.196878 -> 0.192698: 1.02x faster
+        Significant (t=61.86)
+        Stddev: 0.00053 -> 0.00041: 1.2925x smaller
 
-	### nbody ###
-	Min: 0.228039 -> 0.235551: 1.03x slower
-	Avg: 0.228857 -> 0.236052: 1.03x slower
-	Significant (t=-54.15)
-	Stddev: 0.00130 -> 0.00029: 4.4810x smaller
+        ### nbody ###
+        Min: 0.228039 -> 0.235551: 1.03x slower
+        Avg: 0.228857 -> 0.236052: 1.03x slower
+        Significant (t=-54.15)
+        Stddev: 0.00130 -> 0.00029: 4.4810x smaller
 
-	### pathlib ###
-	Min: 0.108501 -> 0.105339: 1.03x faster
-	Avg: 0.109084 -> 0.105619: 1.03x faster
-	Significant (t=311.08)
-	Stddev: 0.00022 -> 0.00011: 1.9314x smaller
+        ### pathlib ###
+        Min: 0.108501 -> 0.105339: 1.03x faster
+        Avg: 0.109084 -> 0.105619: 1.03x faster
+        Significant (t=311.08)
+        Stddev: 0.00022 -> 0.00011: 1.9314x smaller
 
-	### regex_effbot ###
-	Min: 0.057905 -> 0.056447: 1.03x faster
-	Avg: 0.058055 -> 0.056760: 1.02x faster
-	Significant (t=79.22)
-	Stddev: 0.00006 -> 0.00015: 2.7741x larger
+        ### regex_effbot ###
+        Min: 0.057905 -> 0.056447: 1.03x faster
+        Avg: 0.058055 -> 0.056760: 1.02x faster
+        Significant (t=79.22)
+        Stddev: 0.00006 -> 0.00015: 2.7741x larger
 
-	### silent_logging ###
-	Min: 0.070810 -> 0.072436: 1.02x slower
-	Avg: 0.070899 -> 0.072609: 1.02x slower
-	Significant (t=-191.59)
-	Stddev: 0.00004 -> 0.00008: 2.2640x larger
+        ### silent_logging ###
+        Min: 0.070810 -> 0.072436: 1.02x slower
+        Avg: 0.070899 -> 0.072609: 1.02x slower
+        Significant (t=-191.59)
+        Stddev: 0.00004 -> 0.00008: 2.2640x larger
 
-	### spectral_norm ###
-	Min: 0.290255 -> 0.299286: 1.03x slower
-	Avg: 0.290335 -> 0.299541: 1.03x slower
-	Significant (t=-572.10)
-	Stddev: 0.00005 -> 0.00015: 2.8547x larger
+        ### spectral_norm ###
+        Min: 0.290255 -> 0.299286: 1.03x slower
+        Avg: 0.290335 -> 0.299541: 1.03x slower
+        Significant (t=-572.10)
+        Stddev: 0.00005 -> 0.00015: 2.8547x larger
 
-	### threaded_count ###
-	Min: 0.107215 -> 0.115206: 1.07x slower
-	Avg: 0.107488 -> 0.115996: 1.08x slower
-	Significant (t=-109.39)
-	Stddev: 0.00016 -> 0.00076: 4.8665x larger
+        ### threaded_count ###
+        Min: 0.107215 -> 0.115206: 1.07x slower
+        Avg: 0.107488 -> 0.115996: 1.08x slower
+        Significant (t=-109.39)
+        Stddev: 0.00016 -> 0.00076: 4.8665x larger
 
-	The following not significant results are hidden, use -v to show them:
-	call_method, call_method_unknown, chaos, fastpickle, fastunpickle, float, formatted_logging, hexiom2, json_load, normal_startup, nqueens, pidigits, raytrace, regex_compile, regex_v8, richards, simple_logging, startup_nosite, telco, unpack_sequence.
+        The following not significant results are hidden, use -v to show them:
+        call_method, call_method_unknown, chaos, fastpickle, fastunpickle, float, formatted_logging, hexiom2, json_load, normal_startup, nqueens, pidigits, raytrace, regex_compile, regex_v8, richards, simple_logging, startup_nosite, telco, unpack_sequence.
 
 
 Alternative proposals
