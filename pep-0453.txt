@@ -21,7 +21,7 @@ explicit bootstrapping method and a recommendation to third party
 redistributors of Python to also provide pip by default (in a way reasonable
 for their distributions).
 
-This PEP does *not* proposes the inclusion of pip itslef in the standard
+This PEP does *not* propose the inclusion of pip itself in the standard
 library.
 
 
@@ -156,7 +156,7 @@ attempt to run ``python -m getpip`` by default however the ``make install``
 and ``make altinstall`` commands of the source distribution will not.
 
 Keeping the pip bootstrapping as a separate step for make based
-installations should minimise the changes CPython redistributors need to
+installations should minimize the changes CPython redistributors need to
 make to their build processes. Avoiding the layer of indirection through
 make for the getpip invocation also ensures those installing from a custom
 source build can easily force an offline installation of pip, install it
