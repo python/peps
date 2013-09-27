@@ -1,0 +1,421 @@
+PEP: 456
+Title: Pluggable and secure hash algorithm
+Version: $Revision$
+Last-Modified: $Date$
+Author: Christian Heimes <christian@python.org>
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 27-Sep-2013
+Python-Version: 3.4
+Post-History:
+
+
+Abstract
+========
+
+This PEP proposes SipHash as default string and bytes hash algorithm to properly
+fix hash randomization once and for all. It also proposes an addition to
+Python's C API in order to make the hash code pluggable. The new API allows to
+select the algorithm on startup as well as the addition of more hash algorithms.
+
+
+Rationale
+=========
+
+Despite the last attempt [issue13703]_ CPython is still vulnerable to hash
+collision DoS attacks [29c3]_ [issue14621]_. The current hash algorithm and
+its randomization is not resilient against attacks. Only a proper
+cryptographic hash function prevents the extraction of secret randomization
+keys. Although no practical attack against a Python-based service has been
+seen yet, the weakness has to be fixed. Jean-Philippe Aumasson and Daniel
+J. Bernstein have already shown how the seed for the current implementation
+can be recovered [poc]_.
+
+Furthermore the current hash algorithm is hard-coded and implemented multiple
+times for bytes and three different Unicode representations UCS1, UCS2 and
+UCS4. This makes it impossible for embedders to replace it with a different
+implementation without patching and recompiling large parts of the interpreter.
+Embedders may want to choose a more suitable hash function.
+
+Finally the current implementation code does not perform well. In the common
+case it only processes one or two bytes per cycle. On a modern 64bit processor
+the code can easily be adjusted to deal with eight bytes at once.
+
+This PEP proposes three major changes to the hash code for strings and bytes:
+
+* SipHash [sip]_ is introduced as default hash algorithm. It is fast and small
+  despite its cryptographic properties. Due to the fact that it was designed
+  by well known security and crypto experts, it is safe to assume that its
+  secure for the near future.
+
+* Calculation of the hash of strings and bytes is moved into a single API 
+  function instead of multiple specialized implementations in 
+  ``Objects/object.c`` and ``Objects/unicodeobject.c``. The function takes a
+  void pointer plus length and returns the hash for it.
+
+* The algorithm can be selected by the user with an environment variable,
+  command line argument or by an embedder with an API function. By default FNV
+  and SipHash are available for selection.
+
+
+Current implementation with modified FNV
+========================================
+
+CPython currently uses uses a variant of the Fowler-Noll-Vo hash function
+[fnv]_. The variant is has been modified to reduce the amount and cost of hash
+collisions for common strings. The first character of the string is added
+twice, the first time time with a bit shift of 7. The length of the input
+string is XOR-ed to the final value. Both deviations from the original FNV
+algorithm reduce the amount of hash collisions for short strings.
+
+Recently [issue13703]_ a random prefix and suffix were added as an attempt to
+randomize the hash values. In order to protect the hash secret the code still
+returns ``0`` for zero length input.
+
+C code::
+
+    Py_uhash_t x;
+    Py_ssize_t len;
+    /* p is either 1, 2 or 4 byte type */
+    unsigned char *p;
+    Py_UCS2 *p;
+    Py_UCS4 *p;
+
+    if (len == 0)
+        return 0;
+    x = (Py_uhash_t) _Py_HashSecret.prefix;
+    x ^= (Py_uhash_t) *p << 7;
+    for (i = 0; i < len; i++)
+        x = (1000003 * x) ^ (Py_uhash_t) *p++;
+    x ^= (Py_uhash_t) len;
+    x ^= (Py_uhash_t) _Py_HashSecret.suffix;
+    return x;
+
+
+Which roughly translates to Python::
+
+    def fnv(p):
+        if len(p) == 0:
+            return 0
+
+        # bit mask, 2**32-1 or 2**64-1
+        mask = 2 * sys.maxsize + 1
+
+        x = hashsecret.prefix
+        x = (x ^ (ord(p[0]) << 7)) & mask
+        for c in p:
+            x = ((1000003 * x) ^ ord(c)) & mask
+        x = (x ^ len(p)) & mask
+        x = (x ^ hashsecret.suffix) & mask
+
+        if x == -1:
+            x = -2
+
+        return x
+
+
+FNV is a simple multiply and XOR algorithm with no cryptographic properties.
+The randomization was not part of the initial hash code, but was added as
+counter measure against hash collision attacks as explained in oCERT-2011-003
+[ocert]_. Because FNV is not a cryptographic hash algorithm and the dict
+implementation is not fortified against side channel analysis, the
+randomization secrets can be calculated by a remote attacker. The author of
+this PEP strongly believes that the nature of a non-cryptographic hash
+function makes it impossible to conceal the secrets.
+
+
+Hash algorithm
+==============
+
+SipHash
+-------
+
+SipHash [sip]_ is a cryptographic pseudo random function with a 128bit seed and
+64bit output. It was designed by Jean-Philippe Aumasson and Daniel J.
+Bernstein as a fast and secure keyed hash algorithm. It's used by Ruby, Perl,
+OpenDNS, Rust, Redis, FreeBSD and more. The C reference implementation has
+been released under CC0 license (public domain).
+
+Quote from SipHash's site:
+
+    SipHash is a family of pseudorandom functions (a.k.a. keyed hash
+    functions) optimized for speed on short messages. Target applications
+    include network traffic authentication and defense against hash-flooding
+    DoS attacks.
+
+siphash24 is the recommend variant with best performance. It uses 2 rounds per
+message block and 4 finalization rounds.
+
+Marek Majkowski C implementation csiphash [csiphash]_::
+
+    uint64_t siphash24(const void *src,
+                       unsigned long src_sz,
+                       const char k[16]);
+
+
+MurmurHash
+----------
+
+MurmurHash [murmur]_ is a family of non-cryptographic keyed hash function
+developed by Austin Appleby. Murmur3 is the latest and fast variant of
+MurmurHash. The C++ reference implementation has been released into public
+domain. It features 32bit seed and 32 or 128bit output.
+
+::
+
+    void MurmurHash3_x86_32(const void *key,
+                            int len,
+                            uint32_t seed,
+                            void *out);
+
+    void MurmurHash3_x86_128(const void * key,
+                             int len,
+                             uint32_t seed,
+                             void *out);
+
+    void MurmurHash3_x64_128(const void *key,
+                             int len,
+                             uint32_t seed,
+                             void *out);
+
+
+CityHash
+--------
+
+CityHash [city]_ is a family of non-cryptographic hash function developed by
+Geoff Pike and Jyrki Alakuijala for Google. The C++ reference implementation
+has been released under MIT license. The algorithm is partly based on
+MurmurHash and claims to be faster. It supports 64 and 128 bit output with a
+128bit seed as well as 32bit output without seed.
+
+::
+
+    uint64 CityHash64WithSeeds(const char *buf,
+                               size_t len,
+                               uint64 seed0,
+                               uint64 seed1)
+
+
+
+C API Implementation
+====================
+
+hash secret
+-----------
+
+The ``_Py_HashSecret_t`` type of Python 2.6 to 3.3 has two members with either
+32 or 64bit length each. SipHash requires two 64bit unsigned integers as keys.
+The typedef will be changed to an union with a guaranteed size of 128bits on
+all architectures. On platforms with a 64bit data type it will have two
+``uint64`` members. Because C89 compatible compilers may not have ``uint64``
+the union also has an array of 16 chars.
+
+new type definition::
+
+    typedef union {
+        unsigned char uc16[16];
+        struct {
+            Py_hash_t prefix;
+            Py_hash_t suffix;
+        } ht;
+    #ifdef PY_UINT64_T
+        struct {
+            PY_UINT64_T k0;
+            PY_UINT64_T k1;
+        } ui64;
+    #endif
+    } _Py_HashSecret_t;
+
+    PyAPI_DATA(_Py_HashSecret_t) _Py_HashSecret;
+
+``_Py_HashSecret_t`` is initialized in ``Python/random.c:_PyRandom_Init()``
+exactly once at startup.
+
+
+hash function table
+-------------------
+
+type definition::
+
+    typedef Py_hash_t (*PyHash_func_t)(void *, Py_ssize_t);
+
+    typedef struct {
+        PyHash_func_t hashfunc;
+        char *name;
+        unsigned int precedence;
+    } PyHash_FuncDef;
+
+    PyAPI_DATA(PyHash_FuncDef) *PyHash_FuncTable;
+
+Implementation::
+
+    PyHash_FuncDef hash_func_table[] = {
+        {fnv, "fnv", 10},
+    #ifdef PY_UINT64_T
+        {siphash24, "sip24", 20},
+    #endif
+        {NULL, NULL},
+    };
+
+    PyHash_FuncDef *PyHash_FuncTable = hash_func_table;
+
+
+hash function API
+-----------------
+
+::
+
+    int PyHash_SetHashAlgorithm(char *name);
+
+    PyHash_FuncDef* PyHash_GetHashAlgorithm(void);
+
+``PyHash_SetHashAlgorithm(NULL)`` selects the hash algorithm with the highest
+precedence. ``PyHash_SetHashAlgorithm("sip24")`` selects siphash24 as hash
+algorithm. The function returns ``0`` on success. In case the algorithm is
+not supported or a hash algorithm is already set it returns ``-1``.
+(XXX use enum?)
+
+``PyHash_GetHashAlgorithm()`` returns a pointer to current hash function
+definition or `NULL`.
+
+(XXX use an extern variable to hold a function pointer to improve performance?)
+
+
+Python API
+==========
+
+sys module
+----------
+
+The sys module grows a new struct member with information about the select
+algorithm as well as all available algorithms.
+
+::
+
+    sys.hash_info(algorithm='siphash24', available=('siphash24', 'fnv'))
+
+
+_testcapi
+---------
+
+The `_testcapi` C module gets a function to hash a buffer or string object
+with any supported hash algorithm. The function neither uses nor sets the
+cached hash value of the object. The feature is soley intended for benchmarks
+and testing.
+
+::
+
+    _testcapi.get_hash(name: str, str_or_buffer) -> int
+
+
+Further things to consider
+==========================
+
+ASCII str / bytes hash collision
+--------------------------------
+
+Since the implementation of [#pep-0393]_ bytes and ASCII text have the same
+memory layout. Because of this the new hashing API will keep the invariant::
+
+    hash("ascii string") == hash(b"ascii string")
+
+for ASCII string and ASCII bytes. Equal hash values result in a hash collision
+and therefore cause a minor speed penalty for dicts and sets with mixed keys.
+The cause of the collision could be removed by e.g. subtraction ``-2`` from
+the hash value of bytes. (``-2`` because ``hash(b"") == 0`` and ``-1`` is
+reserved.)
+
+
+Performance
+===========
+
+TBD
+
+First tests suggest that SipHash performs a bit faster on 64bit CPUs when
+it is feed with medium size byte strings as well as ASCII and UCS2 Unicode
+strings. For very short strings the setup costs for SipHash dominates its
+speed but it is still in the same order of magnitude as the current FNV code.
+
+Serhiy Storchaka has shown in [issue16427]_ that a modified FNV
+implementation with 64bits per cycle is able to process long strings several
+times faster than the current FNV implementation.
+
+
+Backwards Compatibility
+=======================
+
+The modifications don't alter any existing API.
+
+The output of `hash()` for strings and bytes are going to be different. The
+hash values for ASCII Unicode and ASCII bytes will stay equal.
+
+
+Alternative counter measures against hash collision DoS
+=======================================================
+
+Three alternative counter measures against hash collisions were discussed in
+the past, but are not subject of this PEP.
+
+1. Marc-Andre Lemburg has suggested that dicts shall count hash collision. In
+   case an insert operation causes too many collisions an exception shall be
+   raised.
+
+2. Some application (e.g. PHP) have limit the amount of keys for GET and POST
+   HTTP request. The approach effectively leverages the impact of a hash
+   collision attack. (XXX citation needed)
+
+3. Hash maps have a worst case of O(n) for insertion and lookup of keys. This
+   results in an quadratic runtime during a hash collision attack. The
+   introduction of a new and additional data structure with with O(log n)
+   worst case behavior would eliminate the root cause. A data structures like
+   red-black-tree or prefix trees (trie [trie]_) would have other benefits,
+   too. Prefix trees with stringed keyed can reduce memory usage as common
+   prefixes are stored within the tree structure.
+
+
+Reference
+=========
+
+.. [29c3] http://events.ccc.de/congress/2012/Fahrplan/events/5152.en.html
+
+.. [fnv] http://en.wikipedia.org/wiki/Fowler-Noll-Vo_hash_function
+
+.. [sip] https://131002.net/siphash/
+
+.. [ocert] http://www.nruns.com/_downloads/advisory28122011.pdf
+
+.. [poc] https://131002.net/siphash/poc.py
+
+.. [issue13703] http://bugs.python.org/issue13703
+
+.. [issue14621] http://bugs.python.org/issue14621
+
+.. [issue16427] http://bugs.python.org/issue16427
+
+.. [trie] http://en.wikipedia.org/wiki/Trie
+
+.. [city] http://code.google.com/p/cityhash/
+
+.. [murmur] http://code.google.com/p/smhasher/
+
+.. [csiphash] https://github.com/majek/csiphash/
+
+.. [#pep-0393] http://www.python.org/dev/peps/pep-0393/
+
+
+Copyright
+=========
+
+This document has been placed in the public domain.
+
+
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   coding: utf-8
+   End:
