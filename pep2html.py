@@ -228,11 +228,14 @@ def fixfile(inpath, input_lines, outfile):
         elif k.lower() in ('last-modified',):
             date = v or time.strftime('%d-%b-%Y',
                                       time.localtime(os.stat(inpath)[8]))
-            try:
-                url = PEPCVSURL % int(pep)
-                v = '<a href="%s">%s</a> ' % (url, cgi.escape(date))
-            except ValueError, error:
+            if basename == 'pep-0000.txt':
                 v = date
+            else:
+                try:
+                    url = PEPCVSURL % int(pep)
+                    v = '<a href="%s">%s</a> ' % (url, cgi.escape(date))
+                except ValueError, error:
+                    v = date
         elif k.lower() in ('content-type',):
             url = PEPURL % 9
             pep_type = v or 'text/plain'
