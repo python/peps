@@ -137,7 +137,7 @@ def fixanchor(current, match):
                 break
         link = EMPTYSTRING.join(ltext)
     elif text.endswith('.txt') and text <> current:
-        link = PEPDIRURL + os.path.splitext(text)[0] + '/' + text 
+        link = PEPDIRURL + os.path.splitext(text)[0] + '/' + text
     elif text.startswith('pep-') and text <> current:
         link = os.path.splitext(text)[0] + ".html"
     elif text.startswith('PEP'):
@@ -235,11 +235,14 @@ def fixfile(inpath, input_lines, outfile):
                                       time.localtime(os.stat(inpath)[8]))
             if date.startswith('$' 'Date: ') and date.endswith(' $'):
                 date = date[6:-2]
-            try:
-                url = PEPCVSURL % int(pep)
-                v = '<a href="%s">%s</a> ' % (url, cgi.escape(date))
-            except ValueError, error:
+            if basename == 'pep-0000.txt':
                 v = date
+            else:
+                try:
+                    url = PEPCVSURL % int(pep)
+                    v = '<a href="%s">%s</a> ' % (url, cgi.escape(date))
+                except ValueError, error:
+                    v = date
         elif k.lower() == 'content-type':
             url = PEPURL % 9
             pep_type = v or 'text/plain'
@@ -381,7 +384,7 @@ def make_html(inpath):
     destDir, needSvn, pepnum = set_up_pyramid(inpath)
     outpath = os.path.join(destDir, 'body.html')
     if ( not settings.force_rebuild
-         and (os.path.exists(outpath) 
+         and (os.path.exists(outpath)
               and os.stat(inpath).st_mtime <= os.stat(outpath).st_mtime)):
         if settings.verbose:
             print "Skipping %s (outfile up to date)"%(inpath)
