@@ -125,8 +125,33 @@ this PEP strongly believes that the nature of a non-cryptographic hash
 function makes it impossible to conceal the secrets.
 
 
-Hash algorithm
-==============
+Requirements for a hash function
+================================
+
+
+
+* It must be able to hash arbitrarily large blocks of memory from 1 bytes up
+  to the maximum ``ssize_t`` value.
+
+* It must produce at least 32bit values on 32bit platforms and at least 64bit
+  values on 64bit platforms. (Note: Larger outputs can be compressed with e.g.
+  ``v ^ (v >> 32)``.)
+
+* It must support hashing of unaligned memory in order to support
+  hash(memoryview).
+
+* It must not return ``-1``. It` either stands for error or missing hash value.
+  (Note: A special case can be added to map ``-1`` to ``-2``.)
+
+* It should return ``0`` for zero length input. (Note: This can be handled as
+  special case, too.)
+
+
+Examined hashing algorithms
+===========================
+
+The author of this PEP has researched several hashing algorithms that are
+considered modern, fast and state-of-the-art.
 
 SipHash
 -------
@@ -145,9 +170,12 @@ Quote from SipHash's site:
     DoS attacks.
 
 siphash24 is the recommend variant with best performance. It uses 2 rounds per
-message block and 4 finalization rounds.
-
-Marek Majkowski C implementation csiphash [csiphash]_::
+message block and 4 finalization rounds. Besides the reference implementation
+several other implementations are available. Some are single-shot functions,
+others use a Merkle–Damgård construction-like approach with init, update and
+finalize functions. Marek Majkowski C implementation csiphash [csiphash]_
+defines the prototype of the function. (Note: ``k`` is split up into two
+uint64_t)::
 
     uint64_t siphash24(const void *src,
                        unsigned long src_sz,
@@ -160,9 +188,10 @@ MurmurHash
 MurmurHash [murmur]_ is a family of non-cryptographic keyed hash function
 developed by Austin Appleby. Murmur3 is the latest and fast variant of
 MurmurHash. The C++ reference implementation has been released into public
-domain. It features 32bit seed and 32 or 128bit output.
+domain. It features 32 or 128bit output with a 32bit seed. (Note: The out
+parameter is a buffer with either 1 or 4 bytes.)
 
-::
+Murmur3's function prototypes are::
 
     void MurmurHash3_x86_32(const void *key,
                             int len,
@@ -179,6 +208,10 @@ domain. It features 32bit seed and 32 or 128bit output.
                              uint32_t seed,
                              void *out);
 
+Aumasson, Bernstein and Boßlet have shown [sip]_ [ocert-2012-001]_ that
+Murmur3 is not resilient against hash collision attacks. Therefore Murmur3
+can no longer be considered as secure algorithm. It still may be an
+alternative is hash collision attacks are of no concern.
 
 CityHash
 --------
@@ -197,9 +230,36 @@ MurmurHash and claims to be faster. It supports 64 and 128 bit output with a
                                uint64 seed1)
 
 
+Like MurmurHash Aumasson, Bernstein and Boßlet have shown [sip]_ a similar
+weakness in CityHash.
 
-C API Implementation
-====================
+
+HMAC, MD5, SHA-1, SHA-2
+-----------------------
+
+These hash algorithms are too slow and have high setup and finalization costs.
+For these reasons they are not considered fit for this purpose.
+
+
+AES CMAC
+--------
+
+Modern AMD and Intel CPUs have AES-NI (AES instruction set) [aes-ni]_ to speed
+up AES encryption. CMAC with AES-NI might be a viable option but it's probably
+too slow for daily operation. (testing required)
+
+
+Conclusion
+----------
+
+SipHash provides the best combination of speed and security. Developers of
+other prominent projects have came to the same conclusion.
+
+
+C API additions
+===============
+
+All C API extension modifications are no part of the stable API.
 
 hash secret
 -----------
@@ -232,13 +292,18 @@ new type definition::
 ``_Py_HashSecret_t`` is initialized in ``Python/random.c:_PyRandom_Init()``
 exactly once at startup.
 
+hash function
+-------------
+
+function prototype::
+
+    typedef Py_hash_t (*PyHash_func_t)(void *, Py_ssize_t);
+
 
 hash function table
 -------------------
 
 type definition::
-
-    typedef Py_hash_t (*PyHash_func_t)(void *, Py_ssize_t);
 
     typedef struct {
         PyHash_func_t hashfunc;
@@ -246,7 +311,7 @@ type definition::
         unsigned int precedence;
     } PyHash_FuncDef;
 
-    PyAPI_DATA(PyHash_FuncDef) *PyHash_FuncTable;
+    PyAPI_DATA(PyHash_FuncDef *) PyHash_FuncTable;
 
 Implementation::
 
@@ -264,11 +329,13 @@ Implementation::
 hash function API
 -----------------
 
-::
+function proto types::
 
-    int PyHash_SetHashAlgorithm(char *name);
+    PyAPI_FUNC(int) PyHash_SetHashAlgorithm(char *name);
 
-    PyHash_FuncDef* PyHash_GetHashAlgorithm(void);
+    PyAPI_FUNC(PyHash_FuncDef *) PyHash_GetHashAlgorithm(void);
+
+    PyAPI_DATA(PyHash_FuncDef *) _PyHash_Func;
 
 ``PyHash_SetHashAlgorithm(NULL)`` selects the hash algorithm with the highest
 precedence. ``PyHash_SetHashAlgorithm("sip24")`` selects siphash24 as hash
@@ -279,11 +346,12 @@ not supported or a hash algorithm is already set it returns ``-1``.
 ``PyHash_GetHashAlgorithm()`` returns a pointer to current hash function
 definition or `NULL`.
 
-(XXX use an extern variable to hold a function pointer to improve performance?)
+``_PyHash_Func`` holds the set hash function definition. It can't be modified
+or reset once a hash algorithm is set.
 
 
-Python API
-==========
+Python API addition
+===================
 
 sys module
 ----------
@@ -309,13 +377,86 @@ and testing.
     _testcapi.get_hash(name: str, str_or_buffer) -> int
 
 
+Necessary modifications to C code
+=================================
+
+_Py_HashBytes (Objects/object.c)
+--------------------------------
+
+``_Py_HashBytes`` is an internal helper function that provides the hashing
+code for bytes, memoryview and datetime classes. It currently implements FNV
+for ``unsigned char*``. The function can either be modified to use the new
+API or it could be completely removed to avoid an unnecessary level of
+indirection.
+
+
+bytes_hash (Objects/bytesobject.c)
+----------------------------------
+
+``bytes_hash`` uses ``_Py_HashBytes`` to provide the tp_hash slot function
+for bytes objects. If ``_Py_HashBytes`` is to be removed then ``bytes_hash``
+must be reimplemented.
+
+
+memory_hash (Objects/memoryobject.c)
+------------------------------------
+
+``memory_hash`` provides the tp_hash slot function for read-only memory
+views if the original object is hashable, too. It's the only function that
+has to support hashing of unaligned memory segments in the future.
+
+
+unicode_hash (Objects/unicodeobject.c)
+--------------------------------------
+
+``bytes_hash`` provides the tp_hash slot function for unicode. Right now it
+implements the FNV algorithm three times for ``unsigned char*``, ``Py_UCS2``
+and ``Py_UCS4``. A reimplementation of the function must take care to use the
+correct length. Since the macro ``PyUnicode_GET_LENGTH`` returns the length
+of the unicode string and not its size in octets, the length must be
+multiplied with the size of the internal unicode kind::
+
+    Py_ssize_t len;
+    Py_uhash_t x;
+
+    len = PyUnicode_GET_LENGTH(self);
+    switch (PyUnicode_KIND(self)) {
+    case PyUnicode_1BYTE_KIND: {
+        const Py_UCS1 *c = PyUnicode_1BYTE_DATA(self);
+        x = _PyHash_Func->hashfunc(c, len * sizeof(Py_UCS1));
+        break;
+    }
+    case PyUnicode_2BYTE_KIND: {
+        const Py_UCS2 *s = PyUnicode_2BYTE_DATA(self);
+        x = _PyHash_Func->hashfunc(s, len * sizeof(Py_UCS2));
+        break;
+    }
+    case PyUnicode_4BYTE_KIND: {
+        const Py_UCS4 *l = PyUnicode_4BYTE_DATA(self);
+        x = _PyHash_Func->hashfunc(l, len * sizeof(Py_UCS4));
+        break;
+    }
+    }
+
+
+generic_hash (Modules/_datetimemodule.c)
+----------------------------------------
+
+``generic_hash`` acts as a wrapper around ``_Py_HashBytes`` for the tp_hash
+slots of date, time and datetime types. timedelta objects are hashed by their
+state (days, seconds, microseconds) and tzinfo objects are not hashable. The
+data members of date, time and datetime types' struct are not void* aligned.
+This can easily by fixed with memcpy()ing four to ten bytes to an aligned
+buffer.
+
+
 Further things to consider
 ==========================
 
 ASCII str / bytes hash collision
 --------------------------------
 
-Since the implementation of [#pep-0393]_ bytes and ASCII text have the same
+Since the implementation of [pep-0393]_ bytes and ASCII text have the same
 memory layout. Because of this the new hashing API will keep the invariant::
 
     hash("ascii string") == hash(b"ascii string")
@@ -336,6 +477,9 @@ First tests suggest that SipHash performs a bit faster on 64bit CPUs when
 it is feed with medium size byte strings as well as ASCII and UCS2 Unicode
 strings. For very short strings the setup costs for SipHash dominates its
 speed but it is still in the same order of magnitude as the current FNV code.
+
+It's yet unknown how the new distribution of hash values affects collisions
+of common keys in dicts of Python classes.
 
 Serhiy Storchaka has shown in [issue16427]_ that a modified FNV
 implementation with 64bits per cycle is able to process long strings several
@@ -385,6 +529,8 @@ Reference
 
 .. [ocert] http://www.nruns.com/_downloads/advisory28122011.pdf
 
+.. [ocert-2012-001] http://www.ocert.org/advisories/ocert-2012-001.html
+
 .. [poc] https://131002.net/siphash/poc.py
 
 .. [issue13703] http://bugs.python.org/issue13703
@@ -401,7 +547,9 @@ Reference
 
 .. [csiphash] https://github.com/majek/csiphash/
 
-.. [#pep-0393] http://www.python.org/dev/peps/pep-0393/
+.. [pep-0393] http://www.python.org/dev/peps/pep-0393/
+
+.. [aes-ni] http://en.wikipedia.org/wiki/AES_instruction_set
 
 
 Copyright
