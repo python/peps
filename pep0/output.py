@@ -8,6 +8,19 @@ from operator import attrgetter
 from . import constants
 from .pep import PEP, PEPError
 
+# This is a list of reserved PEP numbers.  Reservations are not to be used for
+# the normal PEP number allocation process - just give out the next available
+# PEP number.  These are for "special" numbers that may be used for semantic,
+# humorous, or other such reasons, e.g. 401, 666, 754.
+#
+# PEP numbers may only be reserved with the approval of a PEP editor.  Fields
+# here are the PEP number being reserved and the claimants for the PEP.
+# Although the output is sorted when PEP 0 is generated, please keep this list
+# sorted as well.
+RESERVED = [
+    (801, 'Warsaw'),
+    ]
+
 
 indent = u' '
 
@@ -180,6 +193,17 @@ def write_pep0(peps, output=sys.stdout):
         prev_pep = pep.number
     print>>output
     print>>output
+    print>>output, u'Reserved PEP Numbers'
+    print>>output
+    write_column_headers(output)
+    for number, claimants in sorted(RESERVED):
+        print>>output, constants.column_format % {
+            'type': '',
+            'status': '',
+            'number': number,
+            'title': 'RESERVED',
+            'authors': claimants,
+            }
     print>>output, u"Key"
     print>>output
     for type_ in PEP.type_values:
