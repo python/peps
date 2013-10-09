@@ -204,6 +204,8 @@ def write_pep0(peps, output=sys.stdout):
             'title': 'RESERVED',
             'authors': claimants,
             }
+    print>>output
+    print>>output
     print>>output, u"Key"
     print>>output
     for type_ in PEP.type_values:
