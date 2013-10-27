@@ -75,15 +75,13 @@ Requirements for a hash function
 * It MUST support hashing of unaligned memory in order to support
   hash(memoryview).
 
-* It MUST NOT return ``-1``. The value is reserved for error cases and yet
-  uncached hash values.  (Note: A special case can be added to map ``-1``
-  to ``-2``.)
-
 * It is highly RECOMMENDED that the length of the input influences the
   outcome, so that ``hash(b'\00') != hash(b'\x00\x00')``.
 
-* It MAY return ``0`` for zero length input in order to disguise the
-  randomization seed. (Note: This can be handled as special case, too.)
+The internal interface code between the hash function and the tp_hash slots
+implements special cases for zero length input and a return value of ``-1``.
+An input of length ``0`` is mapped to hash value ``0``. The output ``-1``
+is mapped to ``-2``.
 
 
 Current implementation with modified FNV
@@ -306,51 +304,62 @@ new type definition::
 ``_Py_HashSecret_t`` is initialized in ``Python/random.c:_PyRandom_Init()``
 exactly once at startup.
 
-hash function
--------------
 
-function prototype::
+hash function definition
+------------------------
 
-    typedef Py_hash_t (*PyHash_Func_t)(const void *, Py_ssize_t);
+Implementation::
+
+    typedef struct {
+        /* function pointer to hash function, e.g. fnv or siphash24 */
+        Py_hash_t (*const hash)(const void *, Py_ssize_t);
+        const char *name;       /* name of the hash algorithm and variant */
+        const int hash_bits;    /* internal size of hash value */
+        const int seed_bits;    /* size of seed input */
+    } PyHash_FuncDef;
+
+    PyAPI_FUNC(PyHash_FuncDef*) PyHash_GetFuncDef(void);
+
+
+autoconf
+--------
+
+A new test is added to the configure script. The test sets
+``HAVE_ALIGNED_REQUIRED``, when it detects a platform, that requires aligned
+memory access for integers. Must current platforms such as X86, X86_64 and
+modern ARM don't need aligned data.
+
+A new option ``--with-hash-algorithm`` enables the user to select a hash
+algorithm in the configure step.
 
 
 hash function selection
 -----------------------
 
-type definition::
+The value of the macro ``PY_HASH_ALGORITHM`` defines which hash algorithm is
+used internally. It may be set to any of the three values ``PY_HASH_SIPHASH24``,
+``PY_HASH_FNV`` or ``PY_HASH_EXTERNAL``. If ``PY_HASH_ALGORITHM`` is not
+defined at all, then the best available algorithm is selected. On platforms
+wich don't require aligned memory access (``HAVE_ALIGNED_REQUIRED`` not
+defined) and an unsigned 64bit integer type ``PY_UINT64_T``, SipHash24 is
+used. On strict C89 platforms without a 64 bit data type, or architectures such
+as SPARC, FNV is selected as fallback. A hash algorithm can be selected with
+an autoconf option, for example ``./configure --with-hash-algorithm=fnv``.
 
-    #define PY_HASH_SIPHASH24 0x53495024
-    #define PY_HASH_FNV 0x464E56
+The value ``PY_HASH_EXTERNAL`` allows 3rd parties to provide their own
+implementation at compile time.
 
-    #ifndef PY_HASH_ALGORITHM
-    #if defined(PY_UINT64_T) && defined(PY_UINT32_T)
-    #define PY_HASH_ALGORITHM PY_HASH_SIPHASH24
-    #else
-    #define PY_HASH_ALGORITHM PY_HASH_FNV
-    #endif /* uint64_t && uint32_t */
-    #endif /* PY_HASH_ALGORITHM */
-
-    typedef struct {
-        PyHash_Func_t hash;    /* function pointer */
-        char *name;            /* name of the hash algorithm and variant */
-        int hash_bits;         /* internal size of hash value */
-        int seed_bits;         /* size of seed input */
-    } PyHash_FuncDef;
-
-    PyAPI_DATA(PyHash_FuncDef) PyHash_Func;
 
 Implementation::
 
-    #if PY_HASH_ALGORITHM == PY_HASH_FNV
-    PyHash_FuncDef PyHash_Func = {fnv, "fnv", 8 * sizeof(Py_hash_t),
-                                  16 * sizeof(Py_hash_t)};
+    #if PY_HASH_ALGORITHM == PY_HASH_EXTERNAL
+    extern PyHash_FuncDef PyHash_Func;
+    #elif PY_HASH_ALGORITHM == PY_HASH_SIPHASH24
+    static PyHash_FuncDef PyHash_Func = {siphash24, "siphash24", 64, 128};
+    #elif PY_HASH_ALGORITHM == PY_HASH_FNV
+    static PyHash_FuncDef PyHash_Func = {fnv, "fnv", 8 * sizeof(Py_hash_t),
+                                         16 * sizeof(Py_hash_t)};
     #endif
-
-    #if PY_HASH_ALGORITHM == PY_HASH_SIPHASH24
-    PyHash_FuncDef PyHash_Func = {siphash24, "siphash24", 64, 128};
-    #endif
-
-TODO: select hash algorithm with autoconf variable
 
 
 Python API addition
@@ -378,34 +387,37 @@ to the object to reflect the active hash algorithm and its properties.
 Necessary modifications to C code
 =================================
 
-_Py_HashBytes (Objects/object.c)
---------------------------------
+_Py_HashBytes() (Objects/object.c)
+----------------------------------
 
 ``_Py_HashBytes`` is an internal helper function that provides the hashing
 code for bytes, memoryview and datetime classes. It currently implements FNV
-for ``unsigned char*``. The function can either be modified to use the new
-API or it could be completely removed to avoid an unnecessary level of
-indirection.
+for ``unsigned char *``.
 
+The function is moved to Python/pyhash.c and modified to use the hash function
+through PyHash_Func.hash(). The function signature is altered to take
+a ``const void *`` as first argument. ``_Py_HashBytes`` also takes care of
+special cases. It maps zero length input to ``0`` and return value of ``-1``
+to ``-2``.
 
-bytes_hash (Objects/bytesobject.c)
-----------------------------------
+bytes_hash() (Objects/bytesobject.c)
+------------------------------------
 
 ``bytes_hash`` uses ``_Py_HashBytes`` to provide the tp_hash slot function
-for bytes objects. If ``_Py_HashBytes`` is to be removed then ``bytes_hash``
-must be reimplemented.
+for bytes objects. The function will continue to use ``_Py_HashBytes``
+but withoht a type cast.
 
-
-memory_hash (Objects/memoryobject.c)
-------------------------------------
+memory_hash() (Objects/memoryobject.c)
+--------------------------------------
 
 ``memory_hash`` provides the tp_hash slot function for read-only memory
 views if the original object is hashable, too. It's the only function that
-has to support hashing of unaligned memory segments in the future.
+has to support hashing of unaligned memory segments in the future. The
+function will continue to use ``_Py_HashBytes`` but withoht a type cast.
 
 
-unicode_hash (Objects/unicodeobject.c)
---------------------------------------
+unicode_hash() (Objects/unicodeobject.c)
+----------------------------------------
 
 ``unicode_hash`` provides the tp_hash slot function for unicode. Right now it
 implements the FNV algorithm three times for ``unsigned char*``, ``Py_UCS2``
@@ -416,12 +428,12 @@ multiplied with the size of the internal unicode kind::
 
     if (PyUnicode_READY(u) == -1)
         return -1;
-    x = PyHash_Func.hash(PyUnicode_DATA(u),
-                         PyUnicode_GET_LENGTH(u) * PyUnicode_KIND(u));
+    x = _Py_HashBytes(PyUnicode_DATA(u),
+                      PyUnicode_GET_LENGTH(u) * PyUnicode_KIND(u));
 
 
-generic_hash (Modules/_datetimemodule.c)
-----------------------------------------
+generic_hash() (Modules/_datetimemodule.c)
+------------------------------------------
 
 ``generic_hash`` acts as a wrapper around ``_Py_HashBytes`` for the tp_hash
 slots of date, time and datetime types. timedelta objects are hashed by their
@@ -459,8 +471,17 @@ it is fed with medium size byte strings as well as ASCII and UCS2 Unicode
 strings. For very short strings the setup cost for SipHash dominates its
 speed but it is still in the same order of magnitude as the current FNV code.
 
-It's yet unknown how the new distribution of hash values affects collisions
-of common keys in dicts of Python classes.
+
+Hash value distribution
+-----------------------
+
+A good distribution of hash values is important for dict and set performance.
+Both SipHash24 and FNV take the length of the input into account, so that
+strings made up entirely of NULL bytes don't have the same hash value. The
+last bytes of the input tend to affect the least significant bits of the hash
+value, too. That attribute reduces the amount of hash collisions for strings
+with a common prefix.
+
 
 Typical length
 --------------
