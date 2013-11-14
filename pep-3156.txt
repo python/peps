@@ -1172,6 +1172,30 @@ Bidirectional stream transports have the following public methods:
   is known ahead of time, the best approach in both cases is to use
   the Content-Length header.)
 
+- ``get_write_buffer_size()``.  Return the current size of the
+  transport's write buffer in bytes.  This only knows about the write
+  buffer managed explicitly by the transport; buffering in other
+  layers of the network stack or elsewhere of the network is not
+  reported.
+
+- ``set_write_buffer_limits(high=None, low=None)``.  Set the high- and
+  low-water limits for flow control.
+
+  These two values control when to call the protocol's
+  ``pause_writing()`` and ``resume_writing()`` methods.  If specified,
+  the low-water limit must be less than or equal to the high-water
+  limit.  Neither value can be negative.
+
+  The defaults are implementation-specific.  If only the high-water
+  limit is given, the low-water limit defaults to a
+  implementation-specific value less than or equal to the high-water
+  limit.  Setting high to zero forces low to zero as well, and causes
+  ``pause_writing()`` to be called whenever the buffer becomes
+  non-empty.  Setting low to zero causes ``resume_writing()`` to be
+  called only once the buffer is empty.  Use of zero for either limit
+  is generally sub-optimal as it reduces opportunities for doing I/O
+  and computation concurrently.
+
 - ``pause_reading()``.  Suspend delivery of data to the protocol until
   a subsequent ``resume_reading()`` call.  Between ``pause_reading()``
   and ``resume_reading()``, the protocol's ``data_received()`` method
@@ -1225,7 +1249,7 @@ Datagram transports have these methods:
   ``create_datagram_endpoint()`` call that created this transport.  If
   present, and ``remote_addr`` was specified, they must match.  The
   (data, addr) pair may be sent immediately or buffered.  The return
-  value is None.
+  value is ``None``.
 
 - ``abort()``.  Immediately close the transport.  Buffered data will
   be discarded.
@@ -1248,7 +1272,33 @@ transport.)
 Subprocess Transports
 '''''''''''''''''''''
 
-TBD.
+Subprocess transports have the following methods:
+
+- ``get_pid()``.  Return the process ID of the subprocess.
+
+- ``get_returncode()``.  Return the process return code, if the
+  process has exited; otherwise ``None``.
+
+- ``get_pipe_transport(fd)``.  Return the pipe transport (a
+  unidirectional stream transport) corresponding to the argument,
+  which should be 0, 1 or 2 representing stdin, stdout or stderr (of
+  the subprocess).  If there is no such pipe transport, return
+  ``None``.  For stdin, this is a writing transport; for stdout and
+  stderr this is a reading transport.  You must use this method to get
+  a transport you can use to write to the subprocess's stdin.
+
+- ``send_signal(signal)``.  Send a signal to the subprocess.
+
+- ``terminate()``.  Terminate the subprocess.
+
+- ``kill()``.  Kill the subprocess.  On Windows this is an alias for
+  ``terminate()``.
+
+- ``close()``.  This is an alias for ``terminate()``.
+
+Note that ``send_signal()``, ``terminate()`` and ``kill()`` wrap the
+corresponding methods in the standard library ``subprocess`` module.
+
 
 Protocols
 ---------
@@ -1289,13 +1339,22 @@ context.  (See the "Context" section way above.)
 
 - ``eof_received()``.  This is called when the other end called
   ``write_eof()`` (or something equivalent).  If this returns a false
-  value (including None), the transport will close itself.  If it
+  value (including ``None``), the transport will close itself.  If it
   returns a true value, closing the transport is up to the protocol.
   However, for SSL/TLS connections this is ignored, because the TLS
   standard requires that no more data is sent and the connection is
   closed as soon as a "closure alert" is received.
 
-  The default implementation returns None.
+  The default implementation returns ``None``.
+
+- ``pause_writing()``.  Asks that the protocol temporarily stop
+  writing data to the transport.  Heeding the request is optional, but
+  the transport's buffer may grow without bounds if you keep writing.
+  The buffer size at which this is called can be controlled through
+  the transport's ``set_write_buffer_limits()`` method.
+
+- ``resume_writing()``.  Tells the protocol that it is safe to start
+  writing data to the transport again.  Note that this may be cal
 
 - ``connection_lost(exc)``.  The transport has been closed or aborted,
   has detected that the other end has closed the connection cleanly,
@@ -1303,14 +1362,18 @@ context.  (See the "Context" section way above.)
   the argument is ``None``; for an unexpected error, the argument is
   the exception that caused the transport to give up.
 
-Here is a chart indicating the order and multiplicity of calls:
+Here is a table indicating the order and multiplicity of the basic
+calls:
 
   1. ``connection_made()`` -- exactly once
   2. ``data_received()`` -- zero or more times
   3. ``eof_received()`` -- at most once
   4. ``connection_lost()`` -- exactly once
 
-TBD: Document ``pause_writing()`` and ``resume_writing()``.
+Calls to ``pause_writing()`` and ``resume_writing()`` occur in pairs
+and only between #1 and #4.  These pairs will not be nested.  The
+final ``resume_writing()`` call may be omitted; i.e. a paused
+connection may be lost and never be resumed.
 
 Datagram Protocols
 ''''''''''''''''''
@@ -1345,7 +1408,34 @@ Here is a chart indicating the order and multiplicity of calls:
 Subprocess Protocol
 '''''''''''''''''''
 
-TBD.
+Subprocess protocols have ``connection_made()``, ``connection_lost()``
+``pause_writing()`` and ``resume_writing()`` methods with the same
+signatures as stream protocols.  In addition, they have the following
+methods:
+
+- ``pipe_data_received(fd, data)``.  Called when the subprocess writes
+  data to its stdout or stderr.  ``fd`` is the file descriptor (1 for
+  stdout, 2 for stderr).  ``data`` is a ``bytes`` object.  (TBD: No
+  ``pipe_eof_received()``?)
+
+- ``pipe_connection_lost(fd, exc)``.  Called when the subprocess
+  closes its stdin, stdout or stderr.  ``fd`` is the file descriptor.
+  ``exc`` is an exception or ``None``.
+
+- ``process_exited()``.  Called when the subprocess has exited.  To
+  retrieve the exit status, use the transport's ``get_returncode()``
+  method.
+
+Note that depending on the behavior of the subprocess it is possible
+that ``process_exited()`` is called either before or after
+``pipe_connection_lost()``.  For example, if the subprocess creates a
+sub-subprocess that shares its stdin/stdout/stderr and then itself
+exits, ``process_exited()`` may be called while all the pipes are
+still open.  On the other hand when the subprocess closes its
+stdin/stdout/stderr but does not exit, ``pipe_connection_lost()`` may
+be called for all three pipes without ``process_exited()`` being
+called.  If (as is the more common case) the subprocess exits and
+thereby implicitly closes all pipes, the calling order is undefined.
 
 Callback Style
 --------------
@@ -1493,6 +1583,11 @@ package are provided:
   arguments.  Note that coroutine arguments are converted to Futures
   using ``asyncio.async()``.
 
+- ``asyncio.shield(f)``.  Wait for a Future, shielding it from
+  cancellation.  This returns a Future whose result or exception
+  is exactly the same as the argument; however, if the returned
+  Future is cancelled, the argument Future is unaffected.
+
 Sleeping
 --------
 
@@ -1558,13 +1653,17 @@ off the coroutine when ``connection_made()`` is called.
 TO DO
 =====
 
-- Document pause/resume_writing.
-
-- Document subprocess/pipe protocols/transports.
+- Document cancellation in more detail.
 
 - Document locks and queues.
 
-- Document SIGCHILD handling API (once it lands).
+- Document StreamReader, StreamWriter and open_connection().
+
+- Document passing 'loop=...' everywhere.
+
+- Document logger object.
+
+- Document SIGCHILD handling API.
 
 - Compare all APIs with the source code to be sure there aren't any
   undocumented or unimplemented features.
@@ -1572,6 +1671,10 @@ TO DO
 
 Wish List
 =========
+
+- An open_server() helper.  It should take a callback which is called
+  for each accepted connection with a reader and writer; the callback
+  may be a coroutine (then it is wrapped in a task).
 
 - Support a "start TLS" operation to upgrade a TCP socket to SSL/TLS.
 
