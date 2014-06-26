@@ -1,0 +1,376 @@
+PEP: 471
+Title: os.scandir() function -- a better and faster directory iterator
+Version: $Revision$
+Last-Modified: $Date$
+Author: Ben Hoyt <benhoyt@gmail.com>
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 30-May-2014
+Python-Version: 3.5
+
+
+Abstract
+========
+
+This PEP proposes including a new directory iteration function,
+``os.scandir()``, in the standard library. This new function adds
+useful functionality and increases the speed of ``os.walk()`` by 2-10
+times (depending on the platform and file system) by significantly
+reducing the number of times ``stat()`` needs to be called.
+
+
+Rationale
+=========
+
+Python's built-in ``os.walk()`` is significantly slower than it needs
+to be, because -- in addition to calling ``os.listdir()`` on each
+directory -- it executes the system call ``os.stat()`` or
+``GetFileAttributes()`` on each file to determine whether the entry is
+a directory or not.
+
+But the underlying system calls -- ``FindFirstFile`` /
+``FindNextFile`` on Windows and ``readdir`` on Linux and OS X --
+already tell you whether the files returned are directories or not, so
+no further system calls are needed. In short, you can reduce the
+number of system calls from approximately 2N to N, where N is the
+total number of files and directories in the tree. (And because
+directory trees are usually much wider than they are deep, it's often
+much better than this.)
+
+In practice, removing all those extra system calls makes ``os.walk()``
+about **8-9 times as fast on Windows**, and about **2-3 times as fast
+on Linux and Mac OS X**. So we're not talking about micro-
+optimizations. See more `benchmarks`_.
+
+.. _`benchmarks`: https://github.com/benhoyt/scandir#benchmarks
+
+Somewhat relatedly, many people (see Python `Issue 11406`_) are also
+keen on a version of ``os.listdir()`` that yields filenames as it
+iterates instead of returning them as one big list. This improves
+memory efficiency for iterating very large directories.
+
+So as well as providing a ``scandir()`` iterator function for calling
+directly, Python's existing ``os.walk()`` function could be sped up a
+huge amount.
+
+.. _`Issue 11406`: http://bugs.python.org/issue11406
+
+
+Implementation
+==============
+
+The implementation of this proposal was written by Ben Hoyt (initial
+version) and Tim Golden (who helped a lot with the C extension
+module). It lives on GitHub at `benhoyt/scandir`_.
+
+.. _`benhoyt/scandir`: https://github.com/benhoyt/scandir
+
+Note that this module has been used and tested (see "Use in the wild"
+section in this PEP), so it's more than a proof-of-concept. However,
+it is marked as beta software and is not extensively battle-tested.
+It will need some cleanup and more thorough testing before going into
+the standard library, as well as integration into `posixmodule.c`.
+
+
+
+Specifics of proposal
+=====================
+
+Specifically, this PEP proposes adding a single function to the ``os``
+module in the standard library, ``scandir``, that takes a single,
+optional string as its argument::
+
+    scandir(path='.') -> generator of DirEntry objects
+
+Like ``listdir``, ``scandir`` calls the operating system's directory
+iteration system calls to get the names of the files in the ``path``
+directory, but it's different from ``listdir`` in two ways:
+
+* Instead of bare filename strings, it returns lightweight
+  ``DirEntry`` objects that hold the filename string and provide
+  simple methods that allow access to the stat-like data the operating
+  system returned.
+
+* It returns a generator instead of a list, so that ``scandir`` acts
+  as a true iterator instead of returning the full list immediately.
+
+``scandir()`` yields a ``DirEntry`` object for each file and directory
+in ``path``. Just like ``listdir``, the ``'.'`` and ``'..'``
+pseudo-directories are skipped, and the entries are yielded in
+system-dependent order. Each ``DirEntry`` object has the following
+attributes and methods:
+
+* ``name``: the entry's filename, relative to ``path`` (corresponds to
+  the return values of ``os.listdir``)
+
+* ``is_dir()``: like ``os.path.isdir()``, but requires no system calls
+  on most systems (Linux, Windows, OS X)
+
+* ``is_file()``: like ``os.path.isfile()``, but requires no system
+  calls on most systems (Linux, Windows, OS X)
+
+* ``is_symlink()``: like ``os.path.islink()``, but requires no system
+  calls on most systems (Linux, Windows, OS X)
+
+* ``lstat()``: like ``os.lstat()``, but requires no system calls on
+  Windows
+
+The ``DirEntry`` attribute and method names were chosen to be the same
+as those in the new ``pathlib`` module for consistency.
+
+
+Notes on caching
+----------------
+
+The ``DirEntry`` objects are relatively dumb -- the ``name`` attribute
+is obviously always cached, and the ``is_X`` and ``lstat`` methods
+cache their values (immediately on Windows via ``FindNextFile``, and
+on first use on Linux / OS X via a ``stat`` call) and never refetch
+from the system.
+
+For this reason, ``DirEntry`` objects are intended to be used and
+thrown away after iteration, not stored in long-lived data structured
+and the methods called again and again.
+
+If a user wants to do that (for example, for watching a file's size
+change), they'll need to call the regular ``os.lstat()`` or
+``os.path.getsize()`` functions which force a new system call each
+time.
+
+
+Examples
+========
+
+Here's a good usage pattern for ``scandir``. This is in fact almost
+exactly how the scandir module's faster ``os.walk()`` implementation
+uses it::
+
+    dirs = []
+    non_dirs = []
+    for entry in scandir(path):
+        if entry.is_dir():
+            dirs.append(entry)
+        else:
+            non_dirs.append(entry)
+
+The above ``os.walk()``-like code will be significantly using scandir
+on both Windows and Linux or OS X.
+
+Or, for getting the total size of files in a directory tree -- showing
+use of the ``DirEntry.lstat()`` method::
+
+    def get_tree_size(path):
+        """Return total size of files in path and subdirs."""
+        size = 0
+        for entry in scandir(path):
+            if entry.is_dir():
+                sub_path = os.path.join(path, entry.name)
+                size += get_tree_size(sub_path)
+            else:
+                size += entry.lstat().st_size
+        return size
+
+Note that ``get_tree_size()`` will get a huge speed boost on Windows,
+because no extra stat call are needed, but on Linux and OS X the size
+information is not returned by the directory iteration functions, so
+this function won't gain anything there.
+
+
+Support
+=======
+
+The scandir module on GitHub has been forked and used quite a bit (see
+"Use in the wild" in this PEP), but there's also been a fair bit of
+direct support for a scandir-like function from core developers and
+others on the python-dev and python-ideas mailing lists. A sampling:
+
+* **Nick Coghlan**, a core Python developer: "I've had the local Red
+  Hat release engineering team express their displeasure at having to
+  stat every file in a network mounted directory tree for info that is
+  present in the dirent structure, so a definite +1 to os.scandir from
+  me, so long as it makes that info available."
+  [`source1 <http://bugs.python.org/issue11406>`_]
+
+* **Tim Golden**, a core Python developer, supports scandir enough to
+  have spent time refactoring and significantly improving scandir's C
+  extension module.
+  [`source2 <https://github.com/tjguk/scandir>`_]
+
+* **Christian Heimes**, a core Python developer: "+1 for something
+  like yielddir()"
+  [`source3 <https://mail.python.org/pipermail/python-ideas/2012-November/017772.html>`_]
+  and "Indeed! I'd like to see the feature in 3.4 so I can remove my
+  own hack from our code base."
+  [`source4 <http://bugs.python.org/issue11406>`_]
+
+* **Gregory P. Smith**, a core Python developer: "As 3.4beta1 happens
+  tonight, this isn't going to make 3.4 so i'm bumping this to 3.5.
+  I really like the proposed design outlined above."
+  [`source5 <http://bugs.python.org/issue11406>`_]
+
+* **Guido van Rossum** on the possibility of adding scandir to Python
+  3.5 (as it was too late for 3.4): "The ship has likewise sailed for
+  adding scandir() (whether to os or pathlib). By all means experiment
+  and get it ready for consideration for 3.5, but I don't want to add
+  it to 3.4."
+  [`source6 <https://mail.python.org/pipermail/python-dev/2013-November/130583.html>`_]
+
+Support for this PEP itself (meta-support?) was given by Nick Coghlan
+on python-dev: "A PEP reviewing all this for 3.5 and proposing a
+specific os.scandir API would be a good thing."
+[`source7 <https://mail.python.org/pipermail/python-dev/2013-November/130588.html>`_]
+
+
+Use in the wild
+===============
+
+To date, ``scandir`` is definitely useful, but has been clearly marked
+"beta", so it's uncertain how much use of it there is in the wild. Ben
+Hoyt has had several reports from people using it. For example:
+
+* Chris F: "I am processing some pretty large directories and was half
+  expecting to have to modify getdents. So thanks for saving me the
+  effort." [via personal email]
+
+* bschollnick: "I wanted to let you know about this, since I am using
+  Scandir as a building block for this code. Here's a good example of
+  scandir making a radical performance improvement over os.listdir."
+  [`source8 <https://github.com/benhoyt/scandir/issues/19>`_]
+
+* Avram L: "I'm testing our scandir for a project I'm working on.
+  Seems pretty solid, so first thing, just want to say nice work!"
+  [via personal email]
+
+Others have `requested a PyPI package`_ for it, which has been
+created. See `PyPI package`_.
+
+.. _`requested a PyPI package`: https://github.com/benhoyt/scandir/issues/12
+.. _`PyPI package`: https://pypi.python.org/pypi/scandir
+
+GitHub stats don't mean too much, but scandir does have several
+watchers, issues, forks, etc. Here's the run-down as of the stats as
+of June 5, 2014:
+
+* Watchers: 17
+* Stars: 48
+* Forks: 15
+* Issues: 2 open, 19 closed
+
+**However, the much larger point is this:**, if this PEP is accepted,
+``os.walk()`` can easily be reimplemented using ``scandir`` rather
+than ``listdir`` and ``stat``, increasing the speed of ``os.walk()``
+very significantly. There are thousands of developers, scripts, and
+production code that would benefit from this large speedup of
+``os.walk()``. For example, on GitHub, there are almost as many uses
+of ``os.walk`` (194,000) as there are of ``os.mkdir`` (230,000).
+
+
+Open issues and optional things
+===============================
+
+There are a few open issues or optional additions:
+
+
+Should scandir be in its own module?
+------------------------------------
+
+Should the function be included in the standard library in a new
+module, ``scandir.scandir()``, or just as ``os.scandir()`` as
+discussed? The preference of this PEP's author (Ben Hoyt) would be
+``os.scandir()``, as it's just a single function.
+
+
+Should there be a way to access the full path?
+----------------------------------------------
+
+Should ``DirEntry``'s have a way to get the full path without using
+``os.path.join(path, entry.name)``? This is a pretty common pattern,
+and it may be useful to add pathlib-like ``str(entry)`` functionality.
+This functionality has also been requested in `issue 13`_ on GitHub.
+
+.. _`issue 13`: https://github.com/benhoyt/scandir/issues/13
+
+
+Should it expose Windows wildcard functionality?
+------------------------------------------------
+
+Should ``scandir()`` have a way of exposing the wildcard functionality
+in the Windows ``FindFirstFile`` / ``FindNextFile`` functions? The
+scandir module on GitHub exposes this as a ``windows_wildcard``
+keyword argument, allowing Windows power users the option to pass a
+custom wildcard to ``FindFirstFile``, which may avoid the need to use
+``fnmatch`` or similar on the resulting names. It is named the
+unwieldly ``windows_wildcard`` to remind you you're writing power-
+user, Windows-only code if you use it.
+
+This boils down to whether ``scandir`` should be about exposing all of
+the system's directory iteration features, or simply providing a fast,
+simple, cross-platform directory iteration API.
+
+This PEP's author votes for not including ``windows_wildcard`` in the
+standard library version, because even though it could be useful in
+rare cases (say the Windows Dropbox client?), it'd be too easy to use
+it just because you're a Windows developer, and create code that is
+not cross-platform.
+
+
+Possible improvements
+=====================
+
+There are many possible improvements one could make to scandir, but
+here is a short list of some this PEP's author has in mind:
+
+* scandir could potentially be further sped up by calling ``readdir``
+  / ``FindNextFile`` say 50 times per ``Py_BEGIN_ALLOW_THREADS`` block
+  so that it stays in the C extension module for longer, and may be
+  somewhat faster as a result. This approach hasn't been tested, but
+  was suggested by on Issue 11406 by Antoine Pitrou.
+  [`source9 <http://bugs.python.org/msg130125>`_]
+
+
+Previous discussion
+===================
+
+* `Original thread Ben Hoyt started on python-ideas`_ about speeding
+  up ``os.walk()``
+
+* Python `Issue 11406`_, which includes the original proposal for a
+  scandir-like function
+
+* `Further thread Ben Hoyt started on python-dev`_ that refined the
+  ``scandir()`` API, including Nick Coghlan's suggestion of scandir
+  yielding ``DirEntry``-like objects
+
+* `Final thread Ben Hoyt started on python-dev`_ to discuss the
+  interaction between scandir and the new ``pathlib`` module
+
+* `Question on StackOverflow`_ about why ``os.walk()`` is slow and
+  pointers on how to fix it (this inspired the author of this PEP
+  early on)
+
+* `BetterWalk`_, this PEP's author's previous attempt at this, on
+  which the scandir code is based
+
+.. _`Original thread Ben Hoyt started on python-ideas`: https://mail.python.org/pipermail/python-ideas/2012-November/017770.html
+.. _`Further thread Ben Hoyt started on python-dev`: https://mail.python.org/pipermail/python-dev/2013-May/126119.html
+.. _`Final thread Ben Hoyt started on python-dev`: https://mail.python.org/pipermail/python-dev/2013-November/130572.html
+.. _`Question on StackOverflow`: http://stackoverflow.com/questions/2485719/very-quickly-getting-total-size-of-folder
+.. _`BetterWalk`: https://github.com/benhoyt/betterwalk
+
+
+Copyright
+=========
+
+This document has been placed in the public domain.
+
+
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   coding: utf-8
+   End:
