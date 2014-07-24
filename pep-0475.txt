@@ -1,0 +1,413 @@
+PEP: 475
+Title: Retry system calls failing with EINTR
+Version: $Revision$
+Last-Modified: $Date$
+Author: Charles-François Natali <cf.natali@gmail.com>, Victor Stinner <victor.stinner@gmail.com>
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 29-July-2014
+Python-Version: 3.5
+
+
+Abstract
+========
+
+Retry system calls failing with the ``EINTR`` error and recompute
+timeout if needed. Deprecate the ``signal.siginterrupt()`` function.
+
+
+Rationale
+=========
+
+Interrupted system calls
+------------------------
+
+On POSIX systems, signals are common. Your program must be prepared to
+handle them. Examples of signals:
+
+* The most common signal is ``SIGINT``, signal sent when CTRL+c is
+  pressed. By default, Python raises a ``KeyboardInterrupt`` exception
+  when this signal is received.
+* When running subprocesses, the ``SIGCHLD`` signal is sent when a
+  child process exits.
+* Resizing the terminal sends the ``SIGWINCH`` signal to the
+  applications running in the terminal.
+* Putting the application in background (ex: press CTRL-z and then
+  type the ``bg`` command) sends the ``SIGCONT`` signal.
+
+Writing a signal handler is difficult, only "signal-safe" functions
+can be called.  For example, ``printf()`` and ``malloc()`` are not
+signal-safe. When a signal is sent to a process calling a system
+call, the system call fails with the ``EINTR`` error to give the
+program an opportunity to handle the signal without the restriction on
+signal safe functions.
+
+If the signal handler was set with the ``SA_RESTART`` flag set, the C
+library retries some the system call instead of failing with
+``EINTR``. For example, ``read()`` is retried, whereas ``select()`` is
+not retried. The Python function ``signal.signal()`` clears the
+``SA_RESTART`` flag when setting the signal handler: all system calls
+should fail with ``EINTR`` in Python.
+
+The problem is that handling ``EINTR`` should be done for all system
+calls. The problem is similar to handling errors in the C language
+which does not have exceptions: you must check all function returns to
+check for error, and usually duplicate the code checking for errors.
+Python does not have this issue, it uses exceptions to notify errors.
+
+
+Current status
+--------------
+
+Currently in Python, the code to handle the ``InterruptedError``
+exception (``EINTR`` error) is duplicated on case by case. Only a few
+Python modules handle this exception, and fixes usually took several
+years to cover a whole module. Example of code retrying
+``file.read()`` on ``InterruptedError``::
+
+    while True:
+        try:
+            data = file.read()
+            break
+        except InterruptedError:
+            continue
+
+List of Python modules of the standard library which handle
+``InterruptedError``:
+
+* ``asyncio``
+* ``asyncore``
+* ``io``, ``_pyio``
+* ``multiprocessing``
+* ``selectors``
+* ``socket``
+* ``socketserver``
+* ``subprocess``
+
+
+Use Case 1: Don't Bother of Signals
+-----------------------------------
+
+In most cases, you don't want to be interrupted by signals and you
+don't expect to get ``InterruptedError`` exceptions. For example, do
+you really want to write such complex code for an "Hello World"
+example?
+
+::
+
+    while True:
+        try:
+            print("Hello World")
+        except InterruptedError:
+            pass
+
+``InterruptedError`` can happen in unexpected places. For example,
+``os.close()`` and ``FileIO.close()`` can raises ``InterruptedError``:
+see the article `close() and EINTR
+<http://alobbs.com/post/54503240599/close-and-eintr>`_.
+
+The `Python issues related to EINTR`_ section below gives examples of
+bugs caused by "EINTR".
+
+The expectation is that Python hides the ``InterruptedError``: retry
+system calls failing with the ``EINTR`` error.
+
+
+Use Case 2: Be notified of signals as soon as possible
+------------------------------------------------------
+
+Sometimes, you expect some signals and you want to handle them as soon
+as possible.  For example, you may want to quit immediatly a program
+using the ``CTRL+c`` keyboard shortcut.
+
+Some signals are not interesting and should not interrupt the the
+application.  There are two options to only interrupt an application
+on some signals:
+
+* Raise an exception in the signal handler, like ``KeyboardInterrupt`` for
+  ``SIGINT``
+* Use a I/O multiplexing function like ``select()`` with the Python
+  signal "wakeup" file descriptor: see the function
+  ``signal.set_wakeupfd()``.
+
+
+Proposition
+===========
+
+If a system call fails with ``EINTR``, Python must call signal
+handlers: call ``PyErr_CheckSignals()``. If a signal handler raises
+an exception, the Python function fails with the exception.
+Otherwise, the system call is retried.  If the system call takes a
+timeout parameter, the timeout is recomputed.
+
+Modified functions
+------------------
+
+Example of functions that need to be modified:
+
+* ``os.read()``, ``io.FileIO.read()``, ``io.FileIO.readinto()``
+* ``os.write()``, ``io.FileIO.write()``
+* ``os.waitpid()``
+* ``socket.accept()``
+* ``socket.connect()``
+* ``socket.recv()``, ``socket.recv_into()``
+* ``socket.recv_from()``
+* ``socket.send()``
+* ``socket.sendto()``
+* ``time.sleep()``
+* ``select.select()``
+* ``select.poll()``
+* ``select.epoll.poll()``
+* ``select.devpoll.poll()``
+* ``select.kqueue.control()``
+* ``selectors.SelectSelector.select()`` and other selector classes
+
+Note: The ``selector`` module already retries on ``InterruptedError``, but it
+doesn't recompute the timeout yet.
+
+
+Deprecate siginterrupt()
+------------------------
+
+The function ``signal.siginterrupt()`` becomes useless with this PEP,
+it should be deprecated. When ``signal.siginterrupt(signum, False)``
+is used, some system calls don't fail with ``EINTR`` when a signal is
+received. Python cannot call its signal handler and interrupt the
+system call.
+
+The function ``signal.siginterrupt()`` will be deprecated in Python
+3.5.
+
+In Python 3.6, calling ``signal.siginterrupt(signum, False)`` will
+raise an exception, whereas ``signal.siginterrupt(signum, True)`` will
+only emit the deprecation warning.
+
+
+Backward Compatibility
+======================
+
+Applications relying on the fact that system calls are interrupted
+with ``InterruptedError`` will hang. The authors of this PEP don't
+think that such application exist.
+
+If such applications exist, they must be fixed to handle signals
+differently, to have a reliable behaviour on all platforms and all
+Python versions.  For example, use a signal handle which raises an
+exception, or use a wakeup file descriptor.
+
+Applications should not call ``signal.siginterrupt(signum, False)``
+anymore, since this call will raise an exception in Python 3.6.
+
+For applications using event loops, ``signal.set_wakeup_fd()`` is the
+recommanded option to handle signals. The signal handler writes signal
+numbers into the file descriptor and the event loop is awaken to read
+them. The event loop can decide how to handle these signals without
+the restriction of signal handlers.
+
+
+Appendix
+========
+
+Wakeup file descriptor
+----------------------
+
+Since Python 3.3, ``signal.set_wakeup_fd()`` writes the signal number
+into the file descriptor, whereas it only wrote a null byte before.
+It becomes possible to handle different signals using the wakeup file
+descriptor.
+
+Linux has a ``signalfd()`` which provides more information on each
+signal.  For example, it's possible to know the pid and uid who sent
+the signal.  This function is not exposed in Python yet (see the
+`issue 12304 <http://bugs.python.org/issue12304>`_).
+
+On Unix, the ``asyncio`` module uses the wakeup file descriptor to
+wake up its event loop.
+
+
+Multithreading
+--------------
+
+A C signal handler can be called from any thread, but the Python
+signal handler should only be called in the main thread.
+
+Python has a ``PyErr_SetInterrupt()`` function which calls the
+``SIGINT`` signal handler to interrupt the Python main thread.
+
+
+Signals on Windows
+------------------
+
+Control events
+^^^^^^^^^^^^^^
+
+Windows uses "control events":
+
+* ``CTRL_BREAK_EVENT``: Break (``SIGBREAK``)
+* ``CTRL_CLOSE_EVENT``: Close event
+* ``CTRL_C_EVENT``: CTRL+C (``SIGINT``)
+* ``CTRL_LOGOFF_EVENT``: Logoff
+* ``CTRL_SHUTDOWN_EVENT``: Shutdown
+
+The `SetConsoleCtrlHandler() function
+<http://msdn.microsoft.com/en-us/library/windows/desktop/ms686016%28v=vs.85%29.aspx>`_
+can be used to install a control handler.
+
+The ``CTRL_C_EVENT`` and ``CTRL_BREAK_EVENT`` events can be sent to a
+process using the `GenerateConsoleCtrlEvent() function
+<http://msdn.microsoft.com/en-us/library/windows/desktop/ms683155%28v=vs.85%29.aspx>`_.
+This function is exposed in Python as ``os.kill()``.
+
+
+Signals
+^^^^^^^
+
+The following signals are supported on Windows:
+
+* ``SIGABRT``
+* ``SIGBREAK`` (``CTRL_BREAK_EVENT``): signal only available on Windows
+* ``SIGFPE``
+* ``SIGILL``
+* ``SIGINT`` (``CTRL_C_EVENT``)
+* ``SIGSEGV``
+* ``SIGTERM``
+
+
+SIGINT
+^^^^^^
+
+The default Python signal handler for ``SIGINT`` sets a Windows event
+object: ``sigint_event``.
+
+``time.sleep()`` is implemented with ``WaitForSingleObjectEx()``, it
+waits for the ``sigint_event`` object using ``time.sleep()`` parameter
+as the timeout.  So the sleep can be interrupted by ``SIGINT``.
+
+``_winapi.WaitForMultipleObjects()`` automatically adds
+``sigint_event`` to the list of watched handles, so it can also be
+interrupted.
+
+``PyOS_StdioReadline()`` also used ``sigint_event`` when ``fgets()``
+failed to check if Ctrl-C or Ctrl-Z was pressed.
+
+
+Links
+-----
+
+Misc
+^^^^
+
+* `glibc manual: Primitives Interrupted by Signals
+  <http://www.gnu.org/software/libc/manual/html_node/Interrupted-Primitives.html>`_
+* `Bug #119097 for perl5: print returning EINTR in 5.14
+  <https://rt.perl.org/Public/Bug/Display.html?id=119097>`_.
+
+
+Python issues related to EINTR
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The main issue is: `handle EINTR in the stdlib
+<http://bugs.python.org/issue18885>`_.
+
+Open issues:
+
+* `Add a new signal.set_wakeup_socket() function
+  <http://bugs.python.org/issue22018>`_
+* `signal.set_wakeup_fd(fd): set the fd to non-blocking mode
+  <http://bugs.python.org/issue22042>`_
+* `Use a monotonic clock to compute timeouts
+  <http://bugs.python.org/issue22043>`_
+* `sys.stdout.write on OS X is not EINTR safe
+  <http://bugs.python.org/issue22007>`_
+* `platform.uname() not EINTR safe
+  <http://bugs.python.org/issue21772>`_
+* `asyncore does not handle EINTR in recv, send, connect, accept,
+  <http://bugs.python.org/issue11266>`_
+* `socket.create_connection() doesn't handle EINTR properly
+  <http://bugs.python.org/issue20611>`_
+
+Closed issues:
+
+* `Interrupted system calls are not retried
+  <http://bugs.python.org/issue9867>`_
+* `Solaris: EINTR exception in select/socket calls in telnetlib
+  <http://bugs.python.org/issue1049450>`_
+* `subprocess: Popen.communicate() doesn't handle EINTR in some cases
+  <http://bugs.python.org/issue12493>`_
+* `multiprocessing.util._eintr_retry doen't recalculate timeouts
+  <http://bugs.python.org/issue12338>`_
+* `file readline, readlines & readall methods can lose data on EINTR
+  <http://bugs.python.org/issue12268>`_
+* `multiprocessing BaseManager serve_client() does not check EINTR on recv
+  <http://bugs.python.org/issue17097>`_
+* `selectors behaviour on EINTR undocumented
+  <http://bugs.python.org/issue19849>`_
+* `asyncio: limit EINTR occurrences with SA_RESTART
+  <http://bugs.python.org/issue19850>`_
+* `smtplib.py socket.create_connection() also doesn't handle EINTR properly
+  <http://bugs.python.org/issue21602>`_
+* `Faulty RESTART/EINTR handling in Parser/myreadline.c
+  <http://bugs.python.org/issue11650>`_
+* `test_httpservers intermittent failure, test_post and EINTR
+  <http://bugs.python.org/issue3771>`_
+* `os.spawnv(P_WAIT, ...) on Linux doesn't handle EINTR
+  <http://bugs.python.org/issue686667>`_
+* `asyncore fails when EINTR happens in pol
+  <http://bugs.python.org/issue517554>`_
+* `file.write and file.read don't handle EINTR
+  <http://bugs.python.org/issue10956>`_
+* `socket.readline() interface doesn't handle EINTR properly
+  <http://bugs.python.org/issue1628205>`_
+* `subprocess is not EINTR-safe
+  <http://bugs.python.org/issue1068268>`_
+* `SocketServer doesn't handle syscall interruption
+  <http://bugs.python.org/issue7978>`_
+* `subprocess deadlock when read() is interrupted
+  <http://bugs.python.org/issue17367>`_
+* `time.sleep(1): call PyErr_CheckSignals() if the sleep was interrupted
+  <http://bugs.python.org/issue12462>`_
+* `siginterrupt with flag=False is reset when signal received
+  <http://bugs.python.org/issue8354>`_
+* `need siginterrupt()  on Linux - impossible to do timeouts
+  <http://bugs.python.org/issue1089358>`_
+* `[Windows] Can not interrupt time.sleep()
+  <http://bugs.python.org/issue581232>`_
+
+Python issues related to signals
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Open issues:
+
+* `expose signalfd(2) in the signal module
+  <http://bugs.python.org/issue12304>`_
+* `missing return in win32_kill?
+  <http://bugs.python.org/issue14484>`_
+* `Interrupts are lost during readline PyOS_InputHook processing
+  <http://bugs.python.org/issue3180>`_
+* `cannot catch KeyboardInterrupt when using curses getkey()
+  <http://bugs.python.org/issue1687125>`_
+* `Deferred KeyboardInterrupt in interactive mode
+  <http://bugs.python.org/issue16151>`_
+
+Closed issues:
+
+* `sys.interrupt_main()
+  <http://bugs.python.org/issue753733>`_
+
+
+Copyright
+=========
+
+This document has been placed in the public domain.
+
+
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   coding: utf-8
+   End:
