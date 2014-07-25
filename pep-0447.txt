@@ -1,5 +1,5 @@
 PEP: 447
-Title: Add __locallookup__ method to metaclass
+Title: Add __getdescriptor__ method to metaclass
 Version: $Revision$
 Last-Modified: $Date$
 Author: Ronald Oussoren <ronaldoussoren@mac.com>
@@ -15,7 +15,7 @@ Abstract
 
 Currently ``object.__getattribute__`` and ``super.__getattribute__`` peek
 in the ``__dict__`` of classes on the MRO for a class when looking for
-an attribute. This PEP adds an optional ``__locallookup__`` method to
+an attribute. This PEP adds an optional ``__getdescriptor__`` method to
 a metaclass that can be used to override this behavior.
 
 That is, the MRO walking loop in ``_PyType_Lookup`` and
@@ -33,7 +33,7 @@ to::
      def lookup(mro_list, name):
          for cls in mro_list:
              try:
-                 return cls.__locallookup__(name)
+                 return cls.__getdescriptor__(name)
              except AttributeError:
                  pass
 
@@ -48,7 +48,7 @@ up attributes (that is, ``super.__getattribute__`` unconditionally
 peeks in the class ``__dict__``), and that can be problematic for
 dynamic classes that can grow new methods on demand.
 
-The ``__locallookup__`` method makes it possible to dynamically add
+The ``__getdescriptor__`` method makes it possible to dynamically add
 attributes even when looking them up using the `super class`_.
 
 The new method affects ``object.__getattribute__`` (and
@@ -80,31 +80,133 @@ walk an object's MRO and currently peek in the class' ``__dict__`` to look up
 attributes.
 
 With this proposal both lookup methods no longer peek in the class ``__dict__``
-but call the special method ``__locallookup__``, which is a slot defined
+but call the special method ``__getdescriptor__``, which is a slot defined
 on the metaclass. The default implementation of that method looks
 up the name the class ``__dict__``, which means that attribute lookup is
 unchanged unless a metatype actually defines the new special method.
 
+Aside: Attribute resolution algorithm in Python
+-----------------------------------------------
+
+The attribute resolution proces as implemented by ``object.__getattribute__`` (or
+PyObject_GenericGetAttr`` in CPython's implementation) is fairly straightforward,
+but not entirely so without reading C code.
+
+The current CPython implementation of object.__getattribute__ is basicly equivalent
+to the following (pseudo-) Python code (excluding some house keeping and speed tricks)::
+
+
+    def _PyType_Lookup(tp, name):
+        mro = tp.mro()
+	assert isinstance(mro, tuple)
+
+	for base in mro:
+	   assert isinstance(base, type)
+
+	   # PEP 447 will change these lines:
+	   try:
+	       return base.__dict__[name]
+	   except KeyError:
+	       pass
+
+	return None
+
+
+    class object:
+        def __getattribute__(self, name):
+	    assert isinstance(name, str)
+
+	    tp = type(self)
+	    descr = _PyType_Lookup(tp, name)
+
+	    f = None
+	    if descr is not None:
+	        f = descr.__get__
+		if f is not None and descr.__set__ is not None:
+		    # Data descriptor
+		    return f(descr, self, type(self))
+
+            dict = self.__dict__
+	    if dict is not None:
+	        try:
+		    return self.__dict__[name]
+                except KeyError:
+	            pass
+
+            if f is not None:
+	        # Non-data descriptor
+	        return f(descr, self, type(self))
+
+            if descr is not None:
+	        # Regular class attribute
+	        return descr
+
+            raise AttributeError(name)
+
+
+    class super:
+        def __getattribute__(self, name):
+	   assert isinstance(name, unicode)
+
+	   if name != '__class__':
+	       starttype = self.__self_type__
+	       mro = startype.mro()
+
+	       try:
+	           idx = mro.index(self.__thisclass__)
+
+	       except ValueError:
+	           pass
+
+	       else:
+	           for base in mro[idx+1:]:
+		       # PEP 447 will change these lines:
+		       try:
+		           descr = base.__dict__[name]
+                       except KeyError:
+		           continue
+
+		       f = descr.__get__
+		       if f is not None:
+		           return f(descr,
+			       None if (self.__self__ is self.__self_type__) else self.__self__,
+			       starttype)
+
+		       else:
+		           return descr
+
+	   return object.__getattribute__(self, name)
+
+
+This PEP should change the dict lookup at the lines starting at "# PEP 447" with
+a method call to perform the actual lookup, making is possible to affect that lookup
+both for normal attribute access and access through the `super proxy`_.
+
+Note that specific classes can already completely override the default
+behaviour by implementing their own ``__getattribute__`` slot (with or without
+calling the super class implementation).
+
+
 In Python code
 --------------
 
-A meta type can define a method ``__locallookup__`` that is called during
+A meta type can define a method ``__getdescriptor__`` that is called during
 attribute resolution by both ``super.__getattribute__``
 and ``object.__getattribute``::
 
     class MetaType(type):
-        def __locallookup__(cls, name):
+        def __getdescriptor__(cls, name):
             try:
                 return cls.__dict__[name]
             except KeyError:
                 raise AttributeError(name) from None
 
-The ``__locallookup__`` method has as its arguments a class (which is an
+The ``__getdescriptor__`` method has as its arguments a class (which is an
 instance of the meta type) and the name of the attribute that is looked up.
 It should return the value of the attribute without invoking descriptors,
 and should raise `AttributeError`_ when the name cannot be found.
 
-The `type`_ class provides a default implementation for ``__locallookup__``,
+The `type`_ class provides a default implementation for ``__getdescriptor__``,
 that looks up the name in the class dictionary.
 
 Example usage
@@ -114,8 +216,11 @@ The code below implements a silly metaclass that redirects attribute lookup to
 uppercase versions of names::
 
     class UpperCaseAccess (type):
-        def __locallookup__(cls, name):
-            return cls.__dict__[name.upper()]
+        def __getdescriptor__(cls, name):
+	    try:
+                return cls.__dict__[name.upper()]
+	    except KeyError:
+	        raise AttributeError(name) from None
 
     class SillyObject (metaclass=UpperCaseAccess):
         def m(self):
@@ -127,16 +232,28 @@ uppercase versions of names::
     obj = SillyObject()
     assert obj.m() == "fortytwo"
 
+As mentioned earlier in this PEP a more realistic use case of this functionallity
+is a ``__getdescriptor__`` method that dynamicly populates the class ``__dict__``
+based on attribute access, primarily when it is not possible to reliably keep the
+class dict in sync with its source, for example because the source used to populate
+``__dict__`` is dynamic as well and does not have triggers that can be used to detect
+changes to that source.
+
+An example of that are the class bridges in PyObjC: the class bridge is a Python
+object (class) that represents an Objective-C class and conceptually has a Python
+method for every Objective-C method in the Objective-C class. As with Python it is
+possible to add new methods to an Objective-C class, or replace existing ones, and
+there are no callbacks that can be used to detect this.
 
 In C code
 ---------
 
-A new slot ``tp_locallookup`` is added to the ``PyTypeObject`` struct, this
-slot corresponds to the ``__locallookup__`` method on `type`_.
+A new slot ``tp_getdescriptor`` is added to the ``PyTypeObject`` struct, this
+slot corresponds to the ``__getdescriptor__`` method on `type`_.
 
 The slot has the following prototype::
 
-    PyObject* (*locallookupfunc)(PyTypeObject* cls, PyObject* name);
+    PyObject* (*getdescriptorfunc)(PyTypeObject* cls, PyObject* name);
 
 This method should lookup *name* in the namespace of *cls*, without looking at
 superclasses, and should not invoke descriptors. The method returns ``NULL``
@@ -149,7 +266,7 @@ Use of this hook by the interpreter
 The new method is required for metatypes and as such is defined on `type_`.
 Both ``super.__getattribute__`` and
 ``object.__getattribute__``/`PyObject_GenericGetAttr`_
-(through ``_PyType_Lookup``) use the this ``__locallookup__`` method when
+(through ``_PyType_Lookup``) use the this ``__getdescriptor__`` method when
 walking the MRO.
 
 Other changes to the implementation
@@ -157,13 +274,13 @@ Other changes to the implementation
 
 The change for `PyObject_GenericGetAttr`_ will be done by changing the private
 function ``_PyType_Lookup``. This currently returns a borrowed reference, but
-must return a new reference when the ``__locallookup__`` method is present.
+must return a new reference when the ``__getdescriptor__`` method is present.
 Because of this ``_PyType_Lookup`` will be renamed to ``_PyType_LookupName``,
 this will cause compile-time errors for all out-of-tree users of this
 private API.
 
 The attribute lookup cache in ``Objects/typeobject.c`` is disabled for classes
-that have a metaclass that overrides ``__locallookup__``, because using the
+that have a metaclass that overrides ``__getdescriptor__``, because using the
 cache might not be valid for such classes.
 
 Performance impact
@@ -427,6 +544,8 @@ This document has been placed in the public domain.
 .. _`Issue 18181`: http://bugs.python.org/issue18181
 
 .. _`super class`: http://docs.python.org/3/library/functions.html#super
+
+.. _`super proxy`: http://docs.python.org/3/library/functions.html#super
 
 .. _`NotImplemented`: http://docs.python.org/3/library/constants.html#NotImplemented
 
