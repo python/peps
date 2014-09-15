@@ -5,8 +5,8 @@ try:
 except ImportError:
     from time import time as timeout_time
 
-def compute_precision(func):
-    precision = None
+def compute_resolution(func):
+    resolution = None
     points = 0
     timeout = timeout_time() + 1.0
     previous = func()
@@ -21,13 +21,13 @@ def compute_precision(func):
             dt = t2 - previous
             if dt <= 0.0:
                 continue
-        if precision is not None:
-            precision = min(precision, dt)
+        if resolution is not None:
+            resolution = min(resolution, dt)
         else:
-            precision = dt
+            resolution = dt
         points += 1
         previous = func()
-    return precision
+    return resolution
 
 def format_duration(dt):
     if dt >= 1e-3:
@@ -39,8 +39,8 @@ def format_duration(dt):
 
 def test_clock(name, func):
     print("%s:" % name)
-    precision = compute_precision(func)
-    print("- precision in Python: %s" % format_duration(precision))
+    resolution = compute_resolution(func)
+    print("- resolution in Python: %s" % format_duration(resolution))
 
 
 clocks = ['clock', 'perf_counter', 'process_time']
@@ -51,10 +51,8 @@ for name in clocks:
     func = getattr(time, name)
     test_clock("%s()" % name, func)
     info = time.get_clock_info(name)
-    if 'precision' in info:
-        print("- announced precision: %s" % format_duration(info['precision']))
-    print("- implementation: %s" % info['implementation'])
-    print("- resolution: %s" % format_duration(info['resolution']))
+    print("- implementation: %s" % info.implementation)
+    print("- resolution: %s" % format_duration(info.resolution))
 
 clock_ids = [name for name in dir(time) if name.startswith("CLOCK_")]
 clock_ids.sort()
@@ -69,6 +67,6 @@ for clock_id_text in clock_ids:
         print("%s failed: %s" % (name, err))
         continue
     test_clock(name, gettime)
-    precision = time.clock_getres(clock_id)
-    print("- announced precision: %s" % format_duration(precision))
+    resolution = time.clock_getres(clock_id)
+    print("- announced resolution: %s" % format_duration(resolution))
 
