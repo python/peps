@@ -29,5 +29,4 @@ clean:
 	-rm *.html
 
 update:
-	hg pull --update http://hg.python.org/peps
-
+	hg pull -u https://hg.python.org/peps
