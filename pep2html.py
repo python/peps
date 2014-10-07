@@ -49,7 +49,7 @@ REQUIRES = {'python': '2.2',
 PROGRAM = sys.argv[0]
 RFCURL = 'http://www.faqs.org/rfcs/rfc%d.html'
 PEPURL = 'pep-%04d.html'
-PEPCVSURL = ('http://hg.python.org/peps/file/tip/pep-%04d.txt')
+PEPCVSURL = ('https://hg.python.org/peps/file/tip/pep-%04d.txt')
 PEPDIRRUL = 'http://www.python.org/peps/'
 
 
