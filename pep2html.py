@@ -228,6 +228,8 @@ def fixfile(inpath, input_lines, outfile):
         elif k.lower() in ('last-modified',):
             date = v or time.strftime('%d-%b-%Y',
                                       time.localtime(os.stat(inpath)[8]))
+            if date.startswith('$' 'Date: ') and date.endswith(' $'):
+                date = date[6:-2]
             if basename == 'pep-0000.txt':
                 v = date
             else:
