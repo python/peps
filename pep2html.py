@@ -308,6 +308,7 @@ application when this module is imported."""
 
 def fix_rst_pep(inpath, input_lines, outfile):
     from docutils import core
+    Headers.pep_cvs_url = PEPCVSURL
     output = core.publish_string(
         source=''.join(input_lines),
         source_path=inpath,
