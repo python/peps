@@ -208,7 +208,7 @@ def fixfile(inpath, input_lines, outfile):
     print >> outfile, COMMENT
     print >> outfile, '<div class="header">\n<table border="0" class="rfc2822">'
     for k, v in header:
-        if k.lower() in ('author', 'discussions-to'):
+        if k.lower() in ('author', 'bdfl-delegate', 'discussions-to'):
             mailtos = []
             for part in re.split(',\s*', v):
                 if '@' in part:
