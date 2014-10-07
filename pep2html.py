@@ -242,6 +242,9 @@ def fixfile(inpath, input_lines, outfile):
             url = PEPURL % 9
             pep_type = v or 'text/plain'
             v = '<a href="%s">%s</a> ' % (url, cgi.escape(pep_type))
+        elif k.lower() == 'version':
+            if v.startswith('$' 'Revision: ') and v.endswith(' $'):
+                v = cgi.escape(v[11:-2])
         else:
             v = cgi.escape(v)
         print >> outfile, '  <tr><th>%s:&nbsp;</th><td>%s</td></tr>' \
