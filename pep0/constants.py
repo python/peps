@@ -24,7 +24,7 @@ intro = u"""
 references = u"""
     [1] PEP 1: PEP Purpose and Guidelines
     [2] View PEP history online
-        http://hg.python.org/peps/
+        https://hg.python.org/peps/
 """
 
 footer = u"""
