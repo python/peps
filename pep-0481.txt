@@ -50,7 +50,7 @@ generating a patch and either uploading them to bugs.python.org or emailing
 them to peps@python.org. This process is unfriendly towards non-comitter
 contributors as well as cumbersome for comitters seeking to accept the patches
 sent by users. In contrast, the Pull Request workflow style enables non
-techincal contributors, especially those who do not know their way around the
+technical contributors, especially those who do not know their way around the
 DVCS of choice, to contribute using the web based editor. On the committer
 side, the Pull Requests enable them to tell, before merging, whether or not
 a particular Pull Request will break anything. It also enables them to do a
@@ -66,7 +66,7 @@ Why Git?
 --------
 
 Looking at the variety of DVCS which are available today, it becomes fairly
-clear that git has the largest mindshare. The Open Hub (Previously Ohloh)
+clear that git has the largest mindshare. The Open Hub (previously Ohloh)
 statistics [#openhub-stats]_ show that currently 37% of the repositories
 indexed by Open Hub are using git which is second only to SVN (which has 48%),
 while Mercurial has just 2% of the indexed repositories (beating only bazaar
@@ -88,8 +88,8 @@ meaningfully contribute without having to learn a new tool.
 In addition to simply making it more likely that any individual will already
 know how to use git, the number of projects and people using it means that the
 resources for learning the tool are likely to be more fully fleshed out.
-When you run into problems, the liklihood that someone else had that problem
-and posted a question and recieved an answer is also far likelier.
+When you run into problems, the likelihood that someone else had that problem
+and posted a question and recieved an answer is also far higher.
 
 Thirdly, by using a more popular tool you also increase your options for
 tooling *around* the DVCS itself. Looking at the various options for hosting
@@ -99,7 +99,7 @@ there are a number of tools which support Git but do not support Mercurial.
 Therefore the popularity of git increases the flexibility of our options going
 into the future for what toolchain these projects use.
 
-Also, by moving to the more popular DVCS, we increase the likelhood that the
+Also, by moving to the more popular DVCS, we increase the likelihood that the
 knowledge that the person has learned in contributing to these support
 repositories will transfer to projects outside of the immediate CPython project
 such as to the larger Python community which is primarily using Git hosted on
@@ -108,7 +108,7 @@ Github.
 In previous years there was concern about how well supported git was on Windows
 in comparison to Mercurial. However, git has grown to support Windows as a
 first class citizen. In addition to that, for Windows users who are not well
-aquanted with the Windows command line, there are GUI options as well.
+acquainted with the Windows command line, there are GUI options as well.
 
 
 Why Github?
@@ -116,7 +116,7 @@ Why Github?
 
 There are a number of software projects or web services which offer
 functionality similar to that of Github. These range from commerical web
-services such as a Bitbucket to self-hosted OSS solutions such as Kallithea or
+services such as Bitbucket to self-hosted OSS solutions such as Kallithea or
 Gitlab. This PEP proposes that we move these repositories to Github.
 
 There are two primary reasons for selecting Github: Popularity and
@@ -124,7 +124,7 @@ Quality/Polish.
 
 Github is currently the most popular hosted repository hosting according to
 Alexa, where it currently has a global rank of 121. Much like for Git itself,
-by choosing the most popular tool we gain benefits in increasing the likelhood
+by choosing the most popular tool we gain benefits in increasing the likelihood
 that a new contributor will have already experienced the toolchain, the quality
 and availablity of the help, more and better tooling being built around it, and
 the knowledge transfer to other projects. A look again at the top 100 projects
@@ -145,10 +145,10 @@ often.
 
 Finally, a reason to choose a web service at all over something that is
 self-hosted is to be able to more efficiently use volunteer time and donated
-resources. Every additional service hosted on the PSF infrastruture by the
+resources. Every additional service hosted on the PSF infrastructure by the
 PSF infrastructure team further spreads out the amount of time that the
 volunteers on that team have to spend and uses some chunk of resources that
-could potentionally be used for something where there is no free or affordable
+could potentially be used for something where there is no free or affordable
 hosted solution available.
 
 One concern that people do have with using a hosted service is that there is a
@@ -178,7 +178,7 @@ casual contributors to easily move between different projects within their
 sub-community without having to learn a special, bespoke workflow and a
 different toolchain for each project. They've found that when people can use
 their limited time on actually contributing instead of learning the different
-tools and workflows that, not only do they contribute more to one project, but
+tools and workflows, not only do they contribute more to one project, but
 that they also expand out and contribute to other projects. This move has also
 been attributed to the increased tendency for members of that community to go
 so far as publishing their research and educational materials on Github as
@@ -195,7 +195,7 @@ Migration
 
 Through the use of hg-git [#hg-git]_ we can easily convert a Mercurial
 repository to a Git repository by simply pushing the Mercurial repository to
-the Git repository. People who wish to continue to use Mercurual locally can
+the Git repository. People who wish to continue to use Mercurial locally can
 then use hg-git going into the future using the new Github URL. However they
 will need to re-clone their repositories as using Git as the server seems to
 trigger a one time change of the changeset ids.
@@ -210,8 +210,8 @@ GitHub issues.
 
 In addition to the migration of the repository hosting itself there are a
 number of locations for each particular repository which will require updating.
-The bulk of these will simply be changing commands from the hg equivilant to
-the git equivilant.
+The bulk of these will simply be changing commands from the hg equivalent to
+the git equivalent.
 
 In particular this will include:
 
