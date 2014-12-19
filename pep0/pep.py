@@ -131,7 +131,7 @@ class Author(object):
 class PEP(object):
 
     """Representation of PEPs.
-    
+
     Attributes:
 
         + number : int
