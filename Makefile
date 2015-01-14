@@ -21,6 +21,9 @@ $(TARGETS): pep2html.py
 pep-0000.txt: $(wildcard pep-????.txt) $(wildcard pep0/*.py)
 	$(PYTHON) genpepindex.py .
 
+rss:
+	$(PYTHON) pep2rss.py .
+
 install:
 	echo "Installing is not necessary anymore. It will be done in post-commit."
 
