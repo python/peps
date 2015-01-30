@@ -14,8 +14,12 @@ Python-Version: 3.5
 Abstract
 ========
 
-Retry system calls failing with the ``EINTR`` error and recompute
-timeout if needed.
+System call wrappers provided in the standard library should be retried
+automatically when they fail with ``EINTR``, to relieve application code
+from the burden of doing so.
+
+By system calls, we mean the functions exposed by the standard C library
+pertaining to I/O or handling of other system resources.
 
 
 Rationale
@@ -24,10 +28,10 @@ Rationale
 Interrupted system calls
 ------------------------
 
-On POSIX systems, signals are common. Your program must be prepared to
-handle them. Examples of signals:
+On POSIX systems, signals are common.  Code calling system calls must be
+prepared to handle them.  Examples of signals:
 
-* The most common signal is ``SIGINT``, signal sent when CTRL+c is
+* The most common signal is ``SIGINT``, the signal sent when CTRL+c is
   pressed. By default, Python raises a ``KeyboardInterrupt`` exception
   when this signal is received.
 * When running subprocesses, the ``SIGCHLD`` signal is sent when a
@@ -37,37 +41,35 @@ handle them. Examples of signals:
 * Putting the application in background (ex: press CTRL-z and then
   type the ``bg`` command) sends the ``SIGCONT`` signal.
 
-Writing a signal handler is difficult, only "async-signal safe"
-functions can be called.  For example, ``printf()`` and ``malloc()``
-are not async-signal safe. When a signal is sent to a process calling
-a system call, the system call can fail with the ``EINTR`` error to
+Writing a C signal handler is difficult: only "async-signal-safe"
+functions can be called (for example, ``printf()`` and ``malloc()``
+are not async-signal safe), and there are issues with reentrancy.
+Therefore, when a signal is received by a process during the execution
+of a system call, the system call can fail with the ``EINTR`` error to
 give the program an opportunity to handle the signal without the
-restriction on signal safe functions. Depending on the platform, on
-the system call and the ``SA_RESTART`` flag, the system call may or
-may not fail with ``EINTR``.
+restriction on signal-safe functions.
 
-If the signal handler was set with the ``SA_RESTART`` flag set, the
-kernel retries some the system call instead of failing with
-``EINTR``. For example, ``read()`` is retried, whereas ``select()`` is
-not retried. The Python function ``signal.signal()`` clears the
-``SA_RESTART`` flag when setting the signal handler: all system calls
-should fail with ``EINTR`` in Python.
+This behaviour is system-dependent: on certain systems, using the
+``SA_RESTART`` flag, some system calls are retried automatically instead
+of failing with ``EINTR``.  Regardless, Python's ``signal.signal()``
+function clears the ``SA_RESTART`` flag when setting the signal handler:
+all system calls will probably fail with ``EINTR`` in Python.
 
-The problem is that handling ``EINTR`` should be done for all system
-calls. The problem is similar to handling errors in the C language
-which does not have exceptions: you must check all function returns to
-check for error, and usually duplicate the code checking for errors.
-Python does not have this issue, it uses exceptions to notify errors.
+Since receiving a signal is a non-exceptional occurrence, robust POSIX code
+must be prepared to handle ``EINTR`` (which, in most cases, means
+retry in a loop in the hope that the call eventually succeeds).
+Without special support from Python, this can make application code
+much more verbose than it needs to be.
 
 
 Status in Python 3.4
 --------------------
 
-In Python 3.4, the code to handle the ``InterruptedError``
-exception (``EINTR`` error) is duplicated on case by case. Only a few
-Python modules handle this exception, and fixes usually took several
-years to cover a whole module. Example of code retrying
-``file.read()`` on ``InterruptedError``::
+In Python 3.4, handling the ``InterruptedError`` exception (``EINTR``'s
+dedicated exception class) is duplicated at every call site on a case by
+case basis.  Only a few Python modules actually handle this exception,
+and fixes usually took several years to cover a whole module.  Example of
+code retrying ``file.read()`` on ``InterruptedError``::
 
     while True:
         try:
@@ -76,7 +78,7 @@ years to cover a whole module. Example of code retrying
         except InterruptedError:
             continue
 
-List of Python modules of the standard library which handle
+List of Python modules in the standard library which handle
 ``InterruptedError``:
 
 * ``asyncio``
@@ -88,16 +90,17 @@ List of Python modules of the standard library which handle
 * ``socketserver``
 * ``subprocess``
 
-Other programming languages like Perl, Java and Go already retry
-system calls failing with ``EINTR``.
+Other programming languages like Perl, Java and Go retry system calls
+failing with ``EINTR`` at a lower level, so that libraries and applications
+needn't bother.
 
 
 Use Case 1: Don't Bother With Signals
 -------------------------------------
 
 In most cases, you don't want to be interrupted by signals and you
-don't expect to get ``InterruptedError`` exceptions. For example, do
-you really want to write such complex code for an "Hello World"
+don't expect to get ``InterruptedError`` exceptions.  For example, do
+you really want to write such complex code for a "Hello World"
 example?
 
 ::
@@ -110,48 +113,59 @@ example?
             continue
 
 ``InterruptedError`` can happen in unexpected places. For example,
-``os.close()`` and ``FileIO.close()`` can raises ``InterruptedError``:
+``os.close()`` and ``FileIO.close()`` may raise ``InterruptedError``:
 see the article `close() and EINTR
 <http://alobbs.com/post/54503240599/close-and-eintr>`_.
 
 The `Python issues related to EINTR`_ section below gives examples of
-bugs caused by "EINTR".
+bugs caused by ``EINTR``.
 
-The expectation is that Python hides the ``InterruptedError``: retry
-system calls failing with the ``EINTR`` error.
+The expectation in this use case is that Python hides the
+``InterruptedError`` and retries system calls automatically.
 
 
 Use Case 2: Be notified of signals as soon as possible
 ------------------------------------------------------
 
-Sometimes, you expect some signals and you want to handle them as soon
-as possible.  For example, you may want to quit immediatly a program
-using the ``CTRL+c`` keyboard shortcut.
+Sometimes yet, you expect some signals and you want to handle them as
+soon as possible.  For example, you may want to immediately quit a
+program using the ``CTRL+c`` keyboard shortcut.
 
-Some signals are not interesting and should not interrupt the the
-application.  There are two options to only interrupt an application
-on some signals:
+Besides, some signals are not interesting and should not disrupt the
+application.  There are two options to interrupt an application on
+only *some* signals:
 
-* Raise an exception in the signal handler, like ``KeyboardInterrupt`` for
-  ``SIGINT``
-* Use a I/O multiplexing function like ``select()`` with the Python
-  signal "wakeup" file descriptor: see the function
-  ``signal.set_wakeup_fd()``.
+* Set up a custom signal signal handler which raises an exception, such as
+  ``KeyboardInterrupt`` for ``SIGINT``.
+* Use a I/O multiplexing function like ``select()`` together with Python's
+  signal wakeup file descriptor: see the function ``signal.set_wakeup_fd()``.
+
+The expectation in this use case is for the Python signal handler to be
+executed timely, and the system call to fail if the handler raised an
+exception -- otherwise restart.
 
 
-Proposition
-===========
+Proposal
+========
 
-If a system call fails with ``EINTR``, Python must call signal
-handlers: call ``PyErr_CheckSignals()``. If a signal handler raises
-an exception, the Python function fails with the exception.
-Otherwise, the system call is retried.  If the system call takes a
-timeout parameter, the timeout is recomputed.
+This PEP proposes to handle EINTR and retries at the lowest level, i.e.
+in the wrappers provided by the stdlib (as opposed to higher-level
+libraries and applications).
+
+Specifically, when a system call fails with ``EINTR``, its Python wrapper
+must call the given signal handler (using ``PyErr_CheckSignals()``).
+If the signal handler raises an exception, the Python wrapper bails out
+and fails with the exception.
+
+If the signal handler returns successfully, the Python wrapper retries the
+system call automatically.  If the system call involves a timeout parameter,
+the timeout is recomputed.
 
 Modified functions
 ------------------
 
-Example of functions that need to be modified:
+Example of standard library functions that need to be modified to comply
+with this PEP:
 
 * ``os.read()``, ``io.FileIO.read()``, ``io.FileIO.readinto()``
 * ``os.write()``, ``io.FileIO.write()``
@@ -170,38 +184,40 @@ Example of functions that need to be modified:
 * ``select.kqueue.control()``
 * ``selectors.SelectSelector.select()`` and other selector classes
 
-Note: The ``selector`` module already retries on ``InterruptedError``, but it
-doesn't recompute the timeout yet.
+(note: the ``selector`` module already retries on ``InterruptedError``, but it
+doesn't recompute the timeout yet)
 
-
-InterruptedError
-----------------
+InterruptedError handling
+-------------------------
 
 Since interrupted system calls are automatically retried, the
-``InterruptedError`` exception should not occur anymore. The code handling
-``InterruptedError`` can be removed from in the standard library to simply the
-code.
+``InterruptedError`` exception should not occur anymore when calling those
+system calls.  Therefore, manual handling of ``InterruptedError`` as
+described in `Status in Python 3.4`_ can be removed, which will simplify
+standard library code.
 
 
-Backward Compatibility
+Backward compatibility
 ======================
 
 Applications relying on the fact that system calls are interrupted
-with ``InterruptedError`` will hang. The authors of this PEP don't
-think that such application exist.
+with ``InterruptedError`` will hang.  The authors of this PEP don't
+think that such applications exist, since they would be exposed to
+other issues such as race conditions (there is an opportunity for deadlock
+if the signal comes before the system call).  Besides, such code would
+be non-portable.
 
-If such applications exist, they are not portable and are subject to
-race conditions (deadlock if the signal comes before the system call).
-These applications must be fixed to handle signals differently, to
-have a reliable behaviour on all platforms and all Python versions.
-For example, use a signal handler which raises an exception, or use a
-wakeup file descriptor.
+In any case, those applications must be fixed to handle signals differently,
+to have a reliable behaviour on all platforms and all Python versions.
+A possible strategy is to set up a signal handler raising a well-defined
+exception, or use a wakeup file descriptor.
 
 For applications using event loops, ``signal.set_wakeup_fd()`` is the
-recommanded option to handle signals. The signal handler writes signal
-numbers into the file descriptor and the event loop is awaken to read
-them. The event loop can handle these signals without the restriction
-of signal handlers.
+recommanded option to handle signals.  Python's low-level signal handler
+will write signal numbers into the file descriptor and the event loop
+will be awaken to read them.  The event loop can handle those signals
+without the restriction of signal handlers (for example, the loop can
+be woken up in any thread, not just the main thread).
 
 
 Appendix
@@ -212,12 +228,12 @@ Wakeup file descriptor
 
 Since Python 3.3, ``signal.set_wakeup_fd()`` writes the signal number
 into the file descriptor, whereas it only wrote a null byte before.
-It becomes possible to handle different signals using the wakeup file
+It becomes possible to distinguish between signals using the wakeup file
 descriptor.
 
-Linux has a ``signalfd()`` which provides more information on each
-signal.  For example, it's possible to know the pid and uid who sent
-the signal.  This function is not exposed in Python yet (see the
+Linux has a ``signalfd()`` system call which provides more information on
+each signal.  For example, it's possible to know the pid and uid who sent
+the signal.  This function is not exposed in Python yet (see
 `issue 12304 <http://bugs.python.org/issue12304>`_).
 
 On Unix, the ``asyncio`` module uses the wakeup file descriptor to
@@ -227,11 +243,11 @@ wake up its event loop.
 Multithreading
 --------------
 
-A C signal handler can be called from any thread, but the Python
-signal handler should only be called in the main thread.
+A C signal handler can be called from any thread, but Python
+signal handlers will always be called in the main Python thread.
 
-Python has a ``PyErr_SetInterrupt()`` function which calls the
-``SIGINT`` signal handler to interrupt the Python main thread.
+Python's C API provides the ``PyErr_SetInterrupt()`` function which calls
+the ``SIGINT`` signal handler in order to interrupt the main Python thread.
 
 
 Signals on Windows
