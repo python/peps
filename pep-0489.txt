@@ -1,0 +1,400 @@
+PEP: 489
+Title: Redesigning extension module loading
+Version: $Revision$
+Last-Modified: $Date$
+Author: Petr Viktorin <encukou@gmail.com>,
+        Stefan Behnel <stefan_ml@behnel.de>,
+        Nick Coghlan <ncoghlan@gmail.com>
+Discussions-To: import-sig@python.org
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 11-Aug-2013
+Python-Version: 3.5
+Post-History: 23-Aug-2013, 20-Feb-2015
+Resolution:
+
+
+Abstract
+========
+
+This PEP proposes a redesign of the way in which extension modules interact
+with the import machinery. This was last revised for Python 3.0 in PEP
+3121, but did not solve all problems at the time. The goal is to solve them
+by bringing extension modules closer to the way Python modules behave;
+specifically to hook into the ModuleSpec-based loading mechanism
+introduced in PEP 451.
+
+Extensions that do not require custom memory layout for their module objects
+may be executed in arbitrary pre-defined namespaces, paving the way for
+extension modules being runnable with Python's ``-m`` switch.
+Other extensions can use custom types for their module implementation.
+Module types are no longer restricted to types.ModuleType.
+
+This proposal makes it easy to support properties at the module
+level and to safely store arbitrary global state in the module that is
+covered by normal garbage collection and supports reloading and
+sub-interpreters.
+Extension authors are encouraged to take these issues into account
+when using the new API.
+
+
+
+Motivation
+==========
+
+Python modules and extension modules are not being set up in the same way.
+For Python modules, the module is created and set up first, then the module
+code is being executed (PEP 302).
+A ModuleSpec object (PEP 451) is used to hold information about the module,
+and passed to the relevant hooks.
+For extensions, i.e. shared libraries, the module
+init function is executed straight away and does both the creation and
+initialisation. The initialisation function is not passed ModuleSpec
+information about the loaded module, such as the __file__ or fully-qualified
+name. This hinders relative imports and resource loading.
+
+This is specifically a problem for Cython generated modules, for which it's
+not uncommon that the module init code has the same level of complexity as
+that of any 'regular' Python module. Also, the lack of __file__ and __name__
+information hinders the compilation of __init__.py modules, i.e. packages,
+especially when relative imports are being used at module init time.
+
+The other disadvantage of the discrepancy is that existing Python programmers
+learning C cannot effectively map concepts between the two domains.
+As long as extension modules are fundamentally different from pure Python ones
+in the way they're initialised, they are harder for people to pick up without
+relying on something like cffi, SWIG or Cython to handle the actual extension
+module creation.
+
+Currently, extension modules are also not added to sys.modules until they are
+fully initialized, which means that a (potentially transitive)
+re-import of the module will really try to reimport it and thus run into an
+infinite loop when it executes the module init function again.
+Without the fully qualified module name, it is not trivial to correctly add
+the module to sys.modules either.
+
+Furthermore, the majority of currently existing extension modules has
+problems with sub-interpreter support and/or reloading, and, while it is
+possible with the current infrastructure to support these
+features, it is neither easy nor efficient.
+Addressing these issues was the goal of PEP 3121, but many extensions,
+including some in the standard library, took the least-effort approach
+to porting to Python 3, leaving these issues unresolved.
+This PEP keeps the backwards-compatible behavior, which should reduce pressure
+and give extension authors adequate time to consider these issues when porting.
+
+
+The current process
+===================
+
+Currently, extension modules export an initialisation function named
+"PyInit_modulename", named after the file name of the shared library. This
+function is executed by the import machinery and must return either NULL in
+the case of an exception, or a fully initialised module object. The
+function receives no arguments, so it has no way of knowing about its
+import context.
+
+During its execution, the module init function creates a module object
+based on a PyModuleDef struct. It then continues to initialise it by adding
+attributes to the module dict, creating types, etc.
+
+In the back, the shared library loader keeps a note of the fully qualified
+module name of the last module that it loaded, and when a module gets
+created that has a matching name, this global variable is used to determine
+the fully qualified name of the module object. This is not entirely safe as it
+relies on the module init function creating its own module object first,
+but this assumption usually holds in practice.
+
+
+The proposal
+============
+
+The current extension module initialisation will be deprecated in favour of
+a new initialisation scheme. Since the current scheme will continue to be
+available, existing code will continue to work unchanged, including binary
+compatibility.
+
+Extension modules that support the new initialisation scheme must export
+the public symbol "PyModuleExec_modulename", and optionally
+"PyModuleCreate_modulename", where "modulename" is the
+name of the module. This mimics the previous naming convention for
+the "PyInit_modulename" function.
+
+If defined, these symbols must resolve to C functions with the following
+signatures, respectively::
+
+    int (*PyModuleExecFunction)(PyObject* module)
+    PyObject* (*PyModuleCreateFunction)(PyObject* module_spec)
+
+
+The PyModuleExec function
+-------------------------
+
+The PyModuleExec function is used to implement "loader.exec_module"
+defined in PEP 451.
+
+It function will be called to initialize a module. (Usually, this amounts to
+setting the module's initial attributes.)
+This happens in two situations: when the module is first initialized for
+a given (sub-)interpreter, and possibly later when the module is reloaded.
+
+When PyModuleExec is called, the module has already been added to
+sys.modules, and import-related attributes specified in
+PEP 451 [#pep-0451-attributes]_) have been set on the module.
+
+The "module" argument receives the module object to initialize.
+
+If PyModuleCreate is defined, "module" will generally be the the object
+returned by it.
+It is possible for a custom loader to pass any object to
+PyModuleExec, so this function should check and fail with TypeError
+if the module's type is unsupported.
+Any other assumptions should also be checked.
+
+If PyModuleCreate is not defined, PyModuleExec is expected to operate
+on any Python object for which attributes can be added by PyObject_GetAttr*
+and retrieved by PyObject_SetAttr*.
+This allows loading an extension into a pre-created module, making it possible
+to run it as __main__ in the future, participate in certain lazy-loading
+schemes [#lazy_import_concerns]_, or enable other creative uses.
+
+If PyModuleExec replaces the module's entry in sys.modules,
+the new object will be used and returned by importlib machinery.
+(This mirrors the behavior of Python modules. Note that for extensions,
+implementing PyModuleCreate is usually a better solution for the use cases
+this serves.)
+
+The function must return ``0`` on success, or, on error, set an exception and
+return ``-1``.
+
+
+The PyModuleCreate function
+---------------------------
+
+The optional PyModuleCreate function is used to implement
+"loader.create_module" defined in PEP 451.
+By exporting it, an extension module indicates that it uses a custom
+module object.
+This prevents loading the extension in a pre-created module,
+but gives greater flexibility in allowing a custom C-level layout
+of the module object.
+Most extensions will not need to implement this function.
+
+The "module_spec" argument receives a "ModuleSpec" instance, as defined in
+PEP 451.
+
+When called, this function must create and return a module object,
+or set an exception and return NULL.
+There is no requirement for the returned object to be an instance of
+types.ModuleType. Any type can be used, as long as it supports setting and
+getting attributes, including at least the import-related attributes
+specified in PEP 451 [#pep-0451-attributes]_.
+This follows the current support for allowing arbitrary objects in sys.modules
+and makes it easier for extension modules to define a type that exactly matches
+their needs for holding module state.
+
+Note that when this function is called, the module's entry in sys.modules
+is not populated yet. Attempting to import the same module again
+(possibly transitively), may lead to an infinite loop.
+Extension authors are advised to keep PyModuleCreate minimal, an in particular
+to not call user code from it.
+
+If PyModuleCreate is not defined, the default loader will construct
+a module object as if with PyModule_New.
+
+
+Initialization helper functions
+-------------------------------
+
+For two initialization tasks previously done by PyModule_Create,
+two functions are introduced::
+
+    int PyModule_SetDocString(PyObject *m, const char *doc)
+    int PyModule_AddFunctions(PyObject *m, PyMethodDef *functions)
+
+These set the module docstring, and add the module functions, respectively.
+Both will work on any Python object that supports setting attributes.
+They return ``0`` on success, and on failure, they set the exception
+and return ``-1``.
+
+
+PyCapsule convenience functions
+-------------------------------
+
+Instead of custom module objects, PyCapsule will become the preferred
+mechanism for storing per-module C data.
+Two new convenience functions will be added to help with this.
+
+*
+    ::
+
+        PyObject *PyModule_AddCapsule(
+            PyObject *module,
+            const char *module_name,
+            const char *attribute_name,
+            void *pointer,
+            PyCapsule_Destructor destructor)
+
+    Add a new PyCapsule to *module* as *attribute_name*.
+    The capsule name is formed by joining *module_name* and *attribute_name*
+    by a dot.
+
+    This convenience function can be used from a module initialization function
+    instead of separate calls to PyCapsule_New and PyModule_AddObject.
+
+    Returns a borrowed reference to the new capsule,
+    or NULL (with exception set) on failure.
+
+*
+    ::
+
+        void *PyModule_GetCapsulePointer(
+            PyObject *module,
+            const char *module_name,
+            const char *attribute_name)
+
+    Returns the pointer stored in *module* as *attribute_name*, or NULL
+    (with an exception set) on failure. The capsule name is formed by joining
+    *module_name* and *attribute_name* by a dot.
+
+    This convenience function can be used instead of separate calls to
+    PyObject_GetAttr and PyCapsule_GetPointer.
+
+Extension authors are encouraged to define a macro to
+call PyModule_GetCapsulePointer and cast the result to an appropriate type.
+
+
+Generalizing PyModule_* functions
+---------------------------------
+
+The following functions and macros will be modified to work on any object
+that supports attribute access:
+
+    * PyModule_GetNameObject
+    * PyModule_GetName
+    * PyModule_GetFilenameObject
+    * PyModule_GetFilename
+    * PyModule_AddIntConstant
+    * PyModule_AddStringConstant
+    * PyModule_AddIntMacro
+    * PyModule_AddStringMacro
+    * PyModule_AddObject
+
+The PyModule_GetDict function will continue to only work on true module
+objects. This means that it should not be used on extension modules that only
+define PyModuleExec.
+
+
+Legacy Init
+-----------
+
+If PyModuleExec is not defined, the import machinery will try to initialize
+the module using the PyModuleInit hook, as described in PEP 3121.
+
+If PyModuleExec is defined, PyModuleInit will be ignored.
+Modules requiring compatibility with previous versions of CPython may implement
+PyModuleInit in addition to the new hook.
+
+
+Subinterpreters and Interpreter Reloading
+-----------------------------------------
+
+Extensions using the new initialization scheme are expected to support
+subinterpreters and multiple Py_Initialize/Py_Finalize cycles correctly.
+The mechanism is designed to make this easy, but care is still required
+on the part of the extension author.
+No user-defined functions, methods, or instances may leak to different
+interpreters.
+To achieve this, all module-level state should be kept in either the module
+dict, or in the module object.
+A simple rule of thumb is: Do not define any static data, except built-in types
+with no mutable or user-settable class attributes.
+
+
+Module Reloading
+----------------
+
+Reloading an extension module will re-execute its PyModuleInit function.
+Similar caveats apply to reloading an extension module as to reloading
+a Python module. Notably, attributes or any other state of the module
+are not reset before reloading.
+
+Additionally, due to limitations in shared library loading (both dlopen on
+POSIX and LoadModuleEx on Windows), it is not generally possible to load
+a modified library after it has changed on disk.
+Therefore, reloading extension modules is of limited use.
+
+
+Multiple modules in one library
+-------------------------------
+
+To support multiple Python modules in one shared library, the library
+must export appropriate PyModuleExec_<name> or PyModuleCreate_<name> hooks
+for each exported module.
+The modules are loaded using a ModuleSpec with origin set to the name of the
+library file, and name set to the module name.
+
+Note that this mechanism can currently only be used to *load* such modules,
+not to *find* them.
+
+XXX: This is an existing issue; either fix it/wait for a fix or provide
+an example of how to load such modules.
+
+
+Implementation
+==============
+
+XXX - not started
+
+
+Open issues
+===========
+
+We should expose some kind of API in importlib.util (or a better place?) that
+can be used to check that a module works with reloading and subinterpreters.
+
+
+Related issues
+==============
+
+The runpy module will need to be modified to take advantage of PEP 451
+and this PEP. This is out of scope for this PEP.
+
+
+Previous Approaches
+===================
+
+Stefan Behnel's initial proto-PEP [#stefans_protopep]_
+had a "PyInit_modulename" hook that would create a module class,
+whose ``__init__`` would be then called to create the module.
+This proposal did not correspond to the (then nonexistent) PEP 451,
+where module creation and initialization is broken into distinct steps.
+It also did not support loading an extension into pre-existing module objects.
+
+Nick Coghlan proposed the Create annd Exec hooks, and wrote a prototype
+implementation [#nicks-prototype]_.
+At this time PEP 451 was still not implemented, so the prototype
+does not use ModuleSpec.
+
+
+References
+==========
+
+.. [#lazy_import_concerns]
+   https://mail.python.org/pipermail/python-dev/2013-August/128129.html
+
+.. [#pep-0451-attributes]
+   https://www.python.org/dev/peps/pep-0451/#attributes
+
+.. [#stefans_protopep]
+   https://mail.python.org/pipermail/python-dev/2013-August/128087.html
+
+.. [#nicks-prototype]
+   https://mail.python.org/pipermail/python-dev/2013-August/128101.html
+
+
+Copyright
+=========
+
+This document has been placed in the public domain.
