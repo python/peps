@@ -34,6 +34,8 @@ Options:
 The optional arguments ``peps`` are either pep numbers or .txt files.
 """
 
+from __future__ import print_function, unicode_literals
+
 import sys
 import os
 import re
@@ -43,8 +45,9 @@ import getopt
 import errno
 import random
 import time
+from io import open
 
-REQUIRES = {'python': '2.2',
+REQUIRES = {'python': '2.6',
             'docutils': '0.2.7'}
 PROGRAM = sys.argv[0]
 RFCURL = 'http://www.faqs.org/rfcs/rfc%d.html'
@@ -85,9 +88,9 @@ def usage(code, msg=''):
         out = sys.stdout
     else:
         out = sys.stderr
-    print >> out, __doc__ % globals()
+    print(__doc__ % globals(), file=out)
     if msg:
-        print >> out, msg
+        print(msg, file=out)
     sys.exit(code)
 
 
@@ -105,7 +108,7 @@ def fixanchor(current, match):
                 ltext.append(c)
                 break
         link = EMPTYSTRING.join(ltext)
-    elif text.startswith('pep-') and text <> current:
+    elif text.startswith('pep-') and text != current:
         link = os.path.splitext(text)[0] + ".html"
     elif text.startswith('PEP'):
         pepnum = int(match.group('pepnum'))
@@ -143,14 +146,17 @@ def linkemail(address, pepno):
 
 
 def fixfile(inpath, input_lines, outfile):
-    from email.Utils import parseaddr
+    try:
+        from email.Utils import parseaddr
+    except ImportError:
+        from email.utils import parseaddr
     basename = os.path.basename(inpath)
     infile = iter(input_lines)
     # convert plaintext pep to minimal XHTML markup
-    print >> outfile, DTD
-    print >> outfile, '<html>'
-    print >> outfile, COMMENT
-    print >> outfile, '<head>'
+    print(DTD, file=outfile)
+    print('<html>', file=outfile)
+    print(COMMENT, file=outfile)
+    print('<head>', file=outfile)
     # head
     header = []
     pep = ""
@@ -176,9 +182,9 @@ def fixfile(inpath, input_lines, outfile):
     if pep:
         title = "PEP " + pep + " -- " + title
     if title:
-        print >> outfile, '  <title>%s</title>' % cgi.escape(title)
-    r = random.choice(range(64))
-    print >> outfile, (
+        print('  <title>%s</title>' % cgi.escape(title), file=outfile)
+    r = random.choice(list(range(64)))
+    print((
         '  <link rel="STYLESHEET" href="style.css" type="text/css" />\n'
         '</head>\n'
         '<body bgcolor="white">\n'
@@ -189,18 +195,18 @@ def fixfile(inpath, input_lines, outfile):
         '<img src="../pics/PyBanner%03d.gif" alt="[Python]"\n'
         ' border="0" width="150" height="35" /></a></td>\n'
         '<td class="textlinks" align="left">\n'
-        '[<b><a href="../">Python Home</a></b>]' % r)
-    if basename <> 'pep-0000.txt':
-        print >> outfile, '[<b><a href=".">PEP Index</a></b>]'
+        '[<b><a href="../">Python Home</a></b>]' % r), file=outfile)
+    if basename != 'pep-0000.txt':
+        print('[<b><a href=".">PEP Index</a></b>]', file=outfile)
     if pep:
         try:
-            print >> outfile, ('[<b><a href="pep-%04d.txt">PEP Source</a>'
-                               '</b>]' % int(pep))
-        except ValueError, error:
-            print >> sys.stderr, ('ValueError (invalid PEP number): %s'
-                                  % error)
-    print >> outfile, '</td></tr></table>'
-    print >> outfile, '<div class="header">\n<table border="0">'
+            print(('[<b><a href="pep-%04d.txt">PEP Source</a>'
+                               '</b>]' % int(pep)), file=outfile)
+        except ValueError as error:
+            print(('ValueError (invalid PEP number): %s'
+                                  % error), file=sys.stderr)
+    print('</td></tr></table>', file=outfile)
+    print('<div class="header">\n<table border="0">', file=outfile)
     for k, v in header:
         if k.lower() in ('author', 'bdfl-delegate', 'discussions-to'):
             mailtos = []
@@ -236,7 +242,7 @@ def fixfile(inpath, input_lines, outfile):
                 try:
                     url = PEPCVSURL % int(pep)
                     v = '<a href="%s">%s</a> ' % (url, cgi.escape(date))
-                except ValueError, error:
+                except ValueError as error:
                     v = date
         elif k.lower() in ('content-type',):
             url = PEPURL % 9
@@ -247,12 +253,12 @@ def fixfile(inpath, input_lines, outfile):
                 v = cgi.escape(v[11:-2])
         else:
             v = cgi.escape(v)
-        print >> outfile, '  <tr><th>%s:&nbsp;</th><td>%s</td></tr>' \
-              % (cgi.escape(k), v)
-    print >> outfile, '</table>'
-    print >> outfile, '</div>'
-    print >> outfile, '<hr />'
-    print >> outfile, '<div class="content">'
+        print('  <tr><th>%s:&nbsp;</th><td>%s</td></tr>' \
+              % (cgi.escape(k), v), file=outfile)
+    print('</table>', file=outfile)
+    print('</div>', file=outfile)
+    print('<hr />', file=outfile)
+    print('<div class="content">', file=outfile)
     need_pre = 1
     for line in infile:
         if line[0] == '\f':
@@ -261,8 +267,8 @@ def fixfile(inpath, input_lines, outfile):
             break
         if line[0].strip():
             if not need_pre:
-                print >> outfile, '</pre>'
-            print >> outfile, '<h3>%s</h3>' % line.strip()
+                print('</pre>', file=outfile)
+            print('<h3>%s</h3>' % line.strip(), file=outfile)
             need_pre = 1
         elif not line.strip() and need_pre:
             continue
@@ -274,32 +280,32 @@ def fixfile(inpath, input_lines, outfile):
                     # This is a PEP summary line, which we need to hyperlink
                     url = PEPURL % int(parts[1])
                     if need_pre:
-                        print >> outfile, '<pre>'
+                        print('<pre>', file=outfile)
                         need_pre = 0
-                    print >> outfile, re.sub(
+                    print(re.sub(
                         parts[1],
                         '<a href="%s">%s</a>' % (url, parts[1]),
-                        line, 1),
+                        line, 1), end=' ', file=outfile)
                     continue
                 elif parts and '@' in parts[-1]:
                     # This is a pep email address line, so filter it.
                     url = fixemail(parts[-1], pep)
                     if need_pre:
-                        print >> outfile, '<pre>'
+                        print('<pre>', file=outfile)
                         need_pre = 0
-                    print >> outfile, re.sub(
-                        parts[-1], url, line, 1),
+                    print(re.sub(
+                        parts[-1], url, line, 1), end=' ', file=outfile)
                     continue
             line = fixpat.sub(lambda x, c=inpath: fixanchor(c, x), line)
             if need_pre:
-                print >> outfile, '<pre>'
+                print('<pre>', file=outfile)
                 need_pre = 0
             outfile.write(line)
     if not need_pre:
-        print >> outfile, '</pre>'
-    print >> outfile, '</div>'
-    print >> outfile, '</body>'
-    print >> outfile, '</html>'
+        print('</pre>', file=outfile)
+    print('</div>', file=outfile)
+    print('</body>', file=outfile)
+    print('</html>', file=outfile)
 
 
 docutils_settings = None
@@ -320,7 +326,7 @@ def fix_rst_pep(inpath, input_lines, outfile):
         settings=docutils_settings,
         # Allow Docutils traceback if there's an exception:
         settings_overrides={'traceback': 1})
-    outfile.write(output)
+    outfile.write(output.decode('utf-8'))
 
 
 def get_pep_type(input_lines):
@@ -345,10 +351,10 @@ def get_pep_type(input_lines):
 
 def get_input_lines(inpath):
     try:
-        infile = open(inpath)
-    except IOError, e:
-        if e.errno <> errno.ENOENT: raise
-        print >> sys.stderr, 'Error: Skipping missing PEP file:', e.filename
+        infile = open(inpath, encoding='utf-8')
+    except IOError as e:
+        if e.errno != errno.ENOENT: raise
+        print('Error: Skipping missing PEP file:', e.filename, file=sys.stderr)
         sys.stderr.flush()
         return None
     lines = infile.read().splitlines(1) # handles x-platform line endings
@@ -369,12 +375,12 @@ def make_html(inpath, verbose=0):
         return None
     pep_type = get_pep_type(input_lines)
     if pep_type is None:
-        print >> sys.stderr, 'Error: Input file %s is not a PEP.' % inpath
+        print('Error: Input file %s is not a PEP.' % inpath, file=sys.stderr)
         sys.stdout.flush()
         return None
-    elif not PEP_TYPE_DISPATCH.has_key(pep_type):
-        print >> sys.stderr, ('Error: Unknown PEP type for input file %s: %s'
-                              % (inpath, pep_type))
+    elif pep_type not in PEP_TYPE_DISPATCH:
+        print(('Error: Unknown PEP type for input file %s: %s'
+                              % (inpath, pep_type)), file=sys.stderr)
         sys.stdout.flush()
         return None
     elif PEP_TYPE_DISPATCH[pep_type] == None:
@@ -382,12 +388,12 @@ def make_html(inpath, verbose=0):
         return None
     outpath = os.path.splitext(inpath)[0] + ".html"
     if verbose:
-        print inpath, "(%s)" % pep_type, "->", outpath
+        print(inpath, "(%s)" % pep_type, "->", outpath)
         sys.stdout.flush()
-    outfile = open(outpath, "w")
+    outfile = open(outpath, "w", encoding='utf-8')
     PEP_TYPE_DISPATCH[pep_type](inpath, input_lines, outfile)
     outfile.close()
-    os.chmod(outfile.name, 0664)
+    os.chmod(outfile.name, 0o664)
     return outpath
 
 def push_pep(htmlfiles, txtfiles, username, verbose, local=0):
@@ -425,9 +431,8 @@ PEP_TYPE_MESSAGES = {}
 
 def check_requirements():
     # Check Python:
-    try:
-        from email.Utils import parseaddr
-    except ImportError:
+    # This is pretty much covered by the __future__ imports...
+    if sys.version_info < (2, 6, 0):
         PEP_TYPE_DISPATCH['text/plain'] = None
         PEP_TYPE_MESSAGES['text/plain'] = (
             'Python %s or better required for "%%(pep_type)s" PEP '
@@ -453,7 +458,7 @@ def check_requirements():
                 % (REQUIRES['docutils'], docutils.__version__))
 
 def pep_type_error(inpath, pep_type):
-    print >> sys.stderr, 'Error: ' + PEP_TYPE_MESSAGES[pep_type] % locals()
+    print('Error: ' + PEP_TYPE_MESSAGES[pep_type] % locals(), file=sys.stderr)
     sys.stdout.flush()
 
 
@@ -492,7 +497,7 @@ def main(argv=None):
         opts, args = getopt.getopt(
             argv, 'bilhqu:',
             ['browse', 'install', 'local', 'help', 'quiet', 'user='])
-    except getopt.error, msg:
+    except getopt.error as msg:
         usage(1, msg)
 
     for opt, arg in opts:
