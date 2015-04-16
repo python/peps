@@ -11,7 +11,7 @@ Type: Standards Track
 Content-Type: text/x-rst
 Created: 11-Aug-2013
 Python-Version: 3.5
-Post-History: 23-Aug-2013, 20-Feb-2015
+Post-History: 23-Aug-2013, 20-Feb-2015, 16-Apr-2015
 Resolution:
 
 
@@ -25,19 +25,20 @@ by bringing extension modules closer to the way Python modules behave;
 specifically to hook into the ModuleSpec-based loading mechanism
 introduced in PEP 451.
 
-Extensions that do not require custom memory layout for their module objects
-may be executed in arbitrary pre-defined namespaces, paving the way for
-extension modules being runnable with Python's ``-m`` switch.
-Other extensions can use custom types for their module implementation.
-Module types are no longer restricted to types.ModuleType.
+This proposal draws inspiration from PyType_Spec of PEP 384 to allow extension
+authors to only define features they need, and to allow future additions
+to extension module declarations.
 
-This proposal makes it easy to support properties at the module
-level and to safely store arbitrary global state in the module that is
-covered by normal garbage collection and supports reloading and
-sub-interpreters.
+Extensions modules are created in a two-step process, fitting better into
+the ModuleSpec architecture, with parallels to __new__ and __init__ of classes.
+
+Extension modules can safely store arbitrary C-level per-module state in
+the module that is covered by normal garbage collection and supports
+reloading and sub-interpreters.
 Extension authors are encouraged to take these issues into account
 when using the new API.
 
+The proposal also allows extension modules with non-ASCII names.
 
 
 Motivation
@@ -48,55 +49,47 @@ For Python modules, the module is created and set up first, then the module
 code is being executed (PEP 302).
 A ModuleSpec object (PEP 451) is used to hold information about the module,
 and passed to the relevant hooks.
+
 For extensions, i.e. shared libraries, the module
 init function is executed straight away and does both the creation and
-initialisation. The initialisation function is not passed ModuleSpec
-information about the loaded module, such as the __file__ or fully-qualified
+initialization. The initialization function is not passed the ModuleSpec,
+or any information it contains, such as the __file__ or fully-qualified
 name. This hinders relative imports and resource loading.
 
+In Py3, modules are also not being added to sys.modules, which means that a
+(potentially transitive) re-import of the module will really try to re-import
+it and thus run into an infinite loop when it executes the module init function
+again. Without the FQMN, it is not trivial to correctly add the module to
+sys.modules either.
 This is specifically a problem for Cython generated modules, for which it's
 not uncommon that the module init code has the same level of complexity as
 that of any 'regular' Python module. Also, the lack of __file__ and __name__
-information hinders the compilation of __init__.py modules, i.e. packages,
+information hinders the compilation of "__init__.py" modules, i.e. packages,
 especially when relative imports are being used at module init time.
 
-The other disadvantage of the discrepancy is that existing Python programmers
-learning C cannot effectively map concepts between the two domains.
-As long as extension modules are fundamentally different from pure Python ones
-in the way they're initialised, they are harder for people to pick up without
-relying on something like cffi, SWIG or Cython to handle the actual extension
-module creation.
-
-Currently, extension modules are also not added to sys.modules until they are
-fully initialized, which means that a (potentially transitive)
-re-import of the module will really try to reimport it and thus run into an
-infinite loop when it executes the module init function again.
-Without the fully qualified module name, it is not trivial to correctly add
-the module to sys.modules either.
-
 Furthermore, the majority of currently existing extension modules has
-problems with sub-interpreter support and/or reloading, and, while it is
-possible with the current infrastructure to support these
+problems with sub-interpreter support and/or interpreter reloading, and, while
+it is possible with the current infrastructure to support these
 features, it is neither easy nor efficient.
 Addressing these issues was the goal of PEP 3121, but many extensions,
 including some in the standard library, took the least-effort approach
 to porting to Python 3, leaving these issues unresolved.
-This PEP keeps the backwards-compatible behavior, which should reduce pressure
-and give extension authors adequate time to consider these issues when porting.
+This PEP keeps backwards compatibility, which should reduce pressure and give
+extension authors adequate time to consider these issues when porting.
 
 
 The current process
 ===================
 
-Currently, extension modules export an initialisation function named
+Currently, extension modules export an initialization function named
 "PyInit_modulename", named after the file name of the shared library. This
 function is executed by the import machinery and must return either NULL in
-the case of an exception, or a fully initialised module object. The
+the case of an exception, or a fully initialized module object. The
 function receives no arguments, so it has no way of knowing about its
 import context.
 
 During its execution, the module init function creates a module object
-based on a PyModuleDef struct. It then continues to initialise it by adding
+based on a PyModuleDef struct. It then continues to initialize it by adding
 attributes to the module dict, creating types, etc.
 
 In the back, the shared library loader keeps a note of the fully qualified
@@ -110,191 +103,240 @@ but this assumption usually holds in practice.
 The proposal
 ============
 
-The current extension module initialisation will be deprecated in favour of
-a new initialisation scheme. Since the current scheme will continue to be
+The current extension module initialization will be deprecated in favor of
+a new initialization scheme. Since the current scheme will continue to be
 available, existing code will continue to work unchanged, including binary
 compatibility.
 
-Extension modules that support the new initialisation scheme must export
-the public symbol "PyModuleExec_modulename", and optionally
-"PyModuleCreate_modulename", where "modulename" is the
-name of the module. This mimics the previous naming convention for
-the "PyInit_modulename" function.
+Extension modules that support the new initialization scheme must export
+the public symbol "PyModuleExport_<modulename>", where "modulename"
+is the name of the module. (For modules with non-ASCII names the symbol name
+is slightly different, see "Export Hook Name" below.)
 
-If defined, these symbols must resolve to C functions with the following
-signatures, respectively::
+If defined, this symbol must resolve to a C function with the following
+signature::
+
+    PyModuleExport* (*PyModuleExportFunction)(void)
+
+The function must return a pointer to a PyModuleExport structure.
+This structure must be available for the lifetime of the module created from
+it – usually, it will be declared statically.
+
+The PyModuleExport structure describes the new module, similarly to
+PEP 384's PyType_Spec for types. The structure is defined as::
+
+    typedef struct {
+        int slot;
+        void *value;
+    } PyModuleDesc_Slot;
+
+    typedef struct {
+        const char* doc;
+        int flags;
+        PyModuleDesc_Slot *slots;
+    } PyModuleDesc;
+
+The *doc* member specifies the module's docstring.
+
+The *flags* may currently be either 0 or ``PyModule_EXPORT_SINGLETON``, described
+in "Singleton Modules" below.
+Other flag values may be added in the future.
+
+The *slots* points to an array of PyModuleDesc_Slot structures, terminated
+by a slot with id set to 0 (i.e. ``{0, NULL}``).
+
+To specify a slot, a unique slot ID must be provided.
+New Python versions may introduce new slot IDs, but slot IDs will never be
+recycled. Slots may get deprecated, but will continue to be supported
+throughout Python 3.x.
+
+A slot's value pointer may not be NULL, unless specified otherwise in the
+slot's documentation.
+
+The following slots are available, and described later:
+
+* Py_mod_create
+* Py_mod_statedef
+* Py_mod_methods
+* Py_mod_exec
+
+Unknown slot IDs will cause the import to fail with ImportError.
+
+.. note::
+
+    An alternate proposal is to use PyModuleDef instead of PyModuleDesc,
+    re-purposing the m_reload pointer to hold the slots::
+
+        typedef struct PyModuleDef {
+            PyModuleDef_Base m_base;
+            const char* m_name;
+            const char* m_doc;
+            Py_ssize_t m_size;
+            PyMethodDef *m_methods;
+            PyModuleDesc_Slot* m_slots;  /* changed from `inquiry m_reload;` */
+            traverseproc m_traverse;
+            inquiry m_clear;
+            freefunc m_free;
+        } PyModuleDef;
+
+    This would simplify both the implementation and the API, at the expense
+    of renaming a member of PyModuleDef, and re-purposing a function pointer as
+    a data pointer.
+
+
+Creation Slots
+--------------
+
+The following slots affect module creation phase, i.e. they are hooks for
+ExecutionLoader.create_module.
+They serve to describe creation of the module object itself.
+
+Py_mod_create
+.............
+
+The Py_mod_create slot is used to support custom module subclasses.
+The value pointer must point to a function with the following signature::
+
+    PyObject* (*PyModuleCreateFunction)(PyObject *spec, PyModuleDesc *desc)
+
+The function receives a ModuleSpec instance, as defined in PEP 451,
+and the PyModuleDesc structure.
+It should return a new module object, or set an error
+and return NULL.
+
+This function is not responsible for setting import-related attributes
+specified in PEP 451 [#pep-0451-attributes]_ (such as ``__name__`` or
+``__loader__``) on the new module.
+
+There is no requirement for the returned object to be an instance of
+types.ModuleType. Any type can be used, as long as it supports setting and
+getting attributes, including at least the import-related attributes.
+
+If a module instance is returned from Py_mod_create, the import machinery will
+store a pointer to PyModuleDesc in the module object so that it may be
+retrieved by PyModule_GetDesc (described later).
+
+.. note::
+
+    If PyModuleDef is used instead of PyModuleDesc, the def is stored
+    instead, to be retrieved by PyModule_GetDef.
+
+Note that when this function is called, the module's entry in sys.modules
+is not populated yet. Attempting to import the same module again
+(possibly transitively), may lead to an infinite loop.
+Extension authors are advised to keep Py_mod_create minimal, an in particular
+to not call user code from it.
+
+Multiple Py_mod_create slots may not be specified. If they are, import
+will fail with ImportError.
+
+
+Py_mod_statedef
+...............
+
+The Py_mod_statedef slot is used to allocate per-module storage for C-level
+state.
+The value pointer must point to the following structure::
+
+    typedef struct PyModule_StateDef {
+        int size;
+        traverseproc traverse;
+        inquiry clear;
+        freefunc free;
+    } PyModule_StateDef;
+
+The meaning of the members is the same as for the corresponding members in
+PyModuleDef.
+
+Specifying multiple Py_mod_statedef slots, or specifying Py_mod_statedef
+together with Py_mod_create, will cause the import to fail with ImportError.
+
+.. note::
+
+    If PyModuleDef is reused, this information is taken from PyModuleDef,
+    so the slot is not necessary.
+
+
+Execution slots
+---------------
+
+The following slots affect module "execution" phase, i.e. they are processed in
+ExecutionLoader.exec_module.
+They serve to describe how the module is initialized – e.g. how it is populated
+with functions, types, or constants, and what import-time side effects
+take place.
+
+These slots may be specified multiple times, and are processed in the order
+they appear in the slots array.
+
+When using the default import machinery, these slots are processed after
+import-related attributes specified in PEP 451 [#pep-0451-attributes]_
+(such as ``__name__`` or ``__loader__``) are set and the module is added
+to sys.modules.
+
+
+Py_mod_methods
+..............
+
+This slot's value pointer must point to an array of PyMethodDef structures.
+The specified methods are added to the module, like with PyModuleDef.m_methods.
+
+.. note::
+
+    If PyModuleDef is reused this slot is unnecessary, since methods are
+    already included in PyModuleDef.
+
+
+Py_mod_exec
+...........
+
+The function in this slot must have the signature::
 
     int (*PyModuleExecFunction)(PyObject* module)
-    PyObject* (*PyModuleCreateFunction)(PyObject* module_spec)
 
+It will be called to initialize a module. Usually, this amounts to
+setting the module's initial attributes.
 
-The PyModuleExec function
--------------------------
+The "module" argument receives the module object to initialize. This will
+always be the module object created from the corresponding PyModuleDesc.
+When this function is called, import-related attributes (such as ``__spec__``)
+will have been set, and the module has already been added to sys.modules.
 
-The PyModuleExec function is used to implement "loader.exec_module"
-defined in PEP 451.
-
-It function will be called to initialize a module. (Usually, this amounts to
-setting the module's initial attributes.)
-This happens in two situations: when the module is first initialized for
-a given (sub-)interpreter, and possibly later when the module is reloaded.
-
-When PyModuleExec is called, the module has already been added to
-sys.modules, and import-related attributes specified in
-PEP 451 [#pep-0451-attributes]_) have been set on the module.
-
-The "module" argument receives the module object to initialize.
-
-If PyModuleCreate is defined, "module" will generally be the the object
-returned by it.
-It is possible for a custom loader to pass any object to
-PyModuleExec, so this function should check and fail with TypeError
-if the module's type is unsupported.
-Any other assumptions should also be checked.
-
-If PyModuleCreate is not defined, PyModuleExec is expected to operate
-on any Python object for which attributes can be added by PyObject_GetAttr*
-and retrieved by PyObject_SetAttr*.
-This allows loading an extension into a pre-created module, making it possible
-to run it as __main__ in the future, participate in certain lazy-loading
-schemes [#lazy_import_concerns]_, or enable other creative uses.
 
 If PyModuleExec replaces the module's entry in sys.modules,
 the new object will be used and returned by importlib machinery.
 (This mirrors the behavior of Python modules. Note that for extensions,
-implementing PyModuleCreate is usually a better solution for the use cases
+implementing Py_mod_create is usually a better solution for the use cases
 this serves.)
 
 The function must return ``0`` on success, or, on error, set an exception and
 return ``-1``.
 
 
-The PyModuleCreate function
----------------------------
-
-The optional PyModuleCreate function is used to implement
-"loader.create_module" defined in PEP 451.
-By exporting it, an extension module indicates that it uses a custom
-module object.
-This prevents loading the extension in a pre-created module,
-but gives greater flexibility in allowing a custom C-level layout
-of the module object.
-Most extensions will not need to implement this function.
-
-The "module_spec" argument receives a "ModuleSpec" instance, as defined in
-PEP 451.
-
-When called, this function must create and return a module object,
-or set an exception and return NULL.
-There is no requirement for the returned object to be an instance of
-types.ModuleType. Any type can be used, as long as it supports setting and
-getting attributes, including at least the import-related attributes
-specified in PEP 451 [#pep-0451-attributes]_.
-This follows the current support for allowing arbitrary objects in sys.modules
-and makes it easier for extension modules to define a type that exactly matches
-their needs for holding module state.
-
-Note that when this function is called, the module's entry in sys.modules
-is not populated yet. Attempting to import the same module again
-(possibly transitively), may lead to an infinite loop.
-Extension authors are advised to keep PyModuleCreate minimal, an in particular
-to not call user code from it.
-
-If PyModuleCreate is not defined, the default loader will construct
-a module object as if with PyModule_New.
-
-
-Initialization helper functions
--------------------------------
-
-For two initialization tasks previously done by PyModule_Create,
-two functions are introduced::
-
-    int PyModule_SetDocString(PyObject *m, const char *doc)
-    int PyModule_AddFunctions(PyObject *m, PyMethodDef *functions)
-
-These set the module docstring, and add the module functions, respectively.
-Both will work on any Python object that supports setting attributes.
-They return ``0`` on success, and on failure, they set the exception
-and return ``-1``.
-
-
-PyCapsule convenience functions
--------------------------------
-
-Instead of custom module objects, PyCapsule will become the preferred
-mechanism for storing per-module C data.
-Two new convenience functions will be added to help with this.
-
-*
-    ::
-
-        PyObject *PyModule_AddCapsule(
-            PyObject *module,
-            const char *module_name,
-            const char *attribute_name,
-            void *pointer,
-            PyCapsule_Destructor destructor)
-
-    Add a new PyCapsule to *module* as *attribute_name*.
-    The capsule name is formed by joining *module_name* and *attribute_name*
-    by a dot.
-
-    This convenience function can be used from a module initialization function
-    instead of separate calls to PyCapsule_New and PyModule_AddObject.
-
-    Returns a borrowed reference to the new capsule,
-    or NULL (with exception set) on failure.
-
-*
-    ::
-
-        void *PyModule_GetCapsulePointer(
-            PyObject *module,
-            const char *module_name,
-            const char *attribute_name)
-
-    Returns the pointer stored in *module* as *attribute_name*, or NULL
-    (with an exception set) on failure. The capsule name is formed by joining
-    *module_name* and *attribute_name* by a dot.
-
-    This convenience function can be used instead of separate calls to
-    PyObject_GetAttr and PyCapsule_GetPointer.
-
-Extension authors are encouraged to define a macro to
-call PyModule_GetCapsulePointer and cast the result to an appropriate type.
-
-
-Generalizing PyModule_* functions
----------------------------------
-
-The following functions and macros will be modified to work on any object
-that supports attribute access:
-
-    * PyModule_GetNameObject
-    * PyModule_GetName
-    * PyModule_GetFilenameObject
-    * PyModule_GetFilename
-    * PyModule_AddIntConstant
-    * PyModule_AddStringConstant
-    * PyModule_AddIntMacro
-    * PyModule_AddStringMacro
-    * PyModule_AddObject
-
-The PyModule_GetDict function will continue to only work on true module
-objects. This means that it should not be used on extension modules that only
-define PyModuleExec.
-
-
 Legacy Init
 -----------
 
-If PyModuleExec is not defined, the import machinery will try to initialize
-the module using the PyModuleInit hook, as described in PEP 3121.
+If the PyModuleExport function is not defined, the import machinery will try to
+initialize the module using the PyInit hook, as described in PEP 3121.
 
-If PyModuleExec is defined, PyModuleInit will be ignored.
+If PyModuleExport is defined, PyModuleInit will be ignored.
 Modules requiring compatibility with previous versions of CPython may implement
 PyModuleInit in addition to the new hook.
+
+Modules using the legacy init API will be initialized entirely in the
+Loader.create_module step; Loader.exec_module will be a no-op.
+
+.. XXX: Give example code for a backwards-compatible Init based on slots
+
+.. note::
+
+    If PyModuleDef is reused, implementing the PyInit hook becomes easy:
+
+        * call PyModule_Create with the PyModuleDef (m_reload was ignored in
+          previous Python versions, so the slots array will be ignored).
+          Alternatively, call the Py_mod_create function (keeping in mind that
+          the spec is not available with PyInit).
+        * call the Py_mod_exec function(s).
 
 
 Subinterpreters and Interpreter Reloading
@@ -307,59 +349,200 @@ on the part of the extension author.
 No user-defined functions, methods, or instances may leak to different
 interpreters.
 To achieve this, all module-level state should be kept in either the module
-dict, or in the module object.
+dict, or in the module object's storage reachable by PyModule_GetState.
 A simple rule of thumb is: Do not define any static data, except built-in types
 with no mutable or user-settable class attributes.
+
+
+PyModule_GetDesc
+----------------
+
+To retrieve the PyModuleDesc structure used to create a module,
+a new function will be added::
+
+    PyModuleDesc* PyModule_GetDesc(PyObject *module)
+
+The function returns NULL if the parameter is not a module object, or was not
+created using PyModuleDesc.
+
+.. note::
+
+    This is unnecessary if PyModuleDef is reused: the existing
+    PyModule_GetDef can be used instead.
+
+
+Singleton Modules
+-----------------
+
+Modules defined by PyModuleDef may be registered with PyState_AddModule,
+and later retrieved with PyState_FindModule.
+
+Under the new API, there is no one-to-one mapping between PyModuleSpec
+and the module created from it.
+In particular, multiple modules may be loaded from the same description.
+
+This means that there is no "global" instance of a module object.
+Any C-level callbacks that need access to the module state need to be passed
+a reference to the module object, either directly or indirectly.
+
+
+However, there are some modules that really need to be only loaded once:
+typically ones that wrap a C library with global state.
+These modules should set the PyModule_EXPORT_SINGLETON flag
+in PyModuleDesc.flags. When this flag is set, loading an additional
+copy of the module after it has been loaded once will return the previously
+loaded object.
+This will be done on a low level, using _PyImport_FixupExtensionObject.
+Additionally, the module will be automatically registered using
+PyState_AddSingletonModule (see below) after execution slots are processed.
+
+Singleton modules can be retrieved, registered or unregistered with
+the interpreter state using three new functions, which parallel their
+PyModuleDef counterparts, PyState_FindModule, PyState_AddModule,
+and PyState_RemoveModule::
+
+    PyObject* PyState_FindSingletonModule(PyModuleDesc *desc)
+    int PyState_AddSingletonModule(PyObject *module, PyModuleDesc *desc)
+    int PyState_RemoveSingletonModule(PyModuleDesc *desc)
+
+
+.. note::
+
+    If PyModuleDef is used instead of PyModuleDesc, the flag would be specified
+    as a slot with NULL value, i.e. ``{Py_mod_flag_singleton, NULL}``.
+    In this case, PyState_FindModule, PyState_AddModule and
+    PyState_RemoveModule can be used instead of the new functions.
+
+.. note::
+
+    Another possibility is to use PyModuleDef_Base in PyModuleDesc, and
+    have PyState_FindModule and friends work with either of the two structures.
+
+
+Export Hook Name
+----------------
+
+As portable C identifiers are limited to ASCII, module names
+must be encoded to form the PyModuleExport hook name.
+
+For ASCII module names, the import hook is named
+PyModuleExport_<modulename>, where <modulename> is the name of the module.
+
+For module names containing non-ASCII characters, the import hook is named
+PyModuleExportU_<encodedname>, where the name is encoded using CPython's
+"punycode" encoding (Punycode [#rfc-3492]_ with a lowercase suffix),
+with hyphens ("-") replaced by underscores ("_").
+
+
+In Python::
+
+    def export_hook_name(name):
+        try:
+            encoded = b'_' + name.encode('ascii')
+        except UnicodeDecodeError:
+            encoded = b'U_' + name.encode('punycode').replace(b'-', b'_')
+        return b'PyModuleExport' + encoded
+
+Examples:
+
+=============  ===========================
+Module name    Export hook name
+=============  ===========================
+spam           PyModuleExport_spam
+lančmít        PyModuleExportU_lanmt_2sa6t
+スパム          PyModuleExportU_zck5b2b
+=============  ===========================
 
 
 Module Reloading
 ----------------
 
-Reloading an extension module will re-execute its PyModuleInit function.
-Similar caveats apply to reloading an extension module as to reloading
-a Python module. Notably, attributes or any other state of the module
-are not reset before reloading.
+Reloading an extension module using importlib.reload() will continue to
+have no effect, except re-setting import-related attributes.
 
-Additionally, due to limitations in shared library loading (both dlopen on
-POSIX and LoadModuleEx on Windows), it is not generally possible to load
+Due to limitations in shared library loading (both dlopen on POSIX and
+LoadModuleEx on Windows), it is not generally possible to load
 a modified library after it has changed on disk.
-Therefore, reloading extension modules is of limited use.
+
+Use cases for reloading other than trying out a new version of the module
+are too rare to require all module authors to keep reloading in mind.
+If reload-like functionality is needed, authors can export a dedicated
+function for it.
 
 
 Multiple modules in one library
 -------------------------------
 
-To support multiple Python modules in one shared library, the library
-must export appropriate PyModuleExec_<name> or PyModuleCreate_<name> hooks
-for each exported module.
-The modules are loaded using a ModuleSpec with origin set to the name of the
-library file, and name set to the module name.
+To support multiple Python modules in one shared library, the library can
+export additional PyModuleExport* symbols besides the one that corresponds
+to the library's filename.
 
-Note that this mechanism can currently only be used to *load* such modules,
+Note that this mechanism can currently only be used to *load* extra modules,
 not to *find* them.
 
-XXX: This is an existing issue; either fix it/wait for a fix or provide
-an example of how to load such modules.
+Given the filesystem location of a shared library and a module name,
+a module may be loaded with::
+
+    import importlib.machinery
+    import importlib.util
+    loader = importlib.machinery.ExtensionFileLoader(name, path)
+    spec = importlib.util.spec_from_loader(name, loader)
+    return importlib.util.module_from_spec(spec)
+
+On platforms that support symbolic links, these may be used to install one
+library under multiple names, exposing all exported modules to normal
+import machinery.
+
+
+Testing and initial implementations
+-----------------------------------
+
+For testing, a new built-in module ``_testimportmodexport`` will be created.
+The library will export several additional modules using the mechanism
+described in "Multiple modules in one library".
+
+The ``_testcapi`` module will be unchanged, and will use the old API
+indefinitely (or until the old API is removed).
+
+The ``_csv`` and ``readline`` modules will be converted to the new API as
+part of the initial implementation.
+
+
+Possible Future Extensions
+==========================
+
+The slots mechanism, inspired by PyType_Slot from PEP 384,
+allows later extensions.
+
+Some extension modules exports many constants; for example _ssl has
+a long list of calls in the form::
+
+    PyModule_AddIntConstant(m, "SSL_ERROR_ZERO_RETURN",
+                            PY_SSL_ERROR_ZERO_RETURN);
+
+Converting this to a declarative list, similar to PyMethodDef,
+would reduce boilerplate, and provide free error-checking which
+is often missing.
+
+String constants and types can be handled similarly.
+(Note that non-default bases for types cannot be portably specified
+statically; this case would need a Py_mod_exec function that runs
+before the slots are added. The free error-checking would still be
+beneficial, though.)
+
+Another possibility is providing a "main" function that would be run
+when the module is given to Python's -m switch.
+For this to work, the runpy module will need to be modified to take
+advantage of ModuleSpec-based loading introduced in PEP 451.
+Also, it will be necessary to add a mechanism for setting up a module
+according to slots it wasn't originally defined with.
 
 
 Implementation
 ==============
 
-XXX - not started
-
-
-Open issues
-===========
-
-We should expose some kind of API in importlib.util (or a better place?) that
-can be used to check that a module works with reloading and subinterpreters.
-
-
-Related issues
-==============
-
-The runpy module will need to be modified to take advantage of PEP 451
-and this PEP. This is out of scope for this PEP.
+Work-in-progress implementation is available in a Github repository [#gh-repo]_;
+a patchset is at [#gh-patch]_.
 
 
 Previous Approaches
@@ -372,10 +555,16 @@ This proposal did not correspond to the (then nonexistent) PEP 451,
 where module creation and initialization is broken into distinct steps.
 It also did not support loading an extension into pre-existing module objects.
 
-Nick Coghlan proposed the Create annd Exec hooks, and wrote a prototype
+Nick Coghlan proposed "Create" and "Exec" hooks, and wrote a prototype
 implementation [#nicks-prototype]_.
 At this time PEP 451 was still not implemented, so the prototype
 does not use ModuleSpec.
+
+The original version of this PEP used Create and Exec hooks, and allowed
+loading into arbitrary pre-constructed objects with Exec hook.
+The proposal made extension module initialization closer to how Python modules
+are initialized, but it was later recognized that this isn't an important goal.
+The current PEP describes a simpler solution.
 
 
 References
@@ -392,6 +581,15 @@ References
 
 .. [#nicks-prototype]
    https://mail.python.org/pipermail/python-dev/2013-August/128101.html
+
+.. [#rfc-3492]
+   http://tools.ietf.org/html/rfc3492
+
+.. [#gh-repo]
+   https://github.com/encukou/cpython/commits/pep489
+
+.. [#gh-patch]
+   https://github.com/encukou/cpython/compare/master...encukou:pep489.patch
 
 
 Copyright
