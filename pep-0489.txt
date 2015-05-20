@@ -20,10 +20,10 @@ Abstract
 
 This PEP proposes a redesign of the way in which built-in and extension modules
 interact with the import machinery. This was last revised for Python 3.0 in PEP
-3121, but did not solve all problems at the time. The goal is to solve them
-by bringing extension modules closer to the way Python modules behave;
-specifically to hook into the ModuleSpec-based loading mechanism
-introduced in PEP 451.
+3121, but did not solve all problems at the time. The goal is to solve
+import-related problems by bringing extension modules closer to the way Python
+modules behave; specifically to hook into the ModuleSpec-based loading
+mechanism introduced in PEP 451.
 
 This proposal draws inspiration from PyType_Spec of PEP 384 to allow extension
 authors to only define features they need, and to allow future additions
@@ -39,6 +39,10 @@ Extension authors are encouraged to take these issues into account
 when using the new API.
 
 The proposal also allows extension modules with non-ASCII names.
+
+Not all problems tackled in PEP 3121 are solved in this proposal.
+In particular, problems with run-time module lookup (PyState_FindModule)
+are left to a future PEP.
 
 
 Motivation
@@ -161,7 +165,9 @@ not be used during importing; the module name will be taken from the ModuleSpec.
 
 To prevent crashes when the module is loaded in older versions of Python,
 the PyModuleDef object must be initialized using the newly added
-PyModuleDef_Init function.
+PyModuleDef_Init function. This sets the object type (which cannot be done
+statically on certain compilers), refcount, and internal bookkeeping data
+(m_index).
 For example, an extension module "example" would be exported as::
 
     static PyModuleDef example_def = {...}
@@ -174,6 +180,149 @@ For example, an extension module "example" would be exported as::
 
 The PyModuleDef object must be available for the lifetime of the module created
 from it – usually, it will be declared statically.
+
+Pseudo-code Overview
+--------------------
+
+Here is an overview of how the modified importers will operate.
+Details such as logging or handling of errors and invalid states
+are left out, and C code is presented with a concise Python-like syntax.
+
+The framework that calls the importers is explained in PEP 451
+[#pep-0451-loading]_.
+
+::
+
+    importlib/_bootstrap.py:
+
+        class BuiltinImporter:
+            def create_module(self, spec):
+                module = _imp.create_builtin(spec)
+
+            def exec_module(self, module):
+                _imp.exec_dynamic(module)
+
+            def load_module(self, name):
+                # use a backwards compatibility shim
+                _load_module_shim(self, name)
+
+    importlib/_bootstrap_external.py:
+
+        class ExtensionFileLoader:
+            def create_module(self, spec):
+                module = _imp.create_dynamic(spec)
+
+            def exec_module(self, module):
+                _imp.exec_dynamic(module)
+
+            def load_module(self, name):
+                # use a backwards compatibility shim
+                _load_module_shim(self, name)
+
+    Python/import.c (the _imp module):
+
+        def create_dynamic(spec):
+            name = spec.name
+            path = spec.origin
+
+            # Find an already loaded module that used single-phase init.
+            # For multi-phase initialization, mod is NULL, so a new module
+            # is always created.
+            mod = _PyImport_FindExtensionObject(name, name)
+            if mod:
+                return mod
+
+            return _PyImport_LoadDynamicModuleWithSpec(spec)
+
+        def exec_dynamic(module):
+            if not isinstance(module, types.ModuleType):
+                # non-modules are skipped -- PyModule_GetDef fails on them
+                return
+
+            def = PyModule_GetDef(module)
+            state = PyModule_GetState(module)
+            if state is NULL:
+                PyModule_ExecDef(module, def)
+
+        def create_builtin(spec):
+            name = spec.name
+
+            # Find an already loaded module that used single-phase init.
+            # For multi-phase initialization, mod is NULL, so a new module
+            # is always created.
+            mod = _PyImport_FindExtensionObject(name, name)
+            if mod:
+                return mod
+
+            for initname, initfunc in PyImport_Inittab:
+                if name == initname:
+                    m = initfunc()
+                    if isinstance(m, PyModuleDef):
+                        def = m
+                        return PyModule_FromDefAndSpec(def, spec)
+                    else:
+                        # fall back to single-phase initialization
+                        module = m
+                        _PyImport_FixupExtensionObject(module, name, name)
+                        return module
+
+    Python/importdl.c:
+
+        def _PyImport_LoadDynamicModuleWithSpec(spec):
+            path = spec.origin
+            package, dot, name = spec.name.rpartition('.')
+
+            # see the "Non-ASCII module names" section for export_hook_name
+            hook_name = export_hook_name(name)
+
+            # call platform-specific function for loading exported function
+            # from shared library
+            exportfunc = _find_shared_funcptr(hook_name, path)
+
+            m = exportfunc()
+            if isinstance(m, PyModuleDef):
+                def = m
+                return PyModule_FromDefAndSpec(def, spec)
+
+            module = m
+
+            # fall back to single-phase initialization
+            ....
+
+    Objects/moduleobject.c:
+
+        def PyModule_FromDefAndSpec(def, spec):
+            name = spec.name
+            create = None
+            for slot, value in def.m_slots:
+                if slot == Py_mod_create:
+                    create = value
+            if create:
+                m = create(spec, def)
+            else:
+                m = PyModule_New(name)
+
+            if isinstance(m, types.ModuleType):
+                m.md_state = None
+                m.md_def = def
+
+            if def.m_methods:
+                PyModule_AddFunctions(m, def.m_methods)
+            if def.m_doc:
+                PyModule_SetDocString(m, def.m_doc)
+
+        def PyModule_ExecDef(module, def):
+            if isinstance(module, types.module_type):
+                if module.md_state is NULL:
+                    # allocate a block of zeroed-out memory
+                    module.md_state = _alloc(module.md_size)
+
+            if def.m_slots is NULL:
+                return
+
+            for slot, value in def.m_slots:
+                if slot == Py_mod_exec:
+                    value(module)
 
 
 Module Creation Phase
@@ -223,8 +372,10 @@ Post-creation steps
 
 If the Py_mod_create function returns an instance of types.ModuleType
 or a subclass (or if a Py_mod_create slot is not present), the import
-machinery will associate the PyModuleDef with the module, making it accessible
-to PyModule_GetDef, and enabling the m_traverse, m_clear and m_free hooks.
+machinery will associate the PyModuleDef with the module.
+This also makes the PyModuleDef accessible to execution phase, the
+PyModule_GetDef function, and garbage collection routines (traverse,
+clear, free).
 
 If the Py_mod_create function does not return a module subclass, then m_size
 must be 0, and m_traverse, m_clear and m_free must all be NULL.
@@ -243,6 +394,10 @@ Module Execution Phase
 Module execution -- that is, the implementation of
 ExecutionLoader.exec_module -- is governed by "execution slots".
 This PEP only adds one, Py_mod_exec, but others may be added in the future.
+
+The execution phase is done on the PyModuleDef associated with the module
+object. For objects that are not a subclass of PyModule_Type (for which
+PyModule_GetDef whoud fail), the execution phase is skipped.
 
 Execution slots may be specified multiple times, and are processed in the order
 they appear in the slots array.
@@ -289,12 +444,13 @@ than a PyModuleDef object.
 In this case, the PyInit hook implements the creation phase, and the execution
 phase is a no-op.
 
-Modules that need to work unchanged on older versions of Python should not
-use multi-phase initialization, because the benefits it brings can't be
+Modules that need to work unchanged on older versions of Python should stick to
+single-phase initialization, because the benefits it brings can't be
 back-ported.
-Nevertheless, here is an example of a module that supports multi-phase
-initialization, and falls back to single-phase when compiled for an older
-version of CPython::
+Here is an example of a module that supports multi-phase initialization,
+and falls back to single-phase when compiled for an older version of CPython.
+It is included mainly as an illustration of the changes needed to enable
+multi-phase init::
 
     #include <Python.h>
 
@@ -359,7 +515,8 @@ Subinterpreters and Interpreter Reloading
 -----------------------------------------
 
 Extensions using the new initialization scheme are expected to support
-subinterpreters and multiple Py_Initialize/Py_Finalize cycles correctly.
+subinterpreters and multiple Py_Initialize/Py_Finalize cycles correctly,
+avoiding the issues mentioned in Python documentation [#subinterpreter-docs]_.
 The mechanism is designed to make this easy, but care is still required
 on the part of the extension author.
 No user-defined functions, methods, or instances may leak to different
@@ -503,10 +660,10 @@ export additional PyInit* symbols besides the one that corresponds
 to the library's filename.
 
 Note that this mechanism can currently only be used to *load* extra modules,
-but not to *find* them.
-
-Given the filesystem location of a shared library and a module name,
-a module may be loaded with::
+but not to *find* them. (This is a limitation of the loader mechanism,
+which this PEP does not try to modify.)
+To work around the lack of a suitable finder, code like the following
+can be used::
 
     import importlib.machinery
     import importlib.util
@@ -561,6 +718,13 @@ New structures:
 * PyModuleDef_Slot
 
 PyModuleDef.m_reload changes to PyModuleDef.m_slots.
+
+The internal ``_imp`` module will have backwards incompatible changes:
+``create_builtin``, ``create_dynamic``, and ``exec_dynamic`` will be added;
+``init_builtin``, ``load_dynamic`` will be removed.
+
+The undocumented functions ``imp.load_dynamic`` and ``imp.init_builtin`` will
+be replaced by backwards-compatible shims.
 
 
 Possible Future Extensions
@@ -632,9 +796,6 @@ exporting a definition, yielded a much simpler solution.
 References
 ==========
 
-.. [#lazy_import_concerns]
-   https://mail.python.org/pipermail/python-dev/2013-August/128129.html
-
 .. [#pep-0451-attributes]
    https://www.python.org/dev/peps/pep-0451/#attributes
 
@@ -655,6 +816,12 @@ References
 
 .. [#findmodule-discussion]
    https://mail.python.org/pipermail/import-sig/2015-April/000959.html
+
+.. [#pep-0451-loading]
+   https://www.python.org/dev/peps/pep-0451/#how-loading-will-work]
+
+.. [#subinterpreter-docs]
+   https://docs.python.org/3/c-api/init.html#sub-interpreter-support
 
 
 Copyright
