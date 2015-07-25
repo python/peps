@@ -56,7 +56,8 @@ Rationale
 It is currently not possible to influence how the `super class`_ looks
 up attributes (that is, ``super.__getattribute__`` unconditionally
 peeks in the class ``__dict__``), and that can be problematic for
-dynamic classes that can grow new methods on demand.
+dynamic classes that can grow new methods on demand, for example dynamic
+proxy classes.
 
 The ``__getdescriptor__`` method makes it possible to dynamically add
 attributes even when looking them up using the `super class`_.
@@ -113,7 +114,8 @@ The attribute resolution proces as implemented by ``object.__getattribute__``
 straightforward, but not entirely so without reading C code.
 
 The current CPython implementation of object.__getattribute__ is basicly
-equivalent to the following (pseudo-) Python code (excluding some house keeping and speed tricks)::
+equivalent to the following (pseudo-) Python code (excluding some house
+keeping and speed tricks)::
 
 
     def _PyType_Lookup(tp, name):
@@ -269,6 +271,9 @@ this.
 In C code
 ---------
 
+A new type flag ``Py_TPFLAGS_GETDESCRIPTOR`` with value ``(1UL << 11)`` that
+indicates that the new slot is present and to be used.
+
 A new slot ``tp_getdescriptor`` is added to the ``PyTypeObject`` struct, this
 slot corresponds to the ``__getdescriptor__`` method on `type`_.
 
@@ -280,6 +285,9 @@ This method should lookup *name* in the namespace of *cls*, without looking at
 superclasses, and should not invoke descriptors. The method returns ``NULL``
 without setting an exception when the *name* cannot be found, and returns a
 new reference otherwise (not a borrowed reference).
+
+Classes with a ``tp_getdescriptor`` slot must add ``Py_TPFLAGS_GETDESCRIPTOR``
+to ``tp_flags`` to indicate that new slot must be used.
 
 Use of this hook by the interpreter
 -----------------------------------
@@ -300,12 +308,16 @@ Because of this ``_PyType_Lookup`` will be renamed to ``_PyType_LookupName``,
 this will cause compile-time errors for all out-of-tree users of this
 private API.
 
+For the same reason ``_PyType_LookupId`` is renamed to ``_PyType_LookupId2``.
+A number of other functions in typeobject.c with the same issue do not get
+an updated name because they are private to that file.
+
 The attribute lookup cache in ``Objects/typeobject.c`` is disabled for classes
 that have a metaclass that overrides ``__getdescriptor__``, because using the
 cache might not be valid for such classes.
 
 Impact of this PEP on introspection
------------------------------------
+===================================
 
 Use of the method introduced in this PEP can affect introspection of classes
 with a metaclass that uses a custom ``__getdescriptor__`` method. This section
@@ -334,32 +346,45 @@ changes to the visible behaviour of the ``object.__getattribute__``.
   be ignored and is another way in which the result of ``inspect.getattr_static``
   can be different from that of ``builtin.getattr``.
 
-* ``inspect.getmembers`` and ``inspect.get_class_attrs``
+* ``inspect.getmembers`` and ``inspect.classify_class_attrs``
 
   Both of these functions directly access the class __dict__ of classes along
   the MRO, and hence can be affected by a custom ``__getdescriptor__`` method.
 
-  **TODO**: I haven't fully worked out what the impact of this is, and if there
-  are mitigations for those using either updates to these functions, or
-  additional methods that users should implement to be fully compatible with
-  these functions.
+  Code with a custom ``__getdescriptor__`` method that want to play nice with
+  these methods also needs to ensure that the ``__dict__`` is set up correctly
+  when that is accessed directly by Python code.
 
-  One possible mitigation is to have a custom ``__getattribute__`` for these
-  classes that fills ``__dict__`` before returning and and defers to the
-  default implementation for other attributes.
+  Note that ``inspect.getmembers`` is used by ``pydoc`` and hence this can
+  affect runtime documentation introspection.
 
 * Direct introspection of the class ``__dict__``
 
   Any code that directly access the class ``__dict__`` for introspection
-  can be affected by a custom ``__getdescriptor__`` method.
+  can be affected by a custom ``__getdescriptor__`` method, see the previous
+  item.
 
 
 Performance impact
-------------------
+==================
 
 **WARNING**: The benchmark results in this section are old, and will be updated
 when I've ported the patch to the current trunk. I don't expect significant
 changes to the results in this section.
+
+Micro benchmarks
+----------------
+
+`Issue 18181`_ has a micro benchmark as one of its attachments
+(`pep447-micro-bench.py`_) that specifically tests the speed of attribute
+lookup, both directly and through super.
+
+Note that attribute lookup with deep class hierarchies is significantly slower
+when using a custom ``__getdescriptor__`` method. This is because the
+attribute lookup cache for CPython cannot be used when having this method.
+
+Pybench
+-------
 
 The pybench output below compares an implementation of this PEP with the
 regular source tree, both based on changeset a5681f50bae2, run on an idle
@@ -579,10 +604,10 @@ the performance impact is minimal::
 
 
 Alternative proposals
----------------------
+=====================
 
 ``__getattribute_super__``
-..........................
+--------------------------
 
 An earlier version of this PEP used the following static method on classes::
 
@@ -593,7 +618,7 @@ necessarily limited to working only with ``super.__getattribute__``.
 
 
 Reuse ``tp_getattro``
-.....................
+---------------------
 
 It would be nice to avoid adding a new slot, thus keeping the API simpler and
 easier to understand.  A comment on `Issue 18181`_ asked about reusing the
@@ -605,16 +630,44 @@ That won't work because ``tp_getattro`` will look in the instance
 This would mean that using ``tp_getattro`` instead of peeking the class
 dictionaries changes the semantics of the `super class`_.
 
-Alternate placement of the new method
-.....................................
+Alternative placement of the new method
+---------------------------------------
 
 This PEP proposes to add ``__getdescriptor__`` as a method on the metaclass.
 An alternative would be to add it as a class method on the class itself
 (simular to how ``__new__`` is a `staticmethod`_ of the class and not a method
 of the metaclass).
 
-The two are functionally equivalent, and there's something to be said about
-not requiring the use of a meta class.
+The advantage of using a method on the metaclass is that will give an error
+when two classes on the MRO have different metaclasses that may have different
+behaviors for ``__getdescriptor__``. With a normal classmethod that problem
+would pass undetected while it might cause subtle errors when running the code.
+
+History
+=======
+
+* 23-Jul-2015: Added type flag ``Py_TPFLAGS_GETDESCRIPTOR`` after talking
+  with Guido.
+
+  The new flag is primarily useful to avoid crashing when loading an extension
+  for an older version of CPython and could have positive speed implications
+  as well.
+
+* Jul-2014: renamed slot to ``__getdescriptor__``, the old name didn't
+  match the naming style of other slots and was less descriptive.
+
+Discussion threads
+==================
+
+* The initial version of the PEP was send with
+  Message-ID `<75030FAC-6918-4E94-95DA-67A88D53E6F5@mac.com>`_
+
+* Further discusion starting at a message with
+  Message-ID `<5BB87CC4-F31B-4213-AAAC-0C0CE738460C@mac.com>`_
+
+* And more discussion starting at message with
+  Message-ID `<00AA7433-C853-4101-9718-060468EBAC54@mac.com>`_
+
 
 
 References
@@ -626,6 +679,12 @@ Copyright
 =========
 
 This document has been placed in the public domain.
+
+..  _`<75030FAC-6918-4E94-95DA-67A88D53E6F5@mac.com>`: http://marc.info/?l=python-dev&m=137510220928964&w=2
+
+.. _`<5BB87CC4-F31B-4213-AAAC-0C0CE738460C@mac.com>`: https://mail.python.org/pipermail/python-ideas/2014-July/028420.html
+
+.. _`<00AA7433-C853-4101-9718-060468EBAC54@mac.com>`: https://mail.python.org/pipermail/python-dev/2013-July/127321.html
 
 .. _`Issue 18181`: http://bugs.python.org/issue18181
 
@@ -652,3 +711,5 @@ This document has been placed in the public domain.
 .. _`PyObjC`: http://pyobjc.sourceforge.net/
 
 .. _`classmethod`: http://docs.python.org/3/library/functions.html#classmethod
+
+.. _`pep447-micro-bench.py`: http://bugs.python.org/file40013/pep447-micro-bench.py
