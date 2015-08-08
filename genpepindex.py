@@ -15,6 +15,7 @@ With the PEP information collected, to create the index itself you must:
 
 """
 from __future__ import absolute_import, with_statement
+from __future__ import print_function
 
 import sys
 import os
@@ -48,10 +49,10 @@ def main(argv):
                             raise PEPError('PEP number does not match file name',
                                            file_path, pep.number)
                         peps.append(pep)
-                    except PEPError, e:
+                    except PEPError as e:
                         errmsg = "Error processing PEP %s (%s), excluding:" % \
                             (e.number, e.filename)
-                        print >>sys.stderr, errmsg, e
+                        print(errmsg, e, file=sys.stderr)
                         sys.exit(1)
         peps.sort(key=attrgetter('number'))
     elif os.path.isfile(path):

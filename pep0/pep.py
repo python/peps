@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """Code for handling object representation of a PEP."""
+from __future__ import absolute_import
 import re
 import textwrap
 import unicodedata
@@ -179,9 +180,9 @@ class PEP(object):
         header_order = iter(self.headers)
         try:
             for header_name in metadata.keys():
-                current_header, required = header_order.next()
+                current_header, required = next(header_order)
                 while header_name != current_header and not required:
-                    current_header, required = header_order.next()
+                    current_header, required = next(header_order)
                 if header_name != current_header:
                     raise PEPError("did not deal with "
                                    "%r before having to handle %r" %
@@ -193,7 +194,7 @@ class PEP(object):
         required = False
         try:
             while not required:
-                current_header, required = header_order.next()
+                current_header, required = next(header_order)
             else:
                 raise PEPError("PEP is missing its %r" % (current_header,),
                                pep_file.name)
@@ -239,9 +240,9 @@ class PEP(object):
         """Return a list of author names and emails."""
         # XXX Consider using email.utils.parseaddr (doesn't work with names
         # lacking an email address.
-        angled = ur'(?P<author>.+?) <(?P<email>.+?)>'
-        paren = ur'(?P<email>.+?) \((?P<author>.+?)\)'
-        simple = ur'(?P<author>[^,]+)'
+        angled = constants.text_type(r'(?P<author>.+?) <(?P<email>.+?)>')
+        paren = constants.text_type(r'(?P<email>.+?) \((?P<author>.+?)\)')
+        simple = constants.text_type(r'(?P<author>[^,]+)')
         author_list = []
         for regex in (angled, paren, simple):
             # Watch out for commas separating multiple names.

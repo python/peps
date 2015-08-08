@@ -1,7 +1,14 @@
 # -*- coding: utf-8 -*-
+import sys
+
+if sys.version_info[0] > 2:
+	text_type = str
+else:
+	text_type = unicode
+
 title_length = 55
 column_format = (u' %(type)1s%(status)1s %(number)4s  %(title)-' +
-                    unicode(title_length) + u's %(authors)-s')
+                    text_type(title_length) + u's %(authors)-s')
 
 header = u"""PEP: 0
 Title: Index of Python Enhancement Proposals (PEPs)

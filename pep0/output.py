@@ -1,4 +1,6 @@
 """Code to handle the output of PEP 0."""
+from __future__ import absolute_import
+from __future__ import print_function
 import datetime
 import sys
 import unicodedata
@@ -28,11 +30,11 @@ def write_column_headers(output):
     """Output the column headers for the PEP indices."""
     column_headers = {'status': u'', 'type': u'', 'number': u'num',
                         'title': u'title', 'authors': u'owner'}
-    print>>output, constants.column_format % column_headers
+    print(constants.column_format % column_headers, file=output)
     underline_headers = {}
     for key, value in column_headers.items():
-        underline_headers[key] = unicode(len(value) * '-')
-    print>>output, constants.column_format % underline_headers
+        underline_headers[key] = constants.text_type(len(value) * '-')
+    print(constants.column_format % underline_headers, file=output)
 
 
 def sort_peps(peps):
@@ -120,7 +122,7 @@ def verify_email_addresses(peps):
 
 
 def sort_authors(authors_dict):
-    authors_list = authors_dict.keys()
+    authors_list = list(authors_dict.keys())
     authors_list.sort(key=attrgetter('sort_by'))
     return authors_list
 
@@ -130,109 +132,109 @@ def normalized_last_first(name):
 
 def write_pep0(peps, output=sys.stdout):
     today = datetime.date.today().strftime("%Y-%m-%d")
-    print>>output, constants.header % today
-    print>>output
-    print>>output, u"Introduction"
-    print>>output, constants.intro
-    print>>output
-    print>>output, u"Index by Category"
-    print>>output
+    print(constants.header % today, file=output)
+    print(file=output)
+    print(u"Introduction", file=output)
+    print(constants.intro, file=output)
+    print(file=output)
+    print(u"Index by Category", file=output)
+    print(file=output)
     write_column_headers(output)
     (meta, info, accepted, open_, finished,
            historical, deferred, dead) = sort_peps(peps)
-    print>>output
-    print>>output, u" Meta-PEPs (PEPs about PEPs or Processes)"
-    print>>output
+    print(file=output)
+    print(u" Meta-PEPs (PEPs about PEPs or Processes)", file=output)
+    print(file=output)
     for pep in meta:
-        print>>output, unicode(pep)
-    print>>output
-    print>>output, u" Other Informational PEPs"
-    print>>output
+        print(constants.text_type(pep), file=output)
+    print(file=output)
+    print(u" Other Informational PEPs", file=output)
+    print(file=output)
     for pep in info:
-        print>>output, unicode(pep)
-    print>>output
-    print>>output, u" Accepted PEPs (accepted; may not be implemented yet)"
-    print>>output
+        print(constants.text_type(pep), file=output)
+    print(file=output)
+    print(u" Accepted PEPs (accepted; may not be implemented yet)", file=output)
+    print(file=output)
     for pep in accepted:
-        print>>output, unicode(pep)
-    print>>output
-    print>>output, u" Open PEPs (under consideration)"
-    print>>output
+        print(constants.text_type(pep), file=output)
+    print(file=output)
+    print(u" Open PEPs (under consideration)", file=output)
+    print(file=output)
     for pep in open_:
-        print>>output, unicode(pep)
-    print>>output
-    print>>output, u" Finished PEPs (done, implemented in code repository)"
-    print>>output
+        print(constants.text_type(pep), file=output)
+    print(file=output)
+    print(u" Finished PEPs (done, implemented in code repository)", file=output)
+    print(file=output)
     for pep in finished:
-        print>>output, unicode(pep)
-    print>>output
-    print>>output, u" Historical Meta-PEPs and Informational PEPs"
-    print>>output
+        print(constants.text_type(pep), file=output)
+    print(file=output)
+    print(u" Historical Meta-PEPs and Informational PEPs", file=output)
+    print(file=output)
     for pep in historical:
-        print>>output, unicode(pep)
-    print>>output
-    print>>output, u" Deferred PEPs"
-    print>>output
+        print(constants.text_type(pep), file=output)
+    print(file=output)
+    print(u" Deferred PEPs", file=output)
+    print(file=output)
     for pep in deferred:
-        print>>output, unicode(pep)
-    print>>output
-    print>>output, u" Abandoned, Withdrawn, and Rejected PEPs"
-    print>>output
+        print(constants.text_type(pep), file=output)
+    print(file=output)
+    print(u" Abandoned, Withdrawn, and Rejected PEPs", file=output)
+    print(file=output)
     for pep in dead:
-        print>>output, unicode(pep)
-    print>>output
-    print>>output
-    print>>output, u"Numerical Index"
-    print>>output
+        print(constants.text_type(pep), file=output)
+    print(file=output)
+    print(file=output)
+    print(u"Numerical Index", file=output)
+    print(file=output)
     write_column_headers(output)
     prev_pep = 0
     for pep in peps:
         if pep.number - prev_pep > 1:
-            print>>output
-        print>>output, unicode(pep)
+            print(file=output)
+        print(constants.text_type(pep), file=output)
         prev_pep = pep.number
-    print>>output
-    print>>output
-    print>>output, u'Reserved PEP Numbers'
-    print>>output
+    print(file=output)
+    print(file=output)
+    print(u'Reserved PEP Numbers', file=output)
+    print(file=output)
     write_column_headers(output)
     for number, claimants in sorted(RESERVED):
-        print>>output, constants.column_format % {
+        print(constants.column_format % {
             'type': '',
             'status': '',
             'number': number,
             'title': 'RESERVED',
             'authors': claimants,
-            }
-    print>>output
-    print>>output
-    print>>output, u"Key"
-    print>>output
+            }, file=output)
+    print(file=output)
+    print(file=output)
+    print(u"Key", file=output)
+    print(file=output)
     for type_ in PEP.type_values:
-        print>>output, u"    %s - %s PEP" % (type_[0], type_)
-    print>>output
+        print(u"    %s - %s PEP" % (type_[0], type_), file=output)
+    print(file=output)
     for status in PEP.status_values:
-        print>>output, u"    %s - %s proposal" % (status[0], status)
+        print(u"    %s - %s proposal" % (status[0], status), file=output)
 
-    print>>output
-    print>>output
-    print>>output, u"Owners"
-    print>>output
+    print(file=output)
+    print(file=output)
+    print(u"Owners", file=output)
+    print(file=output)
     authors_dict = verify_email_addresses(peps)
     max_name = max(authors_dict.keys(), key=normalized_last_first)
     max_name_len = len(max_name.last_first)
-    print>>output, u"    %s  %s" % ('name'.ljust(max_name_len), 'email address')
-    print>>output, u"    %s  %s" % ((len('name')*'-').ljust(max_name_len),
-                                    len('email address')*'-')
+    print(u"    %s  %s" % ('name'.ljust(max_name_len), 'email address'), file=output)
+    print(u"    %s  %s" % ((len('name')*'-').ljust(max_name_len),
+                                    len('email address')*'-'), file=output)
     sorted_authors = sort_authors(authors_dict)
     for author in sorted_authors:
         # Use the email from authors_dict instead of the one from 'author' as
         # the author instance may have an empty email.
-        print>>output, (u"    %s  %s" %
-                (author.last_first.ljust(max_name_len), authors_dict[author]))
-    print>>output
-    print>>output
-    print>>output, u"References"
-    print>>output
-    print>>output, constants.references
-    print>>output, constants.footer
+        print((u"    %s  %s" %
+                (author.last_first.ljust(max_name_len), authors_dict[author])), file=output)
+    print(file=output)
+    print(file=output)
+    print(u"References", file=output)
+    print(file=output)
+    print(constants.references, file=output)
+    print(constants.footer, file=output)
