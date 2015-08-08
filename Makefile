@@ -33,3 +33,7 @@ clean:
 
 update:
 	hg pull -u https://hg.python.org/peps
+
+venv:
+	$(PYTHON) -m venv venv
+	./venv/bin/python -m pip install -U docutils
