@@ -196,6 +196,13 @@ blacklisting which projects a user wishes to install from a particular
 repository. The exact specifics of how that is achieved is up to each
 individual implementation.
 
+The `Python packaging guide <https://packaging.python.org/>`_ MUST be updated
+with a section detailing the options for setting up their own repository so
+that any project that wishes to not host on PyPI in the future can reference
+that documentation. This should include the suggestion that projects relying on
+hosting their own repositories should document in their project description how
+to install their project.
+
 
 Deprecation and Removal of Link Spidering
 =========================================
@@ -225,7 +232,8 @@ email **MUST** include instructions for converting their projects to be hosted
 on PyPI and **MUST** include links to a script or package that will enable them
 to enter their PyPI credentials and package name and have it automatically
 download and re-host all of their files on PyPI. This email **MUST** also
-include instructions for setting up their own index page. This email must also contain a link to the Terms of Service for PyPI as many users may have signed
+include instructions for setting up their own index page. This email must also
+contain a link to the Terms of Service for PyPI as many users may have signed
 up a long time ago and may not recall what those terms are. Finally this email
 must also contain a list of the links registered with PyPI where we were able
 to detect an installable file was located.
@@ -284,35 +292,67 @@ safely host outside of PyPI while 95% of them are exposing their users to
 Remote Code Execution via a Man In The Middle attack.
 
 
-Opposition
-==========
+Frequently Asked Questions
+==========================
 
-The primary opposition to this PEP is that some people may want to not host on
-PyPI for any number of reasons such as the PyPI Terms of Service or Data
-Sovereignty requirements for a particular jurisdiction. For these people this
-PEP represents a regression in the ability for end users to discover what
-options are required to install their projects.
+I can't host my project on PyPI because of <X>, what should I do?
+-----------------------------------------------------------------
 
-The projects that are currently unwilling to host on PyPI can be split into
-two general categories, those that would be willing to host on PyPI but for
-some particular missing feature, and those that will never be willing to host
-on PyPI for any reason.
+First you should decide if <X> is something inherient to PyPI, or if PyPI could
+grow a feature to solve <X> for you. If PyPI can add a feature to enable you to
+host your project on PyPI then you should propose that feature. However, if <X>
+is something inherient to PyPI, such as wanting to maintain control over your
+own files, then you should setup your own package repository and instruct your
+users in your project's description to add it to the list of repositories their
+installer of choice will use.
 
-It is the opinion of this PEP that for those who will never be willing to host
-on PyPI for any reason, that those projects should rely on the support of
-multiple repositories that pip and setuptools already possess and which this
-PEP recommends to all installers. These projects may still use PyPI as an index
-for users to discover through the web interface and should document what
-options are needed in order to install within the long description of their
-projects, which is a freeform field which can structure the information however
-is most useful for their particular project. This is a model which is battle
-tested in virtually every Linux distribution.
 
-For the projects that would host on PyPI but for some particular missing
-feature, it is the opinion of this PEP that instead of the legacy feature that
-this PEP aims to remove, they would be be best served by identifying which
-features are missing and then designing a good solution for those particular
-issues.
+My users have a worse experience with this PEP than before, how do I explain that?
+----------------------------------------------------------------------------------
+
+Part of this answer is going to be specific to each individual project, you'll
+need to explain to your users what caused you to decide to host in your own
+repository instead of utilizing one that they already have in their installer's
+default list of repositories. However, part of this answer will also be
+explaining that the previous behavior of transparently including external links
+was both a security hazard (given that in most cases it allowed a MITM to
+execute arbitrary Python code on the end users machine) and a reliability
+concern and that PEP 438 attempted to resolve this by making them explicitly
+opt in, but that PEP 438 brought along with it a number of serious usability
+issues. PEP 470 represents a simplification of the model to a model that many
+users will be familar with, which is common amongst Linux distributions.
+
+
+Switching to a repository structure breaks my workflow or isn't allowed by my host?
+-----------------------------------------------------------------------------------
+
+There are a number of cheap or free hosts that would gladly support what is
+required for a repository. In particular you don't actually need to upload your
+files anywhere differently as long as you can generate a host with the correct
+structure that points to where your files are actually located. Many of these
+hosts provide free HTTPS using a shared domain name, and free HTTPS
+certificates can be gotten from `StartSSL <https://www.startssl.com/>`_, or in
+the near future `LetsEncrypt <https://letsencrypt.org/>`_ or they may be gotten
+cheap from any number of providers.
+
+
+Why don't you provide <X>?
+--------------------------
+
+The answer here will depend on what <X> is, however the answers typically are
+one of:
+
+* We hadn't been thought of it and nobody had suggested it before.
+* We don't have sufficient experience with <X> to properly design a solution
+  for it and would welcome a domain expert to help us provide it.
+* We're an open source project and nobody has decided to volunteer to design
+  and implement <X> yet.
+
+Additional PEPs to propose additional features are always welcome, however they
+would need someone with the time and expertise to accurately design <X>. This
+particular PEP is intended to focus on getting us to a point where the
+capabilities of PyPI are straightforward with an easily understood baseline
+that is similar to existing models such as Linux distribution repositories.
 
 
 Rejected Proposals
@@ -327,9 +367,10 @@ URLs that would instruct installers to ignore any files uploaded to PyPI and
 instead return an error telling the end user about these extra URLs that they
 can add to their installer to make the installation work.
 
-This idea is rejected because it provides a similar painful end user experience
-where people will first attempt to install something, get an error, then have
-to re-run the installation with the correct options.
+This feature has  been removed from the scope of the PEP because it proved too
+difficult to develop a solution that avoided UX issues similar to those that
+caused so many problems with the PEP 438 solution. If needed, a future PEP
+could revisit this idea.
 
 
 Keep the current classification system but adjust the options
