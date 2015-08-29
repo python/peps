@@ -298,10 +298,10 @@ Frequently Asked Questions
 I can't host my project on PyPI because of <X>, what should I do?
 -----------------------------------------------------------------
 
-First you should decide if <X> is something inherient to PyPI, or if PyPI could
+First you should decide if <X> is something inherent to PyPI, or if PyPI could
 grow a feature to solve <X> for you. If PyPI can add a feature to enable you to
 host your project on PyPI then you should propose that feature. However, if <X>
-is something inherient to PyPI, such as wanting to maintain control over your
+is something inherent to PyPI, such as wanting to maintain control over your
 own files, then you should setup your own package repository and instruct your
 users in your project's description to add it to the list of repositories their
 installer of choice will use.
