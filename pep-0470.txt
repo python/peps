@@ -5,12 +5,13 @@ Last-Modified: $Date$
 Author: Donald Stufft <donald@stufft.io>
 BDFL-Delegate: Paul Moore <p.f.moore@gmail.com>
 Discussions-To: distutils-sig@python.org
-Status: Draft
+Status: Accepted
 Type: Process
 Content-Type: text/x-rst
 Created: 12-May-2014
 Post-History: 14-May-2014, 05-Jun-2014, 03-Oct-2014, 13-Oct-2014, 26-Aug-2015
 Replaces: 438
+Resolution: https://mail.python.org/pipermail/distutils-sig/2015-September/026789.html
 
 
 Abstract
