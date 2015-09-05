@@ -16,7 +16,7 @@ Abstract
 ========
 
 There are many implementations of a Python package repository and many tools
-that consume them. Of these, the cannonical implementation that defines what
+that consume them. Of these, the canonical implementation that defines what
 the "simple" repository API looks like is the implementation that powers
 PyPI. This document will specify that API, documenting what the correct
 behavior for any implementation of the simple repository API.
@@ -51,7 +51,7 @@ link to the URL for that particular project. As an example::
 Below the root URL is another URL for each individual project contained within
 a repository. The format of this URL is ``/<project>/`` where the ``<project>``
 is replaced by the normalized name for that project, so a project named
-"HolyGrail" would have an URL like ``/holygrail/``. This URL must response with
+"HolyGrail" would have an URL like ``/holygrail/``. This URL must respond with
 a valid HTML5 page with a single anchor element per file for the project. The
 text of the anchor tag **MUST** be the filename of the file and the href
 attribute **MUST** be an URL that links to the location of the file for
@@ -62,8 +62,12 @@ the hex encoded digest.
 
 In addition to the above, the following constraints are placed on the API:
 
-* All URLs **MUST** end with a ``/`` and the repository **SHOULD** redirect the
-  URLs without a ``/`` to add a ``/`` to the end.
+* All URLs which respond with an HTML5 page **MUST** end with a ``/`` and the
+  repository **SHOULD** redirect the URLs without a ``/`` to add a ``/`` to the
+  end.
+
+* URLs may be either absolute or relative as long as they point to the correct
+  location.
 
 * There is no constraints on where the files must be hosted relative to the
   repository.
@@ -77,9 +81,15 @@ In addition to the above, the following constraints are placed on the API:
   URL.
 
 * Repositories **SHOULD** choose a hash function from one of the ones
-  guarenteed to be available via the ``hashlib`` module in the Python standard
+  guaranteed to be available via the ``hashlib`` module in the Python standard
   library (currently ``md5``, ``sha1``, ``sha224``, ``sha256``, ``sha384``,
   ``sha512``). The current recommendation is to use ``sha256``.
+
+* If there is a GPG signature for a particular distribution file it **MUST**
+  live alongside that file with the same name with a ``.asc`` appended to it.
+  So if the file ``/packages/HolyGrail-1.0.tar.gz`` existed and had an
+  associated signature, the signature would be located at
+  ``/packages/HolyGrail-1.0.tar.gz.asc``.
 
 
 Normalized Names
