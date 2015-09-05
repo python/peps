@@ -32,7 +32,7 @@ the top level URL that all additional URLS are below. The API is named the
 
 .. note:: All subsequent URLs in this document will be relative to this base
           URL (so given PyPI's URL, an URL of ``/foo/`` would be
-          ``https://pypi.python.org/simple/foo/``).
+          ``https://pypi.python.org/simple/foo/``.
 
 
 Within a repository, the root URL (``/``) **MUST** be a valid HTML5 page with a
