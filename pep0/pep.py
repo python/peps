@@ -2,6 +2,7 @@
 """Code for handling object representation of a PEP."""
 from __future__ import absolute_import
 import re
+import sys
 import textwrap
 import unicodedata
 
@@ -234,7 +235,7 @@ class PEP(object):
         if len(authors_and_emails) < 1:
             raise PEPError("no authors found", pep_file.name,
                            self.number)
-        self.authors = map(Author, authors_and_emails)
+        self.authors = list(map(Author, authors_and_emails))
 
     def _parse_author(self, data):
         """Return a list of author names and emails."""
@@ -300,3 +301,6 @@ class PEP(object):
                 'title': self.title_abbr, 'status': self.status_abbr,
                 'authors': self.author_abbr}
         return constants.column_format % pep_info
+
+    if sys.version_info[0] > 2:
+        __str__ = __unicode__
