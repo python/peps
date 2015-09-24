@@ -91,6 +91,10 @@ In addition to the above, the following constraints are placed on the API:
   associated signature, the signature would be located at
   ``/packages/HolyGrail-1.0.tar.gz.asc``.
 
+* A repository **MAY** include a ``data-gpg-sig`` attribute on a file link with
+  a value of either ``true`` or ``false`` to indicate whether or not there is a
+  GPG signature. Repositories that do this **SHOULD** include it on every link.
+
 
 Normalized Names
 ----------------
