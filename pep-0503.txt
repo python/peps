@@ -5,11 +5,12 @@ Last-Modified: $Date$
 Author: Donald Stufft <donald@stufft.io>
 BDFL-Delegate: Donald Stufft <donald@stufft.io>
 Discussions-To: distutils-sig@python.org
-Status: Draft
+Status: Accepted
 Type: Informational
 Content-Type: text/x-rst
 Created: 04-Sep-2015
 Post-History: 04-Sep-2015
+Resolution: https://mail.python.org/pipermail/distutils-sig/2015-September/026899.html
 
 
 Abstract
