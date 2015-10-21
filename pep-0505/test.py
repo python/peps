@@ -1,5 +1,5 @@
 '''
-This file is used for testing find-pep505.out.
+This file is used for testing find-pep505.py.
 
 nc_* and Nc* are examples of null coalescing.
 sn_* and Sn* are examples of save navigation.
