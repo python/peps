@@ -4,7 +4,7 @@ Version: $Revision$
 Last-Modified: $Date$
 Author: Robert Collins <rbtcollins@hp.com>,
         Nathaniel Smith <njs@pobox.com>
-BDFL-Delegate: Donald Stufft <donald@stufft.io>
+BDFL-Delegate: Nick Coghlan <ncoghlan@gmail.com>
 Discussions-To: distutils-sig <distutils-sig@python.org>
 Status: Draft
 Type: Standards Track
