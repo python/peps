@@ -323,7 +323,7 @@ following criteria:
 - All command-line scripts provided by the build-required packages
   must be present in the build environment's PATH. For example, if a
   project declares a build-requirement on `flit
-  <https://flit.readthedocs.org/en/latest/>`_, then the following must
+  <https://flit.readthedocs.org/en/latest/>`__, then the following must
   work as a mechanism for running the flit command-line tool::
 
     import subprocess
@@ -638,7 +638,7 @@ of lowering the barrier to entry, as discussed above.)
 
 
 Other differences
------------------
+=================
 
 Besides the key command line versus Python hook difference described
 above, there are a few other differences in this proposal:
