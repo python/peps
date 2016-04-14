@@ -13,8 +13,9 @@ Python-Version: 3.6
 Abstract
 ========
 
-Add a new private version to builtin ``dict`` type, incremented at each
-change, to implement fast guards on namespaces.
+Add a new private version to the builtin ``dict`` type, incremented at
+each dictionary creation and at each dictionary change, to implement
+fast guards on namespaces.
 
 
 Rationale
@@ -38,7 +39,9 @@ PEP proposes to add a version to dictionaries to implement fast guards
 on namespaces.
 
 Dictionary lookups can be skipped if the version does not change which
-is the common case for most namespaces. The performance of a guard does
+is the common case for most namespaces. Since the version is globally
+unique, the version is also enough to check if the namespace dictionary
+was not replaced with a new dictionary. The performance of a guard does
 not depend on the number of watched dictionary entries, complexity of
 O(1), if the dictionary version does not change.
 
@@ -71,9 +74,10 @@ Pseudo-code of an fast guard to check if a dictionary entry was modified
             self.version = dict_get_version(dict)
 
         def check(self):
-            """Return True if the dictionary entry did not changed."""
+            """Return True if the dictionary entry did not changed
+            and the dictionary was not replaced."""
 
-            # read the version field of the dict structure
+            # read the version of the dict structure
             version = dict_get_version(self.dict)
             if version == self.version:
                 # Fast-path: dictionary lookup avoided
@@ -94,6 +98,22 @@ Pseudo-code of an fast guard to check if a dictionary entry was modified
 Usage of the dict version
 =========================
 
+Speedup method calls 1.2x
+-------------------------
+
+Yury Selivanov wrote a patch to optimize method calls. The patch depends
+on the `implement per-opcode cache in ceval
+<https://bugs.python.org/issue26219>`_ patch which requires dictionary
+versions to invalidate the cache if the globals dictionary or the
+builtins dictionary has been modified.
+
+The cache also requires that the dictionary version is globally unique.
+It is possible to define a function in a namespace and call it
+in a different namespace: using ``exec()`` with the *globals* parameter
+for example. In this case, the globals dictionary was changed and the
+cache must be invalidated.
+
+
 Specialized functions using guards
 ----------------------------------
 
@@ -102,8 +122,9 @@ The `PEP 510 -- Specialized functions with guards
 specialized functions with guards. It allows to implement static
 optimizers for Python without breaking the Python semantics.
 
-Example of a static Python optimizer: the astoptimizer of the `FAT
-Python <http://faster-cpython.readthedocs.org/fat_python.html>`_ project
+Example of a static Python optimizer: the `fatoptimizer
+<http://fatoptimizer.readthedocs.org/>`_ of the `FAT Python
+<http://faster-cpython.readthedocs.org/fat_python.html>`_ project
 implements many optimizations which require guards on namespaces.
 Examples:
 
@@ -128,7 +149,7 @@ Core runtime).
 Unladen Swallow
 ---------------
 
-Even if dictionary version was not explicitly mentioned, optimization
+Even if dictionary version was not explicitly mentioned, optimizing
 globals and builtins lookup was part of the Unladen Swallow plan:
 "Implement one of the several proposed schemes for speeding lookups of
 globals and builtins." Source: `Unladen Swallow ProjectPlan
@@ -143,9 +164,12 @@ Retrospective
 Changes
 =======
 
-Add a ``ma_version`` field to the ``PyDictObject`` structure with the C
-type ``PY_INT64_T``, 64-bit unsigned integer. New empty dictionaries are
-initilized to version ``0``. The version is incremented at each change:
+Add a ``ma_version_tag`` field to the ``PyDictObject`` structure with
+the C type ``PY_INT64_T``, 64-bit unsigned integer. Add also a global
+dictionary version. Each time a dictionary is created, the global
+version is incremented and the dictionary version is initialized to the
+global version. The global version is also incremented and copied to the
+dictionary version at each dictionary change:
 
 * ``clear()`` if the dict was non-empty
 * ``pop(key)`` if the key exists
@@ -158,30 +182,27 @@ initilized to version ``0``. The version is incremented at each change:
   values are compared by identity, not by their content; the version can
   be incremented multiple times
 
-.. note::
-   The ``PyDictObject`` structure is not part of the stable ABI.
+The ``PyDictObject`` structure is not part of the stable ABI.
+
+The field is called ``ma_version_tag`` rather than ``ma_version`` to
+suggest to compare it using ``version_tag == old_version_tag`` rather
+than ``version <= old_version`` which makes the integer overflow much
+likely.
 
 Example using an hypothetical ``dict_get_version(dict)`` function::
 
     >>> d = {}
     >>> dict_get_version(d)
-    0
+    100
     >>> d['key'] = 'value'
     >>> dict_get_version(d)
-    1
+    101
     >>> d['key'] = 'new value'
     >>> dict_get_version(d)
-    2
+    102
     >>> del d['key']
     >>> dict_get_version(d)
-    3
-
-If a dictionary is created with items, the version is also incremented
-at each dictionary insertion. Example::
-
-    >>> d = dict(x=7, y=33)
-    >>> dict_get_version(d)
-    2
+    103
 
 The version is not incremented if an existing key is set to the same
 value. For efficiency, values are compared by their identity:
@@ -192,10 +213,10 @@ value. For efficiency, values are compared by their identity:
     >>> value = object()
     >>> d['key'] = value
     >>> dict_get_version(d)
-    1
+    40
     >>> d['key'] = value
     >>> dict_get_version(d)
-    1
+    40
 
 .. note::
    CPython uses some singleton like integers in the range [-5; 257],
@@ -204,10 +225,10 @@ value. For efficiency, values are compared by their identity:
    singleton, the version is not modified.
 
 
-Implementation
-==============
+Implementation and Performance
+==============================
 
-The `issue #26058: PEP 509: Add ma_version to PyDictObject
+The `issue #26058: PEP 509: Add ma_version_tag to PyDictObject
 <https://bugs.python.org/issue26058>`_ contains a patch implementing
 this PEP.
 
@@ -221,23 +242,26 @@ using 10 global variables in a function, 10 dictionary lookups costs 148
 ns, whereas the guard still only costs 3.8 ns when the version does not
 change (39x as fast).
 
+The `fat module
+<http://fatoptimizer.readthedocs.org/en/latest/fat.html>`_ implements
+such guards: ``fat.GuardDict`` is based on the dictionary version.
+
 
 Integer overflow
 ================
 
-The implementation uses the C unsigned integer type ``PY_UINT64_T`` to
-store the version, a 64 bits unsigned integer. The C code uses
-``version++``. On integer overflow, the version is wrapped to ``0`` (and
-then continue to be incremented) according to the C standard.
+The implementation uses the C type ``PY_UINT64_T`` to store the version:
+a 64 bits unsigned integer. The C code uses ``version++``. On integer
+overflow, the version is wrapped to ``0`` (and then continue to be
+incremented) according to the C standard.
 
 After an integer overflow, a guard can succeed whereas the watched
-dictionary key was modified. The bug occurs if the dictionary is
-modified at least ``2 ** 64`` times between two checks of the guard and
-if the new version (theoretical value with no integer overflow) is equal
-to the old version modulo ``2 ** 64``.
+dictionary key was modified. The bug only occurs at a guard check if
+there are exaclty ``2 ** 64`` dictionary creations or modifications
+since the previous guard check.
 
-If a dictionary is modified each nanosecond, an overflow takes longer
-than 584 years. Using a 32-bit version, the overflow occurs only after 4
+If a dictionary is modified every nanosecond, ``2 ** 64`` modifications
+takes longer than 584 years. Using a 32-bit version, it only takes 4
 seconds. That's why a 64-bit unsigned type is also used on 32-bit
 systems. A dictionary lookup at the C level takes 14.8 ns.
 
@@ -264,11 +288,6 @@ There are multiple issues:
 * All Python implementations must implement this new property, it gives
   more work to other implementations, whereas they may not use the
   dictionary version at all.
-* The ``__version__`` can be wrapped on integer overflow. It is error
-  prone: using ``dict.__version__ <= guard_version`` is wrong,
-  ``dict.__version__ == guard_version`` must be used instead to reduce
-  the risk of bug on integer overflow (even if the integer overflow is
-  unlikely in practice).
 * Exposing the dictionary version at Python level can lead the
   false assumption on performances. Checking ``dict.__version__`` at
   the Python level is not faster than a dictionary lookup. A dictionary
@@ -281,7 +300,13 @@ There are multiple issues:
     $ ./python -m timeit -s 'd = {str(i):i for i in range(100)}' 'd.__version__ == 100'
     10000000 loops, best of 3: 0.0475 usec per loop
 
-Bikeshedding on the property name:
+* The ``__version__`` can be wrapped on integer overflow. It is error
+  prone: using ``dict.__version__ <= guard_version`` is wrong,
+  ``dict.__version__ == guard_version`` must be used instead to reduce
+  the risk of bug on integer overflow (even if the integer overflow is
+  unlikely in practice).
+
+Mandatory bikeshedding on the property name:
 
 * ``__cache_token__``: name proposed by Nick Coghlan, name coming from
   `abc.get_cache_token()
@@ -318,9 +343,10 @@ using hypothetical ``dict_get_version(dict)``
             self.entry_version = dict_get_entry_version(dict, key)
 
         def check(self):
-            """Return True if the dictionary entry did not changed."""
+            """Return True if the dictionary entry did not changed
+            and the dictionary was not replaced."""
 
-            # read the version field of the dict structure
+            # read the version of the dict structure
             dict_version = dict_get_version(self.dict)
             if dict_version == self.version:
                 # Fast-path: dictionary lookup avoided
@@ -486,8 +512,14 @@ first appeared in their parent objects.
 Discussion
 ==========
 
-Thread on the python-ideas mailing list: `RFC: PEP: Add dict.__version__
-<https://mail.python.org/pipermail/python-ideas/2016-January/037702.html>`_.
+Thread on the mailing lists:
+
+* python-dev: `PEP 509: Add a private version to dict
+  <https://mail.python.org/pipermail/python-dev/2016-January/142685.html>`_
+  (january 2016)
+* python-ideas: `RFC: PEP: Add dict.__version__
+  <https://mail.python.org/pipermail/python-ideas/2016-January/037702.html>`_
+  (january 2016)
 
 
 Copyright
