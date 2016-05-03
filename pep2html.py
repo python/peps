@@ -46,6 +46,10 @@ import errno
 import random
 import time
 from io import open
+try:
+    from html import escape
+except ImportError:
+    from cgi import escape
 
 REQUIRES = {'python': '2.6',
             'docutils': '0.2.7'}
@@ -117,8 +121,8 @@ def fixanchor(current, match):
         rfcnum = int(match.group('rfcnum'))
         link = RFCURL % rfcnum
     if link:
-        return '<a href="%s">%s</a>' % (cgi.escape(link), cgi.escape(text))
-    return cgi.escape(match.group(0)) # really slow, but it works...
+        return '<a href="%s">%s</a>' % (escape(link), escape(text))
+    return escape(match.group(0)) # really slow, but it works...
 
 
 
@@ -182,7 +186,7 @@ def fixfile(inpath, input_lines, outfile):
     if pep:
         title = "PEP " + pep + " -- " + title
     if title:
-        print('  <title>%s</title>' % cgi.escape(title), file=outfile)
+        print('  <title>%s</title>' % escape(title), file=outfile)
     r = random.choice(list(range(64)))
     print((
         '  <link rel="STYLESHEET" href="style.css" type="text/css" />\n'
@@ -241,20 +245,20 @@ def fixfile(inpath, input_lines, outfile):
             else:
                 try:
                     url = PEPCVSURL % int(pep)
-                    v = '<a href="%s">%s</a> ' % (url, cgi.escape(date))
+                    v = '<a href="%s">%s</a> ' % (url, escape(date))
                 except ValueError as error:
                     v = date
         elif k.lower() in ('content-type',):
             url = PEPURL % 9
             pep_type = v or 'text/plain'
-            v = '<a href="%s">%s</a> ' % (url, cgi.escape(pep_type))
+            v = '<a href="%s">%s</a> ' % (url, escape(pep_type))
         elif k.lower() == 'version':
             if v.startswith('$' 'Revision: ') and v.endswith(' $'):
-                v = cgi.escape(v[11:-2])
+                v = escape(v[11:-2])
         else:
-            v = cgi.escape(v)
+            v = escape(v)
         print('  <tr><th>%s:&nbsp;</th><td>%s</td></tr>' \
-              % (cgi.escape(k), v), file=outfile)
+              % (escape(k), v), file=outfile)
     print('</table>', file=outfile)
     print('</div>', file=outfile)
     print('<hr />', file=outfile)
