@@ -32,7 +32,7 @@ clean:
 	-rm *.html
 
 update:
-	hg pull -u https://hg.python.org/peps
+	git pull https://github.com/python/peps.git
 
 venv:
 	$(PYTHON) -m venv venv
