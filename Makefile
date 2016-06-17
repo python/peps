@@ -4,6 +4,11 @@
 # Not really important, but convenient.
 
 PEP2HTML=pep2html.py
+PEP2RSS=pep2rss.py
+GENPEPINDEX=genpepindex.py
+
+PEPDIR=peps
+OUTPUTDIR=output
 
 PYTHON=python
 
@@ -12,23 +17,23 @@ PYTHON=python
 .txt.html:
 	@$(PYTHON) $(PEP2HTML) $<
 
-TARGETS=$(patsubst %.txt,%.html,$(wildcard peps/pep-????.txt)) output/pep-0000.html
+TARGETS=$(patsubst %.txt,%.html,$(wildcard $(PEPDIR)/pep-????.txt)) $(OUTPUTDIR)/pep-0000.html
 
 all: pep-0000.txt $(TARGETS)
 
-$(TARGETS): pep2html.py
+$(TARGETS): $(PEP2HTML)
 
-pep-0000.txt: $(wildcard peps/pep-????.txt) $(wildcard pep0/*.py)
-	$(PYTHON) genpepindex.py peps/
+pep-0000.txt: $(wildcard $(PEPDIR)/pep-????.txt) $(wildcard $(PEPDIR)/pep0/*.py)
+	$(PYTHON) $(GENPEPINDEX) $(PEPDIR)
 
 rss:
-	$(PYTHON) pep2rss.py peps/
+	$(PYTHON) $(PEP2RSS) $(PEPDIR)
 
 install:
 	echo "Installing is not necessary anymore. It will be done in post-commit."
 
 clean:
-	-rm -r output/
+	-rm -r $(OUTPUTDIR)
 
 update:
 	git pull https://github.com/python/peps.git
