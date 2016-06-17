@@ -56,6 +56,8 @@ REQUIRES = {'python': '2.6',
 PROGRAM = sys.argv[0]
 RFCURL = 'http://www.faqs.org/rfcs/rfc%d.html'
 PEPURL = 'pep-%04d.html'
+PEPDIR = 'peps'
+OUTPUTDIR = 'output'
 PEPCVSURL = ('https://hg.python.org/peps/file/tip/pep-%04d.txt')
 PEPDIRRUL = 'http://www.python.org/peps/'
 
@@ -371,7 +373,7 @@ def find_pep(pep_str):
     if os.path.exists(pep_str):
         return pep_str
     num = int(pep_str)
-    return "pep-%04d.txt" % num
+    return os.path.join(PEPDIR, "pep-%04d.txt" % num)
 
 def make_html(inpath, verbose=0):
     input_lines = get_input_lines(inpath)
@@ -390,7 +392,7 @@ def make_html(inpath, verbose=0):
     elif PEP_TYPE_DISPATCH[pep_type] == None:
         pep_type_error(inpath, pep_type)
         return None
-    outpath = os.path.splitext(inpath)[0] + ".html"
+    outpath = os.path.join(OUTPUTDIR, os.path.splitext(os.path.basename(inpath))[0] + ".html")
     if verbose:
         print(inpath, "(%s)" % pep_type, "->", outpath)
         sys.stdout.flush()
@@ -519,6 +521,11 @@ def main(argv=None):
         elif opt in ('-b', '--browse'):
             browse = 1
 
+    try:
+        os.makedirs(OUTPUTDIR)
+    except OSError:  # output directory alrady exists. Everything's fine...
+        pass
+
     if args:
         peptxt = []
         html = []
@@ -534,7 +541,7 @@ def main(argv=None):
         # do them all
         peptxt = []
         html = []
-        files = glob.glob("pep-*.txt")
+        files = glob.glob(os.path.join(PEPDIR, "pep-*.txt"))
         files.sort()
         for file in files:
             peptxt.append(file)

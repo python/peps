@@ -16,7 +16,7 @@ def firstline_startingwith(full_path, text):
     return None
 
 # get list of peps with creation time (from "Created:" string in pep .txt)
-peps = glob.glob('pep-*.txt')
+peps = glob.glob('peps/pep-*.txt')
 def pep_creation_dt(full_path):
     created_str = firstline_startingwith(full_path, 'Created:')
     # bleh, I was hoping to avoid re but some PEPs editorialize
