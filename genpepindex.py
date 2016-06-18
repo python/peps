@@ -23,13 +23,16 @@ import codecs
 
 from operator import attrgetter
 
-from pep0.output import write_pep0
-from pep0.pep import PEP, PEPError
+from peps.pep0.output import write_pep0
+from peps.pep0.pep import PEP, PEPError
+
+PEPDIR = "peps"
+OUTPUTDIR = "output"
 
 
 def main(argv):
     if not argv[1:]:
-        path = '.'
+        path = PEPDIR
     else:
         path = argv[1]
 
@@ -61,7 +64,12 @@ def main(argv):
     else:
         raise ValueError("argument must be a directory or file path")
 
-    with codecs.open('pep-0000.txt', 'w', encoding='UTF-8') as pep0_file:
+    try:
+        os.makedirs(OUTPUTDIR)
+    except OSError:  # output directory alrady exists. Everything's fine...
+        pass
+
+    with codecs.open(os.path.join(OUTPUTDIR, 'pep-0000.txt'), 'w', encoding='UTF-8') as pep0_file:
         write_pep0(peps, pep0_file)
 
 if __name__ == "__main__":

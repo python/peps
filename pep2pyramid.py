@@ -46,6 +46,7 @@ RFCURL = 'http://www.faqs.org/rfcs/rfc%d.html'
 PEPCVSURL = 'http://hg.python.org/peps/file/tip/pep-%04d.txt'
 PEPDIRURL = '/dev/peps/'
 PEPURL = PEPDIRURL + 'pep-%04d'
+PEPDIR = 'peps'
 PEPANCHOR = '<a href="' + PEPURL + '">%i</a>'
 
 
@@ -499,7 +500,7 @@ def build_peps(args=None):
         filenames = pep_filename_generator(args)
     else:
         # do them all
-        filenames = glob.glob("pep-*.txt")
+        filenames = glob.glob(os.path.join(PEPDIR, "pep-*.txt"))
         filenames.sort()
     for filename in filenames:
         try:
