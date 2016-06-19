@@ -2,7 +2,7 @@ PEP: 522
 Title: Raise BlockingIOError in security sensitive APIs on Linux
 Version: $Revision$
 Last-Modified: $Date$
-Author: Nick Coghlan <ncoghlan@gmail.com>
+Author: Nick Coghlan <ncoghlan@gmail.com>, Nathaniel J. Smith <njs@pobox.com>
 Status: Draft
 Type: Standards Track
 Content-Type: text/x-rst
@@ -30,22 +30,21 @@ syscall, ``os.urandom()`` would become a wrapper around that API, and raise
 instead return random data that may not be adequately unpredictable for use in
 security sensitive operations.
 
-As higher level abstractions over the lower level ``os.urandom()`` API, both
-``random.SystemRandom()`` and the ``secrets`` would also be documented as
-potentially raising ``BlockingIOError``.
-
-In all cases, as soon as a call to ``os.urandom()`` succeeds, all future
-calls to ``os.urandom()`` in that process will succeed (once the operating
-system random number generator is ready after system boot, it remains ready).
-
 
 Proposal
 ========
 
-This PEP proposes that in Python 3.6+, ``os.urandom()`` be updated to call
-the new Linux ``getrandom()``` syscall in non-blocking mode if available and
-raise ``BlockingIOError: system random number generator is not ready`` if
-the kernel reports that the call would block.
+Main change
+-----------
+
+This PEP proposes that in Python 3.6+, the public ``os.urandom()`` API
+will be updated to call the new Linux ``getrandom()``` syscall in
+non-blocking mode if available and raise ``BlockingIOError: system
+random number generator is not ready`` if the kernel reports that the
+call would block.  In all cases, as soon as a call to ``os.urandom()``
+succeeds, all future calls to ``os.urandom()`` in that process will
+succeed (once the operating system random number generator is ready
+after system boot, it remains ready).
 
 No changes are proposed for Windows or Mac OS X systems, as neither of those
 platforms provides any mechanism to run Python code before the operating
@@ -60,94 +59,340 @@ a similar update, but such changes are out of scope for this particular
 proposal.
 
 
-Rationale
-=========
+Related changes
+---------------
 
-For several years now, the security community's guidance has been to use
-``os.urandom()`` (or the ``random.SystemRandom()`` wrapper) when implementing
-security sensitive operations in Python.
+Currently, SipHash initialization and ``random`` module initialization
+both gather random bytes using the same code that underlies
+``os.urandom``. We propose to modify these so that in situations where
+``os.urandom`` would raise a ``BlockingIOError``, they automatically
+fall back on non-secure sources of randomness (and in the SipHash
+case, print some kind of warning).
+
+As higher level abstractions over the lower level ``os.urandom()``
+API, both ``random.SystemRandom()`` and the ``secrets`` module would
+also be documented as potentially raising ``BlockingIOError``.
+
+
+
+Background
+==========
+
+For several years now, the security community and the standard library
+documentation have both recommended the use of ``os.urandom()`` (or
+the ``random.SystemRandom()`` wrapper) when implementing security
+sensitive operations in Python.
 
 To help improve API discoverability and make it clearer that secrecy and
 simulation are not the same problem (even though they both involve
 random numbers), PEP 506 collected several of the one line recipes based
 on the lower level ``os.urandom()`` API into a new ``secrets`` module.
 
-However, this guidance has also come with a longstanding caveat: developers
-writing security sensitive software at least for Linux, and potentially for
-some other \*BSD systems, may need to wait until the operating system's
-random number generator is ready before relying on it for security sensitive
-operations.
+However, this guidance has also come with a longstanding caveat: on
+Linux and potentially some other \*nix systems, the ``/dev/urandom``
+API for accessing the operating system's random number generator may
+sometimes return non-random values. This generally only occurs if
+``/dev/urandom`` is read very early in the boot process, or on systems
+with few sources of available entropy (e.g. some kinds of virtualized
+or embedded systems), but unfortunately the exact conditions that
+trigger this are difficult to predict, and when it occurs then there
+is no way for userspace to tell. As an analogy: if you think of a
+CSPRNG as a method for generating secure, secret passwords, then you
+can think of Linux's ``/dev/urandom`` as being implemented like::
 
-Unfortunately, there's currently no clear indicator to developers that their
-software may not be working as expected when run early in the Linux boot
-process, or on hardware without good sources of entropy to seed the operating
-system's random number generator: due to the behaviour of the underlying
-``/dev/urandom`` device, ``os.urandom()`` on Linux returns a result either way,
-and it takes extensive statistical analysis to show that a security
-vulnerability exists.
+    # artist's conception of the kernel code implementing /dev/urandom
+    def generate_secure_password():
+        if system_has_working_secure_rng:
+            return use_secure_rng_to_generate_password()
+        else:
+            # we can't make a secure password; silently return an insecure one
+            # instead:
+            return "p4ssw0rd"
+
+In real life it's slightly more complicated than this, because there
+might be a small amount of entropy available -- so the fallback might
+be more like ``return random.choice(["p4ssword", "passw0rd",
+"p4ssw0rd"])``. This doesn't really make things more secure, though;
+mostly it just means that if you try to catch the problem in the
+obvious way -- ``if returned_password == "p4ssw0rd": raise UhOh`` --
+then it doesn't work, because ``returned_password`` might instead be
+``p4ssword`` or even ``pa55word``. So this rough sketch does give the
+right general idea.
+
+This design is generally agreed to be a bad idea. As far as we can
+tell, there are no use cases whatsoever in which this is the behavior
+you actually want. It has led to the use of insecure ``ssh`` keys on
+real systems, and many \*nix-like systems (including at least Mac OS
+X, OpenBSD, and FreeBSD) have modified their ``/dev/urandom``
+implementations so that they never return predictable outputs, either
+by making reads block in this case, or by simply refusing to run any
+userspace programs until the system RNG has been
+initialized. Unfortunately, Linux has so far been unable to follow
+suit, because it's been empirically determined that enabling the
+more-secure behavior causes some currently extant distributions to
+fail to boot.
+
+Notice that so far, none of this has much to do with
+Python. Historically, this behavior was implemented inside the kernel
+code that backed ``/dev/urandom``, and ``/dev/urandom`` was the only
+game in town, so CPython versions 2.3 through 3.4 used
+``/dev/urandom`` and if you disliked the resulting behavior then that
+was Somebody Else's Problem (specifically, LKML's problem, not
+python-dev's).
+
+However, recent versions of Linux have added a new and improved API
+for accessing the kernel RNG -- the ``getrandom()`` syscall -- which
+insists on raising an error or blocking rather than returning
+predictable data, as well as having other advantages. This is now the
+recommended method for accessing the kernel RNG on Linux, with
+``/dev/urandom`` relegated to "legacy" status.
+
+This means that what used to be somebody else's problem is now
+Python's problem -- now that Python has a way to detect that the
+secure RNG is not initialized, it has to choose how to handle this
+situation whenever it tries to use the secure RNG. It could simply
+block, as was semi-accidentally implemented in 3.5.0::
+
+    # artist's impression of the CPython 3.5.0-3.5.1 behavior
+    def generate_secure_random_bytes_or_block(num_bytes):
+        while not system_has_working_secure_rng:
+            wait
+        return secure_random_bytes(num_bytes)
+
+Or it could raise an error, as this PEP proposes (in *some* cases)::
+
+    def generate_secure_random_bytes_or_raise(num_bytes):
+        if system_has_working_secure_rng:
+            return secure_random_bytes(num_bytes)
+        else:
+            raise BlockingIOError
+
+Or it could explicitly emulate the ``/dev/urandom`` fallback behavior,
+as was implemented in 3.5.2rc1 and is expected to remain for the rest
+of the 3.5.x cycle::
+
+    # artist's impression of the CPython 3.5.2rc1+ behavior
+    def generate_secure_random_bytes_or_maybe_not(num_bytes):
+        if system_has_working_secure_rng:
+            return secure_random_bytes(num_bytes)
+        else:
+            return (b"p4ssw0rd" * (num_bytes // 8 + 1))[:num_bytes]
+
+(And the same caveats apply to this sketch as applied to the
+``generate_secure_password`` sketch of ``/dev/urandom`` above.)
+
+There are three places where CPython attempts to use the
+secure RNG, and thus three places where this decision has to be made:
+
+* initializing the SipHash used to protect ``str.__hash__`` and
+  friends against DoS attacks (called unconditionally at startup)
+* initializing the ``random`` module (called when ``random`` is
+  imported)
+* servicing user calls to the ``os.urandom`` public API
+
+Currently, these three places all use the same underlying code, and
+thus make this decision in the same way.
+
+This whole problem was first noticed because 3.5.0 switched this
+underlying code to the ``generate_secure_bytes_or_block`` behavior,
+and it turns out that there are some rare cases where Linux boot
+scripts attempted to run a Python program very early in the boot, the
+Python startup sequence blocked while trying to initialize SipHash,
+and then this triggered a deadlock because the system stopped doing
+anything -- including gathering new entropy -- until the Python script
+finished. This is particularly unfortunate since the scripts in
+question never processed untrusted input, so there was no need for
+SipHash to be initialized with secure random data in the first
+place. This motivated the change in 3.5.2rc1 to emulate the old
+``/dev/urandom`` behavior in all cases (by calling ``getrandom()`` in
+non-blocking mode, and then falling back to reading ``/dev/urandom``
+if the syscall indicates that the ``/dev/urandom`` pool is not yet
+securely initialized.)
+
+As far as we know, this SipHash issue the only case where this problem
+has ever been encountered in practice, i.e., as far as we know no-one
+has ever hit the problem with code that contains calls to the
+``random`` module or ``os.urandom``.
+
+The proposal here is to decouple SipHash and ``random`` module
+initialization from ``os.urandom``, with the former using an automatic
+fallback to non-secure randomness, and the latter using ``getrandom``
+to return only secure randomness.
+
+
+Rationale
+=========
+
+SipHash initialization fallback with warning
+--------------------------------------------
+
+The challenge here is that it might be very important to initialize
+SipHash with secure random bytes (for processes that are exposed to
+hostile input) or it might be totally unimportant (for processes that
+are not exposed to hostile input). Python has no way to know which
+case we're in, which means that if we allowed SipHash initialization
+to block or error out, then our "security fix" would break code that
+was already secure and working fine, which is unacceptable --
+especially since we know that most Python invocations that might run
+at early boot fall into this category. But at the same time, since
+Python has no way to know whether any given invocation needs SipHash,
+when SipHash initialization fails this *might* indicate a serious
+security problem, which should not be allowed to pass silently. And
+anyway, access to secure entropy is such a fundamental expected part
+of modern computing environments that it's generally friendly to warn
+users when it's missing -- even if it turns out that Python doesn't
+actually need it in some particular instance, then it still probably
+indicates some sort of environment misconfiguration that has a good
+chance of biting the user in one way or another.
+
+
+``random`` / ``random.Random`` initialization silent fallback
+-------------------------------------------------------------
+
+The ``random`` module has never made any guarantees that the numbers
+it generates are unpredictable, no correct code depends on this, and
+code that does depend on this may well be broken even when secure
+randomness *is* used to initialize the Mersenne Twister. So falling
+back on insecure randomness is the obvious choice, and no warning is
+needed.
+
+
+``os.urandom`` raising ``BlockingIOError``
+------------------------------------------
+
+This is the main controversial part of this proposal, and is based on
+weighing a number of trade-offs.
+
+**Consideration 1: Backwards compatibility.** We feel that this change
+is fairly neutral with respect to backwards compatibility. Backwards
+compatibility is often easy to determine -- either a change breaks
+code or it doesn't. But sometimes it's a bit harder to say. In this
+case, we are not aware of any situation in which actual code ever
+calls ``os.urandom`` when the secure RNG is uninitialized, so no
+matter what we do to ``os.urandom``, the amount of code broken will be
+minimal, and possibly non-existent. This seems well under the bar for
+changes to CPython; it's almost a certainty that 3.6 will have other
+breaking changes that have larger impacts than this. (Note the
+contrast here with the kernel's ``/dev/urandom``, where the
+back-compatibility concerns are based on specific real code that is
+known to break in real situations.)
+
+Another factor that's often considered when considering potentially
+breaking changes is `whether the affected code was making unwarranted
+assumptions <https://xkcd.com/1172/>`_. In this case, if we consult
+the documentation, ``os.urandom`` has promised that (a) it returns
+secure randomness to the extent that the underlying OS allows, and (b)
+that it might raise an error if secure randomness is not
+available. These are exactly the two properties that this PEP proposes
+to preserve. We don't think that the documentation should get much
+weight in particular, since real-world problems trump theoretical
+backwards compatibility with the docs... but since in this case it's
+not clear there *are* any real-world problems, it seems worth
+mentioning.
+
+**Consideration 2: direct impact on real programs.** What if,
+despite all of the above, some Python code *does* find itself trying
+to use ``os.urandom`` on system without an initialized RNG? Could this
+actually happen? It's hard to say for certain. Certainly it would be
+unusual -- but low cost ARM devices are becoming increasingly
+prevalent, and a lot of them are running Linux and maintained by
+non-expert sysadmins, and a lot of folks are writing Python
+applications to run on these devices. Similarly, exotic virtualized
+environments are becoming more common, like `docker containers running
+directly inside virtual machines
+<https://coreos.com/rkt/docs/latest/running-lkvm-stage1.html>`_. Hopefully
+these will be set up properly with virtio-rng and similar, but
+it's not hard to imagine some flask app finding itself running as PID
+1 in a VM with no functional RNG. So it's worth thinking about how to
+handle this unlikely situation if it does arise.
+
+A `quick GitHub search
+<https://github.com/search?l=python&p=2&q=urandom&ref=searchresults&type=Code&utf8=%E2%9C%93>`_
+demonstrates that ``os.urandom`` is overwhelmingly used specifically
+to generate secure secrets, meaning that traditionally, we have
+handled this situation by silently disabling security. This is almost
+certainly not what any of the developers who took the trouble to call
+``os.urandom`` were hoping for.
 
 By contrast, if ``BlockingIOError`` is raised in those situations, then
-developers can easily choose their desired behaviour:
+we "fail safe" while alerting developers to the situation, and they
+can then easily choose their desired behaviour:
 
+0. Fix their environment / boot process so that this situation doesn't
+   arise.
 1. Loop until the call succeeds (security sensitive)
 2. Switch to using the random module (non-security sensitive)
-3. Switch to reading ``/dev/urandom`` directly (non-security sensitive)
+3. Switch to reading ``/dev/urandom`` directly (non-security
+sensitive)
+
+We have an opportunity here to take an obscure security problem that
+requires a lot of knowledge about Linux boot processes and secure
+random number generation and turn it into a relatively mundane and
+easy-to-find-in-an-internet-search runtime exception. For now this
+situation is largely hypothetical. If it never arises, then the change
+is harmless. But if it *does* arise, it's better to be prepared.
+
+**Consideration three: indirect impact on developers.** While it's
+worth thinking about unlikely security problems because they sometimes
+have disproportionate costs, realistically it's unlikely that whatever
+we decide here will ever effect many running programs. We think the
+main benefit of this proposal (and the cost of its alternatives) will
+be the indirect impact on developers.
+
+Smart and conscientious developers working on security-sensitive code
+generally follow a play-it-safe principle. This comes from bitter
+experience: if a piece of code does something bad in normal usage,
+then it's just a regular bug that gets caught be tests and fixed. So
+security bugs -- almost by definition -- involve weird situations that
+the developer expected couldn't happen, but then did, because a smart
+active attacker can find surprising ways to tilt the odds. Many, many
+security bugs have started with a developer convincing themselves that
+"eh, this might be technically slightly wrong but it will never
+matter".
+
+There are a lot of smart and conscientious developers writing Python
+code. If Python 3.6 were to deprecate the use of ``os.urandom`` in
+favor of some alternative almost-identical-but-slightly-better API,
+then these smart and conscientious developers would be forced to
+modify their code to check for the new API and call it if available,
+just to play it safe. And they'd have to make sure that their smart
+and conscientious and slightly-less-informed coworkers were informed
+that after many years of recommending ``os.urandom``, it was now
+considered sub-optimal. (``os.urandom`` doesn't just have a large
+installed base of code, there's also a large installed base of
+developer brains that know "``os.urandom`` is the thing to use when
+security matters", and pushing upgrades to these brains is very
+difficult and expensive.) Plus of course this message will get
+distorted in all kinds of ways, with crypto fanboys going around
+telling everyone how ``os.urandom`` is totally insecure, and long
+arguments in bug trackers about what the chances are of this situation
+ever arising, and in general it would just create a tremendous amount
+of heat and noise for no benefit.
+
+Taken all together, therefore, it's better to keep ``os.urandom``'s
+security guarantee than to keep its
+always-returns-something-immediately-on-Linux guarantee.
 
 
-Why now?
---------
+Rejected alternatives
+=====================
 
-The main reason is because the 3.5 SipHash initialisation bug causing a deadlock
-when attempting to run Python scripts during the Linux init process resulted in
-a rash of proposals to add *new* APIs like ``getrandom()``, ``urandom_block()``,
-``pseudorandom()`` and ``cryptorandom()`` to the ``os`` module and to start
-trying to educate users on when they should call those APIs instead of
-``os.urandom()``.
+**Adding new APIs like ``os.getrandom()`` or ``os.urandom_block()`` or
+``os.urandom(block=True)`` or ...**: This is a *really* obscure
+problem, and we definitely shouldn't clutter up the standard library
+with new APIs without a compelling reason, especially when future
+versions of Linux could potentially make ``/dev/urandom`` (and thus
+``os.urandom``) blocking after all. In particular, this would require
+a massive effort to re-educate users who've been told for years that
+``os.urandom`` is the correct API to use, and trigger the code churn
+issues described above.
 
-This is a *really* obscure problem, and we definitely shouldn't clutter up the
-standard library with new APIs without a compelling reason, especially with the
-``secrets`` module already being added as the "use this and don't worry about
-the low level details" for developers that don't need to worry about versions
-prior to Python 3.6.
+**Modifying the ``secrets`` module to block or raise an error when the
+system RNG is not securely initialized, but leaving ``os.urandom`` to
+continue returning predictable output:** This is slightly better than
+the previous alternative, in that at least it avoids multiplying APIs
+without necessity, but it still hits the major code churn problem.
 
-However, it's also the case that low cost ARM devices are becoming increasingly
-prevalent, with a lot of them running Linux, and a lot of folks writing
-Python applications that run on those devices. That creates an opportunity to
-take an obscure security problem that requires a lot of knowledge about
-Linux boot processes and secure random number generation and turn it into a
-relatively mundane and easy-to-find-in-an-internet-search runtime exception.
-
-
-Background
-==========
-
-On operating systems other than Linux, ``os.urandom()`` may already block
-waiting for the operating system's random number generator to be ready.
-
-On Linux, even when the operating system's random number generator doesn't
-consider itself ready for use in security sensitive operations, it will return
-random values based on the entropy it as available.
-
-This behaviour is potentially problematic, so Linux 3.17 added a new
-``getrandom()`` syscall that (amongst other benefits) allows callers to
-either block waiting for the random number generator to be ready, or
-else request an error return if the random number generator is not ready.
-Notably, the new API does *not* support the old behaviour of returning
-data that is not suitable for security sensitive use cases.
-
-Versions of Python prior up to and including Python 3.4 access the
-Linux ``/dev/urandom`` device directly.
-
-Python 3.5.0 and 3.5.1 called ``getrandom()`` in blocking mode in order to
-avoid the use of a file descriptor to access ``/dev/urandom``. While there
-were no specific problems reported due to ``os.urandom()`` blocking in user
-code, there *were* problems due to CPython implicitly invoking the blocking
-behaviour during interpreter startup.
-
-Rather than trying to decouple SipHash initialisation from the
-``os.urandom()`` implementation, Python 3.5.2 switched to calling
-``getrandom()`` in non-blocking mode, and falling back to reading from
-``/dev/urandom`` if the syscall indicates it will block.
 
 
 Backwards Compatibility Impact Assessment
@@ -158,18 +403,19 @@ failure into a noisy exception that requires the application developer to
 make an explicit decision regarding the behaviour they desire.
 
 As no changes are proposed for operating systems other than Linux,
-``os.urandom()`` retains its existing behaviour as a nominally blocking API
-that is non-blocking in practice due to the difficulty of scheduling Python
-code to run before the operating system random number generator is ready. We
-believe it may be possible on \*BSD, but nobody has explicitly demonstrated
-that. On Mac OS X and Windows, it appears to be straight up impossible to
-even try to run a Python interpreter that early in the boot process.
+``os.urandom()`` retains its existing behaviour as a nominally
+blocking API that is non-blocking in practice due to the difficulty of
+scheduling Python code to run before the operating system random
+number generator is ready. We believe it is probably possible on
+FreeBSD, but nobody has explicitly demonstrated that. On Mac OS X and
+Windows, it appears to be straight up impossible to even try to run a
+Python interpreter that early in the boot process.
 
 On Linux, ``os.urandom()`` retains its status as a guaranteed non-blocking API.
 However, the means of achieving that status changes in the specific case of
 the operating system random number generator not being ready for use in security
 sensitive operations: historically it would return potentially predictable
-random data, with this PEP it would change to raise ``BlockingIOError``.
+random data, while with this PEP it would instead raise ``BlockingIOError``.
 
 Developers of affected applications would then be required to make one of the
 following changes to forward compatibility with Python 3.6, based on the kind
