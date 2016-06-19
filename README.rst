@@ -32,3 +32,32 @@ your source code should be in ``pep-0999.txt`` and the HTML will be
 generated to ``pep-0999.html`` by the command ``make pep-0999.html``.
 The default Make target generates HTML for all PEPs.  If you don't have
 Make, use the ``pep2html.py`` script.
+
+
+Auto generating the HTML version of Peps from your Pull requests 
+================================================================
+
+Once you have forked this repository:
+
+- Enable travis build for your forks:
+  - go to https://travis-ci.org/profile/$your_user_name
+  - Click `Sync Account`
+  - find `$your_username/peps` and enable it.
+
+- Generate a public/private ssh key pair:
+  - `$ ssh-keygen -b 2048 -t rsa -f ssh_pair_ghpages_deploy_peps -q -N ""`
+
+- head to `https://travis-ci.org/$your_user_name/peps/settings` and add a hidden environment variable with:
+  - the name `DEPLOY_KEY`
+  - the content of `$ cat ssh_pair_ghpages_deploy_peps | base64`
+
+- head to `https://github.com/$your_user_name/peps/settings/keys`
+  and add a deploy key with the content of `$ cat ssh_pair_ghpages_deploy_peps.pub`
+
+
+Now every time you push on `$your_username/peps`, a build of the current branch
+should be available after a few minutes at
+https://yourusername.github.io/peps/${branch-name}/.
+
+
+
