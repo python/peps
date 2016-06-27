@@ -7,18 +7,21 @@ PEP2HTML=pep2html.py
 
 PYTHON=python
 
-.SUFFIXES: .txt .html
+.SUFFIXES: .txt .html .rst
 
 .txt.html:
 	@$(PYTHON) $(PEP2HTML) $<
 
-TARGETS=$(patsubst %.txt,%.html,$(wildcard pep-????.txt)) pep-0000.html
+.rst.html:
+	@$(PYTHON) $(PEP2HTML) $<
+
+TARGETS= $(patsubst %.rst,%.html,$(wildcard pep-????.rst)) $(patsubst %.txt,%.html,$(wildcard pep-????.txt))  pep-0000.html
 
 all: pep-0000.txt $(TARGETS)
 
 $(TARGETS): pep2html.py
 
-pep-0000.txt: $(wildcard pep-????.txt) $(wildcard pep0/*.py)
+pep-0000.txt: $(wildcard pep-????.txt) $(wildcard pep-????.rst) $(wildcard pep0/*.py)
 	$(PYTHON) genpepindex.py .
 
 rss:

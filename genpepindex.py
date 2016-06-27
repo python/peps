@@ -41,7 +41,7 @@ def main(argv):
             abs_file_path = os.path.join(path, file_path)
             if not os.path.isfile(abs_file_path):
                 continue
-            if file_path.startswith("pep-") and file_path.endswith(".txt"):
+            if file_path.startswith("pep-") and file_path.endswith((".txt", "rst")):
                 with codecs.open(abs_file_path, 'r', encoding='UTF-8') as pep_file:
                     try:
                         pep = PEP(pep_file)

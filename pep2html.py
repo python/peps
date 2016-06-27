@@ -31,7 +31,7 @@ Options:
 -h, --help
     Print this help message and exit.
 
-The optional arguments ``peps`` are either pep numbers or .txt files.
+The optional arguments ``peps`` are either pep numbers, .rst or .txt files.
 """
 
 from __future__ import print_function, unicode_literals
@@ -39,7 +39,6 @@ from __future__ import print_function, unicode_literals
 import sys
 import os
 import re
-import cgi
 import glob
 import getopt
 import errno
@@ -75,7 +74,7 @@ to templates.  DO NOT USE THIS HTML FILE AS YOUR TEMPLATE!
 DTD = ('<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN"\n'
        '                      "http://www.w3.org/TR/REC-html40/loose.dtd">')
 
-fixpat = re.compile("((https?|ftp):[-_a-zA-Z0-9/.+~:?#$=&,]+)|(pep-\d+(.txt)?)|"
+fixpat = re.compile("((https?|ftp):[-_a-zA-Z0-9/.+~:?#$=&,]+)|(pep-\d+(.txt|.rst)?)|"
                     "(RFC[- ]?(?P<rfcnum>\d+))|"
                     "(PEP\s+(?P<pepnum>\d+))|"
                     ".")
@@ -367,10 +366,13 @@ def get_input_lines(inpath):
 
 
 def find_pep(pep_str):
-    """Find the .txt file indicated by a cmd line argument"""
+    """Find the .rst or .txt file indicated by a cmd line argument"""
     if os.path.exists(pep_str):
         return pep_str
     num = int(pep_str)
+    rstpath = "pep-%04d.rst" % num
+    if os.path.exists(rstpath):
+        return rstpath
     return "pep-%04d.txt" % num
 
 def make_html(inpath, verbose=0):
@@ -449,7 +451,7 @@ def check_requirements():
         PEP_TYPE_DISPATCH['text/x-rst'] = None
         PEP_TYPE_MESSAGES['text/x-rst'] = (
             'Docutils not present for "%(pep_type)s" PEP file %(inpath)s.  '
-            'See README.txt for installation.')
+            'See README.rst for installation.')
     else:
         installed = [int(part) for part in docutils.__version__.split('.')]
         required = [int(part) for part in REQUIRES['docutils'].split('.')]
@@ -458,7 +460,7 @@ def check_requirements():
             PEP_TYPE_MESSAGES['text/x-rst'] = (
                 'Docutils must be reinstalled for "%%(pep_type)s" PEP '
                 'processing (%%(inpath)s).  Version %s or better required; '
-                '%s present.  See README.txt for installation.'
+                '%s present.  See README.rst for installation.'
                 % (REQUIRES['docutils'], docutils.__version__))
 
 def pep_type_error(inpath, pep_type):
@@ -469,7 +471,7 @@ def pep_type_error(inpath, pep_type):
 def browse_file(pep):
     import webbrowser
     file = find_pep(pep)
-    if file.endswith(".txt"):
+    if file.startswith('pep-') and file.endswith((".txt", '.rst')):
         file = file[:-3] + "html"
     file = os.path.abspath(file)
     url = "file:" + file
@@ -478,7 +480,7 @@ def browse_file(pep):
 def browse_remote(pep):
     import webbrowser
     file = find_pep(pep)
-    if file.endswith(".txt"):
+    if file.startswith('pep-') and file.endswith((".txt", '.rst')):
         file = file[:-3] + "html"
     url = PEPDIRRUL + file
     webbrowser.open(url)
@@ -520,11 +522,11 @@ def main(argv=None):
             browse = 1
 
     if args:
-        peptxt = []
+        pep_list = []
         html = []
         for pep in args:
             file = find_pep(pep)
-            peptxt.append(file)
+            pep_list.append(file)
             newfile = make_html(file, verbose=verbose)
             if newfile:
                 html.append(newfile)
@@ -532,12 +534,12 @@ def main(argv=None):
                     browse_file(pep)
     else:
         # do them all
-        peptxt = []
+        pep_list = []
         html = []
-        files = glob.glob("pep-*.txt")
+        files = glob.glob("pep-*.txt") + glob.glob("pep-*.rst")
         files.sort()
         for file in files:
-            peptxt.append(file)
+            pep_list.append(file)
             newfile = make_html(file, verbose=verbose)
             if newfile:
                 html.append(newfile)
@@ -545,7 +547,7 @@ def main(argv=None):
             browse_file("0")
 
     if update:
-        push_pep(html, peptxt, username, verbose, local=local)
+        push_pep(html, pep_list, username, verbose, local=local)
         if browse:
             if args:
                 for pep in args:
