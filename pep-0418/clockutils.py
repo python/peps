@@ -218,7 +218,7 @@ if os.name == "nt":
     class _NT_GetTickCount64(_Clock):
         ''' Based on
                 http://msdn.microsoft.com/en-us/library/windows/desktop/ms724411%28v=vs.85%29.aspx
-            Note this this specificly disavows high resolution.
+            Note that this specifically disavows high resolution.
         '''
         flags = RUNTIME|MONOTONIC
         resolution = 0.001
