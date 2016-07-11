@@ -83,7 +83,7 @@ class Author(object):
             elif self.first == "Just":
                 self.nick = "JvR"
             else:
-                raise ValueError("unkown van Rossum %r!" % self)
+                raise ValueError("unknown van Rossum %r!" % self)
             self.last_first += " (%s)" % (self.nick,)
         else:
             self.nick = self.last
