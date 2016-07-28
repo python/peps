@@ -1,0 +1,469 @@
+PEP: 524
+Title: Make os.urandom() blocking on Linux
+Version: $Revision$
+Last-Modified: $Date$
+Author: Victor Stinner <victor.stinner@gmail.com>
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 20-June-2016
+Python-Version: 3.6
+
+
+Abstract
+========
+
+Modify ``os.urandom()`` to block on Linux 3.17 and newer until the OS
+urandom is initialized.
+
+
+The bug
+=======
+
+Original bug
+------------
+
+Python 3.5.0 was enhanced to use the new ``getrandom()`` syscall
+introduced in Linux 3.17 and Solaris 11.3. The problem is that users
+started to complain that Python 3.5 blocks at startup on Linux in
+virtual machines and embedded devices: see issues `#25420
+<http://bugs.python.org/issue25420>`_ and `#26839
+<http://bugs.python.org/issue26839>`_.
+
+On Linux, ``getrandom(0)`` blocks until the kernel initialized urandom
+with 128 bits of entropy. The issue #25420 describes a Linux build
+platform blocking at ``import random``. The issue #26839 describes a
+short Python script used to compute a MD5 hash, systemd-cron, script
+called very early in the init process. The system initialization blocks
+on this script which blocks on ``getrandom(0)`` to initialize Python.
+
+The Python initilization requires random bytes to implement a
+counter-measure against the hash denial-of-service (hash DoS), see:
+
+* `Issue #13703: Hash collision security issue
+  <http://bugs.python.org/issue13703>`_
+* `PEP 456: Secure and interchangeable hash algorithm
+  <https://www.python.org/dev/peps/pep-0456/>`_
+
+Importing the ``random`` module creates an instance of
+``random.Random``: ``random._inst``. On Python 3.5, random.Random
+constructor reads 2500 bytes from ``os.urandom()`` to seed a Mersenne
+Twister RNG (random number generator).
+
+Other platforms may be affected by this bug, but in practice, only Linux
+systems use Python scripts to initialize the system.
+
+
+Status in Python 3.5.2
+----------------------
+
+Python 3.5.2 behaves like Python 2.7 and Python 3.4. If the system
+urandom is not initialized, the startup does not block, but
+``os.urandom()`` can return low-quality entropy (even it is not easily
+guessable).
+
+
+Use Cases
+=========
+
+The following use cases are used to help to choose the right compromise
+between security and practicability.
+
+
+Use Case 1: init script
+-----------------------
+
+Use a Python 3 script to initialize the system, like systemd-cron. If
+the script blocks, the system initialize is stuck too.
+
+The issue #26839 is a good example of this use case.
+
+Use case 1.1: No secret needed
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+If the init script doesn't have to generate any secure secret, this use
+case is already handled correctly but Python 3.5.2: Python startup
+doesn't block on system urandom anymore.
+
+Use case 1.2: Secure secret required
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+If the init script has to generate a secure secret, there is no safe
+solution.
+
+Falling back to weak entropy is not acceptable, it would
+reduce the security of the program.
+
+Python cannot produce itself secure entropy, it can only wait until
+system urandom is initialized. But in this use case, the whole system
+initialization is blocked by this script, so the system fails to boot.
+
+The real answer is that the system iniitalization must not be blocked by
+such script. It is ok to start the script very early at system
+initialization, but the script may blocked a few seconds until it is
+able to generate the secret.
+
+Reminder: in some cases, the initialization of the system urandom never
+occurs and so programs waiting for system urandom blocks forever.
+
+
+Use Case 2: Web server
+----------------------
+
+Run a Python 3 web server serving web pages using HTTP and HTTPS
+protocols. The server is started as soon as possible.
+
+The first target of the hash DoS attack was web server: it's important
+that the hash secret cannot be easily guessed by an attacker.
+
+If serving a web page needs a secret to create a cookie, create an
+encryption key, ..., the secret must be created with good entropy:
+again, it must be hard to guess the secret.
+
+A web server requires security. If a choice must be made between
+security and running the server with weak entropy, security is more
+important. If there is no good entropy: the server must block or fail
+with an error.
+
+The question is if it makes sense to start a web server on a host before
+system urandom is initialized.
+
+The issues #25420 and #26839 are restricted to the Python startup, not
+to generate a secret before the system urandom is initialized.
+
+
+Fix system urandom
+==================
+
+Load entropy from disk at boot
+-------------------------------
+
+Collecting entropy can take several minutes. To accelerate the system
+initialization, operating systems store entropy on disk at shutdown, and
+then reload entropy from disk at the boot.
+
+If a system collects enough entropy at least once, the system urandom
+will be initialized quickly, as soon as the entropy is reloaded from
+disk.
+
+
+Virtual machines
+----------------
+
+Virtual machines don't have a direct access to the hardware and so have
+less sources of entropy than bare metal. A solution is to add a
+`virtio-rng device
+<https://fedoraproject.org/wiki/Features/Virtio_RNG>`_ to pass entropy
+from the host to the virtual machine.
+
+
+Embedded devices
+----------------
+
+A solution for embedded devices is to plug an hardware RNG.
+
+For example, Raspberry Pi have an hardware RNG but it's not used by
+default. See: `Hardware RNG on Raspberry Pi
+<http://fios.sector16.net/hardware-rng-on-raspberry-pi/>`_.
+
+
+
+Denial-of-service when reading random
+=====================================
+
+Don't use /dev/random but /dev/urandom
+--------------------------------------
+
+The ``/dev/random`` device should only used for very specific use cases.
+Reading from ``/dev/random`` on Linux is likely to block. Users don't
+like when an application blocks longer than 5 seconds to generate a
+secret. It is only expected for specific cases like generating
+explicitly an encryption key.
+
+When the system has no available entropy, choosing between blocking
+until entropy is available or falling back on lower quality entropy is a
+matter of compromise between security and practicability. The choice
+depends on the use case.
+
+On Linux, ``/dev/urandom`` is secure, it should be used instead of
+``/dev/random``:
+
+* `Myths about /dev/urandom <http://www.2uo.de/myths-about-urandom/>`_
+  by Thomas Hühn: "Fact: /dev/urandom is the preferred source of
+  cryptographic randomness on UNIX-like systems"
+
+
+getrandom(0) can block forever on Linux
+---------------------------------------
+
+The origin of the Python issue #26839 is the `Debian bug
+report #822431
+<https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=822431>`_: in fact,
+``getrandom(0)`` blocks forever on the virtual machine.
+
+`Load entropy from disk at boot`_ reduces the risk of this case.
+
+
+Rationale
+=========
+
+On Linux, reading the ``/dev/urandom`` can return "weak" entropy before
+urandom is fully initialized, before the kernel collected 128 bits of
+entropy. Linux 3.17 adds a new ``getrandom()`` syscall which allows to
+block until urandom is initialized.
+
+On Python 3.5.2, os.urandom() uses the ``getrandom(GRND_NONBLOCK)``, but
+falls back on reading the non-blocking ``/dev/urandom`` if
+``getrandom(GRND_NONBLOCK)`` fails with ``EAGAIN``.
+
+Security experts promotes ``os.urandom()`` to genereate cryptographic
+keys. By the way, ``os.urandom()`` is preferred over
+``ssl.RAND_bytes()`` for different reasons.
+
+This PEP proposes to modify os.urandom() to use ``getrandom()`` in
+blocking mode to not return weak entropy, but also ensure that Python
+will not block at startup.
+
+
+Changes
+=======
+
+All changes described in this section are specific to the Linux
+platform.
+
+* Initialize hash secret from non-blocking system urandom
+* Initialize ``random._inst`` with non-blocking system urandom
+* Modify os.urandom() to block (until system urandom is initialized)
+
+A new ``_PyOS_URandom_Nonblocking()`` private method is added: try to
+call ``getrandom(GRND_NONBLOCK)``, but falls back on reading
+``/dev/urandom`` if it fails with ``EAGAIN``.
+
+``_PyRandom_Init()`` is modified to call
+``_PyOS_URandom_Nonblocking()``.  Moreover, a new ``random_inst_seed``
+field is added to the ``_Py_HashSecret_t`` structure.
+
+``random._inst`` (an instance of ``random.Random``) is initialized with
+the new ``random_inst_seed`` secret. A ("fuse") flag is used to ensure
+that this secret is only used once.
+
+If a second instance of random.Random is created, blocking
+``os.urandom()`` is used.
+
+``os.urandom()`` (C function ``_PyOS_URandom()``) is modified to always
+call ``getrandom(0)`` (blocking mode).
+
+
+
+Alternative
+===========
+
+Never use blocking urandom in the random module
+-----------------------------------------------
+
+The random module can use ``random_inst_seed`` as a seed, but add other
+sources of entropy like the process identifier (``os.getpid()``), the
+current time (``time.time()``), memory addresses, etc.
+
+Reading 2500 bytes from os.urandom() to initialize the Mersenne Twister
+RNG in random.Random is a deliberate choice to get access to the full
+range of the RNG. This PEP is a compromise between "security" and
+"feature". Python should not block at startup before the OS collected
+enough entropy. But on the regular use case (system urandom
+iniitalized), the random module should continue to its code to
+initialize the seed.
+
+Python 3.5.0 was blocked on ``import random``, not on building a second
+instance of ``random.Random``.
+
+
+Leave os.urandom() unchanged, add os.getrandom()
+------------------------------------------------
+
+os.urandom() remains unchanged: never block, but it can return weak
+entropy if system urandom is not initialized yet.
+
+A new ``os.getrandom()`` function is added: thin wrapper to the
+``getrandom()`` syscall.
+
+The ``secrets.token_bytes()`` function should be used to write portable
+code.
+
+The problem with this change is that it expects that users understand
+well security and know well each platforms. Python has the tradition of
+hiding "implementation details". For example, ``os.urandom()`` is not a
+thin wrapper to the ``/dev/urandom`` device: it uses
+``CryptGenRandom()`` on Windows, it uses ``getentropy()`` on OpenBSD, it
+tries ``getrandom()`` on Linux and Solaris or falls back on reading
+``/dev/urandom``. Python already uses the best available system RNG
+depending on the platform.
+
+This PEP does not change the API which didn't change since the creation
+of Python:
+
+* ``os.urandom()``, ``random.SystemRandom`` and ``secrets`` for security
+* ``random`` module (except ``random.SystemRandom``) for all other usages
+
+
+Raise BlockingIOError in os.urandom()
+-------------------------------------
+
+Proposition
+^^^^^^^^^^^
+
+`PEP 522: Allow BlockingIOError in security sensitive APIs on Linux
+<https://www.python.org/dev/peps/pep-0522/>`_.
+
+Python should not decide for the developer how to handle `The bug`_:
+raising immediatly a ``BlockingIOError`` if ``os.urandom()`` is going to
+block allows developers to choose how to handle this case:
+
+* catch the exception and falls back to a non-secure entropy source:
+  read ``/dev/urandom`` on Linux, use the Python ``random`` module
+  (which is not secure at all), use time, use process identifier, etc.
+* don't catch the error, the whole program fails with this fatal
+  exception
+
+More generally, the exception helps to notify when sometimes goes wrong.
+The application can emit a warning when it starts to wait for
+``os.urandom()``.
+
+Criticism
+^^^^^^^^^
+
+For the use case 2 (web server), falling back on non-secure entropy is
+not acceptable. The application must handle ``BlockingIOError``: poll
+``os.urandom()`` until it completes. Example::
+
+    def secret(n=16):
+        try:
+            return os.urandom(n)
+        except BlockingIOError:
+            pass
+
+        print("Wait for system urandom initialiation: move your "
+              "mouse, use your keyboard, use your disk, ...")
+        while 1:
+            # Avoid busy-loop: sleep 1 ms
+            time.sleep(0.001)
+            try:
+                return os.urandom(n)
+            except BlockingIOError:
+                pass
+
+For correctness, all applications which must generate a secure secret
+must be modified to handle ``BlockingIOError`` even if `The bug`_ is
+unlikely.
+
+The case of applications using ``os.random()`` but don't really require
+security is less clear. Maybe these applications should not use
+``os.urandom()`` at the first place, but always the non-blocking
+``random`` module. If ``os.urandom()`` is used for security, we are back
+to the use case 2 (web server) described above. If a developer doesn't
+want to drop ``os.urandom()``, the code should be modified. Example::
+
+    def almost_secret(n=16):
+        try:
+            return os.urandom(n)
+        except BlockingIOError:
+            return [random.randrange(256) for index in range(n)]
+
+The question is if `The bug`_ is common enough to require that so many
+applications have to be modified.
+
+Another simpler choice is to refuse to start before the system urandom
+is initialized::
+
+    def secret(n=16):
+        try:
+            return os.urandom(n)
+        except BlockingIOError:
+            print("Fatal error: the system urandom is not initialized")
+            print("Wait a bit, and rerun the program later.")
+            sys.exit(1)
+
+Compared to Python 2.7, Python 3.4 and Python 3.5.2 where os.urandom()
+never blocks nor raise an exception on Linux, such behaviour change can
+be seen as a major regression.
+
+
+Add an optional block parameter to os.urandom()
+-----------------------------------------------
+
+Add an optional block parameter to os.urandom(). The default value may
+be ``True`` (block by default) or ``False`` (non-blocking).
+
+The first technical issue is to implement ``os.urandom(block=False)`` on
+all platforms. On Linux 3.17 and newer has a well defined non-blocking
+API.
+
+See the `issue #27250: Add os.urandom_block()
+<http://bugs.python.org/issue27250>`_.
+
+As `Raise BlockingIOError in os.urandom()`_, it doesn't seem worth it to
+make the API more complex for a theorical (or at least very rare) use
+case.
+
+As `Leave os.urandom() unchanged, add os.getrandom()`_, the problem is
+that it makes the API more complex and so more error-prone.
+
+
+
+
+
+Annexes
+=======
+
+Operating system random functions
+---------------------------------
+
+``os.urandom()`` uses the following functions:
+
+* `OpenBSD: getentropy()
+  <http://man.openbsd.org/OpenBSD-current/man2/getentropy.2>`_
+  (OpenBSD 5.6)
+* `Linux: getrandom()
+  <http://man7.org/linux/man-pages/man2/getrandom.2.html>`_ (Linux 3.17)
+  -- see also `A system call for random numbers: getrandom()
+  <https://lwn.net/Articles/606141/>`_
+* Solaris: `getentropy()
+  <https://docs.oracle.com/cd/E53394_01/html/E54765/getentropy-2.html#scrolltoc>`_,
+  `getrandom()
+  <https://docs.oracle.com/cd/E53394_01/html/E54765/getrandom-2.html>`_
+  (both need Solaris 11.3)
+* Windows: `CryptGenRandom()
+  <https://msdn.microsoft.com/en-us/library/windows/desktop/aa379942%28v=vs.85%29.aspx>`_
+  (Windows XP)
+* UNIX, BSD: /dev/urandom, /dev/random
+* OpenBSD: /dev/srandom
+
+On Linux, commands to get the status of ``/dev/random`` (results are
+number of bytes)::
+
+    $ cat /proc/sys/kernel/random/entropy_avail
+    2850
+    $ cat /proc/sys/kernel/random/poolsize
+    4096
+
+Why using os.urandom()?
+-----------------------
+
+Since ``os.urandom()`` is implemented in the kernel, it doesn't have
+some issues of user-space RNG. For example, it is much harder to get its
+state. It is usually built on a CSPRNG, so even if its state is get, it
+is hard to compute previously generated numbers. The kernel has a good
+knowledge of entropy sources and feed regulary the entropy pool.
+
+
+Links
+=====
+
+* `Cryptographically secure pseudo-random number generator (CSPRNG)
+  <https://en.wikipedia.org/wiki/Cryptographically_secure_pseudorandom_number_generator>`_
+
+
+Copyright
+=========
+
+This document has been placed in the public domain.
+
