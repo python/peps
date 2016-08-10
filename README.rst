@@ -1,6 +1,9 @@
 Python Enhancement Proposals
 ============================
 
+.. image:: https://travis-ci.org/python/peps.svg?branch=master
+    :target: https://travis-ci.org/python/peps
+
 The PEPs in this repo are published automatically on the web at
 http://www.python.org/dev/peps/.  To learn more about the purpose of
 PEPs and how to go about writing a PEP, please start reading at PEP 1
