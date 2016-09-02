@@ -1,0 +1,293 @@
+PEP: 529
+Title: Change Windows filesystem encoding to UTF-8
+Version: $Revision$
+Last-Modified: $Date$
+Author: Steve Dower <steve.dower@python.org>
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 27-Aug-2016
+Post-History: 01-Sep-2016
+
+Abstract
+========
+
+Historically, Python uses the ANSI APIs for interacting with the Windows
+operating system, often via C Runtime functions. However, these have been long
+discouraged in favor of the UTF-16 APIs. Within the operating system, all text
+is represented as UTF-16, and the ANSI APIs perform encoding and decoding using
+the active code page.
+
+This PEP proposes changing the default filesystem encoding on Windows to utf-8,
+and changing all filesystem functions to use the Unicode APIs for filesystem
+paths. This will not affect code that uses strings to represent paths, however
+those that use bytes for paths will now be able to correctly round-trip all
+valid paths in Windows filesystems. Currently, the conversions between Unicode
+(in the OS) and bytes (in Python) were lossy and would fail to round-trip
+characters outside of the user's active code page.
+
+Notably, this does not impact the encoding of the contents of files. These will
+continue to default to locale.getpreferredencoding (for text files) or plain
+bytes (for binary files). This only affects the encoding used when users pass a
+bytes object to Python where it is then passed to the operating system as a path
+name.
+
+Background
+==========
+
+File system paths are almost universally represented as text with an encoding
+determined by the file system. In Python, we expose these paths via a number of
+interfaces, such as the ``os`` and ``io`` modules. Paths may be passed either
+direction across these interfaces, that is, from the filesystem to the
+application (for example, ``os.listdir()``), or from the application to the
+filesystem (for example, ``os.unlink()``).
+
+When paths are passed between the filesystem and the application, they are
+either passed through as a bytes blob or converted to/from str using
+``os.fsencode()`` or ``sys.getfilesystemencoding()``. The result of encoding a
+string with ``sys.getfilesystemencoding()`` is a blob of bytes in the native
+format for the default file system.
+
+On Windows, the native format for the filesystem is utf-16-le. The recommended
+platform APIs for accessing the filesystem all accept and return text encoded in
+this format. However, prior to Windows NT (and possibly further back), the
+native format was a configurable machine option and a separate set of APIs
+existed to accept this format. The option (the "active code page") and these
+APIs (the "\*A functions") still exist in recent versions of Windows for
+backwards compatibility, though new functionality often only has a utf-16-le API
+(the "\*W functions").
+
+In Python, str is recommended because it can correctly round-trip all characters
+used in paths (on POSIX with surrogateescape handling; on Windows because str
+maps to the native representation). On Windows bytes cannot round-trip all
+characters used in paths, as Python internally uses the \*A functions and hence
+the encoding is "whatever the active code page is". Since the active code page
+cannot represent all Unicode characters, the conversion of a path into bytes can
+lose information without warning or any available indication.
+
+As a demonstration of this::
+    >>> open('test\uAB00.txt', 'wb').close()
+    >>> import glob
+    >>> glob.glob('test*')
+    ['test\uab00.txt']
+    >>> glob.glob(b'test*')
+    [b'test?.txt']
+
+The Unicode character in the second call to glob has been replaced by a '?',
+which means passing the path back into the filesystem will result in a
+``FileNotFoundError``. The same results may be observed with ``os.listdir()`` or
+any function that matches the return type to the parameter type.
+
+While one user-accessible fix is to use str everywhere, POSIX systems generally
+do not suffer from data loss when using bytes exclusively as the bytes are the
+canonical representation. Even if the encoding is "incorrect" by some standard,
+the file system will still map the bytes back to the file. Making use of this
+avoids the cost of decoding and reencoding, such that (theoretically, and only
+on POSIX), code such as this may be faster because of the use of `b'.'` compared
+to using `'.'`::
+
+    >>> for f in os.listdir(b'.'):
+    ... os.stat(f)
+    ...
+
+As a result, POSIX-focused library authors prefer to use bytes to represent
+paths. For some authors it is also a convenience, as their code may receive
+bytes already known to be encoded correctly, while others are attempting to
+simplify porting their code from Python 2. However, the correctness assumptions
+do not carry over to Windows where Unicode is the canonical representation, and
+errors may result. This potential data loss is why the use of bytes paths on
+Windows was deprecated in Python 3.3 - all of the above code snippets produce
+deprecation warnings on Windows.
+
+Proposal
+========
+
+Currently the default filesystem encoding is 'mbcs', which is a meta-encoder
+that uses the active code page. However, when bytes are passed to the filesystem
+they go through the \*A APIs and the operating system handles encoding. In this
+case, paths are always encoded using the equivalent of 'mbcs:replace' - we have
+no ability to change this (though there is a user/machine configuration option
+to change the encoding from CP_ACP to CP_OEM, so it won't necessarily always
+match mbcs...)
+
+This proposal would remove all use of the \*A APIs and only ever call the \*W
+APIs. When Windows returns paths to Python as str, they will be decoded from
+utf-16-le and returned as text (in whatever the minimal representation is). When
+Windows returns paths to Python as bytes, they will be decoded from utf-16-le to
+utf-8 using surrogatepass (Windows does not validate surrogate pairs, so it is
+possible to have invalid surrogates in filenames). Equally, when paths are
+provided as bytes, they are decoded from utf-8 into utf-16-le and passed to the
+\*W APIs.
+
+The use of utf-8 will not be configurable, with the possible exception of a
+"legacy mode" environment variable or X-flag.
+
+surrogateescape does not apply here, as the concern is not about retaining
+non-sensical bytes. Any path returned from the operating system will be valid
+Unicode, while bytes paths created by the user may raise a decoding error
+(currently these would raise ``OSError`` or a subclass).
+
+The choice of utf-8 bytes (as opposed to utf-16-le bytes) is to ensure the
+ability to round-trip without breaking the functionality of the ``os.path``
+module, which assumes an ASCII-compatible encoding. Using utf-16-le as the
+encoding is more pure, but will cause more issues than are resolved.
+
+This change would also undeprecate the use of bytes paths on Windows. No change
+to the semantics of using bytes as a path is required - as before, they must be
+encoded with the encoding specified by ``sys.getfilesystemencoding()``.
+
+Specific Changes
+================
+
+Update sys.getfilesystemencoding
+--------------------------------
+
+Remove the default value for ``Py_FileSystemDefaultEncoding`` and set it in
+``initfsencoding()`` to utf-8, or if the legacy-mode switch is enabled to mbcs.
+
+Update the implementations of ``PyUnicode_DecodeFSDefaultAndSize`` and
+``PyUnicode_EncodeFSDefault`` to use the standard utf-8 codec with surrogatepass
+error mode, or if the legacy-mode switch is enabled the code page codec with
+replace error mode.
+
+Update path_converter
+---------------------
+
+Update the path converter to always decode bytes or buffer objects into text
+using ``PyUnicode_DecodeFSDefaultAndSize``.
+
+Change the ``narrow`` field from a ``char*`` string into a flag that indicates
+whether the original object was bytes. This is required for functions that need
+to return paths using the same type as was originally provided.
+
+Remove unused ANSI code
+-----------------------
+
+Remove all code paths using the ``narrow`` field, as these will no longer be
+reachable by any caller. These are only used within ``posixmodule.c``. Other
+uses of paths should have use of bytes paths replaced with decoding and use of
+the \*W APIs.
+
+Add legacy mode
+---------------
+
+Add a legacy mode flag, enabled by the environment variable
+``PYTHONLEGACYWINDOWSFSENCODING``. When this flag is set, the default filesystem
+encoding is set to mbcs rather than utf-8, and the error mode is set to
+'replace' rather than 'strict'. The ``path_converter`` will continue to decode
+to wide characters and only \*W APIs will be called, however, the bytes passed in
+and received from Python will be encoded the same as prior to this change.
+
+Undeprecate bytes paths on Windows
+----------------------------------
+
+Using bytes as paths on Windows is currently deprecated. We would announce that
+this is no longer the case, and that paths when encoded as bytes should use
+whatever is returned from ``sys.getfilesystemencoding()`` rather than the user's
+active code page.
+
+
+Rejected Alternatives
+=====================
+
+Use strict mbcs decoding
+------------------------
+
+This is essentially the same as the proposed change, but instead of changing
+``sys.getfilesystemencoding()`` to utf-8 it is changed to mbcs (which
+dynamically maps to the active code page).
+
+This approach allows the use of new functionality that is only available as \*W
+APIs and also detection of encoding/decoding errors. For example, rather than
+silently replacing Unicode characters with '?', it would be possible to warn or
+fail the operation.
+
+Compared to the proposed fix, this could enable some new functionality but does
+not fix any of the problems described initially. New runtime errors may cause
+some problems to be more obvious and lead to fixes, provided library maintainers
+are interested in supporting Windows and adding a separate code path to treat
+filesystem paths as strings.
+
+Making the encoding mbcs without strict errors is equivalent to the legacy-mode
+switch being enabled by default. This is a possible course of action if there is
+significant breakage of actual code and a need to extend the deprecation period,
+but still a desire to have the simplifications to the CPython source.
+
+Make bytes paths an error on Windows
+------------------------------------
+
+By preventing the use of bytes paths on Windows completely we prevent users from
+hitting encoding issues.
+
+However, the motivation for this PEP is to increase the likelihood that code
+written on POSIX will also work correctly on Windows. This alternative would
+move the other direction and make such code completely incompatible. As this
+does not benefit users in any way, we reject it.
+
+Make bytes paths an error on all platforms
+------------------------------------------
+
+By deprecating and then disable the use of bytes paths on all platforms we
+prevent users from hitting encoding issues regardless of where the code was
+originally written. This would require a full deprecation cycle, as there are
+currently no warnings on platforms other than Windows.
+
+This is likely to be seen as a hostile action against Python developers in
+general, and as such is rejected at this time.
+
+Code that may break
+===================
+
+The following code patterns may break or see different behaviour as a result of
+this change.
+
+Note that all of these examples produce deprecation warnings on Python 3.3 and
+later.
+
+Not managing encodings across boundaries
+----------------------------------------
+
+Code that does not manage encodings when crossing protocol boundaries may
+currently be working by chance, but could encounter issues when either encoding
+changes. For example::
+
+    filename = open('filename_in_mbcs.txt', 'rb').read()
+    text = open(filename, 'r').read()
+
+To correct this code, the encoding of the bytes in ``filename`` should be
+specified, either when reading from the file or before using the value::
+
+    # Fix 1: Open file as text
+    filename = open('filename_in_mbcs.txt', 'r', encoding='mbcs').read()
+    text = open(filename, 'r').read()
+
+    # Fix 2: Decode path
+    filename = open('filename_in_mbcs.txt', 'rb').read()
+    text = open(filename.decode('mbcs'), 'r').read()
+
+
+Explicitly using 'mbcs'
+-----------------------
+
+Code that explicitly encodes text using 'mbcs' before passing to file system
+APIs. For example::
+
+    filename = open('files.txt', 'r').readline()
+    text = open(filename.encode('mbcs'), 'r')
+
+To correct this code, the string should be passed without explicit encoding, or
+should use ``os.fsencode()``::
+
+    # Fix 1: Do not encode the string
+    filename = open('files.txt', 'r').readline()
+    text = open(filename, 'r')
+
+    # Fix 2: Use correct encoding
+    filename = open('files.txt', 'r').readline()
+    text = open(os.fsencode(filename), 'r')
+
+
+Copyright
+=========
+
+This document has been placed in the public domain.
