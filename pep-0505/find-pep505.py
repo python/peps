@@ -402,7 +402,10 @@ def main():
 
     for file_ in sys.argv[1:]:
         with open(file_) as source:
-            tree = ast.parse(source.read(), filename=file_)
+            try:
+                tree = ast.parse(source.read(), filename=file_)
+            except SyntaxError:
+                continue
 
             NoneCoalesceIfBlockVisitor(file_, nci_callback).visit(tree)
             NoneCoalesceOrVisitor(file_, nco_callback).visit(tree)
