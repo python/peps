@@ -51,9 +51,11 @@ well-defined phases during the initialization sequence:
 As a concrete use case to help guide any design changes, and to solve a known
 problem where the appropriate defaults for system utilities differ from those
 for running user scripts, this PEP also proposes the creation and
-distribution of a separate system Python (``pysystem``) executable
+distribution of a separate system Python (``system-python``) executable
 which, by default, operates in "isolated mode" (as selected by the CPython
-``-I`` switch).
+``-I`` switch), as well as the creation of an example stub binary that just
+runs an appended zip archive (permitting single-file pure Python executables)
+rather than going through the normal CPython startup sequence.
 
 To keep the implementation complexity under control, this PEP does *not*
 propose wholesale changes to the way the interpreter state is accessed at
@@ -148,12 +150,12 @@ tear down the interpreter::
 
    python3 -m timeit -s "from subprocess import call" "call(['./python', '-c', 'pass'])"
 
-Current numbers on my system for Python 3.5 (using the 3.4
+Current numbers on my system for Python 3.6 (using the 3.5
 subprocess and timeit modules to execute the check, all with non-debug
 builds)::
 
     $ python3 -m timeit -s "from subprocess import call" "call(['./python', '-c', 'pass'])"
-    10 loops, best of 3: 18.2 msec per loop
+    100 loops, best of 3: 15.1 msec per loop
 
 This PEP is not expected to have any significant effect on the startup time,
 as it is aimed primarily at *reordering* the existing initialization
@@ -196,7 +198,7 @@ be able to control the following aspects of the final interpreter state:
   * ``os.fsencode``
   * ``os.fsdecode``
 
-* The IO encoding (if any) and the buffering used by:
+* The IO encoding (if any), error handling, and buffering used by:
 
   * ``sys.stdin``
   * ``sys.stdout``
@@ -224,11 +226,11 @@ be able to control the following aspects of the final interpreter state:
   * ``debug`` (Enable debugging output in the pgen parser)
   * ``inspect`` (Enter interactive interpreter after __main__ terminates)
   * ``interactive`` (Treat stdin as a tty)
-  * ``optimize`` (__debug__ status, write .pyc or .pyo, strip doc strings)
+  * ``optimize`` (__debug__ status, .pyc optimization marker, strip doc strings)
   * ``no_user_site`` (don't add the user site directory to sys.path)
   * ``no_site`` (don't implicitly import site during startup)
   * ``ignore_environment`` (whether environment vars are used during config)
-  * ``verbose`` (enable all sorts of random output)
+  * ``verbose`` (enable a variety of additional debugging messages)
   * ``bytes_warning`` (warnings/errors for implicit str/bytes interaction)
   * ``quiet`` (disable banner output even if verbose is also enabled or
     stdin is a tty and the interpreter is launched in interactive mode)
@@ -281,7 +283,7 @@ The affected APIs with a leading underscore, as they would be named in CPython
 * ``_Py_ReadHashSeed``
 * ``_Py_InitializeMainInterpreter``
 * ``_PyMainInterpreterConfig``
-* ``_PyMainInterpreterConfig_INIT``
+* ``_PyInterpreterConfig``
 * ``_Py_ReadMainInterpreterConfig``
 * ``_PyRun_PrepareMain``
 * ``_PyRun_ExecMain``
@@ -365,7 +367,7 @@ over the initialization process::
 
     /* Phase 1: Pre-Initialization */
     PyCoreConfig core_config = PyCoreConfig_INIT;
-    PyMainInterpreterConfig config = PyMainInterpreterConfig_INIT;
+    PyMainInterpreterConfig config;
     /* Easily control the core configuration */
     core_config.ignore_environment = 1; /* Ignore environment variables */
     core_config.use_hash_seed = 0;      /* Full hash randomisation */
@@ -424,7 +426,11 @@ configuration of the core runtime and creation of the main interpreter::
         int _disable_importlib;   /* Needed by freeze_importlib */
     } PyCoreConfig;
 
-    #define PyCoreConfig_INIT {0, -1, 0, 0}
+    #define PyCoreConfig_INIT {.use_hash_seed=-1}
+    /* The above assumes PEP 7 is updated to permit use of C99 features
+     * Without designated initialisers, the macro would be:
+     * #define PyCoreConfig_INIT {0, -1, 0, 0}
+     */
 
 The core configuration settings pointer may be ``NULL``, in which case the
 default values are ``ignore_environment = -1`` and ``use_hash_seed = -1``.
@@ -491,7 +497,7 @@ completion of the bulk of the initialization process::
     int Py_IsCoreInitialized();
 
 Attempting to call ``Py_InitializeCore()`` again when
-``Py_IsCoreInitialized()`` is true is a fatal error.
+``Py_IsCoreInitialized()`` is already true is a fatal error.
 
 As frozen bytecode may now be legitimately run in an interpreter which is not
 yet fully initialized, ``sys.flags`` will gain a new ``initialized`` flag.
@@ -601,8 +607,8 @@ feasibly be made interpreter specific over the course of the implementation.
 
 The ``PyMainInterpreterConfig`` struct holds the settings required to
 complete the main interpreter configuration. These settings are also all
-passed through unmodified to subinterpreters. Fields are either pointers to
-Python data types (not set == ``NULL``) or numeric flags (not set == ``-1``)::
+passed through unmodified to subinterpreters. Fields are always pointers to
+Python data types, with unset values indicated by ``NULL``::
 
     /* Note: if changing anything in PyMainInterpreterConfig, also update
      * PyMainInterpreterConfig_INIT */
@@ -622,36 +628,36 @@ Python data types (not set == ``NULL``) or numeric flags (not set == ``-1``)::
         PyUnicodeObject *base_exec_prefix; /* pyvenv.cfg */
 
         /* Site module */
-        int enable_site_config;  /* -S switch (inverted) */
-        int no_user_site;        /* -s switch, PYTHONNOUSERSITE */
+        PyBoolObject *enable_site_config;  /* -S switch (inverted) */
+        PyBoolObject *no_user_site;        /* -s switch, PYTHONNOUSERSITE */
 
         /* Import configuration */
-        int dont_write_bytecode;        /* -B switch, PYTHONDONTWRITEBYTECODE */
-        int ignore_module_case;         /* PYTHONCASEOK */
-        PyListObject    *import_path;   /* PYTHONPATH (etc) */
+        PyBoolObject *dont_write_bytecode; /* -B switch, PYTHONDONTWRITEBYTECODE */
+        PyBoolObject *ignore_module_case;  /* PYTHONCASEOK */
+        PyListObject *import_path;        /* PYTHONPATH (etc) */
 
         /* Standard streams */
-        int use_unbuffered_io;            /* -u switch, PYTHONUNBUFFEREDIO */
-        PyUnicodeObject *stdin_encoding;  /* PYTHONIOENCODING */
-        PyUnicodeObject *stdin_errors;    /* PYTHONIOENCODING */
-        PyUnicodeObject *stdout_encoding; /* PYTHONIOENCODING */
-        PyUnicodeObject *stdout_errors;   /* PYTHONIOENCODING */
-        PyUnicodeObject *stderr_encoding; /* PYTHONIOENCODING */
-        PyUnicodeObject *stderr_errors;   /* PYTHONIOENCODING */
+        PyBoolObject    *use_unbuffered_io; /* -u switch, PYTHONUNBUFFEREDIO */
+        PyUnicodeObject *stdin_encoding;    /* PYTHONIOENCODING */
+        PyUnicodeObject *stdin_errors;      /* PYTHONIOENCODING */
+        PyUnicodeObject *stdout_encoding;   /* PYTHONIOENCODING */
+        PyUnicodeObject *stdout_errors;     /* PYTHONIOENCODING */
+        PyUnicodeObject *stderr_encoding;   /* PYTHONIOENCODING */
+        PyUnicodeObject *stderr_errors;     /* PYTHONIOENCODING */
 
         /* Filesystem access */
         PyUnicodeObject *fs_encoding;
 
         /* Debugging output */
-        int debug_parser;    /* -d switch, PYTHONDEBUG */
-        int verbosity;       /* -v switch */
+        PyBoolObject *debug_parser;    /* -d switch, PYTHONDEBUG */
+        PyLongObject *verbosity;       /* -v switch */
 
         /* Code generation */
-        int bytes_warnings;  /* -b switch */
-        int optimize;        /* -O switch */
+        PyLongObject *bytes_warnings;  /* -b switch */
+        PyLongObject *optimize;        /* -O switch */
 
         /* Signal handling */
-        int install_signal_handlers;
+        PyBoolObject *install_signal_handlers;
 
         /* Implicit execution */
         PyUnicodeObject *startup_file;  /* PYTHONSTARTUP */
@@ -662,47 +668,25 @@ Python data types (not set == ``NULL``) or numeric flags (not set == ``-1``)::
          * be set before calling PyRun_PrepareMain (Py_ReadMainInterpreterConfig
          * will set one of them based on the command line arguments if
          * prepare_main is non-zero when that API is called).
-        int prepare_main;
+        PyBoolObject    *prepare_main;
         PyUnicodeObject *main_source; /* -c switch */
         PyUnicodeObject *main_path;   /* filesystem path */
         PyUnicodeObject *main_module; /* -m switch */
         PyCodeObject    *main_code;   /* Run directly from a code object */
         PyObject        *main_stream; /* Run from stream */
-        int run_implicit_code;        /* Run implicit code during prep */
+        PyBoolObject    *run_implicit_code; /* Run implicit code during prep */
 
         /* Interactive main
          *
          * Note: Settings related to interactive mode are very much in flux.
          */
         PyObject *prompt_stream;      /* Output interactive prompt */
-        int show_banner;              /* -q switch (inverted) */
-        int inspect_main;             /* -i switch, PYTHONINSPECT */
+        PyBoolObject *show_banner;    /* -q switch (inverted) */
+        PyBoolObject *inspect_main;   /* -i switch, PYTHONINSPECT */
 
     } PyMainInterpreterConfig;
 
-
-    /* Struct initialization is pretty horrible in C89. Avoiding this mess would
-     * be the most attractive aspect of using a PyDictObject* instead... */
-    #define _PyArgConfig_INIT  NULL, NULL, NULL, NULL
-    #define _PyLocationConfig_INIT  NULL, NULL, NULL, NULL, NULL, NULL
-    #define _PySiteConfig_INIT  -1, -1
-    #define _PyImportConfig_INIT  -1, -1, NULL
-    #define _PyStreamConfig_INIT  -1, NULL, NULL, NULL, NULL, NULL, NULL
-    #define _PyFilesystemConfig_INIT  NULL
-    #define _PyDebuggingConfig_INIT  -1, -1, -1
-    #define _PyCodeGenConfig_INIT  -1, -1
-    #define _PySignalConfig_INIT  -1
-    #define _PyImplicitConfig_INIT  NULL
-    #define _PyMainConfig_INIT  -1, NULL, NULL, NULL, NULL, NULL, -1
-    #define _PyInteractiveConfig_INIT  NULL, -1, -1
-
-    #define PyMainInterpreterConfig_INIT {
-                           _PyArgConfig_INIT, _PyLocationConfig_INIT,
-                           _PySiteConfig_INIT, _PyImportConfig_INIT,
-                           _PyStreamConfig_INIT, _PyFilesystemConfig_INIT,
-                           _PyDebuggingConfig_INIT, _PyCodeGenConfig_INIT,
-                           _PySignalConfig_INIT, _PyImplicitConfig_INIT,
-                           _PyMainConfig_INIT, _PyInteractiveConfig_INIT}
+    /* Storing all state as Python object pointers */
 
 The ``PyInterpreterConfig`` struct holds the settings that may vary between
 the main interpreter and subinterpreters. For the main interpreter, these
@@ -713,10 +697,8 @@ settings are automatically populated by ``Py_InitializeMainInterpreter()``.
     /* Note: if changing anything in PyInterpreterConfig, also update
      * PyInterpreterConfig_INIT */
     typedef struct {
-        int is_main_interpreter;    /* Easily check for subinterpreters */
+        PyBoolObject *is_main_interpreter;    /* Easily check for subinterpreters */
     } PyInterpreterConfig;
-
-    #define PyInterpreterConfig_INIT {0}
 
 <TBD: did I miss anything?>
 
