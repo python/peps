@@ -14,12 +14,12 @@ now automatically generated, and not committed to the repo.
 reStructuredText for PEPs
 =========================
 
-Original PEP source may be written using two standard formats, a
-mildly idiomatic plaintext format and the reStructuredText format
-(also, technically plaintext).  These two formats are described in
-PEP 9 and PEP 12 respectively.  The ``pep2html.py`` processing and
-installation script knows how to produce the HTML for either PEP
-format.
+Original PEP source should be written in reStructuredText format,
+which is a constrained version of plaintext, and is described in 
+PEP 12.  Older PEPs were often written in a more mildly restricted
+plaintext format, as described in PEP 9.  The ``pep2html.py`` 
+processing and installation script knows how to produce the HTML 
+for either PEP format.
 
 For processing reStructuredText format PEPs, you need the docutils
 package, which is available from `PyPI <http://pypi.python.org>`_.
