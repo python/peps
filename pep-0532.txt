@@ -1,0 +1,525 @@
+PEP: 532
+Title: Defining a conditional result management protocol
+Version: $Revision$
+Last-Modified: $Date$
+Author: Nick Coghlan <ncoghlan@gmail.com>
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 30-Oct-2016
+Python-Version: 3.7
+
+Abstract
+========
+
+Inspired by PEP 335, PEP 505, PEP 531, and the related discussions, this PEP
+proposes the addition of a new conditional result management protocol to Python
+that allows objects to customise the behaviour of the following expressions:
+
+* ``if-else`` conditional expressions
+* the ``and`` logical conjunction operator
+* the ``or`` logical disjunction operator
+* chained comparisons (which implicitly invoke ``and``)
+
+Each of these expressions is ultimately a variant on the underlying pattern::
+
+    THEN_RESULT if CONDITION else ELSE_RESULT
+
+Currently, the ``CONDITION`` expression can control *which* branch is taken
+(based on whether it evaluates to ``True`` or ``False`` in a boolean context),
+but it can't influence the *result* of taking that branch.
+
+This PEP proposes the addition of two new "conditional result management"
+protocol methods that allow conditional result managers to influence the
+results of each branch directly:
+
+* ``__then__(self, result)``, to alter the result when the condition is ``True``
+* ``__else__(self, result)``, to alter the result when the condition is ``False``
+
+While there are some practical complexities arising from the current handling
+of single-valued arrays in NumPy, this should be sufficient to allow elementwise
+chained comparison operations for matrices, where the result is a matrix of
+boolean values, rather than tautologically returning ``True`` or raising
+``ValueError``.
+
+The PEP further proposes the addition of a new ``if_exists`` builtin that allows
+conditional branching based on whether or not an object is ``None``, but returns
+the original object rather than the existence checking wrapper as the
+result of any conditional expressions. This allows existence checking fallback
+operations (aka null-coalescing operations) to be written as::
+
+    value = if_exists(expr1) or if_exists(expr2) or expr3
+
+and existence checking precondition operations (aka null-propagating
+or null-severing operations) to be written as::
+
+    value = if_exists(obj) and obj.field.of.interest
+    value = if_exists(obj) and obj["field"]["of"]["interest"]
+
+
+Relationship with other PEPs
+============================
+
+This PEP is a direct successor to PEP 531, replacing the existence checking
+protocol and the new ``?then`` and ``?else`` syntactic operators defined there
+with the ability to customise the behaviour of the established ``and`` and
+``or`` operators. The existence checking use case is taken from that PEP.
+
+It is also a direct successor to PEP 335, which proposed the ability to
+overload the ``and`` and ``or`` operators directly, rather than indirectly
+via interpretation as variants of the more general ``if-else`` conditional
+expressions. The discussion of the element-wise comparison use case is
+drawn from Guido's rejection of that PEP.
+
+This PEP competes with a number of aspects of PEP 505, proposing that improved
+support for null-coalescing and null-propagating operations be offered through
+a new protocol and new builtin, rather than through new syntax. It doesn't
+compete specifically with the proposed shorthands for existence checking
+attribute access and subscripting, but instead offers an alternative underlying
+semantic framework for defining them.
+
+
+Specification
+=============
+
+Conditional expressions (``if-else``)
+-------------------------------------
+
+The conditional expression ``THEN_RESULT if CONDITION else ELSE_RESULT`` is
+currently approximately equivalent to the following code::
+
+    if CONDITION:
+        _expr_result = THEN_RESULT
+    else:
+        _expr_result = ELSE_RESULT
+
+The new protocol proposed in this PEP would change that to::
+
+    _condition = CONDITION
+    _condition_type = type(CONDITION)
+    if _condition:
+        _then_result = THEN_RESULT
+        if hasattr(_condition_type, "__then__"):
+            _then_result = _condition_type.__then__(_condition, _then_result)
+        _expr_result = _then_result
+    else:
+        _else_result = ELSE_RESULT
+        if hasattr(_condition_type, "__else__"):
+            _else_result = _condition_type.__else__(_condition, _else_result)
+        _expr_result = _else_result
+
+The key change is that the value determining which branch of the conditional
+expression gets executed *also* gets a chance to postprocess the results of
+the expressions on each of the branches.
+
+Interpreter implementations may check eagerly for the new protocol methods
+on condition objects in order to retain an optimised fast path for the great
+many objects that support use in a boolean context, but don't implement the new
+protocol.
+
+
+Logical conjunction (``and``)
+-----------------------------
+
+Logical conjunction is affected by this proposal as if::
+
+    LHS and RHS
+
+was internally implemented by the interpreter as::
+
+    _lhs_result = LHS
+    _expr_result = RHS if _lhs_result else _lhs_result
+
+Conditional result managers can force non-shortcircuiting evaluation under
+logical conjunction by always returning ``True`` from ``__bool__`` and
+enforce this at runtime by raising ``NotImplementedError`` by raising
+``NotImplementedError`` in ``__else__``.
+
+Alternatively, conditional result managers can detect short-circuited evaluation
+of logical conjunction in ``__else__`` implementations by looking for cases
+where ``self`` and ``result`` are the exact same object.
+
+
+Logical disjunction (``or``)
+-----------------------------
+
+Logical disjunction is affected by this proposal as if::
+
+    LHS or RHS
+
+was internally implemented by the interpreter as::
+
+    _lhs_result = LHS
+    _expr_result = _lhs_result if _lhs_result else RHS
+
+Conditional result managers can force non-shortcircuiting evaluation under
+logical disjunction by always returning ``False`` from ``__bool__`` and
+enforce this at runtime by raising ``NotImplementedError`` by raising
+``NotImplementedError`` in ``__then__``.
+
+Alternatively, conditional result managers can detect short-circuited evaluation
+of logical disjunction in ``__then__`` implementations by looking for cases
+where ``self`` and ``result`` are the exact same object.
+
+
+Chained comparisons
+-------------------
+
+Chained comparisons are affected by this proposal as if::
+
+    LEFT_BOUND left_op EXPR right_op RIGHT_BOUND
+
+was internally implemented by the interpreter as::
+
+    _expr = EXPR
+    _lhs_result = LEFT_BOUND left_op EXPR
+    _expr_result = _lhs_result if _lhs_result else (_expr right_op RIGHT_BOUND)
+
+As with any logical conjunction, conditional result managers returned by
+comparison operations can force non-shortcircuiting evaluating in these
+cases by always returning ``True`` from ``__bool__``.
+
+
+Existence checking comparisons
+------------------------------
+
+A new builtin implementing the new protocol is proposed to encapsulate the
+notion of "existence checking": seeing if a value is ``None`` and either
+falling back to an alternative value (an operation known as "None-coalescing")
+or passing it through as the result of the overall expression (an operation
+known as "None-severing" or "None-propagating").
+
+This builtin would be defined as follows::
+
+    class if_exists:
+        def __init__(self, value):
+            self.value = value
+        def __bool__(self):
+            return self.value is not None
+        def __then__(self, result):
+            if result is self:
+                return result.value
+            return result
+        def __else__(self, result):
+            if result is self:
+                return result.value
+            return result
+
+Aside from changing the definition of ``__bool__`` to be based on
+``is not None`` rather than normal truth checking, the key characteristic of
+``if_exists`` is that when it is used as a conditional result manager, it is
+*ephemeral*: when it detects that short circuiting has taken place, it returns
+the original value, rather than the existence checking wrapper.
+
+
+Other conditional constructs
+----------------------------
+
+No changes are proposed to if statements, while statements, comprehensions, or
+generator expressions, as the boolean clauses they contain are purely used for
+control flow purposes and don't have programmatically accessible "results".
+
+(While that could technically be changed through the definition of suitable
+``as`` clauses based on the conditional result management protocol, such
+proposals are outside the scope of this PEP)
+
+
+Rationale
+=========
+
+Avoiding new syntax
+-------------------
+
+Adding new syntax to Python to make particular software design problems easier
+to handle is considered a solution of last resort. As a successor to PEP 335,
+this PEP focuses on making the existing ``and`` and ``or`` operators less rigid
+in their interpretation, rather than on proposing new operators.
+
+
+Element-wise chained comparisons
+--------------------------------
+
+In ultimately rejecting PEP 335, Guido van Rossum noted [1_]:
+
+    The NumPy folks brought up a somewhat separate issue: for them,
+    the most common use case is chained comparisons (e.g. A < B < C).
+
+To understand this obversation, we first need to look at how comparisons work
+with NumPy arrays::
+
+    >>> import numpy as np
+    >>> increasing = np.arange(5)
+    >>> increasing
+    array([0, 1, 2, 3, 4])
+    >>> decreasing = np.arange(4, -1, -1)
+    >>> decreasing
+    array([4, 3, 2, 1, 0])
+    >>> increasing < decreasing
+    array([ True,  True, False, False, False], dtype=bool)
+
+Here we see that NumPy array comparisons are element-wise by default, comparing
+each element in the lefthand array to the corresponding element in the righthand
+array, and producing a matrix of boolean results.
+
+If either side of the comparison is a scalar value, then it is broadcast across
+the array and compared to each individual element::
+
+    >>> 0 < increasing
+    array([False,  True,  True,  True,  True], dtype=bool)
+    >>> increasing < 4
+    array([ True,  True,  True,  True, False], dtype=bool)
+
+However, this broadcasting idiom breaks down if we attempt to use chained
+comparisons::
+
+    >>> 0 < increasing < 4
+    Traceback (most recent call last):
+      File "<stdin>", line 1, in <module>
+    ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+
+The problem is that internally, Python implicitly expands this chained
+comparison into the form::
+
+    >>> 0 < increasing and increasing < 4
+    Traceback (most recent call last):
+      File "<stdin>", line 1, in <module>
+    ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+
+And NumPy only permits implicit coercion to a boolean value for single-element
+arrays where ``a.any()`` and ``a.all()`` can be assured of having the same
+result::
+
+    >>> np.array([False]) and np.array([False])
+    array([False], dtype=bool)
+    >>> np.array([False]) and np.array([True])
+    array([False], dtype=bool)
+    >>> np.array([True]) and np.array([False])
+    array([False], dtype=bool)
+    >>> np.array([True]) and np.array([True])
+    array([ True], dtype=bool)
+
+The proposal in this PEP would allow this situation to be changed by updating
+the definition of element-wise comparison operations in NumPy to return a
+dedicated subclass that both implements the new protocol methods and also
+changes the result array's interpretation in a boolean context to always
+return true and hence avoid Python's default short-circuiting behaviour::
+
+    class ComparisonResultArray(np.ndarray):
+        def __bool__(self):
+            return True
+        def __then__(self, result):
+            if result is self:
+                msg = ("Comparison array truth values are ambiguous outside "
+                       "chained comparisons. Use a.any() or a.all()")
+                raise ValueError(msg)
+            return np.logical_and(self, result.view(ComparisonResultArray))
+        def __else__(self, result):
+            raise NotImplementedError("Comparison result arrays are never False")
+
+With this change, the chained comparison example above would be able to return::
+
+    >>> 0 < increasing < 4
+    ComparisonResultArray([ False,  True,  True,  True, False], dtype=bool)
+
+
+Existence checking expressions
+------------------------------
+
+An increasingly common requirement in modern software development is the need
+to work with "semi-structured data": data where the structure of the data is
+known in advance, but pieces of it may be missing at runtime, and the software
+manipulating that data is expected to degrade gracefully (e.g. by omitting
+results that depend on the missing data) rather than failing outright.
+
+Some particularly common cases where this issue arises are:
+
+* handling optional application configuration settings and function parameters
+* handling external service failures in distributed systems
+* handling data sets that include some partial records
+
+At the moment, writing such software in Python can be genuinely awkward, as
+your code ends up littered with expressions like:
+
+* ``value1 = expr1.field.of.interest if expr1 is not None else None``
+* ``value2 = expr2["field"]["of"]["interest"] if expr2 is not None else None``
+* ``value3 = expr3 if expr3 is not None else expr4 if expr4 is not None else expr5``
+
+PEP 531 goes into more detail on some of the challenges of working with this
+kind of data, particularly in data transformation pipelines where dealing with
+potentially missing content is the norm rather than the exception.
+
+The combined impact of the proposals in this PEP is to allow the above sample
+expressions to instead be written as:
+
+* ``value1 = if_exists(expr1) and expr1.field.of.interest``
+* ``value2 = if_exists(expr2) and expr2.["field"]["of"]["interest"]``
+* ``value3 = if_exists(expr3) or if_exists(expr4) or expr5``
+
+In these forms, significantly more of the text presented to the reader is
+immediately relevant to the question "What does this code do?", while the
+boilerplate code to handle missing data by passing it through to the output
+or falling back to an alternative input, has shrunk to four uses of the new
+``if_exists`` builtin, two uses of the ``and`` keyword, and two uses of the
+``or`` keyword.
+
+In the first two examples, the 31 character boilerplate suffix
+``if exprN is not None else None`` (minimally 27 characters for a single letter
+variable name) has been replaced by a 20 character `if_exists(expr1) and``
+prefix (minimally 16 characters with a single letter variable name), somewhat
+improving the signal-to-pattern-noise ratio of the lines (especially if it
+encourages the use of more meaningful variable and field names rather than
+making them shorter purely for the sake of expression brevity).
+
+In the last example, not only are two instances of the 26 character boilerplate,
+``if exprN is not None else`` (minimally 22 characters) replaced with the
+14 character function call ``if_exists() or``, with that function call being
+placed directly around the original expression, eliminating the need to
+duplicate it in the conditional existence check.
+
+
+Risks and concerns
+==================
+
+Readability
+-----------
+
+Python has a long history of disallowing customisation of the control flow
+operators, and overloading them isn't particularly common in other languages
+either. Even languages which do permit overloading may lose the property of
+short-circuiting evaluation when overloaded (e.g. that happens when overloading
+``&&`` and ``||`` in C++).
+
+This history means that the idea of ``and`` and ``or`` suddenly gaining the
+ability to be interpreted differently based on the type of the left-hand
+operand is a potentially controversial one from a readability and
+maintainability perspective, to the point where it may be *less* controversial
+to define new ``?then`` and ``?else`` operators as suggested in PEP 531 than
+it would be to redefine the existing operators (as currently proposed in this
+PEP).
+
+Such an approach would also address one of Guido's key concerns with PEP 335
+[1_] that would also apply to this PEP as currently written:
+
+    Amongst other reasons, I really dislike that the PEP adds to the bytecode
+    for all uses of these operators even though almost no call sites will ever
+    need the feature.
+
+If the protocol in this PEP was combined with the core syntactic proposals in
+PEP 531, then the end result would look something like:
+
+* ``value1 = if_exists(expr1) ?then expr1.field.of.interest``
+* ``value2 = if_exists(expr2) ?then expr2["field"]["of"]["interest"]``
+* ``value3 = if_exists(expr3) ?else if_exists(expr4) ?else expr5``
+
+Rather than indicating use of the existence protocol as suggested in PEP 531,
+the ``?`` here would indicate use of the conditional result management protocol,
+and hence the fact the result may be something other than the LHS as written
+when the short-circuiting path is executed.
+
+If new operators were added rather than redefining the semantics of ``and``,
+``or`` and ``if-else``, then it would make sense to *require* that their left
+hand operand be a conditional result manager that defines both ``__then__``
+and ``__else__``, rather than accepting arbitrary objects as ``and`` and ``or``
+do.
+
+With that approach, chained comparisons would be conditionally redefined in
+terms of ``?then`` when the left comparison produces a conditional result
+manager, while continuing to be defined in terms of ``and`` for any other
+left comparison result.
+
+
+Compatibility
+-------------
+
+At least CPython's peephole optimizer, and presumably other Python optimizers,
+include a lot of assumptions about the semantics of ``and`` and ``or``
+expressions. This means that any changes to those semantics are likely to
+require interpreter implementors to closely review a whole lot of code
+related not only to the way those operations are implemented, but also to the
+way they're optimized.
+
+By contrast, new operators would be substantially lower risk, as existing
+optimizers couldn't be making any assumptions about how they work.
+
+
+Speed of execution
+------------------
+
+Making relatively common operations like ``and`` and ``or`` check for additional
+protocol methods is likely to slow them down in the common case. The additional
+overhead should be small relative to the cost of boolean truth checking, but
+it won't be zero.
+
+Defining new operators rather than reusing existing ones would address this
+concern as well.
+
+
+Design Discussion
+=================
+
+Arbitrary sentinel objects
+--------------------------
+
+Unlike PEP 531, this proposal readily handles custom sentinel objects::
+
+    # Definition of a base configurable sentinel check that defaults to None
+    class SentinelCheck:
+        sentinel = None
+        def __init__(self, value):
+            self.value = value
+        def __bool__(self):
+            return self.value is not self.sentinel
+        def __then__(self, result):
+            if result is self:
+                return result.value
+            return result
+        def __else__(self, result):
+            if result is self:
+                return result.value
+            return result
+
+    # Local subclass using a custom sentinel object
+    class if_defined(SentinelCheck):
+        sentinel=object()
+
+    # Using the sentinel to check whether or not an argument was supplied
+    def my_func(arg=if_defined.sentinel):
+        arg = if_defined(arg) or calculate_default()
+
+
+Implementation
+==============
+
+As with PEP 505, actual implementation has been deferred pending in-principle
+interest in the idea of making these changes - aside from the compatibility
+concerns noted above, the implementation isn't really the hard part of these
+proposals, the hard part is deciding whether or not this is a change where the
+long term benefits for new and existing Python users outweigh the short term
+costs involved in the wider ecosystem (including developers of other
+implementations, language curriculum developers, and authors of other Python
+related educational material) adjusting to the change.
+
+...TBD...
+
+
+References
+==========
+
+.. [1] PEP 335 rejection notification
+   (http://mail.python.org/pipermail/python-dev/2012-March/117510.html)
+
+Copyright
+=========
+
+This document has been placed in the public domain under the terms of the
+CC0 1.0 license: https://creativecommons.org/publicdomain/zero/1.0/
+
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   coding: utf-8
+   End:
