@@ -1,0 +1,798 @@
+PEP: 533
+Title: Deterministic cleanup for iterators
+Version: $Revision$
+Last-Modified: $Date$
+Author: Nathaniel J. Smith
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 18-Oct-2016
+Post-History: 18-Oct-2016
+
+Abstract
+========
+
+We propose to extend the iterator protocol with a new
+``__(a)iterclose__`` slot, which is called automatically on exit from
+``(async) for`` loops, regardless of how they exit. This allows for
+convenient, deterministic cleanup of resources held by iterators
+without reliance on the garbage collector. This is especially valuable
+for asynchronous generators.
+
+
+Note on timing
+==============
+
+In practical terms, the proposal here is divided into two separate
+parts: the handling of async iterators, which should ideally be
+implemented ASAP, and the handling of regular iterators, which is a
+larger but more relaxed project that can't start until 3.7 at the
+earliest. But since the changes are closely related, and we probably
+don't want to end up with async iterators and regular iterators
+diverging in the long run, it seems useful to look at them together.
+
+
+Background and motivation
+=========================
+
+Python iterables often hold resources which require cleanup. For
+example: ``file`` objects need to be closed; the `WSGI spec
+<https://www.python.org/dev/peps/pep-0333/>`_ adds a ``close`` method
+on top of the regular iterator protocol and demands that consumers
+call it at the appropriate time (though forgetting to do so is a
+`frequent source of bugs
+<http://blog.dscpl.com.au/2012/10/obligations-for-calling-close-on.html>`_);
+and PEP 342 (based on PEP 325) extended generator objects to add a
+``close`` method to allow generators to clean up after themselves.
+
+Generally, objects that need to clean up after themselves also define
+a ``__del__`` method to ensure that this cleanup will happen
+eventually, when the object is garbage collected. However, relying on
+the garbage collector for cleanup like this causes serious problems in
+several cases:
+
+- In Python implementations that do not use reference counting
+  (e.g. PyPy, Jython), calls to ``__del__`` may be arbitrarily delayed
+  -- yet many situations require *prompt* cleanup of
+  resources. Delayed cleanup produces problems like crashes due to
+  file descriptor exhaustion, or WSGI timing middleware that collects
+  bogus times.
+
+- Async generators (PEP 525) can only perform cleanup under the
+  supervision of the appropriate coroutine runner. ``__del__`` doesn't
+  have access to the coroutine runner; indeed, the coroutine runner
+  might be garbage collected before the generator object. So relying
+  on the garbage collector is effectively impossible without some kind
+  of language extension. (PEP 525 does provide such an extension, but
+  it has a number of limitations that this proposal fixes; see the
+  "alternatives" section below for discussion.)
+
+.. XX add discussion of:
+
+  - Causality preservation, context preservation
+
+  - Exception swallowing
+
+Fortunately, Python provides a standard tool for doing resource
+cleanup in a more structured way: ``with`` blocks. For example, this
+code opens a file but relies on the garbage collector to close it::
+
+  def read_newline_separated_json(path):
+      for line in open(path):
+          yield json.loads(line)
+
+  for document in read_newline_separated_json(path):
+      ...
+
+and recent versions of CPython will point this out by issuing a
+``ResourceWarning``, nudging us to fix it by adding a ``with`` block::
+
+  def read_newline_separated_json(path):
+      with open(path) as file_handle:      # <-- with block
+          for line in file_handle:
+              yield json.loads(line)
+
+  for document in read_newline_separated_json(path):  # <-- outer for loop
+      ...
+
+But there's a subtlety here, caused by the interaction of ``with``
+blocks and generators. ``with`` blocks are Python's main tool for
+managing cleanup, and they're a powerful one, because they pin the
+lifetime of a resource to the lifetime of a stack frame. But this
+assumes that someone will take care of cleaning up the stack
+frame... and for generators, this requires that someone ``close``
+them.
+
+In this case, adding the ``with`` block *is* enough to shut up the
+``ResourceWarning``, but this is misleading -- the file object cleanup
+here is still dependent on the garbage collector. The ``with`` block
+will only be unwound when the ``read_newline_separated_json``
+generator is closed. If the outer ``for`` loop runs to completion then
+the cleanup will happen immediately; but if this loop is terminated
+early by a ``break`` or an exception, then the ``with`` block won't
+fire until the generator object is garbage collected.
+
+The correct solution requires that all *users* of this API wrap every
+``for`` loop in its own ``with`` block::
+
+  with closing(read_newline_separated_json(path)) as genobj:
+      for document in genobj:
+          ...
+
+This gets even worse if we consider the idiom of decomposing a complex
+pipeline into multiple nested generators::
+
+  def read_users(path):
+      with closing(read_newline_separated_json(path)) as gen:
+          for document in gen:
+              yield User.from_json(document)
+
+  def users_in_group(path, group):
+      with closing(read_users(path)) as gen:
+          for user in gen:
+              if user.group == group:
+                  yield user
+
+In general if you have N nested generators then you need N+1 ``with``
+blocks to clean up 1 file. And good defensive programming would
+suggest that any time we use a generator, we should assume the
+possibility that there could be at least one ``with`` block somewhere
+in its (potentially transitive) call stack, either now or in the
+future, and thus always wrap it in a ``with``. But in practice,
+basically nobody does this, because programmers would rather write
+buggy code than tiresome repetitive code. In simple cases like this
+there are some workarounds that good Python developers know (e.g. in
+this simple case it would be idiomatic to pass in a file handle
+instead of a path and move the resource management to the top level),
+but in general we cannot avoid the use of ``with``/``finally`` inside
+of generators, and thus dealing with this problem one way or
+another. When beauty and correctness fight then beauty tends to win,
+so it's important to make correct code beautiful.
+
+Still, is this worth fixing? Until async generators came along I would
+have argued yes, but that it was a low priority, since everyone seems
+to be muddling along okay -- but async generators make it much more
+urgent. Async generators cannot do cleanup *at all* without some
+mechanism for deterministic cleanup that people will actually use, and
+async generators are particularly likely to hold resources like file
+descriptors. (After all, if they weren't doing I/O, they'd be
+generators, not async generators.) So we have to do something, and it
+might as well be a comprehensive fix to the underlying problem. And
+it's much easier to fix this now when async generators are first
+rolling out, then it will be to fix it later.
+
+The proposal itself is simple in concept: add a ``__(a)iterclose__``
+method to the iterator protocol, and have (async) ``for`` loops call
+it when the loop is exited, even if this occurs via ``break`` or
+exception unwinding. Effectively, we're taking the current cumbersome
+idiom (``with`` block + ``for`` loop) and merging them together into a
+fancier ``for``. This may seem non-orthogonal, but makes sense when
+you consider that the existence of generators means that ``with``
+blocks actually depend on iterator cleanup to work reliably, plus
+experience showing that iterator cleanup is often a desireable feature
+in its own right.
+
+
+Alternatives
+============
+
+PEP 525 asyncgen hooks
+----------------------
+
+PEP 525 proposes a `set of global thread-local hooks managed by new
+``sys.{get/set}_asyncgen_hooks()`` functions
+<https://www.python.org/dev/peps/pep-0525/#finalization>`_, which
+allow event loops to integrate with the garbage collector to run
+cleanup for async generators. In principle, this proposal and PEP 525
+are complementary, in the same way that ``with`` blocks and
+``__del__`` are complementary: this proposal takes care of ensuring
+deterministic cleanup in most cases, while PEP 525's GC hooks clean up
+anything that gets missed. But ``__aiterclose__`` provides a number of
+advantages over GC hooks alone:
+
+- The GC hook semantics aren't part of the abstract async iterator
+  protocol, but are instead restricted `specifically to the async
+  generator concrete type
+  <https://mail.python.org/pipermail/python-dev/2016-September/146129.html>`_. If
+  you have an async iterator implemented using a class, like::
+
+    class MyAsyncIterator:
+        async def __anext__():
+            ...
+
+  then you can't refactor this into an async generator without
+  changing its semantics, and vice-versa. This seems very
+  unpythonic. (It also leaves open the question of what exactly
+  class-based async iterators are supposed to do, given that they face
+  exactly the same cleanup problems as async generators.)
+  ``__aiterclose__``, on the other hand, is defined at the protocol
+  level, so it's duck-type friendly and works for all iterators, not
+  just generators.
+
+- Code that wants to work on non-CPython implementations like PyPy
+  cannot in general rely on GC for cleanup. Without
+  ``__aiterclose__``, it's more or less guaranteed that developers who
+  develop and test on CPython will produce libraries that leak
+  resources when used on PyPy. Developers who do want to target
+  alternative implementations will either have to take the defensive
+  approach of wrapping every ``for`` loop in a ``with`` block, or else
+  carefully audit their code to figure out which generators might
+  possibly contain cleanup code and add ``with`` blocks around those
+  only. With ``__aiterclose__``, writing portable code becomes easy
+  and natural.
+
+- An important part of building robust software is making sure that
+  exceptions always propagate correctly without being lost. One of the
+  most exciting things about async/await compared to traditional
+  callback-based systems is that instead of requiring manual chaining,
+  the runtime can now do the heavy lifting of propagating errors,
+  making it *much* easier to write robust code. But, this beautiful
+  new picture has one major gap: if we rely on the GC for generator
+  cleanup, then exceptions raised during cleanup are lost. So, again,
+  with ``__aiterclose__``, developers who care about this kind of
+  robustness will either have to take the defensive approach of
+  wrapping every ``for`` loop in a ``with`` block, or else carefully
+  audit their code to figure out which generators might possibly
+  contain cleanup code. ``__aiterclose__`` plugs this hole by
+  performing cleanup in the caller's context, so writing more robust
+  code becomes the path of least resistance.
+
+- The WSGI experience suggests that there exist important
+  iterator-based APIs that need prompt cleanup and cannot rely on the
+  GC, even in CPython. For example, consider a hypothetical WSGI-like
+  API based around async/await and async iterators, where a response
+  handler is an async generator that takes request headers + an async
+  iterator over the request body, and yields response headers + the
+  response body. (This is actually the use case that got me interested
+  in async generators in the first place, i.e. this isn't
+  hypothetical.) If we follow WSGI in requiring that child iterators
+  must be closed properly, then without ``__aiterclose__`` the
+  absolute most minimalistic middleware in our system looks something
+  like::
+
+    async def noop_middleware(handler, request_header, request_body):
+        async with aclosing(handler(request_body, request_body)) as aiter:
+            async for response_item in aiter:
+                yield response_item
+
+  Arguably in regular code one can get away with skipping the ``with``
+  block around ``for`` loops, depending on how confident one is that
+  one understands the internal implementation of the generator. But
+  here we have to cope with arbitrary response handlers, so without
+  ``__aiterclose__``, this ``with`` construction is a mandatory part
+  of every middleware.
+
+  ``__aiterclose__`` allows us to eliminate the mandatory boilerplate
+  and an extra level of indentation from every middleware::
+
+    async def noop_middleware(handler, request_header, request_body):
+        async for response_item in handler(request_header, request_body):
+            yield response_item
+
+So the ``__aiterclose__`` approach provides substantial advantages
+over GC hooks.
+
+This leaves open the question of whether we want a combination of GC
+hooks + ``__aiterclose__``, or just ``__aiterclose__`` alone. Since
+the vast majority of generators are iterated over using a ``for`` loop
+or equivalent, ``__aiterclose__`` handles most situations before the
+GC has a chance to get involved. The case where GC hooks provide
+additional value is in code that does manual iteration, e.g.::
+
+    agen = fetch_newline_separated_json_from_url(...)
+    while True:
+        document = await type(agen).__anext__(agen)
+        if document["id"] == needle:
+            break
+    # doesn't do 'await agen.aclose()'
+
+If we go with the GC-hooks + ``__aiterclose__`` approach, this
+generator will eventually be cleaned up by GC calling the generator
+``__del__`` method, which then will use the hooks to call back into
+the event loop to run the cleanup code.
+
+If we go with the no-GC-hooks approach, this generator will eventually
+be garbage collected, with the following effects:
+
+- its ``__del__`` method will issue a warning that the generator was
+  not closed (similar to the existing "coroutine never awaited"
+  warning).
+
+- The underlying resources involved will still be cleaned up, because
+  the generator frame will still be garbage collected, causing it to
+  drop references to any file handles or sockets it holds, and then
+  those objects's ``__del__`` methods will release the actual
+  operating system resources.
+
+- But, any cleanup code inside the generator itself (e.g. logging,
+  buffer flushing) will not get a chance to run.
+
+The solution here -- as the warning would indicate -- is to fix the
+code so that it calls ``__aiterclose__``, e.g. by using a ``with``
+block::
+
+    async with aclosing(fetch_newline_separated_json_from_url(...)) as agen:
+        while True:
+            document = await type(agen).__anext__(agen)
+            if document["id"] == needle:
+                break
+
+Basically in this approach, the rule would be that if you want to
+manually implement the iterator protocol, then it's your
+responsibility to implement all of it, and that now includes
+``__(a)iterclose__``.
+
+GC hooks add non-trivial complexity in the form of (a) new global
+interpreter state, (b) a somewhat complicated control flow (e.g.,
+async generator GC always involves resurrection, so the details of PEP
+442 are important), and (c) a new public API in asyncio (``await
+loop.shutdown_asyncgens()``) that users have to remember to call at
+the appropriate time. (This last point in particular somewhat
+undermines the argument that GC hooks provide a safe backup to
+guarantee cleanup, since if ``shutdown_asyncgens()`` isn't called
+correctly then I *think* it's possible for generators to be silently
+discarded without their cleanup code being called; compare this to the
+``__aiterclose__``-only approach where in the worst case we still at
+least get a warning printed. This might be fixable.) All this
+considered, GC hooks arguably aren't worth it, given that the only
+people they help are those who want to manually call ``__anext__`` yet
+don't want to manually call ``__aiterclose__``. But Yury disagrees
+with me on this :-). And both options are viable.
+
+
+Always inject resources, and do all cleanup at the top level
+------------------------------------------------------------
+
+Several commentators on python-dev and python-ideas have suggested
+that a pattern to avoid these problems is to always pass resources in
+from above, e.g. ``read_newline_separated_json`` should take a file
+object rather than a path, with cleanup handled at the top level::
+
+  def read_newline_separated_json(file_handle):
+      for line in file_handle:
+          yield json.loads(line)
+
+  def read_users(file_handle):
+      for document in read_newline_separated_json(file_handle):
+          yield User.from_json(document)
+
+  with open(path) as file_handle:
+      for user in read_users(file_handle):
+          ...
+
+This works well in simple cases; here it lets us avoid the "N+1
+``with`` blocks problem". But unfortunately, it breaks down quickly
+when things get more complex. Consider if instead of reading from a
+file, our generator was reading from a streaming HTTP GET request --
+while handling redirects and authentication via OAUTH. Then we'd
+really want the sockets to be managed down inside our HTTP client
+library, not at the top level. Plus there are other cases where
+``finally`` blocks embedded inside generators are important in their
+own right: db transaction management, emitting logging information
+during cleanup (one of the major motivating use cases for WSGI
+``close``), and so forth. So this is really a workaround for simple
+cases, not a general solution.
+
+
+More complex variants of __(a)iterclose__
+-----------------------------------------
+
+The semantics of ``__(a)iterclose__`` are somewhat inspired by
+``with`` blocks, but context managers are more powerful:
+``__(a)exit__`` can distinguish between a normal exit versus exception
+unwinding, and in the case of an exception it can examine the
+exception details and optionally suppress
+propagation. ``__(a)iterclose__`` as proposed here does not have these
+powers, but one can imagine an alternative design where it did.
+
+However, this seems like unwarranted complexity: experience suggests
+that it's common for iterables to have ``close`` methods, and even to
+have ``__exit__`` methods that call ``self.close()``, but I'm not
+aware of any common cases that make use of ``__exit__``'s full
+power. I also can't think of any examples where this would be
+useful. And it seems unnecessarily confusing to allow iterators to
+affect flow control by swallowing exceptions -- if you're in a
+situation where you really want that, then you should probably use a
+real ``with`` block anyway.
+
+
+Specification
+=============
+
+This section describes where we want to eventually end up, though
+there are some backwards compatibility issues that mean we can't jump
+directly here. A later section describes the transition plan.
+
+
+Guiding principles
+------------------
+
+Generally, ``__(a)iterclose__`` implementations should:
+
+- be idempotent,
+- perform any cleanup that is appropriate on the assumption that the
+  iterator will not be used again after ``__(a)iterclose__`` is
+  called. In particular, once ``__(a)iterclose__`` has been called
+  then calling ``__(a)next__`` produces undefined behavior.
+
+And generally, any code which starts iterating through an iterable
+with the intention of exhausting it, should arrange to make sure that
+``__(a)iterclose__`` is eventually called, whether or not the iterator
+is actually exhausted.
+
+
+Changes to iteration
+--------------------
+
+The core proposal is the change in behavior of ``for`` loops. Given
+this Python code::
+
+  for VAR in ITERABLE:
+      LOOP-BODY
+  else:
+      ELSE-BODY
+
+we desugar to the equivalent of::
+
+  _iter = iter(ITERABLE)
+  _iterclose = getattr(type(_iter), "__iterclose__", lambda: None)
+  try:
+      traditional-for VAR in _iter:
+          LOOP-BODY
+      else:
+          ELSE-BODY
+  finally:
+      _iterclose(_iter)
+
+where the "traditional-for statement" here is meant as a shorthand for
+the classic 3.5-and-earlier ``for`` loop semantics.
+
+Besides the top-level ``for`` statement, Python also contains several
+other places where iterators are consumed. For consistency, these
+should call ``__iterclose__`` as well using semantics equivalent to
+the above. This includes:
+
+- ``for`` loops inside comprehensions
+- ``*`` unpacking
+- functions which accept and fully consume iterables, like
+  ``list(it)``, ``tuple(it)``, ``itertools.product(it1, it2, ...)``,
+  and others.
+
+In addition, a ``yield from`` that successfully exhausts the called
+generator should as a last step call its ``__iterclose__``
+method. (Rationale: ``yield from`` already links the lifetime of the
+calling generator to the called generator; if the calling generator is
+closed when half-way through a ``yield from``, then this will already
+automatically close the called generator.)
+
+
+Changes to async iteration
+--------------------------
+
+We also make the analogous changes to async iteration constructs,
+except that the new slot is called ``__aiterclose__``, and it's an
+async method that gets ``await``\ed.
+
+
+Modifications to basic iterator types
+-------------------------------------
+
+Generator objects (including those created by generator
+comprehensions):
+
+- ``__iterclose__`` calls ``self.close()``
+
+- ``__del__`` calls ``self.close()`` (same as now), and additionally
+  issues a ``ResourceWarning`` if the generator wasn't exhausted. This
+  warning is hidden by default, but can be enabled for those who want
+  to make sure they aren't inadverdantly relying on CPython-specific
+  GC semantics.
+
+Async generator objects (including those created by async generator
+comprehensions):
+
+- ``__aiterclose__`` calls ``self.aclose()``
+
+- ``__del__`` issues a ``RuntimeWarning`` if ``aclose`` has not been
+  called, since this probably indicates a latent bug, similar to the
+  "coroutine never awaited" warning.
+
+QUESTION: should file objects implement ``__iterclose__`` to close the
+file? On the one hand this would make this change more disruptive; on
+the other hand people really like writing ``for line in open(...):
+...``, and if we get used to iterators taking care of their own
+cleanup then it might become very weird if files don't.
+
+
+New convenience functions
+-------------------------
+
+The ``operator`` module gains two new functions, with semantics
+equivalent to the following::
+
+  def iterclose(it):
+      if not isinstance(it, collections.abc.Iterator):
+          raise TypeError("not an iterator")
+      if hasattr(type(it), "__iterclose__"):
+          type(it).__iterclose__(it)
+
+  async def aiterclose(ait):
+      if not isinstance(it, collections.abc.AsyncIterator):
+          raise TypeError("not an iterator")
+      if hasattr(type(ait), "__aiterclose__"):
+          await type(ait).__aiterclose__(ait)
+
+The ``itertools`` module gains a new iterator wrapper that can be used
+to selectively disable the new ``__iterclose__`` behavior::
+
+  # QUESTION: I feel like there might be a better name for this one?
+  class preserve(iterable):
+      def __init__(self, iterable):
+          self._it = iter(iterable)
+
+      def __iter__(self):
+          return self
+
+      def __next__(self):
+          return next(self._it)
+
+      def __iterclose__(self):
+          # Swallow __iterclose__ without passing it on
+          pass
+
+Example usage (assuming that file objects implements
+``__iterclose__``)::
+
+  with open(...) as handle:
+      # Iterate through the same file twice:
+      for line in itertools.preserve(handle):
+          ...
+      handle.seek(0)
+      for line in itertools.preserve(handle):
+          ...
+
+::
+
+  @contextlib.contextmanager
+  def iterclosing(iterable):
+      it = iter(iterable)
+      try:
+          yield preserve(it)
+      finally:
+          iterclose(it)
+
+
+__iterclose__ implementations for iterator wrappers
+---------------------------------------------------
+
+Python ships a number of iterator types that act as wrappers around
+other iterators: ``map``, ``zip``, ``itertools.accumulate``,
+``csv.reader``, and others. These iterators should define a
+``__iterclose__`` method which calls ``__iterclose__`` in turn on
+their underlying iterators. For example, ``map`` could be implemented
+as::
+
+  # Helper function
+  map_chaining_exceptions(fn, items, last_exc=None):
+      for item in items:
+          try:
+              fn(item)
+          except BaseException as new_exc:
+              if new_exc.__context__ is None:
+                  new_exc.__context__ = last_exc
+              last_exc = new_exc
+      if last_exc is not None:
+          raise last_exc
+
+  class map:
+      def __init__(self, fn, *iterables):
+          self._fn = fn
+          self._iters = [iter(iterable) for iterable in iterables]
+
+      def __iter__(self):
+          return self
+
+      def __next__(self):
+          return self._fn(*[next(it) for it in self._iters])
+
+      def __iterclose__(self):
+          map_chaining_exceptions(operator.iterclose, self._iters)
+
+  def chain(*iterables):
+      try:
+          while iterables:
+              for element in iterables.pop(0):
+                  yield element
+      except BaseException as e:
+          def iterclose_iterable(iterable):
+              operations.iterclose(iter(iterable))
+          map_chaining_exceptions(iterclose_iterable, iterables, last_exc=e)
+
+In some cases this requires some subtlety; for example,
+```itertools.tee``
+<https://docs.python.org/3/library/itertools.html#itertools.tee>`_
+should not call ``__iterclose__`` on the underlying iterator until it
+has been called on *all* of the clone iterators.
+
+
+Example / Rationale
+-------------------
+
+The payoff for all this is that we can now write straightforward code
+like::
+
+  def read_newline_separated_json(path):
+      for line in open(path):
+          yield json.loads(line)
+
+and be confident that the file will receive deterministic cleanup
+*without the end-user having to take any special effort*, even in
+complex cases. For example, consider this silly pipeline::
+
+  list(map(lambda key: key.upper(),
+           doc["key"] for doc in read_newline_separated_json(path)))
+
+If our file contains a document where ``doc["key"]`` turns out to be
+an integer, then the following sequence of events will happen:
+
+1. ``key.upper()`` raises an ``AttributeError``, which propagates out
+   of the ``map`` and triggers the implicit ``finally`` block inside
+   ``list``.
+2. The ``finally`` block in ``list`` calls ``__iterclose__()`` on the
+   map object.
+3. ``map.__iterclose__()`` calls ``__iterclose__()`` on the generator
+   comprehension object.
+4. This injects a ``GeneratorExit`` exception into the generator
+   comprehension body, which is currently suspended inside the
+   comprehension's ``for`` loop body.
+5. The exception propagates out of the ``for`` loop, triggering the
+   ``for`` loop's implicit ``finally`` block, which calls
+   ``__iterclose__`` on the generator object representing the call to
+   ``read_newline_separated_json``.
+6. This injects an inner ``GeneratorExit`` exception into the body of
+   ``read_newline_separated_json``, currently suspended at the
+   ``yield``.
+7. The inner ``GeneratorExit`` propagates out of the ``for`` loop,
+   triggering the ``for`` loop's implicit ``finally`` block, which
+   calls ``__iterclose__()`` on the file object.
+8. The file object is closed.
+9. The inner ``GeneratorExit`` resumes propagating, hits the boundary
+   of the generator function, and causes
+   ``read_newline_separated_json``'s ``__iterclose__()`` method to
+   return successfully.
+10. Control returns to the generator comprehension body, and the outer
+    ``GeneratorExit`` continues propagating, allowing the
+    comprehension's ``__iterclose__()`` to return successfully.
+11. The rest of the ``__iterclose__()`` calls unwind without incident,
+    back into the body of ``list``.
+12. The original ``AttributeError`` resumes propagating.
+
+(The details above assume that we implement ``file.__iterclose__``; if
+not then add a ``with`` block to ``read_newline_separated_json`` and
+essentially the same logic goes through.)
+
+Of course, from the user's point of view, this can be simplified down
+to just:
+
+1. ``int.upper()`` raises an ``AttributeError``
+1. The file object is closed.
+2. The ``AttributeError`` propagates out of ``list``
+
+So we've accomplished our goal of making this "just work" without the
+user having to think about it.
+
+
+Transition plan
+===============
+
+While the majority of existing ``for`` loops will continue to produce
+identical results, the proposed changes will produce
+backwards-incompatible behavior in some cases. Example::
+
+  def read_csv_with_header(lines_iterable):
+      lines_iterator = iter(lines_iterable)
+      for line in lines_iterator:
+          column_names = line.strip().split("\t")
+          break
+      for line in lines_iterator:
+          values = line.strip().split("\t")
+          record = dict(zip(column_names, values))
+          yield record
+
+This code used to be correct, but after this proposal is implemented
+will require an ``itertools.preserve`` call added to the first ``for``
+loop.
+
+[QUESTION: currently, if you close a generator and then try to iterate
+over it then it just raises ``Stop(Async)Iteration``, so code the
+passes the same generator object to multiple ``for`` loops but forgets
+to use ``itertools.preserve`` won't see an obvious error -- the second
+``for`` loop will just exit immediately. Perhaps it would be better if
+iterating a closed generator raised a ``RuntimeError``? Note that
+files don't have this problem -- attempting to iterate a closed file
+object already raises ``ValueError``.]
+
+Specifically, the incompatibility happens when all of these factors
+come together:
+
+- The automatic calling of ``__(a)iterclose__`` is enabled
+- The iterable did not previously define ``__(a)iterclose__``
+- The iterable does now define ``__(a)iterclose__``
+- The iterable is re-used after the ``for`` loop exits
+
+So the problem is how to manage this transition, and those are the
+levers we have to work with.
+
+First, observe that the only async iterables where we propose to add
+``__aiterclose__`` are async generators, and there is currently no
+existing code using async generators (though this will start changing
+very soon), so the async changes do not produce any backwards
+incompatibilities. (There is existing code using async iterators, but
+using the new async for loop on an old async iterator is harmless,
+because old async iterators don't have ``__aiterclose__``.) In
+addition, PEP 525 was accepted on a provisional basis, and async
+generators are by far the biggest beneficiary of this PEP's proposed
+changes. Therefore, I think we should strongly consider enabling
+``__aiterclose__`` for ``async for`` loops and async generators ASAP,
+ideally for 3.6.0 or 3.6.1.
+
+For the non-async world, things are harder, but here's a potential
+transition path:
+
+In 3.7:
+
+Our goal is that existing unsafe code will start emitting warnings,
+while those who want to opt-in to the future can do that immediately:
+
+- We immediately add all the ``__iterclose__`` methods described
+  above.
+- If ``from __future__ import iterclose`` is in effect, then ``for``
+  loops and ``*`` unpacking call ``__iterclose__`` as specified above.
+- If the future is *not* enabled, then ``for`` loops and ``*``
+  unpacking do *not* call ``__iterclose__``. But they do call some
+  other method instead, e.g. ``__iterclose_warning__``.
+- Similarly, functions like ``list`` use stack introspection (!!) to
+  check whether their direct caller has ``__future__.iterclose``
+  enabled, and use this to decide whether to call ``__iterclose__`` or
+  ``__iterclose_warning__``.
+- For all the wrapper iterators, we also add ``__iterclose_warning__``
+  methods that forward to the ``__iterclose_warning__`` method of the
+  underlying iterator or iterators.
+- For generators (and files, if we decide to do that),
+  ``__iterclose_warning__`` is defined to set an internal flag, and
+  other methods on the object are modified to check for this flag. If
+  they find the flag set, they issue a ``PendingDeprecationWarning``
+  to inform the user that in the future this sequence would have led
+  to a use-after-close situation and the user should use
+  ``preserve()``.
+
+In 3.8:
+
+- Switch from ``PendingDeprecationWarning`` to ``DeprecationWarning``
+
+In 3.9:
+
+- Enable the ``__future__`` unconditionally and remove all the
+  ``__iterclose_warning__`` stuff.
+
+I believe that this satisfies the normal requirements for this kind of
+transition -- opt-in initially, with warnings targeted precisely to
+the cases that will be effected, and a long deprecation cycle.
+
+Probably the most controversial / risky part of this is the use of
+stack introspection to make the iterable-consuming functions sensitive
+to a ``__future__`` setting, though I haven't thought of any situation
+where it would actually go wrong yet...
+
+
+Acknowledgements
+================
+
+Thanks to Yury Selivanov, Armin Rigo, and Carl Friedrich Bolz for
+helpful discussion on earlier versions of this idea.
+
+
+Copyright
+=========
+
+This document has been placed in the public domain.
