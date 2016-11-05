@@ -16,11 +16,11 @@ Abstract
 
 While we generally try to avoid global state when possible, there
 nonetheless exist a number of situations where it is agreed to be the
-best approach.  In Python, the standard way of handling such cases is
-to store the global state in global or thread-local storage, and then
-use ``with`` blocks to limit modifications of this global state to a
-single dynamic scope. Examples where this pattern is used include the
-standard library's ``warnings.catch_warnings`` and
+best approach.  In Python, a standard pattern for handling such cases
+is to store the global state in global or thread-local storage, and
+then use ``with`` blocks to limit modifications of this global state
+to a single dynamic scope. Examples where this pattern is used include
+the standard library's ``warnings.catch_warnings`` and
 ``decimal.localcontext``, NumPy's ``numpy.errstate`` (which exposes
 the error-handling settings provided by the IEEE 754 floating point
 standard), and the handling of logging context or HTTP request context
@@ -63,7 +63,7 @@ More formally, consider the following code::
       f((yield foo))
       PARTIAL-BLOCK-2
 
-Currently this is equivalent to the following code copied from PEP 343::
+Currently this is equivalent to the following code (copied from PEP 343)::
 
   mgr = (EXPR)
   exit = type(mgr).__exit__  # Not calling it yet
@@ -99,9 +99,9 @@ This PEP proposes to modify ``with`` block handling to instead become::
           VAR = value  # Only if "as VAR" is present
           PARTIAL-BLOCK-1
           ### --- NEW STUFF ---
-          suspend()
+          suspend(mgr)
           tmp = yield foo
-          resume()
+          resume(mgr)
           f(tmp)
           ### --- END OF NEW STUFF ---
           PARTIAL-BLOCK-2
@@ -153,7 +153,7 @@ from right to left, and resume from left to right.
 Other changes
 -------------
 
-``__suspend__`` and ``__resume__`` methods are added to
+Appropriate ``__suspend__`` and ``__resume__`` methods are added to
 ``warnings.catch_warnings`` and ``decimal.localcontext``.
 
 
@@ -186,20 +186,19 @@ correct as-is.  Or if this isn't convincing, then here's another
 example of broken code; fixing it requires even greater gyrations, and
 these are left as an exercise for the reader::
 
-  def f2():
+  async def test_foo_emits_warning():
       with warnings.catch_warnings(record=True) as w:
-          for x in g():
-              yield x
+          await foo()
       assert len(w) == 1
       assert "xyzzy" in w[0].message
 
-And notice that this last example isn't artificial at all -- if you
-squint, it turns out to be exactly how you write a test that an
-asyncio-using coroutine ``g`` correctly raises a warning.  Similar
-issues arise for pretty much any use of ``warnings.catch_warnings``,
-``decimal.localcontext``, or ``numpy.errstate`` in asyncio-using code.
-So there's clearly a real problem to solve here, and the growing
-prominence of async code makes it increasingly urgent.
+And notice that this last example isn't artificial at all -- this is
+exactly how you write a test that an async/await-using coroutine
+correctly raises a warning.  Similar issues arise for pretty much any
+use of ``warnings.catch_warnings``, ``decimal.localcontext``, or
+``numpy.errstate`` in async/await-using code.  So there's clearly a
+real problem to solve here, and the growing prominence of async code
+makes it increasingly urgent.
 
 
 Alternative approaches
@@ -270,7 +269,13 @@ expect::
       loop.call_soon(f)
 
 to result in ``f`` being run with warnings disabled, which would be
-the result if ``call_soon`` preserved global context in general.
+the result if ``call_soon`` preserved global context in general. It's
+also unclear how this would even work given that the warnings context
+manager ``__exit__`` would be called before ``f``.
+
+So this PEP takes the position that ``__suspend__``\/``__resume__``
+and "task-local storage" are two complementary tools that are both
+useful in different circumstances.
 
 
 Backwards compatibility
@@ -287,70 +292,59 @@ allocating an ``AttributeError``), and additional overhead at
 suspension points.  Since the position of ``with`` blocks and
 suspension points is known statically, the compiler can
 straightforwardly optimize away this overhead in all cases except
-where one actually has a ``yield`` inside a ``with``.
+where one actually has a ``yield`` inside a ``with``. Furthermore,
+because we only do attribute checks for ``__suspend__`` and
+``__resume__`` once at the start of a ``with`` block, when these
+attributes are undefined then the per-yield overhead can be optimized
+down to a single C-level ``if (frame->needs_suspend_resume_calls) {
+... }``. Therefore, we expect the overall overhead to be negligible.
 
 
 Interaction with PEP 492
 ========================
 
 PEP 492 added new asynchronous context managers, which are like
-regular context managers but instead of having regular methods
+regular context managers, but instead of having regular methods
 ``__enter__`` and ``__exit__`` they have coroutine methods
 ``__aenter__`` and ``__aexit__``.
 
-There are a few options for how to handle these:
+Following this pattern, one might expect this proposal to add
+``__asuspend__`` and ``__aresume__`` coroutine methods. But this
+doesn't make much sense, since the whole point is that ``__suspend__``
+should be called before yielding our thread of execution and allowing
+other code to run. The only thing we accomplish by making
+``__asuspend__`` a coroutine is to make it possible for
+``__asuspend__`` itself to yield. So either we need to recursively
+call ``__asuspend__`` from inside ``__asuspend__``, or else we need to
+give up and allow these yields to happen without calling the suspend
+callback; either way it defeats the whole point.
 
-1) Add ``__asuspend__`` and ``__aresume__`` coroutine methods.
+Well, with one exception: one possible pattern for coroutine code is
+to call ``yield`` in order to communicate with the coroutine runner,
+but without actually suspending their execution (i.e., the coroutine
+might know that the coroutine runner will resume them immediately
+after processing the ``yield``\ ed message). An example of this is the
+``curio.timeout_after`` async context manager, which yields a special
+``set_timeout`` message to the curio kernel, and then the kernel
+immediately (synchronously) resumes the coroutine which sent the
+message. And from the user point of view, this timeout value acts just
+like the kinds of global variables that motivated this PEP. But, there
+is a crucal difference: this kind of async context manager is, by
+definition, tightly integrated with the coroutine runner. So, the
+coroutine runner can take over responsibility for keeping track of
+which timeouts apply to which coroutines without any need for this PEP
+at all (and this is indeed how curio.timeout_after works).
 
-   One potential difficulty here is that this would add a complication
-   to an already complicated part of the bytecode
-   interpreter. Consider code like::
+That leaves two reasonable approaches to handling async context managers:
 
-     async def f():
-         async with MGR:
-             await g()
+1) Add plain ``__suspend__`` and ``__resume__`` methods.
 
-     @types.coroutine
-     def g():
-          yield 1
-
-   In 3.5, ``f`` gets desugared to something like::
-
-     @types.coroutine
-     def f():
-         yield from MGR.__aenter__()
-         try:
-             yield from g()
-         finally:
-             yield from MGR.__aexit__()
-
-   With the addition of ``__asuspend__`` / ``__aresume__``, the
-   ``yield from`` would have to replaced by something like::
-
-         for SUBVALUE in g():
-             yield from MGR.__asuspend__()
-             yield SUBVALUE
-             yield from MGR.__aresume__()
-
-   Notice that we've had to introduce a new temporary ``SUBVALUE`` to
-   hold the value yielded from ``g()`` while we yield from
-   ``MGR.__asuspend__()``. Where does this temporary go? Currently
-   ``yield from`` is a single bytecode that doesn't modify the stack
-   while looping. Also, the above code isn't even complete, because it
-   skips over the issue of how to direct ``send``/``throw`` calls to
-   the right place at the right time...
-
-2) Add plain ``__suspend__`` and ``__resume__`` methods.
-
-3) Leave async context managers alone for now until we have more
+2) Leave async context managers alone for now until we have more
    experience with them.
 
-It isn't entirely clear what use cases even exist in which an async
-context manager would need to set coroutine-local-state (= like
-thread-local-state, but for a coroutine stack instead of an OS
-thread), and couldn't do so via coordination with the coroutine
-runner. So this draft tentatively goes with option (3) and punts on
-this question until later.
+Either seems plausible, so out of laziness / `YAGNI
+<http://martinfowler.com/bliki/Yagni.html>`_ this PEP tentatively
+proposes to stick with option (2).
 
 
 References
