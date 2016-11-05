@@ -1,5 +1,5 @@
 PEP: 532
-Title: Defining "else" as a protocol based circuit breaking operator
+Title: A circuit breaking operator and protocol
 Version: $Revision$
 Last-Modified: $Date$
 Author: Nick Coghlan <ncoghlan@gmail.com>
@@ -8,6 +8,7 @@ Type: Standards Track
 Content-Type: text/x-rst
 Created: 30-Oct-2016
 Python-Version: 3.7
+Post-History: 5-Nov-2016
 
 Abstract
 ========
@@ -130,14 +131,29 @@ message from branch methods that are never expected to be executed (see the
 comparison chaining use case in the Rationale section below for an example
 of that).
 
-It is proposed that the ``else`` operator use the same precedence level as
-the existing ``and`` and ``or`` operators.
+It is proposed that the ``else`` operator use a new precedence level that binds
+less tightly than the ``or`` operator by adjusting the relevant line in
+Python's grammar from the current::
 
-The precedence/associativity in the otherwise ambiguous case of
-``expr1 if cond else expr2 else epxr3`` is TBD based on ease of implementation
-(a guideline will be added to PEP 8 to say "don't do that", as this construct
-will be inherently confusing for readers, regardless of how the interpreter
-executes it).
+    test: or_test ['if' or_test 'else' test] | lambdef
+
+to instead be::
+
+    test: else_test ['if' or_test 'else' test] | lambdef
+    else_test: or_test ['else' test]
+
+The definition of ``test_nocond`` would remain unchanged, so circuit
+breaking expressions would require parentheses when used in the ``if``
+clause of comprehensions and generator expressions just as conditional
+expressions themselves do.
+
+This grammar definition means precedence/associativity in the otherwise
+ambiguous case of ``expr1 if cond else expr2 else epxr3`` resolves as
+``(expr1 if cond else expr2) else epxr3``.
+
+A guideline will also be added to PEP 8 to say "don't do that", as such a
+construct will be inherently confusing for readers, regardless of how the
+interpreter executes it.
 
 
 Overloading logical inversion (``not``)
@@ -316,18 +332,23 @@ invariant required of ``__not__`` implementations means that existing
 expression optimisations in boolean contexts will remain valid.
 
 As a result of that design simplification, the new protocol and operator would
-even allow us to expose ``operator.logical_and`` and ``operator.logical_or``
+even allow us to expose ``operator.true`` and ``operator.false``
 as circuit breaker definitions if we chose to do so::
 
-    class logical_or(types.CircuitBreaker):
+    class true(types.CircuitBreaker):
         """Circuit breaker for 'bool(EXPR)' checks"""
         def __init__(self, value):
-            super().__init__(value, bool(value), logical_and)
+            super().__init__(value, bool(value), when_false)
 
-    class logical_and(types.CircuitBreaker):
+    class false(types.CircuitBreaker):
         """Circuit breaker for 'not bool(EXPR)' checks"""
         def __init__(self, value):
-            super().__init__(value, not bool(value), logical_or)
+            super().__init__(value, not bool(value), when_true)
+
+Given those circuit breakers:
+
+* ``LHS or RHS`` would be roughly ``operator.true(LHS) else RHS``
+* ``LHS and RHS`` would be roughly ``opreator.false(LHS) else RHS``
 
 
 Naming the operator and protocol
@@ -525,6 +546,91 @@ raised when discussing PEPs 335, 505 and 531.
   and skip evaluating the right operand
 
 
+Possible confusion with conditional expressions
+-----------------------------------------------
+
+The proposal in this PEP is essentially for an "implied ``if``" where if you
+omit the ``if`` clause from a conditional expression, you invoke the circuit
+breaking protocol instead. That is::
+
+    exists(foo) else calculate_default()
+
+invokes the new protocol, but::
+
+    foo.field.of.interest if exists(foo) else calculate_default()
+
+bypasses it entirely, *including* the non-short-circuiting ``__else__`` method.
+
+This mostly wouldn't be a problem for the proposed ``types.CircuitBreaker``
+implementation (and hence the ``exists`` and ``missing`` builtins), as the
+only purpose the extended protocol serves in that case is to remove the
+wrapper in the short-circuiting case - the ``__else__`` method passes the
+right operand through unchanged.
+
+However, this discrepancy could potentially be eliminated entirely by also
+updating conditional expressions to use the circuit breaking protocol if
+the condition defines those methods. In that case, ``__then__`` would need
+to be updated to accept the left operand as a parameter, with short-circuiting
+indicated by passing in the circuit breaker itself::
+
+    class CircuitBreaker:
+        """Base circuit breaker type (available as types.CircuitBreaker)"""
+        def __init__(self, value, condition, inverse_type):
+            self.value = value
+            self._condition = condition
+            self._inverse_type = inverse_type
+        def __bool__(self):
+            return self._condition
+        def __not__(self):
+            return self._inverse_type(self.value)
+        def __then__(self, other):
+            if other is not self:
+                return other
+            return self.value # Short-circuit, remove the wrapper
+        def __else__(self, other):
+            if other is not self:
+                return other
+            return self.value # Short-circuit, remove the wrapper
+
+With this symmetric protocol, the definition of conditional expressions
+could be updated to also make the ``else`` clause optional::
+
+    test: else_test ['if' or_test ['else' test]] | lambdef
+    else_test: or_test ['else' test]
+
+(We would avoid the apparent simplification to ``else_test ('if' else_test)*``
+in order to make it easier to correctly preserve the semantics of normal
+conditional expressions)
+
+Given that expanded definition, the following statements would be
+functionally equivalent::
+
+    foo = calculate_default() if missing(foo)
+    foo = calculate_default() if foo is None else foo
+
+Just as the base proposal already makes the following equivalent::
+
+    foo = exists(foo) else calculate_default()
+    foo = foo if foo is not None else calculate_default()
+
+The ``if`` based circuit breaker form has the virtue of reading significantly
+better when used for conditional imperative commands like debug messages::
+
+    print(some_expensive_query()) if verbosity > 2
+
+If we went down this path, then ``operator.true`` would need to be declared
+as the nominal implicit circuit breaker when the condition didn't define the
+circuit breaker protocol itself (so the above example would produce ``None``
+if the debugging message was printed, and ``False`` otherwise)
+
+The main objection to this expansion of the proposal is that it makes it a
+more intrusive change that may potentially affect the behaviour of existing
+code, while the main point in its favour is that allowing both ``if`` and
+``else`` as circuit breaking operators and also supporting the circuit breaking
+protocol for normal conditional expressions would be significantly more
+self-consistent than special-casing a bare ``else`` as a stand-alone operator.
+
+
 Design Discussion
 =================
 
@@ -552,12 +658,13 @@ Implementation
 
 As with PEP 505, actual implementation has been deferred pending in-principle
 interest in the idea of making these changes - aside from the possible
-syntactic ambiguity concerns noted above, the implementation isn't really the
-hard part of these proposals, the hard part is deciding whether or not this is
-a change where the long term benefits for new and existing Python users
-outweigh the short term costs involved in the wider ecosystem (including
-developers of other implementations, language curriculum developers, and
-authors of other Python related educational material) adjusting to the change.
+syntactic ambiguity concerns covered by the grammer proposals above, the
+implementation isn't really the hard part of these proposals, the hard part
+is deciding whether or not this is a change where the long term benefits for
+new and existing Python users outweigh the short term costs involved in the
+wider ecosystem (including developers of other implementations, language
+curriculum developers, and authors of other Python related educational
+material) adjusting to the change.
 
 ...TBD...
 
