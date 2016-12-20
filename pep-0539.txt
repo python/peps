@@ -1,0 +1,198 @@
+PEP: 539
+Title: A New C-API for Thread-Local Storage in CPython
+Version: $Revision$
+Last-Modified: $Date$
+Author: Erik M. Bray, Masayuki Yamamoto
+BDFL-Delegate: Nick Coghlan
+Status: Draft
+Type: Informational
+Content-Type: text/x-rst
+Created: 20-Dec-2016
+Post-History: 16-Dec-2016
+
+
+Abstract
+========
+
+The proposal is to add a new Thread Local Storage (TLS) API to CPython which
+would supersede use of the existing TLS API within the CPython interpreter,
+while deprecating the existing API.
+
+Because the existing TLS API is only used internally (it is not mentioned in
+the documentation, and the header that defines it, ``pythread.h``, is not
+included in ``Python.h`` either directly or indirectly), this proposal probably
+only affects CPython, but might also affect other interpreter implementations
+(PyPy?) that implement parts of the CPython API.
+
+
+Specification
+=============
+
+The current API for TLS used inside the CPython interpreter consists of 5
+functions::
+
+    PyAPI_FUNC(int) PyThread_create_key(void)
+    PyAPI_FUNC(void) PyThread_delete_key(int key)
+    PyAPI_FUNC(int) PyThread_set_key_value(int key, void *value)
+    PyAPI_FUNC(void *) PyThread_get_key_value(int key)
+    PyAPI_FUNC(void) PyThread_delete_key_value(int key)
+
+These would be superseded by a new set of analogous functions::
+
+    PyAPI_FUNC(int) PyThread_tss_create(Py_tss_t *key)
+    PyAPI_FUNC(void) PyThread_tss_delete(Py_tss_t key)
+    PyAPI_FUNC(int) PyThread_tss_set(Py_tss_t key, void *value)
+    PyAPI_FUNC(void *) PyThread_tss_get(Py_tss_t key)
+    PyAPI_FUNC(void) PyThread_tss_delete_value(Py_tss_t key)
+
+along with a new type ``Py_tss_t``--an opaque type the definition of which
+is undefined here, and may depend on the underlying TLS implementation.
+
+The new ``PyThread_tss_`` functions are almost exactly analogous to their
+original counterparts with a minor difference:  Whereas
+``PyThread_create_key`` takes no arguments and returns a TLS key as an
+``int``, ``PyThread_tss_create`` takes a ``Py_tss_t*`` as an argument, and
+returns a ``Py_tss_t`` by pointer--the ``int`` return value is a status,
+returning zero on success and non-zero on failure.  The meanings of non-zero
+status codes are not not defined by this specification.
+
+The old ``PyThread_*_key*`` functions will be marked as deprecated.
+
+Additionally, on platforms where ``sizeof(pthread_key_t) != sizeof(int)``,
+``PyThread_create_key`` will return immediately with a failure status, and
+the other TLS functions will all be no-ops.
+
+
+Motivation
+==========
+
+The primary problem at issue here is the type of the keys (``int``) used for
+TLS values, as defined by the original PyThread TLS API.
+
+The original TLS API was added to Python by GvR back in 1997, and at the
+time the key used to represent a TLS value was an ``int``, and so it has
+been to the time of writing.  This used CPython's own TLS implementation,
+the current generation of which can still be found, largely unchanged, in
+Python/thread.c.  Support for implementation of the API on top of native
+thread implementations (NT and pthreads) was added much later, and the
+built-in implementation may still be used on other platforms.
+
+The problem with the choice of ``int`` to represent a TLS key, is that while
+it was fine for CPython's internal TLS implementation, and happens to be
+compatible with NT (which uses ``DWORD`` for the analogous data), it is not
+compatible with the POSIX standard for the pthreads API, which defines
+``pthread_key_t`` as an opaque type not further defined by the standard (as
+with ``Py_tss_t`` described above).  This leaves it up to the underlying
+implementation how a ``pthread_key_t`` value is used to look up
+thread-specific data.
+
+This has not generally been a problem for Python's API, as it just happens
+that on Linux ``pthread_key_t`` is defined as an ``unsigned int``, and so is
+fully compatible with Python's TLS API--``pthread_key_t``'s created by
+``pthread_create_key`` can be freely cast to ``int`` and back (well, not
+exactly, even this has some limitations as pointed out by issue #22206).
+
+However, as issue #25658 points out, there are at least some platforms
+(namely Cygwin, CloudABI, but likely others as well) which have otherwise
+modern and POSIX-compliant pthreads implementations, but are not compatible
+with Python's API because their ``pthread_key_t`` is defined in a way that
+cannot be safely cast to ``int``.  In fact, the possibility of running into
+this problem was raised by MvL at the time pthreads TLS was added [1]_.
+
+It could be argued that PEP-11 makes specific requirements for supporting a
+new, not otherwise officially-support platform (such as CloudABI), and that
+the status of Cygwin support is currently dubious.  However, this creates a
+very high barrier to supporting platforms that are otherwise Linux- and/or
+POSIX-compatible and where CPython might otherwise "just work" except for
+this one hurdle.  CPython itself imposes this implementation barrier by way
+of an API that is not compatible with POSIX (and in fact makes invalid
+assumptions about pthreads).
+
+
+Rationale for Proposed Solution
+===============================
+
+The use of an opaque type (``Py_tss_t``) to key TLS values allows the API to
+be compatible, at least in this regard, with CPython's internal TLS
+implementation, as well as all present (NT and posix) and future (C11?)
+native TLS implementations supported by CPython, as it allows the definition
+of ``Py_tss_t`` to depend on the underlying implementation.
+
+A new API must be introduced, rather than changing the function signatures of
+the current API, in order to maintain backwards compatibility.  The new API
+also more clearly groups together these related functions under a single name
+prefix, ``PyThread_tss_``.  The "tss" in the name stands for "thread-specific
+storage", and was influenced by the naming and design of the "tss" API that is
+part of the C11 threads API.  However, this is in no way meant to imply
+compatibility with or support for the C11 threads API, or signal any future
+intention of supporting C11--it's just the influence for the naming and design.
+
+Changing ``PyThread_create_key`` to immediately return a failure status on
+systems using pthreads where ``sizeof(int) != sizeof(pthread_key_t)`` is
+intended as a sanity check:  Currently, ``PyThread_create_key`` may report
+initial success on such systems, but attempts to use the returned key are
+likely to fail.  Although in practice this failure occurs earlier in the
+interpreter initialization, it's better to fail immediately at the source of
+problem (``PyThread_create_key``) rather than sometime later when use of an
+invalid key is attempted.  In other words, this indicates clearly that the
+old API is not supported on platforms where it cannot be used reliably, and
+that no effort will be made to add such support.
+
+
+Rejected Ideas
+==============
+
+* Do nothing: The status quo is fine because it works on Linux, and platforms
+  wishing to be supported by CPython should follow the requirements of
+  PEP-11.  As explained above, while this would be a fair argument if
+  CPython were being to asked to make changes to support particular quirks
+  or features of a specific platform, in this case it is quirk of CPython
+  that prevents it from being used to its full potential on otherwise
+  POSIX-compliant platforms.  The fact that the current implementation
+  happens to work on Linux is a happy accident, and there's no guarantee
+  that this will never change.
+
+* Affected platforms should just configure Python ``--without-threads``:
+  This is a possible temporary workaround to the issue, but only that.
+  Python should not be hobbled on affected platforms despite them being
+  otherwise perfectly capable of running multi-threaded Python.
+
+* Affected platforms should not define ``Py_HAVE_NATIVE_TLS``: This is a more
+  acceptable alternative to the previous idea, and in fact there is a patch to
+  do just that [2]_.  However, CPython's internal TLS implementation being
+  "slower and clunkier" in general than native implementations still needlessly
+  hobbles performance on affected platforms.  At least one other module
+  (``tracemalloc``) is also broken if Python is built without
+  ``Py_HAVE_NATIVE_TLS``.
+
+* Keep the existing API, but work around the issue by providing a mapping from
+  ``pthread_key_t`` values to ``int`` values.  A couple attempts were made at
+  this ([3]_, [4]_), but this only injects needless complexity and overhead
+  into performance-critical code on platforms that are not currently affected
+  by this issue (such as Linux).  Even if use of this workaround were made
+  conditional on platform compatibility, it introduces platform-specific code
+  to maintain, and still has the problem of the previous rejected ideas of
+  needlessly hobbling performance on affected platforms.
+
+
+Implementation
+==============
+
+An initial version of a patch [5]_ is available on the bug tracker for this
+issue.
+
+
+Copyright
+=========
+
+This document has been placed in the public domain.
+
+
+References and Footnotes
+========================
+
+.. [1] https://bugs.python.org/msg116292
+.. [2] http://bugs.python.org/file45548/configure-pthread_key_t.patch
+.. [3] http://bugs.python.org/file44269/issue25658-1.patch
+.. [4] http://bugs.python.org/file44303/key-constant-time.diff
+.. [5] http://bugs.python.org/file45763/pythread-tss.patch
