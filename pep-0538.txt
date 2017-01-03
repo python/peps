@@ -38,8 +38,66 @@ may also choose to opt in to this behaviour for earlier Python 3.x releases by
 applying the necessary changes as a downstream patch to those versions.
 
 
-Specification
-=============
+Background
+==========
+
+While the CPython interpreter is starting up, it may need to convert from
+the ``char *`` format to the ``wchar_t *`` format, or from one of those formats
+to ``PyUnicodeObject *``, before its own text encoding handling machinery is
+fully configured. It handles these cases by relying on the operating system to
+do the conversion and then ensuring that the text encoding name reported by
+``sys.getfilesystemencoding()`` matches the encoding used during this early
+bootstrapping process.
+
+On Mac OS X, this is straightforward, as Apple guarantees that these operations
+will always use UTF-8 to do the conversion.
+
+On Windows, the limitations of the ``mbcs`` format used by default in these
+conversions proved sufficiently problematic that PEP 528 and PEP 529 were
+implemented to bypass the operating system supplied interfaces for binary data
+handling and force the use of UTF-8 instead.
+
+On non-Apple \*nix systems however, these operations are handled using the C
+locale system, which has the following characteristics [4_]:
+
+* by default, all processes start in the ``C`` locale, which uses ``ASCII``
+  for these conversions. This is almost never what anyone doing multilingual
+  text processing actually wants (including CPython)
+* calling ``setlocale(LC_ALL, "")`` reconfigures the active locale based on
+  the locale categories configured in the current process environment
+* if the locale requested by the current environment is unknown, or no specific
+  locale is configured, then the default ``C`` locale will remain active
+
+The specific locale category that covers the APIs that CPython depends on is
+``LC_CTYPE``, which applies to "classification and conversion of characters,
+and to multibyte and wide characters" [5_]. Accordingly, CPython includes the
+following key calls to ``setlocale``:
+
+* in ``Py_Initialize``, CPython calls ``setlocale(LC_CTYPE, "")``, such that
+  the configured locale settings for that category *always* match those set in
+  the environment. It does this unconditionally, and it *doesn't* revert the
+  process state change in ``Py_Finalize``
+* in the main ``python`` binary, CPython calls ``setlocale(LC_ALL, "")`` to
+  configure the entire C locale subsystem according to the process environment.
+  It does this prior to making any calls into the shared CPython library
+
+These calls are usually sufficient to provide sensible behaviour, but they can
+still fail in the following cases:
+
+* SSH environment forwarding means that SSH clients will often forward
+  client locale settings to servers that don't have that locale installed
+* some process environments (such as Linux containers) may not have any
+  explicit locale configured at all
+
+
+Proposal
+========
+
+To better handle the cases where CPython would otherwise end up attempting
+to operate in the ``C`` locale, this PEP proposes changes to CPython's
+behaviour both when it is run as a standalone command line application, as well
+as when it is used as a shared library to embed a Python runtime as part of a
+larger application.
 
 When ``Py_Initialize`` is called and CPython detects that the configured locale
 is the default ``C`` locale, the following warning will be issued::
@@ -49,16 +107,24 @@ is the default ``C`` locale, the following warning will be issued::
    `PYTHONALLOWCLOCALE=1 LC_CTYPE=C` to configure a similar environment
    when running Python directly.
 
+This warning informs both system and application integrators that they're
+running Python 3 in a configuration that we don't expect to work properly.
+
 By contrast, when CPython *is* the main application, it will instead
 automatically coerce the legacy C locale to the multilingual C.UTF-8 locale::
 
     Python detected LC_CTYPE=C, forcing LC_ALL & LANG to C.UTF-8 (set
     PYTHONALLOWCLOCALE to disable this locale coercion behaviour).
 
-This coercion is implemented by actually setting the ``LANG`` and ``LC_ALL``
-environment variables to ``C.UTF-8``, such that future calls to ``setlocale()``
-will see them, as will other components looking for those settings (such as
-GUI development frameworks).
+This locale coercion will mean that the standard Python binary should once
+again "just work" in the two main failure cases we're aware of (missing locale
+settings and SSH forwarding of unknown locales), as long as the target
+platform provides the ``C.UTF-8`` locale.
+
+This coercion will be implemented by actually setting the ``LANG`` and
+``LC_ALL`` environment variables to ``C.UTF-8``, such that future calls to
+``setlocale()`` will see them, as will other components looking for those
+settings (such as GUI development frameworks).
 
 The locale coercion will be skipped if the ``PYTHONALLOWCLOCALE`` environment
 variable is set to a non-empty string. The interpreter will always check for
@@ -96,7 +162,9 @@ and instead made it a deployment requirement that systems be configured to use
 UTF-8 as the text encoding for operating system interfaces. Similarly, Node.js
 assumes UTF-8 by default (a behaviour inherited from the V8 JavaScript engine)
 and requires custom build settings to indicate it should use the system
-locale settings for locale-aware operations.
+locale settings for locale-aware operations. Both the JVM and the .NET CLR
+use UTF-16-LE as their primary encoding for passing text between applications
+and the underlying platform.
 
 The challenge for CPython has been the fact that in addition to being used for
 network service development, it is also extensively used as an embedded
@@ -127,8 +195,9 @@ We've been trying to get strict bytes/text separation to work reliably in the
 legacy C locale for over a decade at this point. Not only haven't we been able
 to get it to work, neither has anyone else - the only viable alternatives
 identified have been to pass the bytes along verbatim without eagerly decoding
-them to text (Python 2, Ruby, etc), or else to ignore the nominal locale
-encoding entirely and assume the use of UTF-8 (Rust, Go, Node.js, etc).
+them to text (Python 2.x, Ruby, etc), or else to ignore the nominal C/C++ locale
+encoding entirely and assume the use of either UTF-8 (Rust, Go, Node.js, etc)
+or UTF-16-LE (JVM, .NET CLR).
 
 While this PEP ensures that developers that need to do so can still opt-in to
 running their Python code in the legacy C locale, it also makes clear that we
@@ -212,8 +281,8 @@ Implementation
 ==============
 
 A draft implementation of the change (including test cases) has been
-posted to issue 28180 [1_](which requests that ``sys.getfilesystemencoding()``
-default to ``utf-8``)
+posted to issue 28180 [1_], which is an end user request that
+``sys.getfilesystemencoding()`` default to ``utf-8`` rather than ``ascii``.
 
 
 Backporting to earlier Python 3 releases
@@ -265,6 +334,12 @@ References
 
 .. [3] Fedora: force C.UTF-8 when Python 3 is run under the C locale
    (https://bugzilla.redhat.com/show_bug.cgi?id=1404918)
+
+.. [4] GNU C: How Programs Set the Locale
+   ( https://www.gnu.org/software/libc/manual/html_node/Setting-the-Locale.html)
+
+.. [5] GNU C: Locale Categories
+   (https://www.gnu.org/software/libc/manual/html_node/Locale-Categories.html)
 
 
 Copyright
