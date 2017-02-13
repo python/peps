@@ -38,5 +38,6 @@ update:
 	git pull https://github.com/python/peps.git
 
 venv:
-	$(PYTHON) -m venv venv
+	$(PYTHON) -m pip install virtualenv
+	$(PYTHON) -m virtualenv venv
 	./venv/bin/python -m pip install -U docutils
