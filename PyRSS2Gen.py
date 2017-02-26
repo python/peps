@@ -1,28 +1,41 @@
 """PyRSS2Gen - A Python library for generating RSS 2.0 feeds."""
 
 __name__ = "PyRSS2Gen"
-__version__ = (1, 0, 0)
+__version__ = (1, 1, 0)
 __author__ = "Andrew Dalke <dalke@dalkescientific.com>"
 
 _generator_name = __name__ + "-" + ".".join(map(str, __version__))
 
 import datetime
 
+import sys
+
+if sys.version_info[0] == 3:
+    # Python 3
+    basestring = str
+    from io import StringIO
+else:
+    # Python 2
+    try:
+        from cStringIO import StringIO
+    except ImportError:
+        # Very old (or memory constrained) systems might
+        # have left out the compiled C version. Fall back
+        # to the pure Python one. Haven't seen this sort
+        # of system since the early 2000s.
+        from StringIO import StringIO
+
 # Could make this the base class; will need to add 'publish'
 class WriteXmlMixin:
-    def write_xml(self, outfile, encoding = "utf-8"):
+    def write_xml(self, outfile, encoding = "iso-8859-1"):
         from xml.sax import saxutils
         handler = saxutils.XMLGenerator(outfile, encoding)
         handler.startDocument()
         self.publish(handler)
         handler.endDocument()
 
-    def to_xml(self, encoding = "utf-8"):
-        try:
-            import cStringIO as StringIO
-        except ImportError:
-            import StringIO
-        f = StringIO.StringIO()
+    def to_xml(self, encoding = "iso-8859-1"):
+        f = StringIO()
         self.write_xml(f, encoding)
         return f.getvalue()
 
@@ -350,7 +363,7 @@ class RSS2(WriteXmlMixin):
         ttl = self.ttl
         if isinstance(self.ttl, int):
             ttl = IntElement("ttl", ttl)
-        _opt_element(handler, "tt", ttl)
+        _opt_element(handler, "ttl", ttl)
 
         if self.image is not None:
             self.image.publish(handler)
