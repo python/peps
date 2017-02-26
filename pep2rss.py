@@ -69,4 +69,5 @@ rss = rssgen.RSS2(
     lastBuildDate = datetime.datetime.now(),
     items = items)
 
-file(RSS_PATH, 'w').write(rss.to_xml())
+with open(RSS_PATH, 'w') as fp:
+    fp.write(rss.to_xml())
