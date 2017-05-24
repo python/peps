@@ -507,24 +507,29 @@ non-protocol generic types::
 ``Protocol[T, S, ...]`` is allowed as a shorthand for
 ``Protocol, Generic[T, S, ...]``.
 
-Declaring variance is not necessary for protocol classes, since it can be
-inferred from a protocol definition. Examples::
+User-defined generic protocols support explicitly declared variance.
+Type checkers will warn if the inferred variance is different from
+the declared variance. Examples::
 
-  class Box(Protocol[T]):
-      def content(self) -> T:
+  T = TypeVar('T')
+  T_co = TypeVar('T_co', covariant=True)
+  T_contra = TypeVar('T_contra', contravariant=True)
+
+  class Box(Protocol[T_co]):
+      def content(self) -> T_co:
           ...
 
   box: Box[float]
   second_box: Box[int]
-  box = second_box  # This is OK due to the inferred covariance of 'Box'.
+  box = second_box  # This is OK due to the covariance of 'Box'.
 
-  class Sender(Protocol[T]):
-      def send(self, data: T) -> int:
+  class Sender(Protocol[T_contra]):
+      def send(self, data: T_contra) -> int:
           ...
 
   sender: Sender[float]
   new_sender: Sender[int]
-  new_sender = sender  # OK, type checker finds that 'Sender' is contravariant.
+  new_sender = sender  # OK, 'Sender' is contravariant.
 
   class Proto(Protocol[T]):
       attr: T  # this class is invariant, since it has a mutable attribute
@@ -532,6 +537,16 @@ inferred from a protocol definition. Examples::
   var: Proto[float]
   another_var: Proto[int]
   var = another_var  # Error! 'Proto[float]' is incompatible with 'Proto[int]'.
+
+Note that unlike nominal classes, de-facto covariant protocols cannot be
+declared as invariant, since this can break transitivity of subtyping
+(see `rejected`_ ideas for details). For example::
+
+  T = TypeVar('T')
+
+  class AnotherBox(Protocol[T]):  # Error, this protocol is covariant in T,
+      def content(self) -> T:     # not invariant.
+          ...
 
 
 Recursive protocols
@@ -562,7 +577,7 @@ Continuing the previous example::
 
   def walk(graph: Traversable) -> None:
       ...
-  tree: Tree[float] = Tree(0, [])
+  tree: Tree[float] = Tree()
   walk(tree)  # OK, 'Tree[float]' is a subtype of 'Traversable'
 
 
@@ -771,17 +786,21 @@ Implementation details
 
 The runtime implementation could be done in pure Python without any
 effects on the core interpreter and standard library except in the
-``typing`` module:
+``typing`` module, and a minor update to ``collections.abc``:
 
 * Define class ``typing.Protocol`` similar to ``typing.Generic``.
 * Implement metaclass functionality to detect whether a class is
-  a protocol or not. Add a class attribute ``__protocol__ = True``
+  a protocol or not. Add a class attribute ``_is_protocol = True``
   if that is the case. Verify that a protocol class only has protocol
   base classes in the MRO (except for object).
-* Implement ``@runtime`` that adds all attributes to ``__subclasshook__()``.
+* Implement ``@runtime`` that allows ``__subclasshook__()`` performing
+  structural instance and subclass checks as in ``collections.abc`` classes.
 * All structural subtyping checks will be performed by static type checkers,
   such as ``mypy`` [mypy]_. No additional support for protocol validation will
   be provided at runtime.
+* Classes ``Mapping``, ``MutableMapping``, ``Sequence``, and
+  ``MutableSequence`` in ``collections.abc`` module will support structural
+  instance and subclass checks (like e.g. ``collections.abc.Iterable``).
 
 
 Changes in the typing module
@@ -879,8 +898,8 @@ reasons:
   Python runtime, which won't happen.
 
 
-Allow protocols subclassing normal classes
-------------------------------------------
+Protocols subclassing normal classes
+------------------------------------
 
 The main rationale to prohibit this is to preserve transitivity of subtyping,
 consider this example::
@@ -1118,6 +1137,74 @@ This was rejected for the following reasons:
   it has an unsafe override.
 
 
+Covariant subtyping of mutable attributes
+-----------------------------------------
+
+Rejected because covariant subtyping of mutable attributes is not safe.
+Consider this example::
+
+  class P(Protocol):
+      x: float
+
+  def f(arg: P) -> None:
+      arg.x = 0.42
+
+  class C:
+      x: int
+
+  c = C()
+  f(c)  # Would typecheck if covariant subtyping
+        # of mutable attributes were allowed
+  c.x >> 1  # But this fails at runtime
+
+It was initially proposed to allow this for practical reasons, but it was
+subsequently rejected, since this may mask some hard to spot bugs.
+
+
+Overriding inferred variance of protocol classes
+------------------------------------------------
+
+It was proposed to allow declaring protocols as invariant if they are actually
+covariant or contravariant (as it is possible for nominal classes, see PEP 484).
+However, it was decided not to do this because of several downsides:
+
+* Declared protocol invariance breaks transitivity of sub-typing. Consider
+  this situation::
+
+    T = TypeVar('T')
+
+    class P(Protocol[T]):  # Declared as invariant
+        def meth(self) -> T:
+            ...
+    class C:
+        def meth(self) -> float:
+            ...
+    class D(C):
+        def meth(self) -> int:
+            ...
+
+  Now we have that ``D`` is a subtype of ``C``, and ``C`` is a subtype of
+  ``P[float]``. But ``D`` is *not* a subtype of ``P[float]`` since ``D``
+  implements ``P[int]``, and ``P`` is invariant. There is a possibility
+  to "cure" this by looking for protocol implementations in MROs but this
+  will be too complex in a general case, and this "cure" requires abandoning
+  simple idea of purely structural subtyping for protocols.
+
+* Subtyping checks will always require type inference for protocols. In the
+  above example a user may complain: "Why did you infer ``P[int]`` for
+  my ``D``? It implements ``P[float]``!". Normally, inference can be overruled
+  by an explicit annotation, but here this will require explicit subclassing,
+  defeating the purpose of using protocols.
+
+* Allowing overriding variance will make impossible more detailed error
+  messages in type checkers citing particular conflicts in member
+  type signatures.
+
+* Finally, explicit is better than implicit in this case. Requiring user to
+  declare correct variance will simplify understanding the code and will avoid
+  unexpected errors at the point of use.
+
+
 Support adapters and adaptation
 -------------------------------
 
@@ -1179,6 +1266,8 @@ https://github.com/ilevkivskyi/typeshed/tree/protocols. Installation steps::
 
 The runtime implementation of protocols in ``typing`` module is
 found at https://github.com/ilevkivskyi/typehinting/tree/protocols.
+The version of ``collections.abc`` with structural behavior for mappings and
+sequences is found at https://github.com/ilevkivskyi/cpython/tree/protocols.
 
 
 References
