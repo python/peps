@@ -398,7 +398,7 @@ class PEPHeaders(Transform):
                 # empty
                 continue
             para = body[0]
-            if name == 'author':
+            if name in ('author', 'bdfl-delegate'):
                 for node in para:
                     if isinstance(node, nodes.reference):
                         node.replace_self(peps.mask_email(node))
