@@ -385,182 +385,71 @@ context for scheduled functions::
             return super().submit(fn)
 
 
-EC Semantics for Coroutines
----------------------------
+Generators
+----------
 
-Python :pep:`492` coroutines are used to implement cooperative
-multitasking.  For a Python end-user they are similar to threads,
-especially when it comes to sharing resources or modifying
-the global state.
+Generators in Python are producers of data, and ``yield`` expressions
+are used to suspend/resume their execution.  When generators suspend
+execution, their local state will "leak" to the outside code if they
+store it in a TLS or in a global variable::
 
-An event loop is needed to schedule coroutines.  Coroutines that
-are explicitly scheduled by the user are usually called Tasks.
-When a coroutine is scheduled, it can schedule other coroutines using
-an ``await`` expression.  In async/await world, awaiting a coroutine
-is equivalent to a regular function call in synchronous code.  Thus,
-Tasks are similar to threads.
+    local = threading.local()
 
-By drawing a parallel between regular multithreaded code and
-async/await, it becomes apparent that any modification of the
-execution context within one Task should be visible to all coroutines
-scheduled within it.  Any execution context modifications, however,
-must not be visible to other Tasks executing within the same OS
-thread.
+    def gen():
+        old_x = local.x
+        local.x = 'spam'
+        try:
+            yield
+            ...
+            yield
+        finally:
+            local.x = old_x
+
+The above code will not work as many Python users expect it to work.
+A simple ``next(gen())`` will set ``local.x`` to "spam" and it will
+never be reset back to its original value.
+
+One of the goals of this proposal is to provide a mechanism to isolate
+local state in generators.
 
 
-Coroutine Object Modifications
+Generator Object Modifications
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-To achieve this, a small set of modifications to the coroutine object
-is needed:
+To achieve this, we make a small set of modifications to the
+generator object:
 
 * New ``__logical_context__`` attribute.  This attribute is readable
   and writable for Python code.
 
-* When a coroutine object is instantiated, its ``__logical_context__``
-  is initialized with an empty Logical Context.
+* When a generator object is instantiated its ``__logical_context__``
+  is initialized with an empty ``LogicalContext``.
 
-* Coroutine's ``.send()`` and ``.throw()`` methods are modified as
+* Generator's ``.send()`` and ``.throw()`` methods are modified as
   follows (in pseudo-C)::
 
-    if coro.__logical_context__ is not None:
+    if gen.__logical_context__ is not NULL:
         tstate = PyThreadState_Get()
 
-        tstate.execution_context.push(coro.__logical_context__)
+        tstate.execution_context.push(gen.__logical_context__)
 
         try:
-            # Perform the actual `Coroutine.send()` or
-            # `Coroutine.throw()` call.
-            return coro.send(...)
+            # Perform the actual `Generator.send()` or
+            # `Generator.throw()` call.
+            return gen.send(...)
         finally:
-            coro.__logical_context__ = tstate.execution_context.pop()
+            gen.__logical_context__ = tstate.execution_context.pop()
     else:
-        # Perform the actual `Coroutine.send()` or
-        # `Coroutine.throw()` call.
-        return coro.send(...)
+        # Perform the actual `Generator.send()` or
+        # `Generator.throw()` call.
+        return gen.send(...)
 
-* When Python interpreter sees an ``await`` instruction, it inspects
-  the ``__logical_context__`` attribute of the coroutine that is about
-  to be awaited.  For ``await coro``:
+  If a generator has a non-NULL ``__logical_context__``, it will
+  be pushed to the EC and, therefore, generators will use it
+  to accumulate their local state.
 
-  * If ``coro.__logical_context__`` is an empty ``LogicalContext``
-    object that ``coro`` was created with, the interpreter will set
-    ``coro.__logical_context__`` to ``None``.
-
-  * If ``coro.__logical_context__`` was modified by Python code, the
-    interpreter will leave it as is.
-
-  This makes any changes to execution context made by nested coroutine
-  calls within a Task to be visible throughout the Task::
-
-      ci = sys.new_context_key('ci')
-
-      async def nested():
-          ci.set('nested')
-
-      async def main():
-          ci.set('main')
-          print('before:', ci.get())
-          await nested()
-          print('after:', ci.get())
-
-      # Will print:
-      #   before: main
-      #   after: nested
-
-  This mechanism also works for ``yield from`` in generators decorated
-  with ``@types.coroutine`` or ``@asyncio.coroutine``, which are
-  called "generator-based coroutines" according to :pep:`492`,
-  and should be fully compatible with native async/await coroutines.
-
-
-Tasks
-^^^^^
-
-In asynchronous frameworks like asyncio, coroutines are run by
-an event loop, and need to be explicitly scheduled (in asyncio
-coroutines are run by ``asyncio.Task``.)
-
-With the currently defined semantics, the interpreter makes
-coroutines linked by an ``await`` expression share the same
-Logical Context.
-
-The interpreter, however, is not aware of the Task concept, and
-cannot help with ensuring that new Tasks started in coroutines,
-use the correct EC::
-
-    current_request = sys.new_context_key('current_request')
-
-    async def child():
-        print('current request:', repr(current_request.get()))
-
-    async def handle_request(request):
-        current_request.set(request)
-        event_loop.create_task(child)
-
-    run(top_coro())
-
-    # Will print:
-    #   current_request: None
-
-To enable correct Execution Context propagation into Tasks, the
-asynchronous framework needs to assist the interpreter:
-
-* When ``create_task`` is called, it should capture the current
-  execution context with ``sys.get_execution_context()`` and save it
-  on the Task object.
-
-* When the Task object runs its coroutine object, it should execute
-  ``.send()`` and ``.throw()`` methods within the captured
-  execution context, using the ``sys.run_with_execution_context()``
-  function.
-
-With help from the asynchronous framework, the above snippet will
-run correctly, and the ``child()`` coroutine will be able to access
-the current request object through the ``current_request``
-Context Key.
-
-
-Event Loop Callbacks
-^^^^^^^^^^^^^^^^^^^^
-
-Similarly to Tasks, functions like asyncio's ``loop.call_soon()``
-should capture the current execution context with
-``sys.get_execution_context()`` and execute callbacks
-within it with ``sys.run_with_execution_context()``.
-
-This way the following code will work::
-
-    current_request = sys.new_context_key('current_request')
-
-    def log():
-        request = current_request.get()
-        print(request)
-
-    async def request_handler(request):
-        current_request.set(request)
-        get_event_loop.call_soon(log)
-
-
-Generators
-----------
-
-Generators in Python, while similar to Coroutines, are used in a
-fundamentally different way.  They are producers of data, and
-they use ``yield`` expression to suspend/resume their execution.
-
-A crucial difference between ``await coro`` and ``yield value`` is
-that the former expression guarantees that the ``coro`` will be
-executed fully, while the latter is producing ``value`` and
-suspending the generator until it gets iterated again.
-
-Generators, similarly to coroutines, have a ``__logical_context__``
-attribute, which is set to an empty Logical Context when created.
-
-Contrary to coroutines though, ``yield from o`` expression in
-generators (that are not generator-based coroutines) is semantically
-equivalent to ``for v in o: yield v``, therefore the interpreter does
-not attempt to control their ``__logical_context__``.
+  If a generator has no ``__logical_context__``, generators will
+  will use whatever LC they are being run in.
 
 
 EC Semantics for Generators
@@ -618,8 +507,8 @@ generator::
 Running generators without LC
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Similarly to coroutines, generators with ``__logical_context__``
-set to ``None`` simply use the outer Logical Context.
+If ``__logical_context__`` is set to ``None`` for a generator,
+it will simply use the outer Logical Context.
 
 The ``@contextlib.contextmanager`` decorator uses this mechanism to
 allow its generator to affect the EC::
@@ -670,6 +559,180 @@ imposed on generators with a regular Python iterator class::
             ...
 
 
+yield from
+^^^^^^^^^^
+
+Prior to :pep:`492`, ``yield from`` was used as one of the mechanisms
+to implement coroutines in Python.  :pep:`492` is built on top
+of ``yield from`` machinery, and it is even possible to make a
+generator compatible with async/await code by decorating it with
+``@types.coroutine`` (or ``@asyncio.coroutine``).  Generators
+decorated with these decorators follow the Execution Context
+semantics described below in the `EC Semantics for Coroutines`_
+section.
+
+Another ``yield from`` use is to compose generators.  Essentially,
+``yield from gen()`` is a better version of
+``for v in gen(): yield v`` (read more about many subtle details
+in :pep:`380`.)
+
+A crucial difference between ``await coro`` and ``yield value`` is
+that the former expression guarantees that the ``coro`` will be
+executed fully, while the latter is producing ``value`` and
+suspending the generator until it gets iterated again.
+
+Therefore, this proposal does not special case ``yield from``
+expression for regular generators::
+
+    item = sys.new_context_key('item')
+
+    def nested():
+        assert item.get() == 'outer'
+        item.set('inner')
+        yield
+
+    def outer():
+        item.set('outer')
+        yield from nested()
+        assert item.get() == 'outer'
+
+
+EC Semantics for Coroutines
+---------------------------
+
+Python :pep:`492` coroutines are used to implement cooperative
+multitasking.  For a Python end-user they are similar to threads,
+especially when it comes to sharing resources or modifying
+the global state.
+
+An event loop is needed to schedule coroutines.  Coroutines that
+are explicitly scheduled by the user are usually called Tasks.
+When a coroutine is scheduled, it can schedule other coroutines using
+an ``await`` expression.  In async/await world, awaiting a coroutine
+is equivalent to a regular function call in synchronous code.  Thus,
+Tasks are similar to threads.
+
+By drawing a parallel between regular multithreaded code and
+async/await, it becomes apparent that any modification of the
+execution context within one Task should be visible to all coroutines
+scheduled within it.  Any execution context modifications, however,
+must not be visible to other Tasks executing within the same OS
+thread.
+
+Similar to generators, coroutines have the new ``__logical_context__``
+attribute and same implementations of ``.send()`` and ``.throw()``
+methods.  The key difference is that coroutines start with
+``__logical_context__`` set to ``NULL`` (generators start with
+an empty ``LogicalContext``.)
+
+This means that it is expected that the asynchronous library and
+its Task abstraction will control how exactly coroutines interact
+with Execution Context.
+
+
+Tasks
+^^^^^
+
+In asynchronous frameworks like asyncio, coroutines are run by
+an event loop, and need to be explicitly scheduled (in asyncio
+coroutines are run by ``asyncio.Task``.)
+
+To enable correct Execution Context propagation into Tasks, the
+asynchronous framework needs to assist the interpreter:
+
+* When ``create_task`` is called, it should capture the current
+  execution context with ``sys.get_execution_context()`` and save it
+  on the Task object.
+
+* The ``__logical_context__`` of the wrapped coroutine should be
+  initialized to a new empty logical context.
+
+* When the Task object runs its coroutine object, it should execute
+  ``.send()`` and ``.throw()`` methods within the captured
+  execution context, using the ``sys.run_with_execution_context()``
+  function.
+
+For ``asyncio.Task``::
+
+    class Task:
+        def __init__(self, coro):
+            ...
+            self.exec_context = sys.get_execution_context()
+            coro.__logical_context__ = sys.new_logical_context()
+
+        def _step(self, val):
+            ...
+            sys.run_with_execution_context(
+                self.exec_context,
+                self.coro.send, val)
+            ...
+
+This makes any changes to execution context made by nested coroutine
+calls within a Task to be visible throughout the Task::
+
+    ci = sys.new_context_key('ci')
+
+    async def nested():
+        ci.set('nested')
+
+    async def main():
+        ci.set('main')
+        print('before:', ci.get())
+        await nested()
+        print('after:', ci.get())
+
+    asyncio.get_event_loop().run_until_complete(main())
+
+    # Will print:
+    #   before: main
+    #   after: nested
+
+New Tasks, started within another Task, will run in the correct
+execution context too.
+
+    current_request = sys.new_context_key('current_request')
+
+    async def child():
+        print('current request:', repr(current_request.get()))
+
+    async def handle_request(request):
+        current_request.set(request)
+        event_loop.create_task(child)
+
+    run(top_coro())
+
+    # Will print:
+    #   current_request: None
+
+The above snippet will run correctly, and the ``child()``
+coroutine will be able to access the current request object
+through the ``current_request`` Context Key.
+
+Any of the above examples would work if one the coroutines
+was a generator decorated with ``@asyncio.coroutine``.
+
+
+Event Loop Callbacks
+^^^^^^^^^^^^^^^^^^^^
+
+Similarly to Tasks, functions like asyncio's ``loop.call_soon()``
+should capture the current execution context with
+``sys.get_execution_context()`` and execute callbacks
+within it with ``sys.run_with_execution_context()``.
+
+This way the following code will work::
+
+    current_request = sys.new_context_key('current_request')
+
+    def log():
+        request = current_request.get()
+        print(request)
+
+    async def request_handler(request):
+        current_request.set(request)
+        get_event_loop.call_soon(log)
+
+
 Asynchronous Generators
 -----------------------
 
@@ -680,10 +743,6 @@ They have an ``__logical_context__`` attribute, which, similarly to
 regular generators, can be set to ``None`` to make them use the outer
 Logical Context.  This is used by the new
 ``contextlib.asynccontextmanager`` decorator.
-
-The EC support of ``await`` expression is implemented using the same
-approach as in coroutines, see the `Coroutine Object Modifications`_
-section.
 
 
 Greenlets
