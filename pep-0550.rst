@@ -1,8 +1,8 @@
 PEP: 550
-Title: Execution Context
+Title: Implicit Execution Context
 Version: $Revision$
 Last-Modified: $Date$
-Author: Yury Selivanov <yury@magic.io>
+Author: Yury Selivanov <yury@magic.io>, Nick Coghlan <ncoghlan@gmail.com>
 Status: Draft
 Type: Standards Track
 Content-Type: text/x-rst
@@ -14,11 +14,11 @@ Post-History: 11-Aug-2017, 15-Aug-2017, 18-Aug-2017
 Abstract
 ========
 
-This PEP proposes a new mechanism to manage execution state--the
+This PEP proposes a new mechanism to manage implicit execution state -- the
 logical environment in which a function, a thread, a generator,
-or a coroutine executes in.
+or a coroutine executes.
 
-A few examples of where having a reliable state storage is required:
+A few examples where having reliable implicit state storage is required:
 
 * Context managers like decimal contexts, ``numpy.errstate``,
   and ``warnings.catch_warnings``;
@@ -28,54 +28,126 @@ A few examples of where having a reliable state storage is required:
 
 * Profiling, tracing, and logging in complex and large code bases.
 
-The usual solution for storing state is to use a Thread-local Storage
-(TLS), implemented in the standard library as ``threading.local()``.
-Unfortunately, TLS does not work for the purpose of state isolation
-for generators or asynchronous code, because such code executes
-concurrently in a single thread.
+The proposed API is split into two main sections:
+
+* an implicit context *access* API, which consists of the ``ContextKey`` type,
+  its methods, and a helper function to create new ``ContextKey`` instances
+* an implicit context *management* API, which consists of the opaque
+  ``LogicalContext`` and ``ExecutionContext`` types, several helper functions
+  to create and manipulate these objects, and new attributes on generators and
+  coroutines to indicate whether or not they should be run in a private logical
+  context
+
+Note: the PEP is currently being redrafted to reflect the above separation into
+clearly distinct access and management APIs. The Specification section does
+*not* currently reflect that separation.
 
 
 Rationale
 =========
 
-Traditionally, a Thread-local Storage (TLS) is used for storing the
-state.  However, the major flaw of using the TLS is that it works only
-for multi-threaded code.  It is not possible to reliably contain the
-state within a generator or a coroutine.  For example, consider
-the following generator::
+In a variety of situations, especially those relying on operator overloading,
+it isn't always practical to pass all the required configuration state for an
+operation as an explicit function parameter.
 
-    def calculate(precision, ...):
-        with decimal.localcontext() as ctx:
-            # Set the precision for decimal calculations
-            # inside this block
-            ctx.prec = precision
+While module globals can sometimes be used for this purpose, they are often
+insufficient when an application wants to be using different contexts for
+different operations that may be executing concurrently (for example, the
+current decimal context, or the request currently being handled in a web
+framework).
 
-            yield calculate_something()
-            yield calculate_something_else()
+Traditionally, thread local storage (TLS), also known as thread-specific
+storage (TSS), has been used for storing this implicit state.  However, the
+major flaw of relying on thread locals for this use case is that it works only
+for thread-based concurrency: it fails to reliably contain state updates made
+within a generator or a coroutine.
 
-Decimal context is using a TLS to store the state, and because TLS is
-not aware of generators, the state can leak.  If a user iterates over
-the ``calculate()`` generator with different precisions one by one
-using a ``zip()`` built-in, the above code will not work correctly.
-For example::
+For example, consider the following generator::
 
-    g1 = calculate(precision=100)
-    g2 = calculate(precision=50)
+    import decimal
+    def precision_gen(value):
+        yield +value
+        yield +value
+        with decimal.localcontext(decimal.Context(prec=2)):
+            yield +value
+            yield +value
 
-    items = list(zip(g1, g2))
+And the following interactive session using that generator::
 
-    # items[0] will be a tuple of:
-    #   first value from g1 calculated with 100 precision,
-    #   first value from g2 calculated with 50 precision.
-    #
-    # items[1] will be a tuple of:
-    #   second value from g1 calculated with 50 precision (!!!),
-    #   second value from g2 calculated with 50 precision.
+    >>> value = decimal.Decimal("1.2345")
+    >>> print(value)
+    1.2345
+    >>> print(+value)
+    1.2345
+    >>> pg = precision_gen(value)
+    >>> print(next(pg))
+    1.2345
 
-An even scarier example would be using decimals to represent money
-in an async/await application: decimal calculations can suddenly
-lose precision in the middle of processing a request.  Currently,
-bugs like this are extremely hard to find and fix.
+So far, so good - the unary ``+`` operator rounds to the local context, the
+default decimal precision is 28, and so all three values are displayed the
+same way. Things also behave as expected if we reconfigure the decimal context
+outside the generator::
+
+    >>> decimal.setcontext(decimal.Context(prec=3))
+    >>> print(+value)
+    1.23
+    >>> print(next(pg))
+    1.23
+
+With the new more limited precision set, both the code inside the generator
+and the code outside the generator round their results to only 3 significant
+digits.
+
+However, problems arise once we advance the generator again and it
+*changes* the active decimal context in the current thread to round to only
+two significant digits::
+
+    >>> print(next(pg))
+    1.2
+    >>> print(+value) # Expecting 1.23
+    1.2
+
+Our state change, intended to be local to the generator, has *leaked*, and will
+now affect all other code running in that thread until the decimal context is
+updated again (whether by advancing the generator until it reverts its state
+change, or through other means).
+
+This isn't the only potentially perplexing consequence of combining thread
+locals with generators though, as even though the generator has explicitly
+configured a desired decimal precision, it remains possible for the code
+advancing the generator to override that setting::
+
+    >>> decimal.setcontext(decimal.Context(prec=28))
+    >>> print(+value)
+    1.2345
+    >>> print(next(pg)) # Expecting 1.2
+    1.2345
+
+Neither of those last two behaviours is desirable:
+
+* if a generator updates this kind of implicit context, we want that change to
+  be visible to the generator itself, and to other functions that the generator
+  calls, but we do *not* want it to be visible to the outer code advancing the
+  generator (at least, not by default - we do want it to remain available as an
+  explicitly opt-in behaviour)
+* while we want generators to respect changes to their implicit context by
+  default, we *also* want them to be able to reliably override that context,
+  such that readers can correctly reason about an example like the ``with``
+  statement in ``precision_gen()`` without relying on the assumption that the
+  calling code won't update the decimal context unexpectedly
+
+While the above example uses a generator for simplicity, a more realistic,
+and more concerning, example would be using decimals to represent money
+in an async/await application: if another coroutine running in the same thread
+adjusts the shared decimal context and then yields control of the thread
+without first reverting that change, decimal calculations may suddenly lose
+precision in the middle of processing a request.  Currently, implicit state
+management interaction bugs like this are extremely hard to find and fix.
+
+While the decimal module does offer more explicit context management features to
+avoid these kinds of unexpected side effects, actually adopting them means
+giving up on the attractive operator overloading syntax and instead using
+explicit method calls directly on Decimal context objects.
 
 Another common need for web applications is to have access to the
 current request object, or security context, or, simply, the request
@@ -93,37 +165,53 @@ URL for logging or submitting performance tracing data::
         # in asyncio out of the box.
 
 These examples are just a few out of many, where a reliable way to
-store context data is absolutely needed.
+store implicit context data is absolutely needed.
 
-The inability to use TLS for asynchronous code has lead to
-proliferation of ad-hoc solutions, which are limited in scope and
-do not support all required use cases.
+The difficulty of reliably using thread locals in asynchronous code has lead to
+a proliferation of ad-hoc solutions, which are limited in scope, do not support
+all required use cases, and can make it difficult to effectively share code
+that relies on implicit state management between different asynchronous
+frameworks.
 
-Current status quo is that any library, including the standard
-library, that uses a TLS, will likely not work as expected in
-asynchronous code or with generators (see [3]_ as an example issue.)
+As a result, the current status quo is that any library, including the
+standard library, that relies on thread local variables for implicit state
+management, will likely not work as expected in asynchronous code or with
+generators (see [3]_ as an example issue.)
+
+
+Background
+==========
+
+Python is not the only language to face this implicit context management
+problem, as it is inherent in the notion of supporting asynchronous operations
+that can be suspended and resumed independently of the underlying operating
+system thread executing them.
 
 Some languages that have coroutines or generators recommend to
 manually pass a ``context`` object to every function, see [1]_
 describing the pattern for Go.  This approach, however, has limited
 use for Python, where we have a huge ecosystem that was built to work
-with a TLS-like context.  Moreover, passing the context explicitly
+with a TLS-like implicit context.  Moreover, passing the context explicitly
 does not work at all for libraries like ``decimal`` or ``numpy``,
 which use operator overloading.
 
-.NET runtime, which has support for async/await, has a generic
+The .NET runtime, which has support for async/await, has a generic
 solution of this problem, called ``ExecutionContext`` (see [2]_).
 On the surface, working with it is very similar to working with a TLS,
-but the former explicitly supports asynchronous code.
+but the ExecutionContext concept is explicitly designed to work correctly
+for asynchronous code.
 
 
 Goals
 =====
 
-The goal of this PEP is to provide a more reliable alternative to
-``threading.local()``.  It should be explicitly designed to work with
-Python execution model, equally supporting threads, generators, and
-coroutines.
+The goal of this PEP is to provide an alternative to ``threading.local()``
+for use by libraries (such as the standard library's ``decimal`` module)
+that actually want to track logical threads of control within an application,
+rather than specifically tracking operating system level threads.
+
+The proposed API is explicitly designed to work with Python's execution model,
+equally supporting threads, generators, and coroutines.
 
 An acceptable solution for Python should meet the following
 requirements:
