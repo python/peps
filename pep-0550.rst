@@ -2,547 +2,648 @@ PEP: 550
 Title: Execution Context
 Version: $Revision$
 Last-Modified: $Date$
-Author: Yury Selivanov <yury@magic.io>
+Author: Yury Selivanov <yury@magic.io>,
+        Elvis Pranskevichus <elvis@magic.io>
 Status: Draft
 Type: Standards Track
 Content-Type: text/x-rst
 Created: 11-Aug-2017
 Python-Version: 3.7
-Post-History: 11-Aug-2017, 15-Aug-2017, 18-Aug-2017
+Post-History: 11-Aug-2017, 15-Aug-2017, 18-Aug-2017, 25-Aug-2017
 
 
 Abstract
 ========
 
-This PEP proposes a new mechanism to manage execution state--the
-logical environment in which a function, a thread, a generator,
-or a coroutine executes in.
+This PEP adds a new generic mechanism of ensuring consistent access
+to non-local state in the context of out-of-order execution, such
+as in Python generators and coroutines.
 
-A few examples of where having a reliable state storage is required:
-
-* Context managers like decimal contexts, ``numpy.errstate``,
-  and ``warnings.catch_warnings``;
-
-* Storing request-related data such as security tokens and request
-  data in web applications, implementing i18n;
-
-* Profiling, tracing, and logging in complex and large code bases.
-
-The usual solution for storing state is to use a Thread-local Storage
-(TLS), implemented in the standard library as ``threading.local()``.
-Unfortunately, TLS does not work for the purpose of state isolation
-for generators or asynchronous code, because such code executes
-concurrently in a single thread.
+Thread-local storage, such as ``threading.local()``, is inadequate for
+programs that execute concurrently in the same OS thread.  This PEP
+proposes a solution to this problem.
 
 
 Rationale
 =========
 
-Traditionally, a Thread-local Storage (TLS) is used for storing the
-state.  However, the major flaw of using the TLS is that it works only
-for multi-threaded code.  It is not possible to reliably contain the
-state within a generator or a coroutine.  For example, consider
-the following generator::
+Prior to the advent of asynchronous programming in Python, programs
+used OS threads to achieve concurrency.  The need for thread-specific
+state was solved by ``threading.local()`` and its C-API equivalent,
+``PyThreadState_GetDict()``.
 
-    def calculate(precision, ...):
+A few examples of where Thread-local storage (TLS) is commonly
+relied upon:
+
+* Context managers like decimal contexts, ``numpy.errstate``,
+  and ``warnings.catch_warnings``.
+
+* Request-related data, such as security tokens and request
+  data in web applications, language context for ``gettext`` etc.
+
+* Profiling, tracing, and logging in large code bases.
+
+Unfortunately, TLS does not work well for programs which execute
+concurrently in a single thread.  A Python generator is the simplest
+example of a concurrent program.  Consider the following::
+
+    def fractions(precision, x, y):
         with decimal.localcontext() as ctx:
-            # Set the precision for decimal calculations
-            # inside this block
             ctx.prec = precision
+            yield Decimal(x) / Decimal(y)
+            yield Decimal(x) / Decimal(y**2)
 
-            yield calculate_something()
-            yield calculate_something_else()
-
-Decimal context is using a TLS to store the state, and because TLS is
-not aware of generators, the state can leak.  If a user iterates over
-the ``calculate()`` generator with different precisions one by one
-using a ``zip()`` built-in, the above code will not work correctly.
-For example::
-
-    g1 = calculate(precision=100)
-    g2 = calculate(precision=50)
+    g1 = fractions(precision=2, x=1, y=3)
+    g2 = fractions(precision=6, x=2, y=3)
 
     items = list(zip(g1, g2))
 
-    # items[0] will be a tuple of:
-    #   first value from g1 calculated with 100 precision,
-    #   first value from g2 calculated with 50 precision.
-    #
-    # items[1] will be a tuple of:
-    #   second value from g1 calculated with 50 precision (!!!),
-    #   second value from g2 calculated with 50 precision.
+The expected value of ``items`` is::
 
-An even scarier example would be using decimals to represent money
-in an async/await application: decimal calculations can suddenly
-lose precision in the middle of processing a request.  Currently,
-bugs like this are extremely hard to find and fix.
+    [(Decimal('0.33'), Decimal('0.666667')),
+     (Decimal('0.11'), Decimal('0.222222'))]
 
-Another common need for web applications is to have access to the
-current request object, or security context, or, simply, the request
-URL for logging or submitting performance tracing data::
+Rather surprisingly, the actual result is::
 
-    async def handle_http_request(request):
-        context.current_http_request = request
+    [(Decimal('0.33'), Decimal('0.666667')),
+     (Decimal('0.111111'), Decimal('0.222222'))]
 
-        await ...
-        # Invoke your framework code, render templates,
-        # make DB queries, etc, and use the global
-        # 'current_http_request' in that code.
+This is because Decimal context is stored as a thread-local, so
+concurrent iteration of the ``fractions()`` generator would corrupt
+the state.  A similar problem exists with coroutines.
 
-        # This isn't currently possible to do reliably
-        # in asyncio out of the box.
+Applications also often need to associate certain data with a given
+thread of execution.  For example, a web application server commonly
+needs access to the current HTTP request object.
 
-These examples are just a few out of many, where a reliable way to
-store context data is absolutely needed.
-
-The inability to use TLS for asynchronous code has lead to
+The inadequacy of TLS in asynchronous code has lead to the
 proliferation of ad-hoc solutions, which are limited in scope and
 do not support all required use cases.
 
-Current status quo is that any library, including the standard
-library, that uses a TLS, will likely not work as expected in
+The current status quo is that any library (including the standard
+library), which relies on TLS, is likely to be broken when used in
 asynchronous code or with generators (see [3]_ as an example issue.)
 
-Some languages that have coroutines or generators recommend to
-manually pass a ``context`` object to every function, see [1]_
-describing the pattern for Go.  This approach, however, has limited
-use for Python, where we have a huge ecosystem that was built to work
-with a TLS-like context.  Moreover, passing the context explicitly
-does not work at all for libraries like ``decimal`` or ``numpy``,
-which use operator overloading.
+Some languages, that support coroutines or generators, recommend
+passing the context manually as an argument to every function, see [1]_
+for an example.  This approach, however, has limited use for Python,
+where there is a large ecosystem that was built to work with a TLS-like
+context.  Furthermore, libraries like ``decimal`` or ``numpy`` rely
+on context implicitly in overloaded operator implementations.
 
-.NET runtime, which has support for async/await, has a generic
-solution of this problem, called ``ExecutionContext`` (see [2]_).
-On the surface, working with it is very similar to working with a TLS,
-but the former explicitly supports asynchronous code.
+The .NET runtime, which has support for async/await, has a generic
+solution for this problem, called ``ExecutionContext`` (see [2]_).
 
 
 Goals
 =====
 
-The goal of this PEP is to provide a more reliable alternative to
-``threading.local()``.  It should be explicitly designed to work with
-Python execution model, equally supporting threads, generators, and
-coroutines.
+The goal of this PEP is to provide a more reliable
+``threading.local()`` alternative, which:
 
-An acceptable solution for Python should meet the following
-requirements:
+* provides the mechanism and the API to fix non-local state issues
+  with coroutines and generators;
 
-* Transparent support for code executing in threads, coroutines,
-  and generators with an easy to use API.
-
-* Negligible impact on the performance of the existing code or the
-  code that will be using the new mechanism.
-
-* Fast C API for packages like ``decimal`` and ``numpy``.
-
-Explicit is still better than implicit, hence the new APIs should only
-be used when there is no acceptable way of passing the state
-explicitly.
+* has no or negligible performance impact on the existing code or
+  the code that will be using the new mechanism, including
+  libraries like ``decimal`` and ``numpy``.
 
 
-Specification
-=============
+High-Level Specification
+========================
 
-Execution Context is a mechanism of storing and accessing data specific
-to a logical thread of execution.  We consider OS threads,
-generators, and chains of coroutines (such as ``asyncio.Task``)
-to be variants of a logical thread.
+The full specification of this PEP is broken down into three parts:
 
-In this specification, we will use the following terminology:
+* High-Level Specification (this section): the description of the
+  overall solution.  We show how it applies to generators and
+  coroutines in user code, without delving into implementation details.
 
-* **Logical Context**, or LC, is a key/value mapping that stores the
-  context of a logical thread.
+* Detailed Specification: the complete description of new concepts,
+  APIs, and related changes to the standard library.
 
-* **Execution Context**, or EC, is an OS-thread-specific dynamic
-  stack of Logical Contexts.
+* Implementation Details: the description and analysis of data
+  structures and algorithms used to implement this PEP, as well as the
+  necessary changes to CPython.
 
-* **Context Key**, or CK, is an object used to set and get values
-  from the Execution Context.
+For the purpose of this section, we define *execution context* as an
+opaque container of non-local state that allows consistent access to
+its contents in the concurrent execution environment.
 
-Please note that throughout the specification we use simple
-pseudo-code to illustrate how the EC machinery works.  The actual
-algorithms and data structures that we will use to implement the PEP
-are discussed in the `Implementation Strategy`_ section.
+A *context variable* is an object representing a value in the
+execution context.  A new context variable is created by calling
+the ``new_context_var()`` function.  A context variable object has
+two methods:
+
+* ``lookup()``: returns the value of the variable in the current
+  execution context;
+
+* ``set()``: sets the value of the variable in the current
+  execution context.
 
 
-Context Key Object
+Regular Single-threaded Code
+----------------------------
+
+In regular, single-threaded code that doesn't involve generators or
+coroutines, context variables behave like globals::
+
+    var = new_context_var()
+
+    def sub():
+        assert var.lookup() == 'main'
+        var.set('sub')
+
+    def main():
+        var.set('main')
+        sub()
+        assert var.lookup() == 'sub'
+
+
+Multithreaded Code
 ------------------
 
-The ``sys.new_context_key(name)`` function creates a new ``ContextKey``
-object.  The ``name`` parameter is a ``str`` needed to render a
-representation of ``ContextKey`` object for introspection and
-debugging purposes.
+In multithreaded code, context variables behave like thread locals::
 
-``ContextKey`` objects have the following methods and attributes:
+    var = new_context_var()
 
-* ``.name``: read-only name;
+    def sub():
+        assert var.lookup() is None  # The execution context is empty
+                                     # for each new thread.
+        var.set('sub')
 
-* ``.set(o)`` method: set the value to ``o`` for the context key
-  in the execution context.
+    def main():
+        var.set('main')
 
-* ``.get()`` method: return the current EC value for the context key.
-  Context keys return ``None`` when the key is missing, so the method
-  never fails.
+        thread = threading.Thread(target=sub)
+        thread.start()
+        thread.join()
 
-The below is an example of how context keys can be used::
-
-    my_context = sys.new_context_key('my_context')
-    my_context.set('spam')
-
-    # Later, to access the value of my_context:
-    print(my_context.get())
-
-
-Thread State and Multi-threaded code
-------------------------------------
-
-Execution Context is implemented on top of Thread-local Storage.
-For every thread there is a separate stack of Logical Contexts --
-mappings of ``ContextKey`` objects to their values in the LC.
-New threads always start with an empty EC.
-
-For CPython::
-
-    PyThreadState:
-        execution_context: ExecutionContext([
-            LogicalContext({ci1: val1, ci2: val2, ...}),
-            ...
-        ])
-
-The ``ContextKey.get()`` and ``.set()`` methods are defined as
-follows (in pseudo-code)::
-
-    class ContextKey:
-
-        def get(self):
-            tstate = PyThreadState_Get()
-
-            for logical_context in reversed(tstate.execution_context):
-                if self in logical_context:
-                    return logical_context[self]
-
-            return None
-
-        def set(self, value):
-            tstate = PyThreadState_Get()
-
-            if not tstate.execution_context:
-                tstate.execution_context = [LogicalContext()]
-
-            tstate.execution_context[-1][self] = value
-
-With the semantics defined so far, the Execution Context can already
-be used as an alternative to ``threading.local()``::
-
-    def print_foo():
-        print(ci.get() or 'nothing')
-
-    ci = sys.new_context_key('ci')
-    ci.set('foo')
-
-    # Will print "foo":
-    print_foo()
-
-    # Will print "nothing":
-    threading.Thread(target=print_foo).start()
-
-
-Manual Context Management
--------------------------
-
-Execution Context is generally managed by the Python interpreter,
-but sometimes it is desirable for the user to take the control
-over it.  A few examples when this is needed:
-
-* running a computation in ``concurrent.futures.ThreadPoolExecutor``
-  with the current EC;
-
-* reimplementing generators with iterators (more on that later);
-
-* managing contexts in asynchronous frameworks (implement proper
-  EC support in ``asyncio.Task`` and ``asyncio.loop.call_soon``.)
-
-For these purposes we add a set of new APIs (they will be used in
-later sections of this specification):
-
-* ``sys.new_logical_context()``: create an empty ``LogicalContext``
-  object.
-
-* ``sys.new_execution_context()``: create an empty
-  ``ExecutionContext`` object.
-
-* Both ``LogicalContext`` and ``ExecutionContext`` objects are opaque
-  to Python code, and there are no APIs to modify them.
-
-* ``sys.get_execution_context()`` function.  The function returns a
-  copy of the current EC: an ``ExecutionContext`` instance.
-
-  The runtime complexity of the actual implementation of this function
-  can be O(1), but for the purposes of this section it is equivalent
-  to::
-
-    def get_execution_context():
-        tstate = PyThreadState_Get()
-        return copy(tstate.execution_context)
-
-* ``sys.run_with_execution_context(ec: ExecutionContext, func, *args,
-  **kwargs)`` runs ``func(*args, **kwargs)`` in the provided execution
-  context::
-
-    def run_with_execution_context(ec, func, *args, **kwargs):
-        tstate = PyThreadState_Get()
-
-        old_ec = tstate.execution_context
-
-        tstate.execution_context = ExecutionContext(
-            ec.logical_contexts + [LogicalContext()]
-        )
-
-        try:
-            return func(*args, **kwargs)
-        finally:
-            tstate.execution_context = old_ec
-
-  Any changes to Logical Context by ``func`` will be ignored.
-  This allows to reuse one ``ExecutionContext`` object for multiple
-  invocations of different functions, without them being able to
-  affect each other's environment::
-
-      ci = sys.new_context_key('ci')
-      ci.set('spam')
-
-      def func():
-          print(ci.get())
-          ci.set('ham')
-
-      ec = sys.get_execution_context()
-
-      sys.run_with_execution_context(ec, func)
-      sys.run_with_execution_context(ec, func)
-
-      # Will print:
-      #   spam
-      #   spam
-
-* ``sys.run_with_logical_context(lc: LogicalContext, func, *args,
-  **kwargs)`` runs ``func(*args, **kwargs)`` in the current execution
-  context using the specified logical context.
-
-  Any changes that ``func`` does to the logical context will be
-  persisted in ``lc``.  This behaviour is different from the
-  ``run_with_execution_context()`` function, which always creates
-  a new throw-away logical context.
-
-  In pseudo-code::
-
-    def run_with_logical_context(lc, func, *args, **kwargs):
-        tstate = PyThreadState_Get()
-
-        old_ec = tstate.execution_context
-
-        tstate.execution_context = ExecutionContext(
-            old_ec.logical_contexts + [lc]
-        )
-
-        try:
-            return func(*args, **kwargs)
-        finally:
-            tstate.execution_context = old_ec
-
-  Using the previous example::
-
-      ci = sys.new_context_key('ci')
-      ci.set('spam')
-
-      def func():
-          print(ci.get())
-          ci.set('ham')
-
-      ec = sys.get_execution_context()
-      lc = sys.new_logical_context()
-
-      sys.run_with_logical_context(lc, func)
-      sys.run_with_logical_context(lc, func)
-
-      # Will print:
-      #   spam
-      #   ham
-
-As an example, let's make a subclass of
-``concurrent.futures.ThreadPoolExecutor`` that preserves the execution
-context for scheduled functions::
-
-    class Executor(concurrent.futures.ThreadPoolExecutor):
-
-        def submit(self, fn, *args, **kwargs):
-            context = sys.get_execution_context()
-
-            fn = functools.partial(
-                sys.run_with_execution_context, context,
-                fn, *args, **kwargs)
-
-            return super().submit(fn)
+        assert var.lookup() == 'main'
 
 
 Generators
 ----------
 
-Generators in Python are producers of data, and ``yield`` expressions
-are used to suspend/resume their execution.  When generators suspend
-execution, their local state will "leak" to the outside code if they
-store it in a TLS or in a global variable::
+In generators, changes to context variables are local and are not
+visible to the caller, but are visible to the code called by the
+generator.  Once set in the generator, the context variable is
+guaranteed not to change between iterations::
 
-    local = threading.local()
+    var = new_context_var()
 
     def gen():
-        old_x = local.x
-        local.x = 'spam'
+        var.set('gen')
+        assert var.lookup() == 'gen'
+        yield 1
+
+        assert var.lookup() == 'gen'
+        yield 2
+
+    def main():
+        var.set('main')
+
+        g = gen()
+        next(g)
+        assert var.lookup() == 'main'
+
+        var.set('main modified')
+        next(g)
+        assert var.lookup() == 'main modified'
+
+Changes to caller's context variables are visible to the generator
+(unless they were also modified inside the generator)::
+
+    var = new_context_var()
+
+    def gen():
+        assert var.lookup() == 'var'
+        yield 1
+
+        assert var.lookup() == 'var modified'
+        yield 2
+
+    def main():
+        g = gen()
+
+        var.set('var')
+        next(g)
+
+        var.set('var modified')
+        next(g)
+
+Now, let's revisit the decimal precision example from the `Rationale`_
+section, and see how the execution context can improve the situation::
+
+    import decimal
+
+    decimal_prec = new_context_var()  # create a new context variable
+
+    # Pre-PEP 550 Decimal relies on TLS for its context.
+    # This subclass switches the decimal context storage
+    # to the execution context for illustration purposes.
+    #
+    class MyDecimal(decimal.Decimal):
+        def __init__(self, value="0"):
+            prec = decimal_prec.lookup()
+            if prec is None:
+                raise ValueError('could not find decimal precision')
+            context = decimal.Context(prec=prec)
+            super().__init__(value, context=context)
+
+    def fractions(precision, x, y):
+        # Normally, this would be set by a context manager,
+        # but for simplicity we do this directly.
+        decimal_prec.set(precision)
+
+        yield MyDecimal(x) / MyDecimal(y)
+        yield MyDecimal(x) / MyDecimal(y**2)
+
+    g1 = fractions(precision=2, x=1, y=3)
+    g2 = fractions(precision=6, x=2, y=3)
+
+    items = list(zip(g1, g2))
+
+The value of ``items`` is::
+
+    [(Decimal('0.33'), Decimal('0.666667')),
+     (Decimal('0.11'), Decimal('0.222222'))]
+
+which matches the expected result.
+
+
+Coroutines and Asynchronous Tasks
+---------------------------------
+
+In coroutines, like in generators, context variable changes are local
+and are not visible to the caller::
+
+    import asyncio
+
+    var = new_context_var()
+
+    async def sub():
+        assert var.lookup() == 'main'
+        var.set('sub')
+        assert var.lookup() == 'sub'
+
+    async def main():
+        var.set('main')
+        await sub()
+        assert var.lookup() == 'main'
+
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
+
+To establish the full semantics of execution context in couroutines,
+we must also consider *tasks*.  A task is the abstraction used by
+*asyncio*, and other similar libraries, to manage the concurrent
+execution of coroutines.  In the example above, a task is created
+implicitly by the ``run_until_complete()`` function.
+``asyncio.wait_for()`` is another example of implicit task creation::
+
+    async def sub():
+        await asyncio.sleep(1)
+        assert var.lookup() == 'main'
+
+    async def main():
+        var.set('main')
+
+        # waiting for sub() directly
+        await sub()
+
+        # waiting for sub() with a timeout
+        await asyncio.wait_for(sub(), timeout=2)
+
+        var.set('main changed')
+
+Intuitively, we expect the assertion in ``sub()`` to hold true in both
+invocations, even though the ``wait_for()`` implementation actually
+spawns a task, which runs ``sub()`` concurrently with ``main()``.
+
+Thus, tasks **must** capture a snapshot of the current execution
+context at the moment of their creation and use it to execute the
+wrapped coroutine whenever that happens.  If this is not done, then
+innocuous looking changes like wrapping a coroutine in a ``wait_for()``
+call would cause surprising breakage.  This leads to the following::
+
+    import asyncio
+
+    var = new_context_var()
+
+    async def sub():
+        # Sleeping will make sub() run after
+        # `var` is modified in main().
+        await asyncio.sleep(1)
+
+        assert var.lookup() == 'main'
+
+    async def main():
+        var.set('main')
+        loop.create_task(sub())  # schedules asynchronous execution
+                                 # of sub().
+        assert var.lookup() == 'main'
+        var.set('main changed')
+
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
+
+In the above code we show how ``sub()``, running in a separate task,
+sees the value of ``var`` as it was when ``loop.create_task(sub())``
+was called.
+
+Like tasks, the intuitive behaviour of callbacks scheduled with either
+``Loop.call_soon()``, ``Loop.call_later()``, or
+``Future.add_done_callback()`` is to also capture a snapshot of the
+current execution context at the point of scheduling, and use it to
+run the callback::
+
+    current_request = new_context_var()
+
+    def log_error(e):
+        logging.error('error when handling request %r',
+                      current_request.lookup())
+
+    async def render_response():
+        ...
+
+    async def handle_get_request(request):
+        current_request.set(request)
+
         try:
-            yield
-            ...
-            yield
-        finally:
-            local.x = old_x
-
-The above code will not work as many Python users expect it to work.
-A simple ``next(gen())`` will set ``local.x`` to "spam" and it will
-never be reset back to its original value.
-
-One of the goals of this proposal is to provide a mechanism to isolate
-local state in generators.
+            return await render_response()
+        except Exception as e:
+            get_event_loop().call_soon(log_error, e)
+            return '500 - Internal Server Error'
 
 
-Generator Object Modifications
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Detailed Specification
+======================
 
-To achieve this, we make a small set of modifications to the
-generator object:
+Conceptually, an *execution context* (EC) is a stack of logical
+contexts.  There is one EC per Python thread.
 
-* New ``__logical_context__`` attribute.  This attribute is readable
-  and writable for Python code.
+A *logical context* (LC) is a mapping of context variables to their
+values in that particular LC.
 
-* When a generator object is instantiated its ``__logical_context__``
-  is initialized with an empty ``LogicalContext``.
+A *context variable* is an object representing a value in the
+execution context.  A new context variable object is created by calling
+the ``sys.new_context_var(name: str)`` function.  The value of the
+``name`` argument is not used by the EC machinery, but may be used for
+debugging and introspection.
 
-* Generator's ``.send()`` and ``.throw()`` methods are modified as
-  follows (in pseudo-C)::
+The context variable object has the following methods and attributes:
 
-    if gen.__logical_context__ is not NULL:
-        tstate = PyThreadState_Get()
+* ``name``: the value passed to ``new_context_var()``.
 
-        tstate.execution_context.push(gen.__logical_context__)
+* ``lookup()``: traverses the execution context top-to-bottom,
+  until the variable value is found.  Returns ``None``, if the variable
+  is not present in the execution context;
 
-        try:
-            # Perform the actual `Generator.send()` or
-            # `Generator.throw()` call.
-            return gen.send(...)
-        finally:
-            gen.__logical_context__ = tstate.execution_context.pop()
-    else:
-        # Perform the actual `Generator.send()` or
-        # `Generator.throw()` call.
-        return gen.send(...)
-
-  If a generator has a non-NULL ``__logical_context__``, it will
-  be pushed to the EC and, therefore, generators will use it
-  to accumulate their local state.
-
-  If a generator has no ``__logical_context__``, generators will
-  will use whatever LC they are being run in.
+* ``set()``: sets the value of the variable in the topmost logical
+  context.
 
 
-EC Semantics for Generators
-^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Generators
+----------
 
-Every generator object has its own Logical Context that stores
-only its own local modifications of the context.  When a generator
-is being iterated, its logical context will be put in the EC stack
-of the current thread.  This means that the generator will be able
-to access keys from the surrounding context::
+When created, each generator object has an empty logical context object
+stored in its ``__logical_context__`` attribute.  This logical context
+is pushed onto the execution context at the beginning of each generator
+iteration and popped at the end::
 
-    local = sys.new_context_key("local")
-    global = sys.new_context_key("global")
+    var1 = sys.new_context_var('var1')
+    var2 = sys.new_context_var('var2')
 
-    def generator():
-        local.set('inside gen:')
-        while True:
-            print(local.get(), global.get())
-            yield
+    def gen():
+        var1.set('var1-gen')
+        var2.set('var2-gen')
 
-    g = gen()
+        # EC = [
+        #     outer_LC(),
+        #     gen_LC({var1: 'var1-gen', var2: 'var2-gen'})
+        # ]
+        n = nested_gen()  # nested_gen_LC is created
+        next(n)
+        # EC = [
+        #     outer_LC(),
+        #     gen_LC({var1: 'var1-gen', var2: 'var2-gen'})
+        # ]
 
-    local.set('hello')
-    global.set('spam')
-    next(g)
+        var1.set('var1-gen-mod')
+        var2.set('var2-gen-mod')
+        # EC = [
+        #     outer_LC(),
+        #     gen_LC({var1: 'var1-gen-mod', var2: 'var2-gen-mod'})
+        # ]
+        next(n)
 
-    local.set('world')
-    global.set('ham')
-    next(g)
+    def nested_gen():
+        # EC = [
+        #     outer_LC(),
+        #     gen_LC({var1: 'var1-gen', var2: 'var2-gen'}),
+        #     nested_gen_LC()
+        # ]
+        assert var1.lookup() == 'var1-gen'
+        assert var2.lookup() == 'var2-gen'
 
-    # Will print:
-    #   inside gen: spam
-    #   inside gen: ham
-
-Any changes to the EC in nested generators are invisible to the outer
-generator::
-
-    local = sys.new_context_key("local")
-
-    def inner_gen():
-        local.set('spam')
+        var1.set('var1-nested-gen')
+        # EC = [
+        #     outer_LC(),
+        #     gen_LC({var1: 'var1-gen', var2: 'var2-gen'}),
+        #     nested_gen_LC({var1: 'var1-nested-gen'})
+        # ]
         yield
 
-    def outer_gen():
-        local.set('ham')
-        yield from gen()
-        print(local.get())
+        # EC = [
+        #     outer_LC(),
+        #     gen_LC({var1: 'var1-gen-mod', var2: 'var2-gen-mod'}),
+        #     nested_gen_LC({var1: 'var1-nested-gen'})
+        # ]
+        assert var1.lookup() == 'var1-nested-gen'
+        assert var2.lookup() == 'var2-gen-mod'
 
-    list(outer_gen())
+        yield
 
-    # Will print:
-    #   ham
+    # EC = [outer_LC()]
+
+    g = gen()  # gen_LC is created for the generator object `g`
+    list(g)
+
+    # EC = [outer_LC()]
+
+The snippet above shows the state of the execution context stack
+throughout the generator lifespan.
 
 
-Running generators without LC
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+contextlib.contextmanager
+-------------------------
 
-If ``__logical_context__`` is set to ``None`` for a generator,
-it will simply use the outer Logical Context.
+Earlier, we've used the following example::
 
-The ``@contextlib.contextmanager`` decorator uses this mechanism to
-allow its generator to affect the EC::
+    import decimal
 
-    item = sys.new_context_key('item')
+    # create a new context variable
+    decimal_prec = sys.new_context_var('decimal_prec')
 
-    @contextmanager
-    def context(x):
-        old = item.get()
-        item.set('x')
+    # ...
+
+    def fractions(precision, x, y):
+        decimal_prec.set(precision)
+
+        yield MyDecimal(x) / MyDecimal(y)
+        yield MyDecimal(x) / MyDecimal(y**2)
+
+Let's extend it by adding a context manager::
+
+    @contextlib.contextmanager
+    def precision_context(prec):
+        old_rec = decimal_prec.lookup()
+
         try:
+            decimal_prec.set(prec)
             yield
         finally:
-            item.set(old)
+            decimal_prec.set(old_prec)
 
-    with context('spam'):
+Unfortunately, this would not work straight away, as the modification
+to the ``decimal_prec`` variable is contained to the
+``precision_context()`` generator, and therefore will not be visible
+inside the ``with`` block::
 
-        with context('ham'):
-            print(1, item.get())
+    def fractions(precision, x, y):
+        # EC = [{}, {}]
 
-        print(2, item.get())
+        with precision_context(precision):
+            # EC becomes [{}, {}, {decimal_prec: precision}] in the
+            # *precision_context()* generator,
+            # but here the EC is still [{}, {}]
 
-    # Will print:
-    #   1 ham
-    #   2 spam
+            # raises ValueError('could not find decimal precision')!
+            yield MyDecimal(x) / MyDecimal(y)
+            yield MyDecimal(x) / MyDecimal(y**2)
+
+The way to fix this is to set the generator's ``__logical_context__``
+attribute to ``None``.  This will cause the generator to avoid
+modifying the execution context stack.
+
+We modify the ``contextlib.contextmanager()`` decorator to
+set ``genobj.__logical_context__`` to ``None`` to produce
+well-behaved context managers::
+
+    def fractions(precision, x, y):
+        # EC = [{}, {}]
+
+        with precision_context(precision):
+            # EC = [{}, {decimal_prec: precision}]
+
+            yield MyDecimal(x) / MyDecimal(y)
+            yield MyDecimal(x) / MyDecimal(y**2)
+
+        # EC becomes [{}, {decimal_prec: None}]
 
 
-Implementing Generators with Iterators
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+asyncio
+-------
 
-The Execution Context API allows to fully replicate EC behaviour
-imposed on generators with a regular Python iterator class::
+``asyncio`` uses ``Loop.call_soon``, ``Loop.call_later``,
+and ``Loop.call_at`` to schedule the asynchronous execution of a
+function.  ``asyncio.Task`` uses ``call_soon()`` to further the
+execution of the wrapped coroutine.
 
-    class Gen:
+We modify ``Loop.call_{at,later,soon}`` to accept the new
+optional *execution_context* keyword argument, which defaults to
+the copy of the current execution context::
+
+    def call_soon(self, callback, *args, execution_context=None):
+        if execution_context is None:
+            execution_context = sys.get_execution_context()
+
+        # ... some time later
+
+        sys.run_with_execution_context(
+            execution_context, callback, args)
+
+The ``sys.get_execution_context()`` function returns a shallow copy
+of the current execution context.  By shallow copy here we mean such
+a new execution context that:
+
+* lookups in the copy provide the same results as in the original
+  execution context, and
+* any changes in the original execution context do not affect the
+  copy, and
+* any changes to the copy do not affect the original execution
+  context.
+
+Either of the following satisfy the copy requirements:
+
+* a new stack with shallow copies of logical contexts;
+* a new stack with one squashed logical context.
+
+The ``sys.run_with_execution_context(ec, func, *args, **kwargs)``
+function runs ``func(*args, **kwargs)`` with *ec* as the execution
+context.  The function performs the following steps:
+
+1. Set *ec* as the current execution context stack in the current
+   thread.
+2. Push an empty logical context onto the stack.
+3. Run ``func(*args, **kwargs)``.
+4. Pop the logical context from the stack.
+5. Restore the original execution context stack.
+6. Return or raise the ``func()`` result.
+
+These steps ensure that *ec* cannot be modified by *func*,
+which makes ``run_with_execution_context()`` idempotent.
+
+``asyncio.Task`` is modified as follows::
+
+    class Task:
+        def __init__(self, coro):
+            ...
+            # Get the current execution context snapshot.
+            self._exec_context = sys.get_execution_context()
+
+            self._loop.call_soon(
+                self._step,
+                execution_context=self._exec_context)
+
+        def _step(self, exc=None):
+            ...
+            self._loop.call_soon(
+                self._step,
+                execution_context=self._exec_context)
+            ...
+
+
+Generators Transformed into Iterators
+-------------------------------------
+
+Any Python generator can be represented as an equivalent iterator.
+Compilers like Cython rely on this axiom.  With respect to the
+execution context, such iterator should behave the same way as the
+generator it represents.
+
+This means that there needs to be a Python API to create new logical
+contexts and run code with a given logical context.
+
+The ``sys.new_logical_context()`` function creates a new empty
+logical context.
+
+The ``sys.run_with_logical_context(lc, func, *args, **kwargs)``
+function can be used to run functions in the specified logical context.
+The *lc* can be modified as a result of the call.
+
+The ``sys.run_with_logical_context()`` function performs the following
+steps:
+
+1. Push *lc* onto the current execution context stack.
+2. Run ``func(*args, **kwargs)``.
+3. Pop *lc* from the execution context stack.
+4. Return or raise the ``func()`` result.
+
+By using ``new_logical_context()`` and ``run_with_logical_context()``,
+we can replicate the generator behaviour like this::
+
+    class Generator:
 
         def __init__(self):
             self.logical_context = sys.new_logical_context()
@@ -558,327 +659,327 @@ imposed on generators with a regular Python iterator class::
             # Actual __next__ implementation.
             ...
 
+Let's see how this pattern can be applied to a real generator::
 
-yield from in generator-based coroutines
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    # create a new context variable
+    decimal_prec = sys.new_context_var('decimal_precision')
 
-Prior to :pep:`492`, ``yield from`` was used as one of the mechanisms
-to implement coroutines in Python.  :pep:`492` is built on top
-of ``yield from`` machinery, and it is even possible to make a
-generator compatible with async/await code by decorating it with
-``@types.coroutine`` (or ``@asyncio.coroutine``).
+    def gen_series(n, precision):
+        decimal_prec.set(precision)
 
-Generators decorated with these decorators follow the Execution
-Context semantics described below in the
-`EC Semantics for Coroutines`_ section below.
+        for i in range(1, n):
+            yield MyDecimal(i) / MyDecimal(3)
 
+    # gen_series is equivalent to the following iterator:
 
-yield from in generators
-^^^^^^^^^^^^^^^^^^^^^^^^
+    class Series:
 
-Another ``yield from`` use is to compose generators.  Essentially,
-``yield from gen()`` is a better version of
-``for v in gen(): yield v`` (read more about many subtle details
-in :pep:`380`.)
+        def __init__(self, n, precision):
+            # Create a new empty logical context on creation,
+            # like the generators do.
+            self.logical_context = sys.new_logical_context()
 
-A crucial difference between ``await coro`` and ``yield value`` is
-that the former expression guarantees that the ``coro`` will be
-executed fully, while the latter is producing ``value`` and
-suspending the generator until it gets iterated again.
+            # run_with_logical_context() will pushes
+            # self.logical_context onto the execution context stack,
+            # runs self._next_impl, and pops self.logical_context
+            # from the stack.
+            return sys.run_with_logical_context(
+                self.logical_context, self._init, n, precision)
 
-Therefore, this proposal does not special case ``yield from``
-expression for regular generators::
+        def _init(self, n, precision):
+            self.i = 1
+            self.n = n
+            decimal_prec.set(precision)
 
-    item = sys.new_context_key('item')
+        def __iter__(self):
+            return self
 
-    def nested():
-        assert item.get() == 'outer'
-        item.set('inner')
-        yield
+        def __next__(self):
+            return sys.run_with_logical_context(
+                self.logical_context, self._next_impl)
 
-    def outer():
-        item.set('outer')
-        yield from nested()
-        assert item.get() == 'outer'
+        def _next_impl(self):
+            decimal_prec.set(self.precision)
+            result = MyDecimal(self.i) / MyDecimal(3)
+            self.i += 1
+            return result
 
+For regular iterators such approach to logical context management is
+normally not necessary, and it is recommended to set and restore
+context variables directly in ``__next__``::
 
-EC Semantics for Coroutines
----------------------------
+    class Series:
 
-Python :pep:`492` coroutines are used to implement cooperative
-multitasking.  For a Python end-user they are similar to threads,
-especially when it comes to sharing resources or modifying
-the global state.
+        def __next__(self):
+            old_prec = decimal_prec.lookup()
 
-An event loop is needed to schedule coroutines.  Coroutines that
-are explicitly scheduled by the user are usually called Tasks.
-When a coroutine is scheduled, it can schedule other coroutines using
-an ``await`` expression.  In async/await world, awaiting a coroutine
-is equivalent to a regular function call in synchronous code.  Thus,
-Tasks are similar to threads.
-
-By drawing a parallel between regular multithreaded code and
-async/await, it becomes apparent that any modification of the
-execution context within one Task should be visible to all coroutines
-scheduled within it.  Any execution context modifications, however,
-must not be visible to other Tasks executing within the same OS
-thread.
-
-Similar to generators, coroutines have the new ``__logical_context__``
-attribute and same implementations of ``.send()`` and ``.throw()``
-methods.  The key difference is that coroutines start with
-``__logical_context__`` set to ``NULL`` (generators start with
-an empty ``LogicalContext``.)
-
-This means that it is expected that the asynchronous library and
-its Task abstraction will control how exactly coroutines interact
-with Execution Context.
-
-
-Tasks
-^^^^^
-
-In asynchronous frameworks like asyncio, coroutines are run by
-an event loop, and need to be explicitly scheduled (in asyncio
-coroutines are run by ``asyncio.Task``.)
-
-To enable correct Execution Context propagation into Tasks, the
-asynchronous framework needs to assist the interpreter:
-
-* When ``create_task`` is called, it should capture the current
-  execution context with ``sys.get_execution_context()`` and save it
-  on the Task object.
-
-* The ``__logical_context__`` of the wrapped coroutine should be
-  initialized to a new empty logical context.
-
-* When the Task object runs its coroutine object, it should execute
-  ``.send()`` and ``.throw()`` methods within the captured
-  execution context, using the ``sys.run_with_execution_context()``
-  function.
-
-For ``asyncio.Task``::
-
-    class Task:
-        def __init__(self, coro):
-            ...
-            self.exec_context = sys.get_execution_context()
-            coro.__logical_context__ = sys.new_logical_context()
-
-        def _step(self, val):
-            ...
-            sys.run_with_execution_context(
-                self.exec_context,
-                self.coro.send, val)
-            ...
-
-This makes any changes to execution context made by nested coroutine
-calls within a Task to be visible throughout the Task::
-
-    ci = sys.new_context_key('ci')
-
-    async def nested():
-        ci.set('nested')
-
-    async def main():
-        ci.set('main')
-        print('before:', ci.get())
-        await nested()
-        print('after:', ci.get())
-
-    asyncio.get_event_loop().run_until_complete(main())
-
-    # Will print:
-    #   before: main
-    #   after: nested
-
-New Tasks, started within another Task, will run in the correct
-execution context too::
-
-    current_request = sys.new_context_key('current_request')
-
-    async def child():
-        print('current request:', repr(current_request.get()))
-
-    async def handle_request(request):
-        current_request.set(request)
-        event_loop.create_task(child)
-
-    run(top_coro())
-
-    # Will print:
-    #   current_request: None
-
-The above snippet will run correctly, and the ``child()``
-coroutine will be able to access the current request object
-through the ``current_request`` Context Key.
-
-Any of the above examples would work if one the coroutines
-was a generator decorated with ``@asyncio.coroutine``.
-
-
-Event Loop Callbacks
-^^^^^^^^^^^^^^^^^^^^
-
-Similarly to Tasks, functions like asyncio's ``loop.call_soon()``
-should capture the current execution context with
-``sys.get_execution_context()`` and execute callbacks
-within it with ``sys.run_with_execution_context()``.
-
-This way the following code will work::
-
-    current_request = sys.new_context_key('current_request')
-
-    def log():
-        request = current_request.get()
-        print(request)
-
-    async def request_handler(request):
-        current_request.set(request)
-        get_event_loop.call_soon(log)
+            try:
+                decimal_prec.set(self.precision)
+                ...
+            finally:
+                decimal_prec.set(old_prec)
 
 
 Asynchronous Generators
 -----------------------
 
-Asynchronous Generators (AG) interact with the Execution Context
-similarly to regular generators.
-
-They have an ``__logical_context__`` attribute, which, similarly to
-regular generators, can be set to ``None`` to make them use the outer
-Logical Context.  This is used by the new
-``contextlib.asynccontextmanager`` decorator.
+The execution context semantics in asynchronous generators does not
+differ from that of regular generators and coroutines.
 
 
-Greenlets
----------
+Implementation
+==============
 
-Greenlet is an alternative implementation of cooperative
-scheduling for Python.  Although greenlet package is not part of
-CPython, popular frameworks like gevent rely on it, and it is
-important that greenlet can be modified to support execution
-contexts.
+Execution context is implemented as an immutable linked list of
+logical contexts, where each logical context is an immutable weak key
+mapping.  A pointer to the currently active execution context is stored
+in the OS thread state::
 
-In a nutshell, greenlet design is very similar to design of
-generators.  The main difference is that for generators, the stack
-is managed by the Python interpreter.  Greenlet works outside of the
-Python interpreter, and manually saves some ``PyThreadState``
-fields and pushes/pops the C-stack.  Thus the ``greenlet`` package
-can be easily updated to use the new low-level `C API`_ to enable
-full support of EC.
+                      +-----------------+
+                      |                 |     ec
+                      |  PyThreadState  +-------------+
+                      |                 |             |
+                      +-----------------+             |
+                                                      |
+    ec_node             ec_node             ec_node   v
+    +------+------+     +------+------+     +------+------+
+    | NULL |  lc  |<----| prev |  lc  |<----| prev |  lc  |
+    +------+--+---+     +------+--+---+     +------+--+---+
+              |                   |                   |
+    LC        v         LC        v         LC        v
+    +-------------+     +-------------+     +-------------+
+    | var1: obj1  |     |    EMPTY    |     | var1: obj4  |
+    | var2: obj2  |     +-------------+     +-------------+
+    | var3: obj3  |
+    +-------------+
+
+The choice of the immutable list of immutable mappings as a fundamental
+data structure is motivated by the need to efficiently implement
+``sys.get_execution_context()``, which is to be frequently used by
+asynchronous tasks and callbacks.  When the EC is immutable,
+``get_execution_context()`` can simply copy the current execution
+context *by reference*::
+
+    def get_execution_context(self):
+        return PyThreadState_Get().ec
+
+Let's review all possible context modification scenarios:
+
+* The ``ContextVariable.set()`` method is called::
+
+    def ContextVar_set(self, val):
+        # See a more complete set() definition
+        # in the `Context Variables` section.
+
+        tstate = PyThreadState_Get()
+        top_ec_node = tstate.ec
+        top_lc = top_ec_node.lc
+        new_top_lc = top_lc.set(self, val)
+        tstate.ec = ec_node(
+            prev=top_ec_node.prev,
+            lc=new_top_lc)
+
+* The ``sys.run_with_logical_context()`` is called, in which case
+  the passed logical context object is appended to the
+  execution context::
+
+    def run_with_logical_context(lc, func, *args, **kwargs):
+        tstate = PyThreadState_Get()
+
+        old_top_ec_node = tstate.ec
+        new_top_ec_node = ec_node(prev=old_top_ec_node, lc=lc)
+
+        try:
+            tstate.ec = new_top_ec_node
+            return func(*args, **kwargs)
+        finally:
+            tstate.ec = old_top_ec_node
+
+* The ``sys.run_with_execution_context()`` is called, in which case
+  the current execution context is set to the passed execution context
+  with a new empty logical context appended to it::
+
+    def run_with_execution_context(ec, func, *args, **kwargs):
+        tstate = PyThreadState_Get()
+
+        old_top_ec_node = tstate.ec
+        new_lc = sys.new_logical_context()
+        new_top_ec_node = ec_node(prev=ec, lc=new_lc)
+
+        try:
+            tstate.ec = new_top_ec_node
+            return func(*args, **kwargs)
+        finally:
+            tstate.ec = old_top_ec_node
+
+* Either ``genobj.send()``, ``genobj.throw()``, ``genobj.close()``
+  are called on a ``genobj`` generator, in which case the logical
+  context recorded in ``genobj`` is pushed onto the stack::
+
+    PyGen_New(PyGenObject *gen):
+        gen.__logical_context__ = sys.new_logical_context()
+
+    gen_send(PyGenObject *gen, ...):
+        tstate = PyThreadState_Get()
+
+        if gen.__logical_context__ is not None:
+            old_top_ec_node = tstate.ec
+            new_top_ec_node = ec_node(
+                prev=old_top_ec_node,
+                lc=gen.__logical_context__)
+
+            try:
+                tstate.ec = new_top_ec_node
+                return _gen_send_impl(gen, ...)
+            finally:
+                gen.__logical_context__ = tstate.ec.lc
+                tstate.ec = old_top_ec_node
+        else:
+            return _gen_send_impl(gen, ...)
+
+* Coroutines and asynchronous generators share the implementation
+  with generators, and the above changes apply to them as well.
+
+In certain scenarios the EC may need to be squashed to limit the
+size of the chain.  For example, consider the following corner case::
+
+    async def repeat(coro, delay):
+        await coro()
+        await asyncio.sleep(delay)
+        loop.create_task(repeat(coro, delay))
+
+    async def ping():
+        print('ping')
+
+    loop = asyncio.get_event_loop()
+    loop.create_task(repeat(ping, 1))
+    loop.run_forever()
+
+In the above code, the EC chain will grow as long as ``repeat()`` is
+called. Each new task will call ``sys.run_in_execution_context()``,
+which will append a new logical context to the chain.  To prevent
+unbounded growth, ``sys.get_execution_context()`` checks if the chain
+is longer than a predetermined maximum, and if it is, squashes the
+chain into a single LC::
+
+    def get_execution_context():
+        tstate = PyThreadState_Get()
+
+        if tstate.ec_len > EC_LEN_MAX:
+            squashed_lc = sys.new_logical_context()
+
+            ec_node = tstate.ec
+            while ec_node:
+                # The LC.merge() method does not replace existing keys.
+                squashed_lc = squashed_lc.merge(ec_node.lc)
+                ec_node = ec_node.prev
+
+            return ec_node(prev=NULL, lc=squashed_lc)
+        else:
+            return tstate.ec
 
 
-New APIs
-========
+Logical Context
+---------------
 
-Python
-------
+Logical context is an immutable weak key mapping which has the
+following properties with respect to garbage collection:
 
-Python APIs were designed to completely hide the internal
-implementation details, but at the same time provide enough control
-over EC and LC to re-implement all of Python built-in objects
-in pure Python.
-
-1. ``sys.new_context_key(name: str='...')``: create a
-   ``ContextKey`` object used to access/set values in EC.
-
-2. ``ContextKey``:
-
-   * ``.name``: read-only attribute.
-   * ``.get()``: return the current value for the key.
-   * ``.set(o)``: set the current value in the EC for the key.
-
-3. ``sys.get_execution_context()``: return the current
-   ``ExecutionContext``.
-
-4. ``sys.new_execution_context()``: create a new empty
-   ``ExecutionContext``.
-
-5. ``sys.new_logical_context()``: create a new empty
-   ``LogicalContext``.
-
-6. ``sys.run_with_execution_context(ec: ExecutionContext,
-   func, *args, **kwargs)``.
-
-7. ``sys.run_with_logical_context(lc:LogicalContext,
-   func, *args, **kwargs)``.
-
-
-C API
------
-
-1. ``PyContextKey * PyContext_NewKey(char *desc)``: create a
-   ``PyContextKey`` object.
-
-2. ``PyObject * PyContext_GetKey(PyContextKey *)``: get the
-   current value for the context key.
-
-3. ``int PyContext_SetKey(PyContextKey *, PyObject *)``: set
-   the current value for the context key.
-
-4. ``PyLogicalContext * PyLogicalContext_New()``: create a new empty
-   ``PyLogicalContext``.
-
-5. ``PyLogicalContext * PyExecutionContext_New()``: create a new empty
-   ``PyExecutionContext``.
-
-6. ``PyExecutionContext * PyExecutionContext_Get()``: get the
-   EC for the active thread state.
-
-7. ``int PyExecutionContext_Set(PyExecutionContext *)``: set the
-   passed EC object as the current for the active thread state.
-
-8. ``int PyExecutionContext_SetWithLogicalContext(PyExecutionContext *,
-   PyLogicalContext *)``: allows to implement
-   ``sys.run_with_logical_context`` Python API.
-
-
-Implementation Strategy
-=======================
-
-LogicalContext is a Weak Key Mapping
-------------------------------------
-
-Using a weak key mapping for ``LogicalContext`` implementation
-enables the following properties with regards to garbage
-collection:
-
-* ``ContextKey`` objects are strongly-referenced only from the
-  application code, not from any of the Execution Context
-  machinery or values they point to.  This means that there
-  are no reference cycles that could extend their lifespan
-  longer than necessary, or prevent their garbage collection.
+* ``ContextVar`` objects are strongly-referenced only from the
+  application code, not from any of the Execution Context machinery
+  or values they point to.  This means that there are no reference
+  cycles that could extend their lifespan longer than necessary, or
+  prevent their collection by the GC.
 
 * Values put in the Execution Context are guaranteed to be kept
-  alive while there is a ``ContextKey`` key referencing them in
+  alive while there is a ``ContextVar`` key referencing them in
   the thread.
 
-* If a ``ContextKey`` is garbage collected, all of its values will
+* If a ``ContextVar`` is garbage collected, all of its values will
   be removed from all contexts, allowing them to be GCed if needed.
 
 * If a thread has ended its execution, its thread state will be
   cleaned up along with its ``ExecutionContext``, cleaning
-  up all values bound to all Context Keys in the thread.
+  up all values bound to all context variables in the thread.
+
+As discussed earluier, we need ``sys.get_execution_context()`` to be
+consistently fast regardless of the size of the execution context, so
+logical context is necessarily an immutable mapping.
+
+Choosing ``dict`` for the underlying implementation is suboptimal,
+because ``LC.set()`` will cause ``dict.copy()``, which is an O(N)
+operation, where *N* is the number of items in the LC.
+
+``get_execution_context()``, when squashing the EC, is a O(M)
+operation, where *M* is the total number of context variable values
+in the EC.
+
+So, instead of ``dict``, we choose Hash Array Mapped Trie (HAMT)
+as the underlying implementation of logical contexts.  (Scala and
+Clojure use HAMT to implement high performance immutable collections
+[5]_, [6]_.)
+
+With HAMT ``.set()`` becomes an O(log N) operation, and
+``get_execution_context()`` squashing is more efficient on average due
+to structural sharing in HAMT.
+
+See `Appendix: HAMT Performance Analysis`_ for a more elaborate
+analysis of HAMT performance compared to ``dict``.
 
 
-ContextKey.get() Cache
-----------------------
+Context Variables
+-----------------
 
-We can add three new fields to ``PyThreadState`` and
-``PyInterpreterState`` structs:
+The ``ContextVar.lookup()`` and ``ContextVar.set()`` methods are
+implemented as follows (in pseudo-code)::
 
-* ``uint64_t PyThreadState->unique_id``: a globally unique
-  thread state identifier (we can add a counter to
-  ``PyInterpreterState`` and increment it when a new thread state is
-  created.)
+    class ContextVar:
 
-* ``uint64_t ContextKey->version``: every time the key is updated
-  in any logical context or thread, this key will be incremented.
+        def get(self):
+            tstate = PyThreadState_Get()
 
-The above two fields allow implementing a fast cache path in
-``ContextKey.get()``, in pseudo-code::
+            ec_node = tstate.ec
+            while ec_node:
+                if self in ec_node.lc:
+                    return ec_node.lc[self]
+                ec_node = ec_node.prev
 
-    class ContextKey:
+            return None
+
+        def set(self, value):
+            tstate = PyThreadState_Get()
+            top_ec_node = tstate.ec
+
+            if top_ec_node is not None:
+                top_lc = top_ec_node.lc
+                new_top_lc = top_lc.set(self, value)
+                tstate.ec = ec_node(
+                    prev=top_ec_node.prev,
+                    lc=new_top_lc)
+            else:
+                top_lc = sys.new_logical_context()
+                new_top_lc = top_lc.set(self, value)
+                tstate.ec = ec_node(
+                    prev=NULL,
+                    lc=new_top_lc)
+
+For efficient access in performance-sensitive code paths, such as in
+``numpy`` and ``decimal``, we add a cache to ``ContextVar.get()``,
+making it an O(1) operation when the cache is hit.  The cache key is
+composed from the following:
+
+* The new ``uint64_t PyThreadState->unique_id``, which is a globally
+  unique thread state identifier.  It is computed from the new
+  ``uint64_t PyInterpreterState->ts_counter``, which is incremented
+  whenever a new thread state is created.
+
+* The ``uint64_t ContextVar->version`` counter, which is incremented
+  whenever the context variable value is changed in any logical context
+  in any thread.
+
+The cache is then implemented as follows::
+
+    class ContextVar:
 
         def set(self, value):
             ...  # implementation
@@ -892,11 +993,7 @@ The above two fields allow implementing a fast cache path in
                     self.last_version == self.version):
                 return self.last_value
 
-            value = None
-            for mapping in reversed(tstate.execution_context):
-                if self in mapping:
-                    value = mapping[self]
-                    break
+            value = self._get_uncached()
 
             self.last_value = value  # borrowed ref
             self.last_tstate_id = tstate.unique_id
@@ -905,158 +1002,130 @@ The above two fields allow implementing a fast cache path in
             return value
 
 Note that ``last_value`` is a borrowed reference.  The assumption
-is that if current thread and key version tests are OK, the object
-will be alive.  This allows the CK values to be properly GCed.
+is that if the version checks are fine, the object will be alive.
+This allows the values of context variables to be properly garbage
+collected.
 
-This is similar to the trick that decimal C implementation uses
-for caching the current decimal context, and will have the same
-performance characteristics, but available to all
-Execution Context users.
-
-
-Approach #1: Use a dict for LogicalContext
-------------------------------------------
-
-The straightforward way of implementing the proposed EC
-mechanisms is to create a ``WeakKeyDict`` on top of Python
-``dict`` type.
-
-To implement the ``ExecutionContext`` type we can use Python
-``list`` (or a custom stack implementation with some
-pre-allocation optimizations).
-
-This approach will have the following runtime complexity:
-
-* O(M) for ``ContextKey.get()``, where ``M`` is the number of
-  Logical Contexts in the stack.
-
-  It is important to note that ``ContextKey.get()`` will implement
-  a cache making the operation O(1) for packages like ``decimal``
-  and ``numpy``.
-
-* O(1) for ``ContextKey.set()``.
-
-* O(N) for ``sys.get_execution_context()``, where ``N`` is the
-  total number of keys/values in the current **execution** context.
+This generic caching approach is similar to what the current C
+implementation of ``decimal`` does to cache the the current decimal
+context, and has similar performance characteristics.
 
 
-Approach #2: Use HAMT for LogicalContext
-----------------------------------------
+Performance Considerations
+==========================
 
-Languages like Clojure and Scala use Hash Array Mapped Tries (HAMT)
-to implement high performance immutable collections [5]_, [6]_.
+Tests of the reference implementation based on the prior
+revisions of this PEP have shown 1-2% slowdown on generator
+microbenchmarks and no noticeable difference in macrobenchmarks.
 
-Immutable mappings implemented with HAMT have O(log\ :sub:`32`\ N)
-performance for both ``set()``, ``get()``, and ``merge()`` operations,
-which is essentially O(1) for relatively small mappings
-(read about HAMT performance in CPython in the
-`Appendix: HAMT Performance`_ section.)
-
-In this approach we use the same design of the ``ExecutionContext``
-as in Approach #1, but we will use HAMT backed weak key Logical Context
-implementation.  With that we will have the following runtime
-complexity:
-
-* O(M * log\ :sub:`32`\ N) for ``ContextKey.get()``,
-  where ``M`` is the number of Logical Contexts in the stack,
-  and ``N`` is the number of keys/values in the EC.  The operation
-  will essentially be O(M), because execution contexts are normally
-  not expected to have more than a few dozen of keys/values.
-
-  (``ContextKey.get()`` will have the same caching mechanism as in
-  Approach #1.)
-
-* O(log\ :sub:`32`\ N) for ``ContextKey.set()`` where ``N`` is the
-  number of keys/values in the current **logical** context.  This will
-  essentially be an O(1) operation most of the time.
-
-* O(log\ :sub:`32`\ N) for ``sys.get_execution_context()``, where
-  ``N`` is the total number of keys/values in the current
-  **execution** context.
-
-Essentially, using HAMT for Logical Contexts instead of Python dicts,
-allows to bring down the complexity of ``sys.get_execution_context()``
-from O(N) to O(log\ :sub:`32`\ N) because of the more efficient
-merge algorithm.
+The performance of non-generator and non-async code is not
+affected by this PEP.
 
 
-Approach #3: Use HAMT and Immutable Linked List
------------------------------------------------
+Summary of the New APIs
+=======================
 
-We can make an alternative ``ExecutionContext`` design by using
-a linked list.  Each ``LogicalContext`` in the ``ExecutionContext``
-object will be wrapped in a linked-list node.
+Python
+------
 
-``LogicalContext`` objects will use an HAMT backed weak key
-implementation described in the Approach #2.
+The following new Python APIs are introduced by this PEP:
 
-Every modification to the current ``LogicalContext`` will produce a
-new version of it, which will be wrapped in a **new linked list
-node**.  Essentially this means, that ``ExecutionContext`` is an
-immutable forest of ``LogicalContext`` objects, and can be safely
-copied by reference in ``sys.get_execution_context()`` (eliminating
-the expensive "merge" operation.)
+1. The ``sys.new_context_var(name: str='...')`` function to create
+   ``ContextVar`` objects.
 
-With this approach, ``sys.get_execution_context()`` will be a
-constant time **O(1) operation**.
+2. The ``ContextVar`` object, which has:
 
-In case we decide to apply additional optimizations such as
-flattening ECs with too many Logical Contexts, HAMT-backed
-immutable mapping will have a O(log\ :sub:`32`\ N) merge
-complexity.
+   * the read-only ``.name`` attribute,
+   * the ``.lookup()`` method which returns the value of the variable
+     in the current execution context;
+   * the ``.set()`` method which sets the value of the variable in
+     the current execution context.
+
+3. The ``sys.get_execution_context()`` function, which returns a
+   copy of the current execution context.
+
+4. The ``sys.new_execution_context()`` function, which returns a new
+   empty execution context.
+
+5. The ``sys.new_logical_context()`` function, which returns a new
+   empty logical context.
+
+6. The ``sys.run_with_execution_context(ec: ExecutionContext,
+   func, *args, **kwargs)`` function, which runs *func* with the
+   provided execution context.
+
+7. The ``sys.run_with_logical_context(lc:LogicalContext,
+   func, *args, **kwargs)`` function, which runs *func* with the
+   provided logical context on top of the current execution context.
 
 
-Summary
--------
+C API
+-----
 
-We believe that approach #3 enables an efficient and complete
-Execution Context implementation, with excellent runtime performance.
+1. ``PyContextVar * PyContext_NewVar(char *desc)``: create a
+   ``PyContextVar`` object.
 
-`ContextKey.get() Cache`_ enables fast retrieval of context keys
-for performance critical libraries like decimal and numpy.
+2. ``PyObject * PyContext_LookupVar(PyContextVar *)``: return
+   the value of the variable in the current execution context.
 
-Fast ``sys.get_execution_context()`` enables efficient management
-of execution contexts in asynchronous libraries like asyncio.
+3. ``int PyContext_SetVar(PyContextVar *, PyObject *)``: set
+   the value of the variable in the current execution context.
+
+4. ``PyLogicalContext * PyLogicalContext_New()``: create a new empty
+   ``PyLogicalContext``.
+
+5. ``PyLogicalContext * PyExecutionContext_New()``: create a new empty
+   ``PyExecutionContext``.
+
+6. ``PyExecutionContext * PyExecutionContext_Get()``: return the
+   current execution context.
+
+7. ``int PyExecutionContext_Set(PyExecutionContext *)``: set the
+   passed EC object as the current for the active thread state.
+
+8. ``int PyExecutionContext_SetWithLogicalContext(PyExecutionContext *,
+   PyLogicalContext *)``: allows to implement
+   ``sys.run_with_logical_context`` Python API.
 
 
 Design Considerations
 =====================
 
-Can we fix ``PyThreadState_GetDict()``?
----------------------------------------
+Should ``PyThreadState_GetDict()`` use the execution context?
+-------------------------------------------------------------
 
-``PyThreadState_GetDict`` is a TLS, and some of its existing users
-might depend on it being just a TLS.  Changing its behaviour to follow
-the Execution Context semantics would break backwards compatibility.
+No. ``PyThreadState_GetDict`` is based on TLS, and changing its
+semantics will break backwards compatibility.
 
 
 PEP 521
 -------
 
-:pep:`521` proposes an alternative solution to the problem:
-enhance Context Manager Protocol with two new methods: ``__suspend__``
-and ``__resume__``.  To make it compatible with async/await,
-the Asynchronous Context Manager Protocol will also need to be
-extended with ``__asuspend__`` and ``__aresume__``.
+:pep:`521` proposes an alternative solution to the problem, which
+extends the context manager protocol with two new methods:
+``__suspend__()`` and ``__resume__()``.  Similarly, the asynchronous
+context manager protocol is also extended with ``__asuspend__()`` and
+``__aresume__()``.
 
-This allows to implement context managers like decimal context and
-``numpy.errstate`` for generators and coroutines.
+This allows implementing context managers that manage non-local state,
+which behave correctly in generators and coroutines.
 
-The following code::
+For example, consider the following context manager, which uses
+execution state::
 
     class Context:
 
         def __init__(self):
-            self.key = new_context_key('key')
+            self.var = new_context_var('var')
 
         def __enter__(self):
-            self.old_x = self.key.get()
-            self.key.set('something')
+            self.old_x = self.var.lookup()
+            self.var.set('something')
 
         def __exit__(self, *err):
-            self.key.set(self.old_x)
+            self.var.set(self.old_x)
 
-would become this::
+An equivalent implementation with PEP 521::
 
     local = threading.local()
 
@@ -1075,26 +1144,21 @@ would become this::
         def __exit__(self, *err):
             local.x = self.old_x
 
-Besides complicating the protocol, the implementation will likely
-negatively impact performance of coroutines, generators, and any code
-that uses context managers, and will notably complicate the
-interpreter implementation.
+The downside of this approach is the addition of significant new
+complexity to the context manager protocol and the interpreter
+implementation.  This approach is also likely to negatively impact
+the performance of generators and coroutines.
 
-:pep:`521` also does not provide any mechanism to propagate state
-in a logical context, like storing a request object in an HTTP request
-handler to have better logging.  Nor does it solve the leaking state
-problem for greenlet/gevent.
+Additionally, the solution in :pep:`521` is limited to context managers,
+and does not provide any mechanism to propagate state in asynchronous
+tasks and callbacks.
 
 
 Can Execution Context be implemented outside of CPython?
 --------------------------------------------------------
 
-Because async/await code needs an event loop to run it, an EC-like
-solution can be implemented in a limited way for coroutines.
-
-Generators, on the other hand, do not have an event loop or
-trampoline, making it impossible to intercept their ``yield`` points
-outside of the Python interpreter.
+No.  Proper generator behaviour with respect to the execution context
+requires changes to the interpreter.
 
 
 Should we update sys.displayhook and other APIs to use EC?
@@ -1111,44 +1175,41 @@ That said we think it is possible to design new APIs that will
 be context aware, but that is outside of the scope of this PEP.
 
 
+Greenlets
+---------
+
+Greenlet is an alternative implementation of cooperative
+scheduling for Python.  Although greenlet package is not part of
+CPython, popular frameworks like gevent rely on it, and it is
+important that greenlet can be modified to support execution
+contexts.
+
+Conceptually, the behaviour of greenlets is very similar to that of
+generators, which means that similar changes around greenlet entry
+and exit can be done to add support for execution context.
+
+
 Backwards Compatibility
 =======================
 
 This proposal preserves 100% backwards compatibility.
 
 
-Appendix: HAMT Performance
-==========================
+Appendix: HAMT Performance Analysis
+===================================
 
-While investigating possibilities of how to implement an immutable
-mapping in CPython, we were able to improve the efficiency
-of ``dict.copy()`` up to 5 times: [4]_.  One caveat is that the
-improved ``dict.copy()`` does not resize the dict, which is a
-necessary thing to do when items get deleted from the dict.
-Which means that we can make ``dict.copy()`` faster for only dicts
-that don't need to be resized, and the ones that do, will use
-a slower version.
-
-To assess if HAMT can be used for Execution Context, we implemented
-it in CPython [7]_.
-
-.. figure:: pep-0550-hamt_vs_dict.png
+.. figure:: pep-0550-hamt_vs_dict-v2.png
    :align: center
    :width: 100%
 
    Figure 1.  Benchmark code can be found here: [9]_.
 
-The chart illustrates the following:
+The above chart demonstrates that:
 
 * HAMT displays near O(1) performance for all benchmarked
   dictionary sizes.
 
-* If we can use the optimized ``dict.copy()`` implementation ([4]_),
-  the performance of immutable mapping implemented with Python
-  ``dict`` is good up until 100 items.
-
-* A dict with an unoptimized ``dict.copy()`` becomes very slow
-  around 100 items.
+* ``dict.copy()`` becomes very slow around 100 items.
 
 .. figure:: pep-0550-lookup_hamt.png
    :align: center
@@ -1156,30 +1217,25 @@ The chart illustrates the following:
 
    Figure 2.  Benchmark code can be found here: [10]_.
 
-Figure 2 shows comparison of lookup costs between Python dict
-and an HAMT immutable mapping.  HAMT lookup time is 30-40% worse
-than Python dict lookups on average, which is a very good result,
-considering how well Python dicts are optimized.
+Figure 2 compares the lookup costs of ``dict`` versus a HAMT-based
+immutable mapping.  HAMT lookup time is 30-40% slower than Python dict
+lookups on average, which is a very good result, considering that the
+latter is very well optimized.
 
-Note, that according to [8]_, HAMT design can be further improved.
+Thre is research [8]_ showing that there are further possible
+improvements to the performance of HAMT.
 
-The bottom line is that it is possible to imagine a scenario when
-an application has more than 100 items in the Execution Context, in
-which case the dict-backed implementation of an immutable mapping
-becomes a subpar choice.
-
-HAMT on the other hand guarantees that its ``set()``, ``get()``,
-and ``merge()`` operations will execute in O(log\ :sub:`32`\ ) time,
-which means it is a more future proof solution.
+The reference implementation of HAMT for CPython can be found here:
+[7]_.
 
 
 Acknowledgments
 ===============
 
-I thank Elvis Pranskevichus and Victor Petrovykh for countless
-discussions around the topic and PEP proof reading and edits.
+Thanks to Victor Petrovykh for countless discussions around the topic
+and PEP proofreading and edits.
 
-Thanks to Nathaniel Smith for proposing the ``ContextKey`` design
+Thanks to Nathaniel Smith for proposing the ``ContextVar`` design
 [17]_ [18]_, for pushing the PEP towards a more complete design, and
 coming up with the idea of having a stack of contexts in the thread
 state.
@@ -1192,9 +1248,9 @@ rewrite of the initial PEP version [19]_.
 Version History
 ===============
 
-1. Posted on 11-Aug-2017, view it here: [20]_.
+1. Initial revision, posted on 11-Aug-2017 [20]_.
 
-2. Posted on 15-Aug-2017, view it here: [21]_.
+2. V2 posted on 15-Aug-2017 [21]_.
 
    The fundamental limitation that caused a complete redesign of the
    first version was that it was not possible to implement an iterator
@@ -1204,7 +1260,7 @@ Version History
    Version 2 was a complete rewrite, introducing new terminology
    (Local Context, Execution Context, Context Item) and new APIs.
 
-3. Posted on 18-Aug-2017: the current version.
+3. V3 posted on 18-Aug-2017 [22]_.
 
    Updates:
 
@@ -1212,18 +1268,23 @@ Version History
      was ambiguous and conflicted with local name scopes.
 
    * Context Item was renamed to Context Key, see the thread with Nick
-     Coghlan, Stefan Krah, and Yury Selivanov [22]_ for details.
+     Coghlan, Stefan Krah, and Yury Selivanov [23]_ for details.
 
    * Context Item get cache design was adjusted, per Nathaniel Smith's
-     idea in [24]_.
+     idea in [25]_.
 
    * Coroutines are created without a Logical Context; ceval loop
      no longer needs to special case the ``await`` expression
-     (proposed by Nick Coghlan in [23]_.)
+     (proposed by Nick Coghlan in [24]_.)
 
-   * `Appendix: HAMT Performance`_ section was updated with more
-     details about the proposed ``dict.copy()`` optimization and
-     its limitations.
+4. V4 posted on 25-Aug-2017: the current version.
+
+   * The specification section has been completely rewritten.
+
+   * Context Key renamed to Context Var.
+
+   * Removed the distinction between generators and coroutines with
+     respect to logical context isolation.
 
 
 References
@@ -1271,11 +1332,13 @@ References
 
 .. [21] https://github.com/python/peps/blob/e3aa3b2b4e4e9967d28a10827eed1e9e5960c175/pep-0550.rst
 
-.. [22] https://mail.python.org/pipermail/python-ideas/2017-August/046801.html
+.. [22] https://github.com/python/peps/blob/287ed87bb475a7da657f950b353c71c1248f67e7/pep-0550.rst
 
-.. [23] https://mail.python.org/pipermail/python-ideas/2017-August/046790.html
+.. [23] https://mail.python.org/pipermail/python-ideas/2017-August/046801.html
 
-.. [24] https://mail.python.org/pipermail/python-ideas/2017-August/046786.html
+.. [24] https://mail.python.org/pipermail/python-ideas/2017-August/046790.html
+
+.. [25] https://mail.python.org/pipermail/python-ideas/2017-August/046786.html
 
 
 Copyright
