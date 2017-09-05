@@ -156,8 +156,8 @@ class PEP(object):
     # The various RFC 822 headers that are supported.
     # The second item in the nested tuples represents if the header is
     # required or not.
-    headers = (('PEP', True), ('Title', True), ('Version', True),
-               ('Last-Modified', True), ('Author', True),
+    headers = (('PEP', True), ('Title', True), ('Version', False),
+               ('Last-Modified', False), ('Author', True),
                ('BDFL-Delegate', False),
                ('Discussions-To', False), ('Status', True), ('Type', True),
                ('Content-Type', False), ('Requires', False),
