@@ -55,6 +55,9 @@ from docutils.readers import standalone
 from docutils.transforms import peps, references, misc, frontmatter, Transform
 from docutils.parsers import rst
 
+class DataError(Exception):
+    pass
+
 REQUIRES = {'python': '2.6',
             'docutils': '0.2.7'}
 PROGRAM = sys.argv[0]
