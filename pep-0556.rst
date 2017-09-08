@@ -6,7 +6,7 @@ Type: Standards Track
 Content-Type: text/x-rst
 Created: 2017-09-08
 Python-Version: 3.7
-Post-History:
+Post-History: 2017-09-08
 
 
 Abstract
@@ -117,6 +117,18 @@ should probably not mess with this setting, just as they shouldn't call
 doing so.
 
 
+Non-goals
+=========
+
+This PEP does not address reentrancy issues with other kinds of
+asynchronous code execution (for example signal handlers registered
+with the ``signal`` module).  The author believes that the overwhelming
+majority of painful reentrancy issues occur with finalizers.  Most of the
+time, signal handlers are able to set a single flag and/or wake up a
+file descriptor for the main program to notice.  As for those signal
+handlers which raise an exception, they *have* to execute in-thread.
+
+
 Internal details
 ================
 
@@ -131,7 +143,7 @@ An internal structure ``gc_mutex`` is added to avoid two GC runs at once:
 .. code-block::
 
    static struct {
-       PyThread_type_lock collecting;  /* taken when collecting */
+       PyThread_type_lock lock;  /* taken when collecting */
        PyThreadState *owner;  /* whichever thread is currently collecting
                                  (NULL if no collection is taking place) */
    } gc_mutex;
@@ -191,6 +203,9 @@ and live inside the ``gc`` module, unless otherwise noted:
 
 
    def lock_and_collect(generation=-1):
+       """
+       Perform a collection with thread safety.
+       """
        me = PyThreadState_GET()
        if gc_mutex.owner == me:
            # reentrant GC collection request, bail out
@@ -201,7 +216,7 @@ and live inside the ``gc`` module, unless otherwise noted:
        gc_mutex.owner = me
        try:
            if generation >= 0:
-               return collect_generation(generation)
+               return collect_with_callback(generation)
            else:
                return collect_generations()
        finally:
@@ -229,6 +244,9 @@ and live inside the ``gc`` module, unless otherwise noted:
 
 
    def PyGC_Malloc():
+       """
+       Allocate a GC-enabled object.
+       """
        # Update allocation statistics (same code as currently, omitted for brievity)
        if is_implicit_gc_desired():
            if gc_is_threaded:
@@ -274,7 +292,7 @@ and live inside the ``gc`` module, unless otherwise noted:
            if gc_is_threaded == True:
                # Wake up thread, asking it to end
                gc_is_threaded = False
-               gc_thread..wakeup.release()
+               gc_thread.wakeup.release()
                # Wait for thread exit
                Py_BEGIN_ALLOW_THREADS
                gc_thread.done.acquire()
@@ -296,7 +314,7 @@ and live inside the ``gc`` module, unless otherwise noted:
        Schedule collection of the given generation and wait for it to
        finish.
        """
-       return lock_and_collect(collection)
+       return lock_and_collect(generation)
 
 
 Discussion
@@ -316,7 +334,7 @@ for example if finalizers rely on some thread-local values.
 Explicit collections
 --------------------
 
-One may ask why explicit collections should not also be delegated to the
+One may ask whether explicit collections should also be delegated to the
 background thread.  The answer is it doesn't really matter: since
 ``gc.collect`` and ``PyGC_Collect`` actually *wait* for the collection to
 end (breaking this property would break compatibility), delegating the
@@ -326,13 +344,59 @@ thread requesting an explicit collection.
 In the end, this PEP choses the behaviour that seems simpler to implement
 based on the pseudo-code above.
 
+Impact on memory use
+--------------------
+
+The "threaded" mode incurs a slight delay in implicit collections compared
+to the default "serial" mode.  This obviously may change the memory profile
+of certain applications.  By how much remains to be measured in real-world
+use, but we expect the impact to remain minor and bearable.  First because
+implicit collections are based on a *heuristic* whose effect does not result
+in deterministic visible behaviour anyway.  Second because the GC deals
+with reference cycles while many objects are reclaimed immediately when their
+last visible reference disappears.
+
+Impact on CPU consumption
+-------------------------
+
+The pseudo-code above adds two lock operations for each implicit collection
+request in "threaded" mode: one in the thread making the request (a
+``release`` call) and one in the GC thread (an ``acquire`` call).
+It also adds two other lock operations, regardless of the current mode,
+around each actual collection.
+
+We expect the cost of those lock operations to be very small, on modern
+systems, compared to the actual cost of crawling through the chains of
+pointers during the collection itself ("pointer chasing" being one of
+the hardest workloads on modern CPUs, as it lends itself poorly to
+speculation and superscalar execution).
+
+Actual measurements on worst-case mini-benchmarks may help provide
+reassuring upper bounds.
+
+Impact on GC pauses
+-------------------
+
+While this PEP does not concern itself with GC pauses, there is a
+practical chance that releasing the GIL at some point during an implicit
+collection (for example by virtue of executing a pure Python finalizer)
+will allow application code to run in-between, lowering the *visible* GC
+pause time for some applications.
+
+If this PEP is accepted, future work may try to better realize this potential
+by speculatively releasing the GIL during collections, though it is unclear
+how doable that is.
+
 
 Open issues
 ===========
 
-``gc.set_mode`` should probably be protected against multiple concurrent
-invocations.  Also, it should raise when called from *inside* a GC run
-(i.e. from a finalizer).
+* ``gc.set_mode`` should probably be protected against multiple concurrent
+  invocations.  Also, it should raise when called from *inside* a GC run
+  (i.e. from a finalizer).
+
+* What happens at shutdown?  Does the GC thread run until ``_PyGC_Fini()``
+  is called?
 
 
 Implementation
