@@ -1,0 +1,260 @@
+PEP: 558
+Title: Defined semantics for locals()
+Author: Nick Coghlan <ncoghlan@gmail.com>
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 2017-09-08
+Python-Version: 3.7
+Post-History: 2017-09-08
+
+
+Abstract
+========
+
+The semantics of the ``locals()`` builtin have historically been underspecified
+and hence implementation dependent.
+
+This PEP proposes formally standardising on the behaviour of the CPython 3.6
+reference implementation for most execution scopes, with some adjustments to the
+behaviour at function scopes to make it more predictable and independent of the
+presence or absence of tracing functions.
+
+
+Rationale
+=========
+
+While the precise semantics of the ``locals()`` builtin are nominally undefined,
+in practice, many Python programs depend on it behaving exactly as it behaves in
+CPython (at least when no tracing functions are installed).
+
+Other implementations such as PyPy are currently replicating that behaviour,
+up to and including replication of local variable mutation bugs that
+can arise when a trace hook is installed [1]_.
+
+
+Proposal
+========
+
+The expected semantics of the ``locals()`` builtin change based on the current
+execution scope. For this purpose, the defined scopes of execution are:
+
+* module scope: top-level module code, as well as any other code executed using
+  ``exec()`` or ``eval()`` with a single namespace
+* class scope: code in the body of a ``class`` statement, as well as any other
+  code executed using ``exec()`` or ``eval()`` with separate local and global
+  namespaces
+* function scope: code in the body of a ``def`` or ``async def`` statement
+
+
+Module scope
+------------
+
+At module scope, as well as when using ``exec()`` or ``eval()`` with a
+single namespace, ``locals()`` must return the same object as ``globals()``,
+which must be the actual execution namespace (available as
+``inspect.currentframe().f_locals`` in implementations that provide access
+to frame objects).
+
+Variable assignments during subsequent code execution in the same scope must
+dynamically change the contents of the returned mapping, and changes to the
+returned mapping must change the values bound to local variable names in the
+execution environment.
+
+This part of the proposal does not require any changes to the reference
+implementation - it is standardisation of the current behaviour.
+
+
+Class scope
+-----------
+
+At class scope, as well as when using ``exec()`` or ``eval()`` with separate
+global and local namespaces, ``locals()`` must return the specified local
+namespace (which may be supplied by the metaclass ``__prepare__`` method
+in the case of classes). As for module scope, this must be a direct reference
+to the actual execution namespace (available as
+``inspect.currentframe().f_locals`` in implementations that provide access
+to frame objects).
+
+Variable assignments during subsequent code execution in the same scope must
+change the contents of the returned mapping, and changes to the returned mapping
+must change the values bound to local variable names in the
+execution environment.
+
+For classes, this mapping will *not* be used as the actual class namespace
+underlying the defined class (the class creation process will copy the contents
+to a fresh dictionary that is only accessible by going through the class
+machinery).
+
+This part of the proposal does not require any changes to the reference
+implementation - it is standardisation of the current behaviour.
+
+
+Function scope
+--------------
+
+At function scope, interpreter implementations are granted significant freedom
+to optimise local variable access, and hence are NOT required to permit
+arbitrary modification of local and nonlocal variable bindings through the
+mapping returned from ``locals()``.
+
+Instead, ``locals()`` is expected to return a mutable *snapshot* of the
+function's local variables and any referenced nonlocal cells with the following
+semantics:
+
+* each call to ``locals()`` returns the *same* mapping
+* each call to ``locals()`` updates the mapping with the current
+  state of the local variables and any referenced nonlocal cells
+* changes to the returned mapping are *never* written back to the
+  local variable bindings or the nonlocal cell references
+* in implementations that provide access to frame objects, the return value
+  from ``locals()`` is *not* a direct reference to
+  ``inspect.currentframe().f_locals``
+
+For interpreters that provide access to frame objects, the ``frame.f_locals``
+attribute at function scope is expected to be a write-through proxy that
+immediately updates the local variables and reference nonlocal cell bindings.
+Additional entries may also be added to ``frame.f_locals`` and will be
+accessible through both ````frame.f_locals`` and ``locals()`` from inside the
+frame, but will not be accessible by name from within the function (as any
+names which don't appear as local or nonlocal variables at compile time will
+only be looked up in the module globals and process builtins, not in the
+function locals).
+
+
+Open Questions
+==============
+
+How much compatibility is enough compatibility?
+-----------------------------------------------
+
+As discussed below, the proposed design aims to keep almost all current code
+working, *except* code that relies on being able to mutate function local
+variable bindings and nonlocal cell references via the ``locals()`` builtin
+when a trace hook is installed.
+
+This is considered reasonable, as if a trace hook is installed, that indicates
+the use of an interpreter implementation that provides access to frame objects,
+and hence ``frame.f_locals`` can be used as a more portable and future-proof
+alternative.
+
+If some other existing behaviours are deemed optional (e.g. allowing
+``locals()`` to return a fresh object each time), then that may allow for
+some simplification of the update implementation.
+
+
+Design Discussion
+=================
+
+Making ``locals()`` return a shared snapshot at function scope
+--------------------------------------------------------------
+
+The ``locals()`` builtin is a required part of the language, and in the
+reference implementation it has historically returned a mutable mapping with
+the following characteristics:
+
+* each call to ``locals()`` returns the *same* mapping
+* each call to ``locals()`` updates the mapping with the current
+  state of the local variables and any referenced nonlocal cells
+* changes to the returned mapping *usually* aren't written back to the
+  local variable bindings or the nonlocal cell references, but write backs
+  can be triggered by doing one of the following:
+
+  * installing a Python level trace hook (write backs then happen whenever
+    the trace hook is called)
+  * running a function level wildcard import (requires bytecode injection in Py3)
+  * running an ``exec`` statement in the function's scope (Py2 only, since
+    ``exec`` became an ordinary builtin in Python 3)
+
+The current proposal aims to retain the first two properties (to maintain
+backwards compatibility with as much code as possible) while still
+eliminating the ability to dynamically alter local and nonlocal variable
+bindings through the mapping returned by ``locals()``.
+
+
+Making ``frame.f_locals`` a write-through proxy at function scope
+-----------------------------------------------------------------
+
+While frame objects and related APIs are an explicitly optional feature of
+Python implementations, there are nevertheless a lot of debuggers and other
+introspection tools that expect them to behave in certain ways, including the
+ability to update the bindings of local variables and nonlocal cell references,
+as well as being able to store custom keys in the locals namespace for
+arbitrary frames and retrieve those values later.
+
+CPython currently supports this by copying the local variable bindings and
+nonlocal cell references to ``frame.f_locals`` before calling a trace function,
+and then copying them back after the function returns.
+
+Unfortunately, as documented in [1]_, this approach leads to intrinsic race
+conditions when a trace function writes to a closure variable via
+``frame.f_locals``.
+
+Switching to immediate updates of the frame state via ``frame.f_locals`` means
+that the behaviour of trace functions should be more predictable, even in the
+presence of multi-threaded access.
+
+
+Historical semantics at function scope
+--------------------------------------
+
+The current semantics of mutating ``locals()`` and ``frame.f_locals`` in CPython
+are rather quirky due to historical implementation details:
+
+* actual execution uses the fast locals array for local variable bindings and
+  cell references for nonlocal variables
+* there's a ``PyFrame_FastToLocals`` operation that populates the frame's
+  ``f_locals`` attribute based on the current state of the fast locals array
+  and any referenced cells. This exists for three reasons:
+
+  * allowing trace functions to read the state of local variables
+  * allowing traceback processors to read the state of local variables
+  * allowing locals() to read the state of local variables
+* a direct reference to ``frame.f_locals`` is returned from ``locals()``, so if
+  you hand out multiple concurrent references, then all those references will be
+  to the exact same dictionary
+* the two common calls to the reverse operation, ``PyFrame_LocalsToFast``, were
+  removed in the migration to Python 3: ``exec`` is no longer a statement (and
+  hence can longer affect function local namespaces), and the compiler now
+  disallows the use of ``from module import *`` operations at function scope
+* however, two obscure calling paths remain: ``PyFrame_LocalsToFast`` is called
+  as part of returning from a trace function (which allows debuggers to make
+  changes to the local variable state), and you can also still inject the
+  ``IMPORT_STAR`` opcode when creating a function directly from a code object
+  rather than via the compiler
+
+This proposal deliberately *doesn't* formalise these semantics as is, since they
+only make sense in terms of the historical evolution of the language and the
+reference implementation, rather than being deliberately designed.
+
+
+Implementation
+==============
+
+The reference implementation update is TBD - when available, it will be linked
+from [2]_.
+
+References
+==========
+
+.. [1] Broken local variable assignment given threads + trace hook + closure
+   (https://bugs.python.org/issue30744)
+
+.. [2] Clarify the required behaviour of ``locals()``
+   (https://bugs.python.org/issue17960)
+
+Copyright
+=========
+
+This document has been placed in the public domain.
+
+
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   coding: utf-8
+   End:
