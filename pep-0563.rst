@@ -1,0 +1,264 @@
+PEP: 563
+Title: Postponed Evaluation of Annotations
+Version: $Revision$
+Last-Modified: $Date$
+Author: Łukasz Langa <lukasz@langa.pl>
+Discussions-To: Python-Dev <python-dev@python.org>
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 8-Sep-2017
+Python-Version: 3.7
+Post-History:
+Resolution:
+
+
+Abstract
+========
+
+PEP 3107 introduced syntax for function annotations, but the semantics
+were deliberately left undefined.  PEP 484 introduced a standard meaning
+to annotations: type hints.  PEP 526 defined variable annotations,
+explicitly tying them with the type hinting use case.
+
+This PEP proposes changing function annotations and variable annotations
+so that they are no longer evaluated at function definition time.
+Instead, they are preserved in ``__annotations__`` in string form.
+
+This change is going to be introduced gradually, starting with a new
+``__future__`` import in Python 3.7.
+
+
+Rationale and Goals
+===================
+
+PEP 3107 added support for arbitrary annotations on parts of a function
+definition.  Just like default values, annotations are evaluated at
+function definition time.  This creates a number of issues for the type
+hinting use case:
+
+* forward references: when a type hint contains names that have not been
+  defined yet, that definition needs to be expressed as a string
+  literal;
+
+* type hints are executed at module import time, which is not
+  computationally free.
+
+Postponing the evaluation of annotations solves both problems.
+
+Non-goals
+---------
+
+Just like in PEP 484 and PEP 526, it should be emphasized that **Python
+will remain a dynamically typed language, and the authors have no desire
+to ever make type hints mandatory, even by convention.**
+
+Annotations are still available for arbitrary use besides type checking.
+Using ``@typing.no_type_hints`` in this case is recommended to
+disambiguate the use case.
+
+
+Implementation
+==============
+
+In a future version of Python, function and variable annotations will no
+longer be evaluated at definition time.  Instead, a string form will be
+preserved in the respective ``__annotations__`` dictionary.  Static type
+checkers will see no difference in behavior, whereas tools using
+annotations at runtime will have to perform postponed evaluation.
+
+If an annotation was already a string, this string is preserved
+verbatim.  In other cases, the string form is obtained from the AST
+during the compilation step, which means that the string form preserved
+might not preserve the exact formatting of the source.
+
+Annotations need to be syntactically valid Python expressions, also when
+passed as literal strings (i.e. ``compile(literal, '', 'eval')``).
+Annotations can only use names present in the module scope as postponed
+evaluation using local names is not reliable.
+
+Note that as per PEP 526, local variable annotations are not evaluated
+at all since they are not accessible outside of the function's closure.
+
+Enabling the future behavior in Python 3.7
+------------------------------------------
+
+The functionality described above can be enabled starting from Python
+3.7 using the following special import::
+
+    from __future__ import annotations
+
+
+Resolving Type Hints at Runtime
+===============================
+
+To resolve an annotation at runtime from its string form to the result
+of the enclosed expression, user code needs to evaluate the string.
+
+For code that uses type hints, the ``typing.get_type_hints()`` function
+correctly evaluates expressions back from its string form.  Note that
+all valid code currently using ``__annotations__`` should already be
+doing that since a type annotation can be expressed as a string literal.
+
+For code which uses annotations for other purposes, a regular
+``eval(ann, globals, locals)`` call is enough to resolve the
+annotation.  The trick here is to get the correct value for globals.
+Fortunately, in the case of functions, they hold a reference to globals
+in an attribute called ``__globals__``.  To get the correct module-level
+context to resolve class variables, use::
+
+    cls_globals = sys.modules[SomeClass.__module__].__dict__
+
+Runtime annotation resolution and class decorators
+--------------------------------------------------
+
+Metaclasses and class decorators that need to resolve annotations for
+the current class will fail for annotations that use the name of the
+current class.  Example::
+
+    def class_decorator(cls):
+        annotations = get_type_hints(cls)  # raises NameError on 'C'
+        print(f'Annotations for {cls}: {annotations}')
+        return cls
+
+    @class_decorator
+    class C:
+        singleton: 'C' = None
+
+This was already true before this PEP.  The class decorator acts on
+the class before it's assigned a name in the current definition scope.
+
+The situation is made somewhat stricter when class-level variables are
+considered.  Previously, when the string form wasn't used in annotations,
+a class decorator would be able to cover situations like::
+
+    @class_decorator
+    class Restaurant:
+        class MenuOption(Enum):
+            SPAM = 1
+            EGGS = 2
+
+        default_menu: List[MenuOption] = []
+
+This is no longer possible.
+
+Runtime annotation resolution and ``TYPE_CHECKING``
+---------------------------------------------------
+
+Sometimes there's code that must be seen by a type checker but should
+not be executed.  For such situations the ``typing`` module defines a
+constant, ``TYPE_CHECKING``, that is considered ``True`` during type
+checking but ``False`` at runtime.  Example::
+
+  import typing
+
+  if typing.TYPE_CHECKING:
+      import expensive_mod
+
+  def a_func(arg: expensive_mod.SomeClass) -> None:
+      a_var: expensive_mod.SomeClass = arg
+      ...
+
+This approach is also useful when handling import cycles.
+
+Trying to resolve annotations of ``a_func`` at runtime using
+``typing.get_type_hints()`` will fail since the name ``expensive_mod``
+is not defined (``TYPE_CHECKING`` variable being ``False`` at runtime).
+This was already true before this PEP.
+
+
+Backwards Compatibility
+=======================
+
+This is a backwards incompatible change.  Applications depending on
+arbitrary objects to be directly present in annotations will break
+if they are not using ``typing.get_type_hints()`` or ``eval()``.
+
+Annotations that depend on locals at the time of the function/class
+definition are now invalid.  Example::
+
+    def generate_class():
+        some_local = datetime.datetime.now()
+        class C:
+            field: some_local = 1  # NOTE: INVALID ANNOTATION
+            def method(self, arg: some_local.day) -> None:  # NOTE: INVALID ANNOTATION
+                ...
+
+Annotations using nested classes and their respective state are still
+valid, provided they use the fully qualified name.  Example::
+
+    class C:
+        field = 'c_field'
+        def method(self, arg: C.field) -> None:  # this is OK
+            ...
+
+        class D:
+            field2 = 'd_field'
+            def method(self, arg: C.field -> C.D.field2:  # this is OK
+                ...
+
+In the presence of an annotation that cannot be resolved using the
+current module's globals, a NameError is raised at compile time.
+
+
+Deprecation policy
+------------------
+
+In Python 3.7, a ``__future__`` import is required to use the described
+functionality and a ``PendingDeprecationWarning`` is raised by the
+compiler in the presence of type annotations in modules without the
+``__future__`` import.  In Python 3.8 the warning becomes a
+``DeprecationWarning``.  In the next version this will become the
+default behavior.
+
+
+Rejected Ideas
+==============
+
+Keep the ability to use local state when defining annotations
+-------------------------------------------------------------
+
+With postponed evaluation, this is impossible for function locals.  For
+classes, it would be possible to keep the ability to define annotations
+using the local scope.  However, when using ``eval()`` to perform the
+postponed evaluation, we need to provide the correct globals and locals
+to the ``eval()`` call.  In the face of nested classes, the routine to
+get the effective "globals" at definition time would have to look
+something like this::
+
+    def get_class_globals(cls):
+        result = {}
+        result.update(sys.modules[cls.__module__].__dict__)
+        for child in cls.__qualname__.split('.'):
+            result.update(result[child].__dict__)
+        return result
+
+This is brittle and doesn't even cover slots.  Requiring the use of
+module-level names simplifies runtime evaluation and provides the
+"one obvious way" to read annotations.  It's the equivalent of absolute
+imports.
+
+
+Acknowledgements
+================
+
+This document could not be completed without valuable input,
+encouragement and advice from Guido van Rossum, Jukka Lehtosalo, and
+Ivan Levkivskyi.
+
+
+Copyright
+=========
+
+This document has been placed in the public domain.
+
+
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   coding: utf-8
+   End:
