@@ -32,6 +32,12 @@ Other implementations such as PyPy are currently replicating that behaviour,
 up to and including replication of local variable mutation bugs that
 can arise when a trace hook is installed [1]_.
 
+While we consider CPython's current behaviour when no trace hooks are installed
+acceptable and desirable, we consider the current behaviour when trace hooks
+are installed to be problematic, as it causes bugs like [1]_ *without* reliably
+enabling the desired functionality of allowing debuggers like ``pdb`` to mutate
+local variables [3]_.
+
 
 Proposal
 ========
@@ -45,6 +51,65 @@ execution scope. For this purpose, the defined scopes of execution are:
   code executed using ``exec()`` or ``eval()`` with separate local and global
   namespaces
 * function scope: code in the body of a ``def`` or ``async def`` statement
+
+We also allow interpreters to define two "modes" of execution, with only the
+first mode being considered part of the language specification itself:
+
+* regular operation: the way the interpreter behaves by default
+* tracing mode: the way the interpreter behaves when a trace hook has been
+  registered in one or more threads via an implementation dependent mechanism
+  like ``sys.settrace`` ([4]_) in CPython's ``sys`` module or
+  ``PyEval_SetTrace`` ([5]_) in CPython's C API
+
+For regular operation, this PEP proposes elevating the current behaviour of
+the CPython reference implementation to become part of the language
+specification.
+
+For tracing mode, this PEP proposes changes to CPython's behaviour at function
+scope that bring the `locals()`` builtin semantics closer to those used in
+regular operation, while also making the related frame API semantics clearer
+and easier for interactive debuggers to rely on.
+
+
+New ``locals()`` documentation
+------------------------------
+
+The heart of this proposal is to revise the documentation for the ``locals()``
+builtin to read as follows:
+
+    Return a dictionary representing the current local symbol table, with
+    variable names as the keys, and their currently bound references as the
+    values. This will always be the same dictionary for a given runtime
+    execution frame.
+
+    At module scope, as well as when using ``exec()`` or ``eval()`` with a
+    single namespace, this function returns the same namespace as ``globals()``.
+
+    At class scope, it returns the namespace that will be passed to the
+    metaclass constructor.
+
+    When using ``exec()`` or ``eval()`` with separate local and global
+    namespaces, it returns the local namespace passed in to the function call.
+
+    At function scope (including for generators and coroutines), it returns a
+    dynamic snapshot of the function's local variables and any nonlocal cell
+    references. In this case, changes made via the snapshot are *not* written
+    back to the corresponding local variables or nonlocal cell references, and
+    any such changes to the snapshot will be overwritten if the snapshot is
+    subsequently refreshed (e.g. by another call to ``locals()``).
+
+    CPython implementation detail: the dynamic snapshot for the current frame
+    will be implicitly refreshed before each call to the trace function when a
+    trace function is active.
+
+For reference, the current documentation of this builtin reads as follows:
+
+    Update and return a dictionary representing the current local symbol table.
+    Free variables are returned by locals() when it is called in function
+    blocks, but not in class blocks.
+
+    Note: The contents of this dictionary should not be modified; changes may
+    not affect the values of local and free variables used by the interpreter.
 
 
 Module scope
@@ -60,6 +125,15 @@ Variable assignments during subsequent code execution in the same scope must
 dynamically change the contents of the returned mapping, and changes to the
 returned mapping must change the values bound to local variable names in the
 execution environment.
+
+The semantics at module scope are required to be the same in both tracing
+mode (if provided by the implementation) and in regular operation.
+
+To capture this expectation as part of the language specification, the following
+paragraph will be added to the documentation for ``locals()``:
+
+   At module scope, as well as when using ``exec()`` or ``eval()`` with a
+   single namespace, this function returns the same namespace as ``globals()``.
 
 This part of the proposal does not require any changes to the reference
 implementation - it is standardisation of the current behaviour.
@@ -81,13 +155,25 @@ change the contents of the returned mapping, and changes to the returned mapping
 must change the values bound to local variable names in the
 execution environment.
 
-The mapping returned by ``locals()`` will *not* be used as the actual class namespace
-underlying the defined class (the class creation process will copy the contents
-to a fresh dictionary that is only accessible by going through the class
-machinery).
+The mapping returned by ``locals()`` will *not* be used as the actual class
+namespace underlying the defined class (the class creation process will copy
+the contents to a fresh dictionary that is only accessible by going through the
+class machinery).
 
 For nested classes defined inside a function, any nonlocal cells referenced from
 the class scope are *not* included in the ``locals()`` mapping.
+
+The semantics at class scope are required to be the same in both tracing
+mode (if provided by the implementation) and in regular operation.
+
+To capture this expectation as part of the language specification, the following
+two paragraphs will be added to the documentation for ``locals()``:
+
+   When using ``exec()`` or ``eval()`` with separate local and global
+   namespaces, [this function] returns the given local namespace.
+
+   At class scope, it returns the namespace that will be passed to the metaclass
+   constructor.
 
 This part of the proposal does not require any changes to the reference
 implementation - it is standardisation of the current behaviour.
@@ -101,91 +187,109 @@ to optimise local variable access, and hence are NOT required to permit
 arbitrary modification of local and nonlocal variable bindings through the
 mapping returned from ``locals()``.
 
-Instead, ``locals()`` is expected to return a mutable *snapshot* of the
-function's local variables and any referenced nonlocal cells with the following
-semantics:
+Historically, this leniency has been described in the language specification
+with the words "The contents of this dictionary should not be modified; changes
+may not affect the values of local and free variables used by the interpreter."
 
-* each call to ``locals()`` returns the *same* mapping object
-* each call to ``locals()`` updates the mapping to the current state of the
-  local variables and any nonlocal cells referenced from either the function
-  itself, or from any nested class definitions
-* changes to the returned mapping are *not* written back to the
-  local variable bindings or the nonlocal cell references
-* changes to the returned mapping may be overwritten by subsequent calls to
-  ``locals()`` and other operations that cause the mapping to be refreshed from
-  the actual execution state
-* for interpreters that provide access to frame objects, the reference returned
-  by ``locals()`` *must* be a reference to the same namespace as is returned by
-  ``inspect.currentframe().f_locals`` (in a running function, generator, or
-  coroutine), ``inspect.getgeneratorlocals()`` (in a running or suspended
-  generator), and ``inspect.getcoroutinelocals()`` (in a running or suspended
-  coroutine)
+This PEP proposes to change that text to instead say:
 
-Additional entries may also be added through ``locals()`` or ``frame.f_locals``
-and will then be accessible through both ``frame.f_locals`` and ``locals()``,
-but will not be accessible by name from within the function (as any
-names which don't appear as local or nonlocal variables at compile time will
-only be looked up in the module globals and process builtins, not in the
-function locals).
+    At function scope (including for generators and coroutines), [this function]
+    returns a
+    dynamic snapshot of the function's local variables and any nonlocal cell
+    references. In this case, changes made via the snapshot are *not* written
+    back to the corresponding local variables or nonlocal cell references, and
+    any such changes to the snapshot will be overwritten if the snapshot is
+    subsequently refreshed (e.g. by another call to ``locals()``).
+
+    CPython implementation detail: the dynamic snapshot for the currently
+    executing frame will be implicitly refreshed before each call to the trace
+    function when a trace function is active.
+
+This part of the proposal *does* require changes to the CPython reference
+implementation, as while it accurately describes the behaviour in regular
+operation, the "write back" strategy currently used to support namespace changes
+from trace functions doesn't comply with it (and also causes the quirky
+behavioural problems mentioned in the Rationale).
 
 
-Allowing trace hooks to reliably mutate local variables
--------------------------------------------------------
+CPython Implementation Changes
+==============================
 
-To allow for the implementation of runtime debuggers that can update local
-variable state, trace functions are required to write changes made to
-``frame.f_locals`` back to the actual execution namespace.
+The current cause of CPython's tracing mode quirks (both the side effects from
+simply installing a tracing function and the fact that writing values back to
+function locals only works for the specific function being traced) is the way
+that locals mutation support for trace hooks is currently implemented: the
+``PyFrame_FastToLocals`` function.
 
-This is not a problem for trace hooks executed at module or class scope, as
-any changes made via ``frame.f_locals`` are made directly to the actual local
-namespace used for code execution, and hence no special handling of trace hooks
-is required.
+When a trace function is installed, CPython currently does the following for
+function frames (those where the code object uses "fast locals" semantics):
 
-At function scope, however, special trace hook handling is needed in order to
-copy changes made through ``frame.f_locals`` back into the actual execution
-state.
+1. Calls ``PyFrame_FastToLocals`` to update the dynamic snapshot
+2. Calls the trace hook (with tracing of the hook itself disabled)
+3. Calls ``PyFrame_LocalsToFast`` to capture any changes made to the dynamic
+   snapshot
 
-For Python versions up to and including Python 3.6, this worked as follows:
+This approach is problematic for a few different reasons:
 
-1. Before calling the trace hook, update ``frame.f_locals`` from the current
-   execution state
-2. Run the trace hook
-3. After the trace hook returns, update the current execution state from
-   ``frame.f_locals``
+* Even if the trace function doesn't mutate the snapshot, the final step resets
+  any cell references back to the state they were in before the trace function
+  was called (this is the root cause of the bug report in [1]_)
+* If the trace function *does* mutate the snapshot, but then does something
+  that causes the snapshot to be refreshed, those changes are lost (this is
+  one aspect of the bug report in [3]_)
+* If the trace function attempts to mutate the local variables of a frame other
+  than the one being traced (e.g. ``frame.f_back.f_locals``), those changes
+  will almost certainly be lost (this is another aspect of the bug report in
+  [3]_)
+* If a ``locals()`` reference is passed to another function, and *that*
+  function mutates the snapshot namespace, then those changes *may* be written
+  back to the execution frame *if* a trace hook is installed
 
-Due to the problems this behaviour creates for closure references (as reported
-in [1]_), this PEP proposes to amend this behaviour as follows:
+The proposed resolution to this problem is to take advantage of the fact that
+whereas functions typically access their *own* namespace using the language
+defined ``locals()`` builtin, trace functions necessarily use the implementation
+dependent ``frame.f_locals`` interface, as a frame reference is what gets
+passed to hook implementations.
 
-1. Before calling the trace hook, update ``frame.f_locals`` from the current
-   execution state, but include the actual cell object for all closure
-   references, *not* the value referred to by the cell
-2. Run the trace hook
-3. After the trace hook returns:
+In regular operation, nothing will change - ``frame.f_locals`` will be a direct
+reference to the dynamic snapshot, and ``locals()`` will return a reference to
+that snapshot. This reflects the fact that it's only CPython's tracing mode
+semantics that are currently problematic.
 
-  * update the current execution state from ``frame.f_locals``, but leave
-    closure reference values unmodified if ``frame.f_locals`` still contains
-    the relevant cell object for that variable reference (and hence clearly
-    hasn't been modified by the trace function)
-  * after updating the execution state, replace the cells for closure references
-    in ``frame.f_locals`` with the values referenced by those cells (restoring
-    the expected behaviour of ``locals()`` at function scope)
+In tracing mode, however, we will change ``frame.f_locals`` to instead return
+a dedicated proxy type (probably implemented as a private subclass of
+``types.MappingProxyType``) that has two internal attributes not exposed as
+part of either the Python or public C API:
 
+* *mapping*: the dynamic snapshot that would be returned by ``frame.f_locals``
+  during regular operation
+* *frame*: the underlying frame that the snapshot is for
 
-Open Questions
-==============
+The ``locals()`` builtin would be aware of this proxy type, and continue to
+return a reference to the dynamic snapshot even when in tracing mode.
 
-How much compatibility is enough compatibility?
------------------------------------------------
+As long as the process remains in tracing mode, then ``__setitem__`` and
+``__delitem__`` operations on the proxy will affect not only the dynamic
+snapshot, but *also* the corresponding fast local or cell reference on the
+underlying frame.
 
-As discussed below, the proposed design aims to keep almost all current code
-working, *except* code that relies on being able to read the values of
-closure references directly from ``frame.f_locals`` while a trace hook is
-running.
+If the process leaves tracing mode (i.e. all previously installed trace hooks
+are uninstalled), then any already created proxy objects will remain in place,
+but their ``__setitem__`` and ``__delitem__`` methods will skip mutating
+the underlying frame.
 
-This is considered reasonable, as trace hooks may use
-``frame.f_code.co_freevars`` and ``frame.f_code.co_cellvars`` to identify
-variables for which they need to read ``frame.f_locals[varname].cell_contents``
-to get the actual current value, rather than the cell object.
+At the C API layer, ``PyEval_GetLocals()`` will implement the same semantics
+as the Python level ``locals()`` builtin, and a new ``PyFrame_GetLocals(frame)``
+accessor API will be provided to allow the proxy bypass logic to be encapsulated
+entirely inside the frame implementation. The C level equivalent of accessing
+``pyframe.f_locals`` in Python will be to access ``cframe->f_locals`` directly
+(the one difference is that the Python descriptor will continue to include an
+implicit snapshot refresh).
+
+The ``PyFrame_LocalsToFast()`` function will be changed to always emit
+``RuntimeError``, explaining that it is no longer a supported operation, and
+affected code should be updated to rely on the write-through tracing mode
+proxy instead.
 
 
 Design Discussion
@@ -199,8 +303,10 @@ reference implementation it has historically returned a mutable mapping with
 the following characteristics:
 
 * each call to ``locals()`` returns the *same* mapping
-* each call to ``locals()`` updates the mapping with the current
-  state of the local variables and any referenced nonlocal cells
+* for namespaces where ``locals()`` returns a reference to something other than
+  the actual local execution namespace, each call to ``locals()`` updates the
+  mapping with the current state of the local variables and any referenced
+  nonlocal cells
 * changes to the returned mapping *usually* aren't written back to the
   local variable bindings or the nonlocal cell references, but write backs
   can be triggered by doing one of the following:
@@ -211,10 +317,31 @@ the following characteristics:
   * running an ``exec`` statement in the function's scope (Py2 only, since
     ``exec`` became an ordinary builtin in Python 3)
 
-The current proposal aims to retain the first two properties (to maintain
-backwards compatibility with as much code as possible) while still
-eliminating the ability to dynamically alter local and nonlocal variable
-bindings through the mapping returned by ``locals()``.
+The proposal in this PEP aims to retain the first two properties (to maintain
+backwards compatibility with as much code as possible) while ensuring that
+simply installing a trace hook can't enable rebinding of function locals via
+the ``locals()`` builtin (whereas enabling rebinding via
+``inspect.currentframe().f_locals`` is fully intended).
+
+
+Ensuring any semantic changes are restricted to tracing mode
+------------------------------------------------------------
+
+It would be possible to say that ``frame.f_locals`` should *always* return a
+write-through proxy, even in regular operation.
+
+This PEP avoids that option for a couple of key reasons, one pragmatic and one
+more philosophical:
+
+* Object allocations and method wrappers aren't free, and tracing functions
+  aren't the only operations that access frame locals from outside the function.
+  Restricting the changes to tracing mode means that the additional memory and
+  execution time overhead of these changes are going to be as close to zero in
+  regular operation as we can possibly make them
+* "Don't change what isn't broken": the current tracing mode problems are caused
+  by a requirement that's specific to tracing mode (support for external
+  rebinding of function local variable references), so it makes sense to also
+  restrict any related fixes to tracing mode
 
 
 What happens with the default args for ``eval()`` and ``exec()``?
@@ -240,7 +367,7 @@ are rather quirky due to historical implementation details:
 
   * allowing trace functions to read the state of local variables
   * allowing traceback processors to read the state of local variables
-  * allowing locals() to read the state of local variables
+  * allowing ``locals()`` to read the state of local variables
 * a direct reference to ``frame.f_locals`` is returned from ``locals()``, so if
   you hand out multiple concurrent references, then all those references will be
   to the exact same dictionary
@@ -259,71 +386,20 @@ only make sense in terms of the historical evolution of the language and the
 reference implementation, rather than being deliberately designed.
 
 
-Rejected Alternatives
-=====================
-
-Allowing local variable binding mutation outside trace functions
-----------------------------------------------------------------
-
-Earlier versions of this PEP allowed local variable bindings to be mutated
-whenever code had access to the frame object - it didn't restrict that ability
-to trace functions the way the status quo does.
-
-This was considered undesirable, so the design was changed to retain the
-characteristic where only trace hooks can mutate local variable bindings
-from outside a function.
-
-
-Making ``frame.f_locals`` a write-through proxy at function scope
------------------------------------------------------------------
-
-While frame objects and related APIs are an explicitly optional feature of
-Python implementations, there are nevertheless a lot of debuggers and other
-introspection tools that expect them to behave in certain ways, including the
-ability to update the bindings of local variables and nonlocal cell references
-by modifying ``frame.f_locals`` in a trace hook, as well as being able to store
-custom keys in the local namespace for arbitrary frames and retrieve those
-values later.
-
-Rather than the proposed approach of temporarily injecting the closure cells
-into ``frame.f_locals`` and using that to determine if a trace hook has
-rebound a particular local variable reference, it would technically be
-possible to devise a write-through proxy that *immediately* wrote local variable
-rebindings back to the frame execution state, closer to the way things work
-at module and class scope.
-
-However, in addition to being more complex to implement, adopting such an
-approach would *also* allow arbitrary changes to local variables in suspended
-generators and coroutines, as well as potentially allowing other threads to
-mutate a regular synchronous function's local variables while it was running.
-
-While it does introduce some additional runtime overhead when calling trace
-hooks in frames that provide or reference closure variables, the proposal in
-the PEP more specifically targets the actual problem being solved (i.e. updates
-to closure variable references being unexpectedly overwritten by the trace hook
-machinery) while otherwise preserving the existing semantics of both
-``locals()`` and ``frame.f_locals``.
-
-
-Making ``locals()`` and ``frame.f_locals`` refer to different namespaces
-------------------------------------------------------------------------
-
-Rather than replacing closure references in ``frame.f_locals`` before and
-after calling trace hooks, it would also be possible to persistently maintain
-two different namespaces, one containing the cell objects, and one containing
-the values they reference.
-
-Similar to the write-through proxy idea, this has been rejected mainly on the
-basis of it being a larger divergence from established semantics than is needed
-to actually solve the problem with changes to closure variable references being
-unexpectedly overwritten by the trace hook machinery.
-
-
 Implementation
 ==============
 
 The reference implementation update is TBD - when available, it will be linked
 from [2]_.
+
+
+Acknowledgements
+================
+
+Thanks to Nathaniel J. Smith for proposing the write-through proxy idea in
+[1]_ and pointing out some critical design flaws in earlier iterations of the
+PEP that attempted to avoid introducing such a proxy.
+
 
 References
 ==========
@@ -333,6 +409,16 @@ References
 
 .. [2] Clarify the required behaviour of ``locals()``
    (https://bugs.python.org/issue17960)
+
+.. [3] Updating function local variables from pdb is unreliable
+   (https://bugs.python.org/issue9633)
+
+.. [4] CPython's Python API for installing trace hooks
+   (https://docs.python.org/dev/library/sys.html#sys.settrace)
+
+.. [5] CPython's C API for installing trace hooks
+   (https://docs.python.org/3/c-api/init.html#c.PyEval_SetTrace)
+
 
 Copyright
 =========
