@@ -7,21 +7,18 @@ PEP2HTML=pep2html.py
 
 PYTHON=python3
 
-.SUFFIXES: .txt .html .rst
-
-.txt.html:
-	@$(PYTHON) $(PEP2HTML) $<
+.SUFFIXES: .html .rst
 
 .rst.html:
 	@$(PYTHON) $(PEP2HTML) $<
 
-TARGETS= $(patsubst %.rst,%.html,$(wildcard pep-????.rst)) $(patsubst %.txt,%.html,$(wildcard pep-????.txt))  pep-0000.html
+TARGETS= $(patsubst %.rst,%.html,$(wildcard pep-????.rst)) $(patsubst %.rst,%.html,$(wildcard pep-????.rst))  pep-0000.html
 
-all: pep-0000.txt $(TARGETS)
+all: pep-0000.rst $(TARGETS)
 
 $(TARGETS): pep2html.py
 
-pep-0000.txt: $(wildcard pep-????.txt) $(wildcard pep-????.rst) $(wildcard pep0/*.py)
+pep-0000.rst: $(wildcard pep-????.rst) $(wildcard pep-????.rst) $(wildcard pep0/*.py)
 	$(PYTHON) genpepindex.py .
 
 rss:
@@ -31,7 +28,7 @@ install:
 	echo "Installing is not necessary anymore. It will be done in post-commit."
 
 clean:
-	-rm pep-0000.txt
+	-rm pep-0000.rst
 	-rm *.html
 
 update:
