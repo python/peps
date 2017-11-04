@@ -17,7 +17,7 @@ Options:
 
 -i, --install
     After generating the HTML, install it and the plaintext source file
-    (.txt) on python.org.  In that case the user's name is used in the scp
+    (.rst) on python.org.  In that case the user's name is used in the scp
     and ssh commands, unless "-u username" is given (in which case, it is
     used instead).  Without -i, -u is ignored.
 
@@ -31,7 +31,7 @@ Options:
 -h, --help
     Print this help message and exit.
 
-The optional arguments ``peps`` are either pep numbers, .rst or .txt files.
+The optional arguments ``peps`` are either pep numbers, .rst files.
 """
 
 from __future__ import print_function, unicode_literals
@@ -63,7 +63,7 @@ REQUIRES = {'python': '2.6',
 PROGRAM = sys.argv[0]
 RFCURL = 'http://www.faqs.org/rfcs/rfc%d.html'
 PEPURL = 'pep-%04d.html'
-PEPCVSURL = ('https://hg.python.org/peps/file/tip/pep-%04d.txt')
+PEPCVSURL = ('https://hg.python.org/peps/file/tip/pep-%04d.rst')
 PEPDIRRUL = 'http://www.python.org/peps/'
 
 
@@ -82,7 +82,7 @@ to templates.  DO NOT USE THIS HTML FILE AS YOUR TEMPLATE!
 DTD = ('<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN"\n'
        '                      "http://www.w3.org/TR/REC-html40/loose.dtd">')
 
-fixpat = re.compile("((https?|ftp):[-_a-zA-Z0-9/.+~:?#$=&,]+)|(pep-\d+(.txt|.rst)?)|"
+fixpat = re.compile("((https?|ftp):[-_a-zA-Z0-9/.+~:?#$=&,]+)|(pep-\d+(\.rst)?)|"
                     "(RFC[- ]?(?P<rfcnum>\d+))|"
                     "(PEP\s+(?P<pepnum>\d+))|"
                     ".")
@@ -154,169 +154,6 @@ def linkemail(address, pepno):
     return ('<a href="mailto:%s&#64;%s?subject=PEP%%20%s">'
             '%s&#32;&#97;t&#32;%s</a>'
             % (parts[0], parts[1], pepno, parts[0], parts[1]))
-
-
-def fixfile(inpath, input_lines, outfile):
-    try:
-        from email.Utils import parseaddr
-    except ImportError:
-        from email.utils import parseaddr
-    basename = os.path.basename(inpath)
-    infile = iter(input_lines)
-    # convert plaintext pep to minimal XHTML markup
-    print(DTD, file=outfile)
-    print('<html>', file=outfile)
-    print(COMMENT, file=outfile)
-    print('<head>', file=outfile)
-    # head
-    header = []
-    pep = ""
-    title = ""
-    for line in infile:
-        if not line.strip():
-            break
-        if line[0].strip():
-            if ":" not in line:
-                break
-            key, value = line.split(":", 1)
-            value = value.strip()
-            header.append((key, value))
-        else:
-            # continuation line
-            key, value = header[-1]
-            value = value + line
-            header[-1] = key, value
-        if key.lower() == "title":
-            title = value
-        elif key.lower() == "pep":
-            pep = value
-    if pep:
-        title = "PEP " + pep + " -- " + title
-    if title:
-        print('  <title>%s</title>' % escape(title), file=outfile)
-    r = random.choice(list(range(64)))
-    print((
-        '  <link rel="STYLESHEET" href="style.css" type="text/css" />\n'
-        '</head>\n'
-        '<body bgcolor="white">\n'
-        '<table class="navigation" cellpadding="0" cellspacing="0"\n'
-        '       width="100%%" border="0">\n'
-        '<tr><td class="navicon" width="150" height="35">\n'
-        '<a href="../" title="Python Home Page">\n'
-        '<img src="../pics/PyBanner%03d.gif" alt="[Python]"\n'
-        ' border="0" width="150" height="35" /></a></td>\n'
-        '<td class="textlinks" align="left">\n'
-        '[<b><a href="../">Python Home</a></b>]' % r), file=outfile)
-    if basename != 'pep-0000.txt':
-        print('[<b><a href=".">PEP Index</a></b>]', file=outfile)
-    if pep:
-        try:
-            print(('[<b><a href="pep-%04d.txt">PEP Source</a>'
-                               '</b>]' % int(pep)), file=outfile)
-        except ValueError as error:
-            print(('ValueError (invalid PEP number): %s'
-                                  % error), file=sys.stderr)
-    print('</td></tr></table>', file=outfile)
-    print('<div class="header">\n<table border="0">', file=outfile)
-    for k, v in header:
-        if k.lower() in ('author', 'bdfl-delegate', 'discussions-to'):
-            mailtos = []
-            for part in re.split(',\s*', v):
-                if '@' in part:
-                    realname, addr = parseaddr(part)
-                    if k.lower() == 'discussions-to':
-                        m = linkemail(addr, pep)
-                    else:
-                        m = fixemail(addr, pep)
-                    mailtos.append('%s &lt;%s&gt;' % (realname, m))
-                elif part.startswith('http:'):
-                    mailtos.append(
-                        '<a href="%s">%s</a>' % (part, part))
-                else:
-                    mailtos.append(part)
-            v = COMMASPACE.join(mailtos)
-        elif k.lower() in ('replaces', 'replaced-by', 'requires'):
-            otherpeps = ''
-            for otherpep in re.split(',?\s+', v):
-                otherpep = int(otherpep)
-                otherpeps += '<a href="pep-%04d.html">%i</a> ' % (otherpep,
-                                                                  otherpep)
-            v = otherpeps
-        elif k.lower() in ('last-modified',):
-            date = v or time.strftime('%d-%b-%Y',
-                                      time.localtime(os.stat(inpath)[8]))
-            if date.startswith('$' 'Date: ') and date.endswith(' $'):
-                date = date[6:-2]
-            if basename == 'pep-0000.txt':
-                v = date
-            else:
-                try:
-                    url = PEPCVSURL % int(pep)
-                    v = '<a href="%s">%s</a> ' % (url, escape(date))
-                except ValueError as error:
-                    v = date
-        elif k.lower() in ('content-type',):
-            url = PEPURL % 9
-            pep_type = v or 'text/plain'
-            v = '<a href="%s">%s</a> ' % (url, escape(pep_type))
-        elif k.lower() == 'version':
-            if v.startswith('$' 'Revision: ') and v.endswith(' $'):
-                v = escape(v[11:-2])
-        else:
-            v = escape(v)
-        print('  <tr><th>%s:&nbsp;</th><td>%s</td></tr>' \
-              % (escape(k), v), file=outfile)
-    print('</table>', file=outfile)
-    print('</div>', file=outfile)
-    print('<hr />', file=outfile)
-    print('<div class="content">', file=outfile)
-    need_pre = 1
-    for line in infile:
-        if line[0] == '\f':
-            continue
-        if line.strip() == LOCALVARS:
-            break
-        if line[0].strip():
-            if not need_pre:
-                print('</pre>', file=outfile)
-            print('<h3>%s</h3>' % line.strip(), file=outfile)
-            need_pre = 1
-        elif not line.strip() and need_pre:
-            continue
-        else:
-            # PEP 0 has some special treatment
-            if basename == 'pep-0000.txt':
-                parts = line.split()
-                if len(parts) > 1 and re.match(r'\s*\d{1,4}', parts[1]):
-                    # This is a PEP summary line, which we need to hyperlink
-                    url = PEPURL % int(parts[1])
-                    if need_pre:
-                        print('<pre>', file=outfile)
-                        need_pre = 0
-                    print(re.sub(
-                        parts[1],
-                        '<a href="%s">%s</a>' % (url, parts[1]),
-                        line, 1), end=' ', file=outfile)
-                    continue
-                elif parts and '@' in parts[-1]:
-                    # This is a pep email address line, so filter it.
-                    url = fixemail(parts[-1], pep)
-                    if need_pre:
-                        print('<pre>', file=outfile)
-                        need_pre = 0
-                    print(re.sub(
-                        parts[-1], url, line, 1), end=' ', file=outfile)
-                    continue
-            line = fixpat.sub(lambda x, c=inpath: fixanchor(c, x), line)
-            if need_pre:
-                print('<pre>', file=outfile)
-                need_pre = 0
-            outfile.write(line)
-    if not need_pre:
-        print('</pre>', file=outfile)
-    print('</div>', file=outfile)
-    print('</body>', file=outfile)
-    print('</html>', file=outfile)
 
 
 docutils_settings = None
@@ -514,14 +351,11 @@ def get_input_lines(inpath):
 
 
 def find_pep(pep_str):
-    """Find the .rst or .txt file indicated by a cmd line argument"""
+    """Find the .rst file indicated by a cmd line argument"""
     if os.path.exists(pep_str):
         return pep_str
     num = int(pep_str)
-    rstpath = "pep-%04d.rst" % num
-    if os.path.exists(rstpath):
-        return rstpath
-    return "pep-%04d.txt" % num
+    return "pep-%04d.rst" % num
 
 def make_html(inpath, verbose=0):
     input_lines = get_input_lines(inpath)
@@ -579,8 +413,7 @@ def push_pep(htmlfiles, txtfiles, username, verbose, local=0):
 ##        sys.exit(rc)
 
 
-PEP_TYPE_DISPATCH = {'text/plain': fixfile,
-                     'text/x-rst': fix_rst_pep}
+PEP_TYPE_DISPATCH = {'text/x-rst': fix_rst_pep}
 PEP_TYPE_MESSAGES = {}
 
 def check_requirements():
@@ -619,7 +452,7 @@ def pep_type_error(inpath, pep_type):
 def browse_file(pep):
     import webbrowser
     file = find_pep(pep)
-    if file.startswith('pep-') and file.endswith((".txt", '.rst')):
+    if file.startswith('pep-') and file.endswith('.rst'):
         file = file[:-3] + "html"
     file = os.path.abspath(file)
     url = "file:" + file
@@ -628,7 +461,7 @@ def browse_file(pep):
 def browse_remote(pep):
     import webbrowser
     file = find_pep(pep)
-    if file.startswith('pep-') and file.endswith((".txt", '.rst')):
+    if file.startswith('pep-') and file.endswith('.rst'):
         file = file[:-3] + "html"
     url = PEPDIRRUL + file
     webbrowser.open(url)
@@ -684,7 +517,7 @@ def main(argv=None):
         # do them all
         pep_list = []
         html = []
-        files = glob.glob("pep-*.txt") + glob.glob("pep-*.rst")
+        files = glob.glob("pep-*.rst")
         files.sort()
         for file in files:
             pep_list.append(file)

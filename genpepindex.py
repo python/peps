@@ -36,12 +36,12 @@ def main(argv):
     peps = []
     if os.path.isdir(path):
         for file_path in os.listdir(path):
-            if file_path == 'pep-0000.txt':
+            if file_path == 'pep-0000.rst':
                 continue
             abs_file_path = os.path.join(path, file_path)
             if not os.path.isfile(abs_file_path):
                 continue
-            if file_path.startswith("pep-") and file_path.endswith((".txt", "rst")):
+            if file_path.startswith("pep-") and file_path.endswith("rst"):
                 with codecs.open(abs_file_path, 'r', encoding='UTF-8') as pep_file:
                     try:
                         pep = PEP(pep_file)
@@ -61,7 +61,7 @@ def main(argv):
     else:
         raise ValueError("argument must be a directory or file path")
 
-    with codecs.open('pep-0000.txt', 'w', encoding='UTF-8') as pep0_file:
+    with codecs.open('pep-0000.rst', 'w', encoding='UTF-8') as pep0_file:
         write_pep0(peps, pep0_file)
 
 if __name__ == "__main__":
