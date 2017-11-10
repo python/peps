@@ -374,7 +374,7 @@ class PEPHeaders(Transform):
                             'header.')
         if pep == 0:
             # Special processing for PEP 0.
-            pending = nodes.pending(PEPZero)
+            pending = nodes.pending(peps.PEPZero)
             self.document.insert(1, pending)
             self.document.note_pending(pending)
         if len(header) < 2 or header[1][0].astext().lower() != 'title':
