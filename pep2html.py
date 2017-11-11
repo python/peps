@@ -352,6 +352,9 @@ class PEPHeaders(Transform):
                 value = field[1].astext()
                 try:
                     pep = int(value)
+                    if pep == 0:
+                        cvs_url = None
+                        continue
                     cvs_url = self.pep_cvs_url % pep
                 except ValueError:
                     pep = value
