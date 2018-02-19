@@ -42,6 +42,7 @@ def sort_peps(peps):
     and essentially dead."""
     meta = []
     info = []
+    provisional = []
     accepted = []
     open_ = []
     finished = []
@@ -74,6 +75,8 @@ def sort_peps(peps):
                 info.append(pep)
             else:
                 historical.append(pep)
+        elif pep.status == 'Provisional':
+            provisional.append(pep)
         elif pep.status in ('Accepted', 'Active'):
             accepted.append(pep)
         elif pep.status == 'Final':
@@ -82,7 +85,8 @@ def sort_peps(peps):
             raise PEPError("unsorted (%s/%s)" %
                            (pep.type_, pep.status),
                            pep.filename, pep.number)
-    return meta, info, accepted, open_, finished, historical, deferred, dead
+    return (meta, info, provisional, accepted, open_,
+            finished, historical, deferred, dead)
 
 
 def verify_email_addresses(peps):
@@ -140,8 +144,8 @@ def write_pep0(peps, output=sys.stdout):
     print(u"Index by Category", file=output)
     print(file=output)
     write_column_headers(output)
-    (meta, info, accepted, open_, finished,
-           historical, deferred, dead) = sort_peps(peps)
+    (meta, info, provisional, accepted, open_,
+           finished, historical, deferred, dead) = sort_peps(peps)
     print(file=output)
     print(u" Meta-PEPs (PEPs about PEPs or Processes)", file=output)
     print(file=output)
@@ -151,6 +155,12 @@ def write_pep0(peps, output=sys.stdout):
     print(u" Other Informational PEPs", file=output)
     print(file=output)
     for pep in info:
+        print(constants.text_type(pep), file=output)
+    print(file=output)
+    print(u" Provisional PEPs (provisionally accepted; interface may still change)",
+          file=output)
+    print(file=output)
+    for pep in provisional:
         print(constants.text_type(pep), file=output)
     print(file=output)
     print(u" Accepted PEPs (accepted; may not be implemented yet)", file=output)
@@ -163,7 +173,7 @@ def write_pep0(peps, output=sys.stdout):
     for pep in open_:
         print(constants.text_type(pep), file=output)
     print(file=output)
-    print(u" Finished PEPs (done, implemented in code repository)", file=output)
+    print(u" Finished PEPs (done, with a stable interface)", file=output)
     print(file=output)
     for pep in finished:
         print(constants.text_type(pep), file=output)

@@ -169,7 +169,8 @@ class PEP(object):
     type_values = (u"Standards Track", u"Informational", u"Process")
     # Valid values for the Status header.
     # Active PEPs can only be for Informational or Process PEPs.
-    status_values = (u"Accepted", u"Rejected", u"Withdrawn", u"Deferred",
+    status_values = (u"Accepted", u"Provisional",
+                     u"Rejected", u"Withdrawn", u"Deferred",
                      u"Final", u"Active", u"Draft", u"Superseded")
 
     def __init__(self, pep_file):
@@ -228,6 +229,11 @@ class PEP(object):
                 self.type_ not in ("Process", "Informational")):
             raise PEPError("Only Process and Informational PEPs may "
                            "have an Active status", pep_file.name,
+                           self.number)
+        # Special case for Provisional PEPs.
+        if (status == u"Provisional" and self.type_ != "Standards Track"):
+            raise PEPError("Only Standards Track PEPs may "
+                           "have a Provisional status", pep_file.name,
                            self.number)
         self.status = status
         # 'Author'.
