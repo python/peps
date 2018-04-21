@@ -26,12 +26,41 @@ package, which is available from `PyPI <http://pypi.python.org>`_.
 If you have pip, ``pip install docutils`` should install it.
 
 
-Generating HTML
-===============
+Generating the PEP Index
+========================
+
+PEP 0 is automatically generated based on the metadata headers in other
+PEPs. The script handling this is ``genpepindex.py``, with supporting
+libraries in the ``pep0`` directory.
+
+
+Checking PEP formatting and rendering
+=====================================
 
 Do not commit changes with bad formatting.  To check the formatting of
 a PEP, use the Makefile.  In particular, to generate HTML for PEP 999,
 your source code should be in ``pep-0999.rst`` and the HTML will be
 generated to ``pep-0999.html`` by the command ``make pep-0999.html``.
-The default Make target generates HTML for all PEPs.  If you don't have
-Make, use the ``pep2html.py`` script.
+The default Make target generates HTML for all PEPs.
+
+If you don't have Make, use the ``pep2html.py`` script directly.
+
+
+Generating HTML for python.org
+==============================
+
+python.org includes its own helper modules to render PEPs as HTML, with
+suitable links back to the source pages in the version control repository.
+
+These can be found at https://github.com/python/pythondotorg/tree/master/peps
+
+When making changes to the PEP management process that may import python.org's
+rendering pipeline:
+
+* Clone the python.org repository from https://github.com/python/pythondotorg/
+* Get set up for local python.org development as per
+  https://pythondotorg.readthedocs.io/install.html#manual-setup
+* Adjust ``PEP_REPO_PATH`` in ``pydotorg/settings/local.py`` to refer to your
+  local clone of the PEP repository
+* Run ``./manage.py generate_pep_pages`` as described in
+  https://pythondotorg.readthedocs.io/pep_generation.html
