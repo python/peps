@@ -54,7 +54,7 @@ suitable links back to the source pages in the version control repository.
 
 These can be found at https://github.com/python/pythondotorg/tree/master/peps
 
-When making changes to the PEP management process that may import python.org's
+When making changes to the PEP management process that may impact python.org's
 rendering pipeline:
 
 * Clone the python.org repository from https://github.com/python/pythondotorg/
