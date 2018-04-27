@@ -6,7 +6,7 @@ Type: Standards Track
 Content-Type: text/x-rst
 Created: 27-Mar-2018
 Python-Version: 3.8
-Post-History: 31-Mar-2018, 12-Apr-2018
+Post-History: 31-Mar-2018, 12-Apr-2018, 27-Apr-2018
 
 
 Abstract
@@ -21,7 +21,8 @@ without sacrificing performance.
 A new base class ``base_function`` is introduced and the various function
 classes, as well as ``method`` (renamed to ``bound_method``), inherit from it.
 
-We also allow subclassing of some of these function classes.
+We also allow subclassing in some cases:
+in particular the Python ``function`` class can be subclassed.
 
 Motivation
 ==========
@@ -32,7 +33,7 @@ when defining a function with ``def`` or ``lambda``.
 The second is built-in functions such as ``len``, ``isinstance`` or ``numpy.dot``.
 These are implemented in C.
 
-These two classes are completely independent with different functionality.
+These two classes are implemented completely independently and have different functionality.
 In particular, it is currently not possible to implement a function efficiently in C
 (only built-in functions can do that)
 while still allowing introspection like ``inspect.signature`` or ``inspect.getsourcefile``
@@ -51,6 +52,14 @@ For example, Python unbound methods are just functions but
 unbound methods of extension types (e.g. ``dict.get``) are a distinct class.
 Bound methods of Python classes have a ``__func__`` attribute,
 bound methods of extension types do not.
+
+Third, this PEP allows great customization of functions.
+The ``function`` class becomes subclassable and custom function
+subclasses are also allowed for functions implemented in C.
+In the latter case, this can be done with the same performance
+as true built-in functions.
+All functions can access the function object
+(the ``self`` in ``__call__``), paving the way for PEP 573.
 
 New classes
 ===========
@@ -80,54 +89,58 @@ base_function
 -------------
 
 The class ``base_function`` becomes a new base class for all function types.
-It behaves like the existing ``builtin_function_or_method``
-with some differences:
+It is based on the existing ``builtin_function_or_method`` class,
+but with the following differences and new features:
 
 #. It acts as a descriptor implementing ``__get__`` to turn a function into a method
    if ``m_self`` is ``NULL``.
    If ``m_self`` is not ``NULL``,
    then this is a no-op: the existing function is returned instead.
 
-#. A new read-only slot ``__objclass__``, represented in the C structure as ``m_objclass``.
-   If this attribute exists, it must be a class.
-   If so, the function must be called with ``self`` being an instance of that class.
-   This is mainly meant to support unbound methods of extension types,
-   replacing ``method_descriptor``.
-   Also ``__qualname__`` will use ``__objclass__`` as namespace
-   (instead of ``m_self`` before).
-   For methods of extension types, it is automatically assigned as the defining class
-   (``__class__`` in plain Python).
+#. A new read-only attribute ``__parent__``, represented in the C structure as ``m_parent``.
+   If this attribute exists, it represents the defining object.
+   For methods of extension types, this is the defining class (``__class__`` in plain Python)
+   and for functions of a module, this is the defining module.
+   In general, it can be any Python object.
+   If ``__parent__`` is a class, it carries special semantics:
+   in that case, the function must be called with ``self`` being an instance of that class.
+   Finally, ``__qualname__`` and ``__reduce__`` will use ``__parent__``
+   as namespace (instead of ``__self__`` before).
 
-#. Argument Clinic [#clinic]_ is not supported.
+#. A new attribute ``__objclass__`` which equals ``__parent__`` if ``__parent__``
+   is a class. Otherwise, accessing ``__objclass__`` raises ``AttributeError``.
+   This is meant to be backwards compatible with ``method_descriptor``.
 
-#. The field ``ml_doc`` and the attributes ``__doc__`` and ``__text_signature__``
-   are gone.
+#. The field ``ml_doc`` and the attributes ``__doc__`` and
+   ``__text_signature__`` (see Argument Clinic [#clinic]_)
+   are not supported.
 
-#. A new flag ``METH_ARG0_FUNCTION`` for ``ml_flags``.
-   If this flag is set, the C function stored in ``ml_meth`` will be called with first argument
-   equal to the function object instead of ``m_self``.
+#. A new flag ``METH_PASS_FUNCTION`` for ``ml_flags``.
+   If this flag is set, the C function stored in ``ml_meth`` is called with
+   an additional first argument equal to the function object.
 
 #. A new flag ``METH_BINDING`` for ``ml_flags`` which only applies to
    functions of a module (not methods of a class).
-   If this flag is set, then ``m_self`` will be set to ``NULL`` instead
+   If this flag is set, then ``m_self`` is set to ``NULL`` instead
    of the module.
    This allows the function to behave more like a Python function
    as it enables ``__get__``.
-   This flag also enables `Self slicing`_.
+
+#. A new flag ``METH_CALL_UNBOUND`` to disable `self slicing`_.
 
 #. A new flag ``METH_PYTHON`` for ``ml_flags``.
    This flag indicates that this function should be treated as Python function.
    Ideally, use of this flag should be avoided because it goes
    against the duck typing philosophy.
-   It is still needed in a few places though, for example `Profiling`_.
+   It is still needed in a few places though, for example `profiling`_.
 
 #. A new flag ``METH_CUSTOM`` for ``ml_flags`` which prevents automatic
-   generation of a ``builtin_function``, see `Automatic creation of built-in functions`_.
+   generation of a ``builtin_function``, see `automatic creation of built-in functions`_.
 
 The goal of ``base_function`` is that it supports all different ways
 of calling functions and methods in just one structure.
-For example, the new flag ``METH_ARG0_FUNCTION``
-will be used by the implementation of Python functions.
+For example, the new flag ``METH_PASS_FUNCTION``
+will be used by the implementation of methods.
 
 It is not possible to directly create instances of ``base_function``
 (``tp_new`` is ``NULL``).
@@ -142,7 +155,7 @@ These are the relevant C structures::
         PyCFunctionDef *m_ml;     /* Description of the C function to call */
         PyObject *m_self;         /* __self__: anything, can be NULL; readonly */
         PyObject *m_module;       /* __module__: anything (typically str) */
-        PyTypeObject *m_objclass; /* __objclass__: type or NULL; readonly */
+        PyObject *m_parent;       /* __parent__: anything, can be NULL; readonly */
         PyObject *m_weakreflist;  /* List of weak references */
     } PyBaseFunctionObject;
 
@@ -157,8 +170,8 @@ Subclasses may extend ``PyCFunctionDef`` with extra fields.
 
 The Python attribute ``__self__`` returns ``m_self``,
 except if ``METH_STATIC`` is set.
-In that case, ``None`` is returned.
-If ``m_self`` is ``NULL``, then there is no ``__self__`` attribute at all.
+In that case or if ``m_self`` is ``NULL``,
+then there is no ``__self__`` attribute at all.
 For that reason, we write either ``m_self`` or ``__self__`` in this PEP
 with slightly different meanings.
 
@@ -180,19 +193,23 @@ This is a copy of ``base_function``, with the following differences:
     } PyMethodDef;
 
    Note that ``PyMethodDef`` is part of the Python Stable ABI [#ABI]_
-   and it is used by most extension modules,
+   and it is used by practically all extension modules,
    so we absolutely cannot change this structure.
 
 #. Argument Clinic [#clinic]_ is supported.
 
+#. ``__self__`` always exists. In the cases where ``base_function.__self__``
+   would raise ``AttributeError``, instead ``None`` is returned.
+
 The type object is ``PyTypeObject PyCFunction_Type``
-and we define ``PyCFunctionObject`` as alias of ``PyBaseFunctionObject``.
+and we define ``PyCFunctionObject`` as alias of ``PyBaseFunctionObject``
+(except for the type of ``m_ml``).
 
 defined_function
 ----------------
 
 The class ``defined_function`` (a subclass of ``base_function``) adds
-support for various standard attributes which are used in ``inspect``.
+support for various standard attributes which are used by ``inspect``.
 This would be a good class to use for auto-generated C code, for example produced by Cython [#cython]_.
 
 The layout of the C structure is as follows::
@@ -213,9 +230,8 @@ The layout of the C structure is as follows::
         PyObject *func_dict;        /* __dict__: dict or NULL */
     } PyDefinedFunctionObject;
 
-This class adds various slots like ``__doc__`` and ``__code__`` to access the C attributes.
-The slot ``__name__`` returns ``func_name``.
-When setting ``__name__``, also ``base.m_ml.ml_name`` is updated
+The descriptor ``__name__`` returns ``func_name``.
+When setting ``__name__``, also ``base.m_ml->ml_name`` is updated
 with the UTF-8 encoded name.
 
 None of the attributes is required to be meaningful.
@@ -226,7 +242,7 @@ And ``__defaults__`` is not required to be used for calling the function.
 Apart from adding these extra attributes,
 ``defined_function`` behaves exactly the same as ``base_function``.
 
-**TODO**: maybe find a better name for ``defined_function``.
+**TODO**: find a better name for ``defined_function``.
 Other proposals: ``builtout_function`` (a function that is better built out; pun on builtin),
 ``generic_function`` (original proposal but conflicts with ``functools.singledispatch`` generic functions),
 ``user_function`` (defined by the user as opposed to CPython).
@@ -234,8 +250,7 @@ Other proposals: ``builtout_function`` (a function that is better built out; pun
 function
 --------
 
-This is the class meant for functions implemented in Python,
-formerly known as ``function``.
+This is the class meant for functions implemented in Python.
 Unlike the other function types,
 instances of ``function`` can be created from Python code.
 This is not changed, so we do not describe the details in this PEP.
@@ -264,7 +279,9 @@ which reserves space to be used by ``base.m_ml``.
 
 When constructing an instance of ``function`` from ``code`` and ``globals``,
 an instance is created with ``base.m_ml = &_ml``,
-``base.m_self = NULL`` and with the ``METH_PYTHON`` flag set.
+``base.m_self = NULL``.
+Instances of ``function`` should always have the flag ``METH_PYTHON`` set.
+This is also handled by the constructors.
 
 To make subclassing easier, we also add a copy constructor:
 if ``f`` is an instance of ``defined_function`` with the ``METH_PYTHON``
@@ -287,19 +304,19 @@ This may be an already-bound method or simply not an instance of ``base_function
 Therefore, in practice there are two kinds of methods:
 
 - For arbitrary callables, we use a single fixed ``PyCFunctionDef``
-  structure with the ``METH_ARG0_FUNCTION`` flag set.
-  The C function then calls ``__func__`` with the correct arguments.
+  structure with the ``METH_PASS_FUNCTION`` flag set.
 
 - For methods which bind instances of ``base_function``
   (more precisely, which have the ``Py_TPFLAGS_BASEFUNCTION`` flag set)
-  that allow self slicing,
+  that have `self slicing`_,
   we instead use the ``PyCFunctionDef`` from the original function.
+  This way, we don't lose any performance when calling bound methods.
   In this case, the ``__func__`` attribute is only used to implement
   various attributes but not for calling the method.
 
 When constructing a new method from a ``base_function``,
 we check that the ``self`` object is an instance of ``__objclass__``
-(if such a class was specified) and raise a ``TypeError`` otherwise.
+(if a class was specified as parent) and raise a ``TypeError`` otherwise.
 
 The C structure is::
 
@@ -317,44 +334,74 @@ Calling base_function instances
 
 We specify the implementation of ``__call__`` for instances of ``base_function``.
 
-__objclass__
-------------
+Checking __objclass__
+---------------------
 
-First of all, if the function has an ``__objclass__`` attribute but
-``m_self`` is ``NULL`` (this is the case for unbound methods of extension types),
+First of all, a type check is done if the ``__parent__`` of the function
+is a class
+(recall that ``__objclass__`` then becomes an alias of ``__parent__``):
+if ``m_self`` is ``NULL`` (this is the case for unbound methods of extension types),
 then the function must be called with at least one positional argument
 and the first (typically called ``self``) must be an instance of ``__objclass__``.
 If not, a ``TypeError`` is raised.
+
+Note that bound methods have ``m_self != NULL``, so the ``__objclass__``
+is not checked.
+Instead, the ``__objclass__`` check is done when constructing the method.
 
 Flags
 -----
 
 For convenience, we define a new constant:
-``METH_CALLSIGNATURE`` combines all flags from ``PyCFunctionDef.ml_flags``
+``METH_CALLFLAGS`` combines all flags from ``PyCFunctionDef.ml_flags``
 which specify the signature of the C function to be called.
 It is equal to ::
 
-    METH_VARARGS | METH_FASTCALL | METH_NOARGS | METH_O | METH_KEYWORDS
+    METH_VARARGS | METH_FASTCALL | METH_NOARGS | METH_O | METH_KEYWORDS | METH_PASS_FUNCTION
 
 Exactly one of the first four flags above must be set
 and only ``METH_VARARGS`` and ``METH_FASTCALL`` may be combined with ``METH_KEYWORDS``.
 Violating these rules is undefined behaviour.
 
-There is one new flag which affects calling functions,
-namely ``METH_ARG0_FUNCTION``.
+There are one new flags which affects calling functions,
+namely ``METH_PASS_FUNCTION`` and ``METH_CALL_UNBOUND``.
 Some flags are already documented in [#methoddoc]_.
-We explain the other two shortly.
+We explain the others below.
 
 Self slicing
 ------------
 
-If the function has ``m_self == NULL``
-and the flag ``METH_ARG0_FUNCTION`` is not set,
-then the first positional argument (if any)
+If the function has ``m_self == NULL`` and the flag ``METH_CALL_UNBOUND``
+is not set, then the first positional argument (if any)
 is removed from ``*args`` and instead passed as first argument to the C function.
 Effectively, the first positional argument is treated as ``__self__``.
-This process is called "self slicing" and is meant to support unbound methods.
-This does not affect keyword arguments.
+This is meant to support unbound methods
+such that the C function does not see the difference
+between bound and unbound method calls.
+This does not affect keyword arguments in any way.
+
+This process is called *self slicing* and a function is said to
+*have self slicing* if ``m_self == NULL`` and ``METH_CALL_UNBOUND`` is not set.
+
+Note that a ``METH_NOARGS`` function which has self slicing
+effectively has one argument, namely ``self``.
+Analogously, a ``METH_O`` function with self slicing has two arguments.
+
+METH_PASS_FUNCTION
+------------------
+
+If this flag is set, then the C function is called with an
+additional first argument, namely the function itself
+(the ``base_function`` instance).
+As special case, if the function is a ``bound_method``,
+then the underlying function of the method is passed
+(but not recursively: if a ``bound_method`` wraps a ``bound_method``,
+then ``__func__`` is only applied once).
+
+For example, an ordinary ``METH_VARARGS`` function has signature
+``(PyObject *self, PyObject *args)``.
+With ``METH_VARARGS | METH_PASS_FUNCTION``, this becomes
+``(PyObject *func, PyObject *self, PyObject *args)``.
 
 METH_FASTCALL
 -------------
@@ -364,27 +411,19 @@ We suggest to officially support and document it.
 
 If the flag ``METH_FASTCALL`` is set without ``METH_KEYWORDS``,
 then the ``ml_meth`` field is of type ``PyCFunctionFast``
-which takes the arguments ``(PyObject *arg0, PyObject *const *args, Py_ssize_t nargs)``.
+which takes the arguments ``(PyObject *self, PyObject *const *args, Py_ssize_t nargs)``.
 Such a function takes only positional arguments and they are passed as plain C array
 ``args`` of length ``nargs``.
 
 If the flags ``METH_FASTCALL | METH_KEYWORDS`` are set,
 then the ``ml_meth`` field is of type ``PyCFunctionFastWithKeywords``
-which takes the arguments ``(PyObject *arg0, PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames)``.
+which takes the arguments ``(PyObject *self, PyObject *const *args, Py_ssize_t nargs, PyObject *kwnames)``.
 The positional arguments are passed as C array ``args`` of length ``nargs``.
 The *values* of the keyword arguments follow in that array,
 starting at position ``nargs``.
 The *keys* (names) of the keyword arguments are passed as a ``tuple`` in ``kwnames``.
 As an example, assume that 3 positional and 2 keyword arguments are given.
 Then ``args`` is an array of length 3 + 2 = 5, ``nargs`` equals 3 and ``kwnames`` is a 2-tuple.
-
-METH_ARG0_FUNCTION
-------------------
-
-If this flag is set, then the first argument to the C function
-is the function itself (the ``base_function`` instance) instead of ``m_self``.
-In this case, the C function should deal with ``__self__``
-by getting it from the function, for example using ``PyBaseFunction_GET_SELF``.
 
 
 Automatic creation of built-in functions
@@ -402,20 +441,22 @@ This allows an application to customize the creation of functions
 in an extension type or module.
 If ``METH_CUSTOM`` is set, then ``METH_STATIC`` and ``METH_CLASS`` are ignored.
 
-Built-in unbound methods
-------------------------
+Unbound methods of extension types
+----------------------------------
 
 The type of unbound methods changes from ``method_descriptor``
 to ``builtin_function``.
 The object which appears as unbound method is the same object which
 appears in the class ``__dict__``.
-Python automatically sets the ``__objclass__`` attribute.
+Python automatically sets the ``__parent__`` attribute to the defining class.
 
 Built-in functions of a module
 ------------------------------
 
 For the case of functions of a module,
-``__self__`` will be set to the module unless the flag ``METH_BINDING`` is set.
+``__parent__`` will be set to the module.
+Unless the flag ``METH_BINDING`` is given, also ``__self__``
+will be set to the module (for backwards compatibility).
 
 An important consequence is that such functions by default
 do not become methods when used as attribute
@@ -438,7 +479,7 @@ A new ``PyTypeObject`` flag (for ``tp_flags``) is added:
 ``Py_TPFLAGS_BASEFUNCTION`` to indicate that instances of this type are
 functions which can be called as a ``base_function``.
 In other words, subclasses of ``base_function``
-which follow the implementation from `Calling base_function instances`_.
+which follow the implementation from the section `Calling base_function instances`_.
 
 This is different from flags like ``Py_TPFLAGS_LIST_SUBCLASS``
 because it indicates more than just a subclass:
@@ -458,12 +499,12 @@ Some of these are existing (possibly changed) functions, some are new:
 - ``int PyBaseFunction_CheckFast(PyObject *op)``: return true if ``op``
   is an instance of a class with the ``Py_TPFLAGS_BASEFUNCTION`` set.
   This is the function that you need to use to determine
-  whether you can safely access the ``base_function`` internals.
+  whether it is meaningful to access the ``base_function`` internals.
 
 - ``int PyBaseFunction_Check(PyObject *op)``: return true if ``op``
   is an instance of ``base_function``.
 
-- ``PyObject *PyBaseFunction_New(PyTypeObject *cls, PyCFunctionDef *ml, PyObject *self, PyObject *module, PyTypeObject *objclass)``:
+- ``PyObject *PyBaseFunction_New(PyTypeObject *cls, PyCFunctionDef *ml, PyObject *self, PyObject *module, PyObject *parent)``:
   create a new instance of ``cls`` (which must be a subclass of ``base_function``)
   from the given data.
 
@@ -474,12 +515,13 @@ Some of these are existing (possibly changed) functions, some are new:
   create a new instance of ``builtin_function``.
   As special case, if ``self`` is ``NULL``,
   then set ``self = Py_None`` instead (for backwards compatibility).
+  If ``self`` is a module, then ``__parent__`` is set to ``self``.
+  Otherwise, ``__parent__`` is ``NULL``.
 
 - For many existing ``PyCFunction_...`` and ``PyMethod_`` functions,
   we define a new function ``PyBaseFunction_...``
   acting on ``base_function`` instances.
-  For backwards compatibility,
-  the old functions are kept as aliases of the new functions.
+  The old functions are kept as aliases of the new functions.
 
 - ``int PyFunction_Check(PyObject *op)``: return true if ``op``
   is an instance of ``defined_function``.
@@ -511,13 +553,13 @@ Two types are added: ``types.BaseFunctionType`` corresponding to
 Apart from that, no changes to the ``types`` module are made.
 In particular, ``types.FunctionType`` refers to ``function``.
 However, the actual types will change:
-for example, ``types.BuiltinFunctionType`` will no longer be the same
+in particular, ``types.BuiltinFunctionType`` will no longer be the same
 as ``types.BuiltinMethodType``.
 
 Changes to the inspect module
 -----------------------------
 
-``inspect.isbasefunction`` checks for an instance of ``base_function``.
+The new function ``inspect.isbasefunction`` checks for an instance of ``base_function``.
 
 ``inspect.isfunction`` checks for an instance of ``defined_function``.
 
@@ -525,7 +567,7 @@ Changes to the inspect module
 
 ``inspect.isroutine`` checks ``isbasefunction`` or ``ismethoddescriptor``.
 
-Note that bpo-33261 [#bpo33261]_ should be fixed first.
+**NOTE**: bpo-33261 [#bpo33261]_ should be fixed first.
 
 Profiling
 ---------
@@ -564,7 +606,7 @@ The latter two are the only classes which can be instantiated directly
 from the Python interpreter.
 We require ``base_function`` for consistency but we put no requirements on it:
 it is acceptable if this is just a copy of ``object``.
-Support for the new ``__objclass__`` attribute is not required.
+Support for the new ``__parent__`` (and ``__objclass__``) attribute is not required.
 If there is no ``defined_function`` type,
 then ``types.DefinedFunctionType`` should be an alias of ``types.FunctionType``.
 
@@ -588,7 +630,7 @@ Having two independent kinds of ``inspect.signature`` support on the same
 class sounds like asking for problems.
 
 And this would not fix some of the other differences between built-in functions
-and Python functions that were mentioned in the `Motivation`_.
+and Python functions that were mentioned in the `motivation`_.
 
 Why __text_signature__ is not a solution
 ----------------------------------------
@@ -645,7 +687,7 @@ and this is left as a possible future improvement.
 Slot wrappers for extension types like ``__init__`` or ``__eq__``
 are quite different from normal methods.
 They are also typically not called directly because you would normally
-write ``foo[i]`` instead of ``foo.__getitem__(i)`` for example.
+write ``foo[i]`` instead of ``foo.__getitem__(i)``.
 So these are left outside the scope of this PEP.
 
 Python also has an ``instancemethod`` class, which was used in Python 2
@@ -661,14 +703,14 @@ Not treating METH_STATIC and METH_CLASS
 ---------------------------------------
 
 Almost nothing in this PEP refers to the flags ``METH_STATIC`` and ``METH_CLASS``.
-These flags are checked only by the `Automatic creation of built-in functions`_.
+These flags are checked only by the `automatic creation of built-in functions`_.
 When a ``staticmethod``, ``classmethod`` or ``classmethod_descriptor``
 is bound (i.e. ``__get__`` is called),
 a ``base_function`` instance is created with ``m_self != NULL``.
 For a ``classmethod``, this is obvious since ``m_self``
 is the class that the method is bound to.
 For a ``staticmethod``, one can take an arbitrary Python object for ``m_self``.
-For backwards compatibility, we choose ``m_self = __objclass__`` for static methods
+For backwards compatibility, we choose ``m_self = __parent__`` for static methods
 of extension types.
 
 __self__ in base_function
@@ -695,35 +737,42 @@ For ``builtin_function``, the docstring is stored (together with the text signat
 as C string in the read-only ``ml_doc`` field of a ``PyMethodDef``.
 For ``defined_function``, the docstring is stored as a writable Python object
 and it does not actually need to be a string.
-This is done like this for backwards compatibility and because
-it looks hard to unify these two very different ways of dealing with ``__doc__``.
+It looks hard to unify these two very different ways of dealing with ``__doc__``.
+For backwards compatibility, we keep the existing implementations.
 
 Subclassing
 -----------
 
 We disallow subclassing of ``builtin_function`` and ``bound_method``
-to enable fast type checks for ``PyBuiltinFunction_Check`` and ``PyMethod_Check()``.
+to enable fast type checks for ``PyCFunction_Check`` and ``PyMethod_Check``.
 
 We allow subclassing of the other classes because there is no reason to disallow it.
 For Python modules, the only relevant class to subclass is
 ``function`` because the others cannot be instantiated anyway.
 
-Replacing tp_call: METH_ARG0_FUNCTION
--------------------------------------
+Replacing tp_call: METH_PASS_FUNCTION and METH_CALL_UNBOUND
+-----------------------------------------------------------
 
-The new flag ``METH_ARG0_FUNCTION`` is meant to support cases where
-formerly a custom ``tp_call`` was used.
-It would reduce the number of special fast paths in ``Python/ceval.c``
+The new flags ``METH_PASS_FUNCTION`` and ``METH_CALL_UNBOUND``
+are meant to support cases where formerly a custom ``tp_call`` was used.
+It reduces the number of special fast paths in ``Python/ceval.c``
 for calling objects:
-instead of treating Python functions, built-in functions and methods,
-there would only be a single check.
+instead of treating Python functions, built-in functions and method descriptors
+separately, there would only be a single check.
 
 The signature of ``tp_call`` is essentially the signature
 of ``PyBaseFunctionObject.m_ml.ml_meth`` with flags
-``METH_VARARGS | METH_KEYWORDS | METH_ARG0_FUNCTION``.
+``METH_VARARGS | METH_KEYWORDS | METH_PASS_FUNCTION | METH_CALL_UNBOUND``
+(the only difference is an added ``self`` argument).
 Therefore, it should be easy to change existing ``tp_call`` slots
-to use ``METH_ARG0_FUNCTION``.
-There is one extra complication though: ``__self__`` must be handled manually.
+to use the ``base_function`` implementation instead.
+
+It also makes sense to use ``METH_PASS_FUNCTION`` without ``METH_CALL_UNBOUND``
+in cases where the C function simply needs access to additional metadata
+from the function, such as the ``__parent__``.
+This is for example needed to support PEP 573.
+Converting existing methods to use ``METH_PASS_FUNCTION`` is trivial:
+it only requires adding an extra argument to the C function.
 
 User flags: METH_CUSTOM and METH_USRx
 -------------------------------------
@@ -801,8 +850,8 @@ New attributes
 --------------
 
 Some objects get new special double-underscore attributes.
-For example, ``__objclass__`` now appears on bound methods too
-and all methods get a ``__func__`` attribute.
+For example, the new attribute ``__parent__`` appears on
+all built-in functions and all methods get a ``__func__`` attribute.
 The fact that ``__self__`` is now a special read-only attribute
 for Python functions caused trouble in [#bpo33265]_.
 Generally, we expect that not much will break though.
@@ -810,15 +859,16 @@ Generally, we expect that not much will break though.
 method_descriptor and PyDescr_NewMethod
 ---------------------------------------
 
-The classes ``method_descriptor`` and the constructor ``PyDescr_NewMethod``
-are deprecated and no longer used by CPython itself.
-For now, they are kept for backwards compatibility.
+The class ``method_descriptor`` and the constructor ``PyDescr_NewMethod``
+should be deprecated.
+They are no longer used by CPython itself but are still supported.
 
 
 Two-phase Implementation
 ========================
 
-**TODO**: this section is optional. When accepting this PEP, it should
+**TODO**: this section is optional.
+If this PEP is accepted, it should
 be decided whether to apply this two-phase implementation or not.
 
 As mentioned above, the `changes to types and inspect`_ can break some
@@ -833,12 +883,12 @@ Implement this PEP but duplicate the classes ``bound_method``
 and ``builtin_function``.
 Add a new class ``builtin_method`` which is an exact copy of ``builtin_function``
 add a new class ``bound_builtin_method`` which is an exact copy
-of ``bound_method`` (in both cases, only the name would differ).
+of ``bound_method`` (in both cases, literally only the name of the class would differ).
 
 The class ``builtin_method`` will be used for unbound methods
 of extension types.
 It should be seen as continuation of the existing class
-``method-descriptor``.
+``method_descriptor``.
 This ensures 100% backwards compatibility for these objects
 (except for added attributes and maybe the ``repr()``).
 
