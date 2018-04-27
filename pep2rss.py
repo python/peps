@@ -69,5 +69,5 @@ rss = rssgen.RSS2(
     lastBuildDate = datetime.datetime.now(),
     items = items)
 
-with open(RSS_PATH, 'w', encoding="utf-8") as fp:
+with codecs.open(RSS_PATH, 'w', encoding="utf-8") as fp:
     fp.write(rss.to_xml())
