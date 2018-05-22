@@ -1,0 +1,652 @@
+PEP: 577
+Title: Augmented Assignment Expressions
+Author: Nick Coghlan <ncoghlan@gmail.com>
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 14-May-2018
+Python-Version: 3.8
+Post-History: 22-May-2018
+
+
+Abstract
+========
+
+This is a proposal to allow augmented assignment statements such as
+``x += 1`` to be used as expressions when the assignment target is a
+simple name.
+
+For example, this will allow operation retry loops to be written as::
+
+    remaining_attempts = 10
+    while remaining_attempts -= 1:
+        try:
+            result = attempt_operation()
+        except Exception as exc:
+            continue # Failed, so try again
+        break # Success!
+    else:
+        # Ran out of attempts before succeeding
+        raise OperationFailed("No more attempts remaining") from exc
+
+It is a direct competitor to PEP 572 (although it borrows heavily from that
+PEP's motivation, and even borrows its proposed syntax for a slightly
+different purpose).
+
+As part of this, a semantic split is proposed between the handling of augmented
+assignments in regular block scopes (modules, classes, and functions), and the
+handling of augmented assignments in scoped expressions (lambda expressions,
+generator expressions, and comprehensions), such that augmented assignments
+default to targeting the nearest containing block scope.
+
+A new compile time ``TargetNameError`` is added as a subclass of ``SyntaxError``
+to handle cases where it either isn't clear to the compiler which target is
+expected to be rebound by an augmented assignment, or else the augmented
+assignment target scope is invalid for another reason.
+
+Finally, ``NAME := EXPR`` is proposed as a name rebinding expression that
+uses the new augmented assignment scoping rules, rather than implicitly
+defining a new local variable name the way that existing name binding
+statements do.
+
+
+Relationship with PEP 572
+=========================
+
+The case for allowing inline assignments at all is made in PEP 572. This
+competing PEP was initially going to propose an alternate surface syntax
+(``EXPR given NAME = EXPR``), while retaining the expression semantics from
+PEP 572, but that changed when discussing one of the initial motivating use
+cases for allowing embedded assignments at all: making it possible to easily
+calculate cumulative sums in comprehensions and generator expressions.
+
+As a result of that, and unlike PEP 572, this PEP focuses primarily on use
+cases for inline augmented assignment. It also has the effect of converting
+cases that currently inevitably raise ``UnboundLocalError`` at function call
+time to report a new compile time ``TargetNameError``.
+
+New syntax for a name rebinding expression (``NAME := TARGET``) is then added
+primarily as a lower level primitive to help illustrate, implement and explain
+the new augmented assignment semantics, rather than being the sole change being
+proposed.
+
+The author of this PEP believes that this approach makes the value of the new
+flexibility in name rebinding clearer, while also mitigating many of the
+potential concerns raised with PEP 572 around explaining when to use
+``NAME = EXPR`` over ``NAME := EXPR`` (and vice-versa).
+
+
+Syntax and semantics
+====================
+
+Augmented assignment expressions
+--------------------------------
+
+The language grammar would be adjusted to allow augmented assignments that
+target simple names to appear as expressions, where the result of the
+augmented assignment expression is the same post-calculation reference as is
+being bound to the given target.
+
+For example::
+
+    >>> n = 0
+    >>> n += 5
+    5
+    >>> n -= 2
+    3
+    >>> n *= 3
+    9
+    >>> n
+    9
+
+Augmented assignments to attributes and container subscripts will continue to
+be restricted to the standalone statement form, and will be defined as
+returning ``None`` for purposes of interactive use. While a future PEP could
+potentially make the case for allowing those more complex targets as expressions,
+this PEP doesn't attempt to do so due to the ambiguity around whether or not
+they should call ``__getitem__`` and/or ``__getattribute`` on the target
+expression after performing the assignment, or else just return a reference to
+the binary operation result being assigned.
+
+(Note: as an implementation detail, the language grammar itself may allow all
+existing permitted targets for all augmented assignments, regardless of whether
+they're appearing as an expression or a statement, with the restriction to
+statement level usage for more complex targets being implemented at the AST
+generation step).
+
+
+Augmented assignment in block scopes
+------------------------------------
+
+No target name binding changes are proposed for augmented assignments at module
+or class scope (this also includes code executed using "exec" or "eval"). These
+will continue to implicitly declare a new local variable as the binding target
+as they do today, and (if necessary) will be able to resolve the name from an
+outer scope before binding it locally.
+
+At function scope, augmented assignments will be changed to require that there
+be either a preceding name binding or variable declaration to explicitly
+establish the target name as being local to the function, or else an explicit
+``global`` or ``nonlocal`` declaration. ``TargetNameError``, a new
+``SyntaxError`` subclass, will be raised at compile time if no such binding or
+declaration is present.
+
+For example, the following code would compile and run as it does today::
+
+    x = 0
+    x += 1 # Sets global "x" to 1
+
+    class C:
+        x += 1 # Sets local "x" to 2, leaves global "x" alone
+
+    def local_target():
+        x = 0
+        x += 1 # Sets local "x" to 1, leaves global "x" alone
+
+    def global_target():
+        global x
+        x += 1 # Increments global "x" each time this runs
+
+    def nonlocal_target():
+        x = 0
+        def g():
+            nonlocal x
+            x += 1 # Increments "x" in outer scope each time this runs
+            return x
+        return g
+
+The follow examples would all still compile and then raise an error at runtime
+as they do today::
+
+    n += 1 # Raises NameError at runtime
+
+    class C:
+        n += 1 # Raises NameError at runtime
+
+    def missing_global():
+        global n
+        n += 1 # Raises NameError at runtime
+
+    def delayed_nonlocal_initialisation():
+        def f():
+            nonlocal n
+            n += 1
+        f() # Raises NameError at runtime
+        n = 0
+
+    def skipped_conditional_initialisation():
+        if False:
+            n = 0
+        n += 1 # Raises UnboundLocalError at runtime
+
+    def local_declaration_without_initial_assignment():
+        n : typing.Any
+        n += 1 # Raises UnboundLocalError at runtime
+
+Whereas the following would raise a compile time ``DeprecationWarning``
+initially, and eventually change to report a compile time ``TargetNameError``::
+
+    def missing_target():
+        x += 1 # Compile time TargetNameError due to ambiguous target scope
+               # Is there a missing initialisation of "x" here? Or a missing
+               # global or nonlocal declaration?
+
+As a conservative implementation approach, the compile time function name
+resolution change would be introduced as a ``DeprecationWarning`` in Python
+3.8, and then converted to ``TargetNameError`` in Python 3.9. This avoids
+potential problems in cases where an unused function would currently raise
+``UnboundLocalError`` if it was ever actually called, but the code is actually
+unused - converting that latent runtime defect to a compile time error qualifies
+as a backwards incompatible change that requires a deprecation period.
+
+When augmented assignments are used as expressions in function scope (rather
+than as standalone statements), there aren't any backwards compatibility
+concerns, so the compile time name binding checks would be enforced immediately
+in Python 3.9.
+
+
+Augmented assignment in scoped expressions
+------------------------------------------
+
+Scoped expressions is a new collective term being proposed for expressions that
+introduce a new nested scope of execution, either as an intrinsic part of their
+operation (lambda expressions, generator expressions), or else as a way of
+hiding name binding operations from the containing scope (container
+comprehensions).
+
+Unlike regular functions, these scoped expressions can't include explicit
+``global`` or ``nonlocal`` declarations to rebind names directly in an outer
+scope.
+
+Instead, their name binding semantics for augmented assignment expressions would
+be defined as follows:
+
+* augmented assignment targets used in scoped expressions are expected to either
+  be already bound in the containing block scope, or else have their scope
+  explicitly declared in the containing block scope. If no suitable name
+  binding or declaration can be found in that scope, then ``TargetNameError``
+  will be raised at compile time (rather than creating a new binding within
+  the scoped expression).
+* if the containing block scope is a class scope, than ``TargetNameError`` will
+  always be raised, with a dedicated message indicating that combining class
+  scopes with augmented assignments in scoped expressions is not currently
+  permitted.
+* if a name is declared as a formal parameter (lambda expressions), or as an
+  iteration variable (generator expressions, comprehensions), then that name
+  is considered local to that scoped expression, and attempting to use it as
+  the target of an augmented assignment operation in that scope, or any nested
+  scoped expression, will raise ``TargetNameError`` (this is a restriction that
+  could potentially be lifted later, but is being proposed for now to simplify
+  the initial set of compile time and runtime semantics that needs to be
+  covered in the language reference and handled by the compiler and interpreter)
+
+For example, the following code would work as shown::
+
+    >>> global_target = 0
+    >>> incr_global_target = lambda: global_target += 1
+    >>> incr_global_target()
+    1
+    >>> incr_global_target()
+    2
+    >>> global_target
+    2
+    >>> def cumulative_sums(data, start=0)
+    ...    total = start
+    ...    yield from (total += value for value in data)
+    ...    return total
+    ...
+    >>> print(list(cumulative_sums(range(5))))
+    [0, 1, 3, 6, 10]
+
+While the following examples would all raise ``TargetNameError``::
+
+    class C:
+        cls_target = 0
+        incr_cls_target = lambda: cls_target += 1 # Error due to class scope
+
+    def missing_target():
+        incr_x = lambda: x += 1 # Error due to missing target "x"
+
+    def late_target():
+        incr_x = lambda: x += 1 # Error due to "x" being declared after use
+        x = 1
+
+    lambda arg: arg += 1 # Error due to attempt to target formal parameter
+
+    [x += 1 for x in data] # Error due to attempt to target iteration variable
+
+
+As augmented assignments currently can't appear inside scoped expressions, the
+above compile time name resolution exceptions would be included as part of the
+initial implementation rather than needing to be phased in as a potentially
+backwards incompatible change.
+
+
+Promoting nonlocal references to global references
+--------------------------------------------------
+
+As part of the above changes, all ``nonlocal NAME`` declarations (including
+the implicit ones added for augmented assignment targets in scoped expressions
+at function scope) will be changed to take explicit ``global NAME`` declarations
+into account, such that the affected name is considered ``global`` in the inner
+scope as well. For example, the following code would work by binding ``x`` in
+the global scope instead of raising ``SyntaxError`` as it does today::
+
+    >>> def f():
+    ...     global x
+    ...     def g():
+    ...         nonlocal x
+    ...         x = 1
+    ...     g()
+    >>> f()
+    >>> x
+    1
+
+
+Adding an inline assignment expression
+--------------------------------------
+
+Given just the above changes, it would be possible to abuse a symbol like
+``|=`` as a general purpose assignment operator by defining a ``Target`` wrapper
+type that worked as follows::
+
+    >>> class Target:
+    ...     def __init__(self, value):
+    ...         self.value = value
+    ...     def __or__(self, other):
+    ...         return Target(other)
+    ...
+    >>> x = Target(10)
+    >>> x.value
+    10
+    >>> x |= 42
+    <__main__.Target object at 0x7f608caa8048>
+    >>> x.value
+    42
+
+Rather than requiring such workarounds, this PEP instead proposes that
+PEP 572's "NAME := EXPR" syntax be adopted as a new inline assignment
+expression that uses the augmented assignment scoping rules described above.
+
+This cleanly handles cases where only the new value is of interest, and the
+previously bound value (if any) can just be discarded completely.
+
+As with other augmented assignment operators, function level usage would always
+require a preceding name binding or scope declaration to avoid getting
+``TargetNameError`` (as a new operator, there's no need for a
+``DeprecationWarning`` period).
+
+This difference in target scoping behaviour means that the ``NAME := EXPR``
+syntax would be expected to have two primary use cases:
+
+- as a way of allowing assignments to be embedded as an expression in an ``if``
+  or ``while`` statement, or as part of a scoped expression
+- as a way of requesting a compile time check that the target name be previously
+  declared or bound in the current function scope
+
+At module or class scope, ``NAME = EXPR`` and ``NAME := EXPR`` would be
+semantically equivalent due to the compiler's lack of visibility into the set
+of names that will be resolvable at runtime, but code linters and static
+type checkers would be encouraged to enforce the same "declaration or assignment
+required before use" behaviour for ``NAME := EXPR`` as the compiler would
+enforce at function scope.
+
+Unlike existing augmented assignment statements, inline assignment expressions
+would be restricted entirely to single name targets (even when used as a
+standalone statement).
+
+
+Design discussion
+=================
+
+Restriction to single name targets
+----------------------------------
+
+This PEP keeps PEP 572's restriction to single name targets when augmented
+assignments are used as expressions, restricting attribute and subscript
+targets to the statement form.
+
+While the case could be made that it would be more consistent to allow
+those in the expression form as well, the rationale for excluding them is
+that it's inherently ambiguous as to whether or not the expression form would
+return the expression being bound, or the result of evaluating the LHS as
+an expression (rather than as an assignment target).
+
+If this restriction was deemed unduly confusing, then the simplest resolution
+would be to retain the current semantics of augmented assignment statements
+and have the expression result be the reference bound to the target (i.e.
+``__getitem__`` and ``__getattribute__`` would *not* be called after the
+assignment had already taken place)
+
+
+Ignoring scoped expressions when determining augmented assignment targets
+-------------------------------------------------------------------------
+
+When discussing possible binding semantics for PEP 572's assignment expressions,
+Tim Peters made a plausible case [1_,2_,3_] for assignment expressions targeting
+the containing block scope, essentially ignoring any intervening scoped
+expressions.
+
+This approach allows use cases like cumulative sums, or extracting the final
+value from a generator expression to be written in a relatively straightforward
+way::
+
+    total = 0
+    partial_sums = [total := total + value for value in data]
+
+    factor = 1
+    while any(n % (factor := p) == 0 for p in small_primes):
+        n //= factor
+
+Guido also expressed his approval for this general approach [4_].
+
+The proposal in this PEP differs from Tim's original proposal in three main
+areas:
+
+- it applies the proposal to all augmented assignment operators, not just a
+  single new name binding operator
+- as far as is practical, it extends the augmented assignment requirement that
+  the name already be defined to the new name binding operator (raising
+  ``TargetNameError`` rather than implicitly declaring new local variables at
+  function scope)
+- it includes lambda expressions in the set of scopes that gets ignored for
+  target name binding purposes, making this transparency to assignments common
+  to all of the scoped expressions rather than being specific to comprehensions
+  and generator expressions
+
+With scoped expressions being ignored when calculating binding targets, it's
+once again difficult to detect the scoping difference between the outermost
+iterable expressions in generator expressions and comprehensions (you have to
+mess about with either class scopes or attempting to rebind iteration Variables
+to detect it), so there's also no need to tinker with that.
+
+
+Treating inline assignment as an augmented assignment variant
+-------------------------------------------------------------
+
+One of the challenges with PEP 572 is the fact that ``NAME = EXPR`` and
+``NAME := EXPR`` are entirely semantically equivalent at every scope. This
+makes the two forms hard to teach, since there's no inherent nudge towards
+choosing one over the other at the statement level, so you end up having to
+resort to "``NAME = EXPR`` is preferred because it's been around longer".
+
+That semantic equivalence is difficult to avoid at module and class scope while
+still having ``if NAME := EXPR:`` and ``while NAME := EXPR:`` work sensibly, but
+at function scope the compiler's comprehensive view of all local names makes
+it possible to require that the name be assigned or declared before use,
+providing a reasonable incentive to continue to default to using the
+``NAME = EXPR`` form when possible, while also enabling the use of the
+``NAME := EXPR`` as a kind of simple compile time assertion (i.e. explicitly
+indicating that the targeted name has already been bound or declared and hence
+should already be known to the compiler).
+
+
+Disallowing augmented assignments in class level scoped expressions
+-------------------------------------------------------------------
+
+While modern classes do define an implicit closure that's visible to method
+implementations (in order to make ``__class__`` available for use in zero-arg
+``super()`` calls), there's no way for user level code to explicitly add
+additional names to that scope.
+
+Meanwhile, attributes defined in a class body are ignored for the purpose of
+defining a method's lexical closure, which means adding them there wouldn't
+work at an implementation level.
+
+Rather than trying to resolve that inherent ambiguity, this PEP simply
+prohibits such usage, and requires that any affected logic be written somewhere
+other than directly inline in the class body (e.g. in a separate helper
+function).
+
+
+Examples
+========
+
+Simplifying retry loops
+-----------------------
+
+There are currently a few different options for writing retry loops, including::
+
+    # Post-decrementing a counter
+    remaining_attempts = 9
+    while remaining_attempts:
+        try:
+            result = attempt_operation()
+        except Exception as exc:
+            remaining_attempts -= 1
+            continue # Failed, so try again
+        break # Success!
+    else:
+        # Ran out of attempts before succeeding
+        raise OperationFailed("No more attempts remaining") from exc
+
+    # Loop-and-a-half with a pre-decremented counter
+    remaining_attempts = 10
+    while True:
+        remaining_attempts -= 1
+        if not remaining_attempts:
+            # Ran out of attempts before succeeding
+            raise OperationFailed("No more attempts remaining") from exc
+        try:
+            result = attempt_operation()
+        except Exception as exc:
+            continue # Failed, so try again
+        break # Success!
+
+Each of the available options hides some aspect of the intended loop structure
+inside the loop body, whether that's the state modification, the exit condition,
+or both.
+
+The proposal in this PEP allows both the state modification and the exit
+condition to be included directly in the loop header::
+
+    remaining_attempts = 10
+    while remaining_attempts -= 1:
+        try:
+            result = attempt_operation()
+        except Exception as exc:
+            continue # Failed, so try again
+        break # Success!
+    else:
+        # Ran out of attempts before succeeding
+        raise OperationFailed("No more attempts remaining") from exc
+
+
+Simplifying if-elif chains
+--------------------------
+
+if-elif chains that need to rebind the checked condition currently need to
+be written using nested if-else statements::
+
+
+    m = pattern.match(data)
+    if m:
+        ...
+    else:
+        m = other_pattern.match(data)
+        if m:
+            ...
+        else:
+            m = yet_another_pattern.match(data)
+            if m:
+                ...
+            else:
+                ...
+
+As with PEP 572, this PEP allows the else/if portions of that chain to be
+condensed, making their consistent and mutually exclusive structure more
+readily apparent::
+
+    m = pattern.match(data)
+    if m:
+        ...
+    elif m := other_pattern.match(data):
+        ...
+    elif m := yet_another_pattern.match(data):
+        ...
+    else:
+        ...
+
+Unlike PEP 572, this PEP requires that the assignment target be explicitly
+indicated as local before the first use as a ``:=`` target, either by
+binding it to a value (as shown above), or else by including an appropriate
+explicit type declaration::
+
+    m : typing.re.Match
+    if m := pattern.match(data):
+        ...
+    elif m := other_pattern.match(data):
+        ...
+    elif m := yet_another_pattern.match(data):
+        ...
+    else:
+        ...
+
+
+Capturing intermediate values from comprehensions
+-------------------------------------------------
+
+The proposal in this PEP makes it straightforward to capture and reuse
+intermediate values in comprehensions and generator expressions by
+exporting them to the containing block scope::
+
+    factor = 1
+    while any(n % (factor := p) == 0 for p in small_primes):
+        n //= factor
+
+    def cumulative_sums(data, start=0)
+       total = start
+       yield from (total += value for value in data)
+       return total
+
+
+Allowing lambda expressions to act more like re-usable code thunks
+------------------------------------------------------------------
+
+This PEP allows the closure-based counter example::
+
+    def make_counter(start=0):
+        x = start
+        def counter(step=1):
+            nonlocal x
+            x += step
+            return x
+        return counter
+
+To be abbreviated as::
+
+    def make_counter(start=0):
+        x = start
+        return (lambda step=1: x += step)
+
+While the latter form is still a conceptually dense piece of code, it can be
+reasonably argued that the lack of boilerplate (where the "def", "nonlocal",
+and "return" keywords and two additional repetitions of the "x" variable name
+have been replaced with the "lambda" keyword) may make it easier to read in
+practice.
+
+
+Acknowledgements
+================
+
+The PEP author wishes to thank Chris Angelico for his work on PEP 572, and his
+efforts to create a coherent summary of the great many sprawling discussions
+that spawned on both python-ideas and python-dev, as well as Tim Peters for
+the in-depth discussion of parent local scoping that prompted the above
+scoping proposal for augmented assignments inside scoped expressions.
+
+Eric Snow's feedback on a pre-release version of this PEP helped make it
+significantly more readable.
+
+
+References
+==========
+
+.. [1] The beginning of Tim's genexp & comprehension scoping thread
+       (https://mail.python.org/pipermail/python-ideas/2018-May/050367.html)
+
+.. [2] Reintroducing the original cumulative sums use case
+       (https://mail.python.org/pipermail/python-ideas/2018-May/050544.html)
+
+.. [3] Tim's language reference level explanation of his proposed scoping semantics
+       (https://mail.python.org/pipermail/python-ideas/2018-May/050729.html)
+
+.. [4] Guido's endorsement of Tim's proposed genexp & comprehension scoping
+       (https://mail.python.org/pipermail/python-ideas/2018-May/050411.html)
+
+
+Copyright
+=========
+
+This document has been placed in the public domain.
+
+
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   coding: utf-8
+   End:
