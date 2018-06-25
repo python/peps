@@ -112,6 +112,7 @@ For methods, this works indirectly through the class,
 assuming that the class has a pointer to the module.
 
 The parent would also typically be used to implement ``__qualname__``.
+The new C API function ``PyCCall_GenericGetQualname()`` does exactly that.
 
 Custom classes are free to set ``cc_parent`` to whatever they want.
 It is only used by the C call protocol if the ``CCALL_OBJCLASS`` flag is set.
@@ -170,10 +171,21 @@ For example, we have the following signature:
 
 - ``CCALL_FUNCARG | CCALL_VARARGS``: ``cc_func(PyObject *func, PyObject *self, PyObject *args)``
 
+**NOTE**: in the case of bound methods, it is currently unspecified
+whether the "function object" in the paragraph above refers
+to the bound method or the original function (which is wrapped by the bound method).
+In the reference implementation, the bound method is passed.
+In the future, this may change to the wrapped function.
+Despite this ambiguity, the implementation of bound methods
+guarantees that ``PyCCall_CCALLDEF(func)``
+points to the ``CCallDef`` of the original function.
+
 **NOTE**: unlike the existing ``METH_...`` flags,
 the ``CCALL_...`` constants do not necessarily represent single bits.
-So checking ``cc_flags & CCALL_VARARGS != 0`` is not a valid way
+So checking ``(cc_flags & CCALL_VARARGS) == 0`` is not a valid way
 for checking the signature.
+There are also no guarantees of binary compatibility
+between Python versions for these flags.
 
 Checking __objclass__
 ---------------------
@@ -194,12 +206,10 @@ is not set in ``cc_flags``, then the argument passed as ``self``
 is simply ``cr_self``.
 
 If ``cr_self`` is NULL and the flag ``CCALL_SLICE_SELF`` is set,
-then the first positional argument (if any) is removed from
+then the first positional argument is removed from
 ``args`` and instead passed as first argument to the C function.
 Effectively, the first positional argument is treated as ``__self__``.
-This is meant to support unbound methods such that the C function does
-not see the difference between bound and unbound method calls.
-This does not affect keyword arguments in any way.
+If there are no positional arguments, ``TypeError`` is raised.
 
 This process is called self slicing and a function is said to have self
 slicing if ``cr_self`` is NULL and ``CCALL_SLICE_SELF`` is set.
@@ -208,14 +218,19 @@ Note that a ``METH_NULLARG`` function with self slicing effectively has
 one argument, namely ``self``.
 Analogously, a ``METH_O`` function with self slicing has two arguments.
 
-Supporting the LOAD_METHOD/CALL_METHOD opcodes
-----------------------------------------------
+Descriptor behavior
+-------------------
 
 Classes supporting the C call protocol
-must implement ``__get__`` in a specific way.
-This is required to correctly deal with the ``LOAD_METHOD``/``CALL_METHOD`` optimization.
-If ``func`` supports the C call protocol, then ``func.__get__``
-must behave as follows:
+must implement the descriptor protocol in a specific way.
+This is required for an efficient implementation of bound methods:
+it allows sharing the ``PyCCallDef`` structure between bound and unbound methods.
+It is also needed for a correct implementation of ``_PyObject_GetMethod``
+which is used by the ``LOAD_METHOD``/``CALL_METHOD`` optimization.
+First of all, if ``func`` supports the C call protocol,
+then ``func.__set__`` must not be implemented.
+
+Second, ``func.__get__`` must behave as follows:
 
 - If ``cr_self`` is not NULL, then ``__get__`` must be a no-op
   in the sense that ``func.__get__(obj, cls)(*args, **kwds)``
@@ -243,45 +258,55 @@ the easiest solution is to assign ``cr_self = Py_None``
 Generic API functions
 ---------------------
 
-The following C API functions are added:
+This section lists the new public API functions dealing with the C call protocol.
 
 - ``int PyCCall_Check(PyObject *op)``:
   return true if ``op`` implements the C call protocol.
 
+All the functions and macros below
+apply to any instance supporting the C call protocol.
+In other words, ``PyCCall_Check(func)`` must be true.
+
 - ``PyObject * PyCCall_Call(PyObject *func, PyObject *args, PyObject *kwds)``:
-  call ``func`` (which must implement the C call protocol)
-  with positional arguments ``args`` and keyword arguments ``kwds``
-  (``kwds`` may be NULL).
+  call ``func`` with positional arguments ``args``
+  and keyword arguments ``kwds`` (``kwds`` may be NULL).
   This function is meant to be put in the ``tp_call`` slot.
 
-- ``PyObject * PyCCall_FastCall(PyObject *func, PyObject *const *args, Py_ssize_t nargs, PyObject *kwds)``:
-  call ``func`` (which must implement the C call protocol)
-  with ``nargs`` positional arguments given by ``args[0]``, …, ``args[nargs-1]``.
+- ``PyObject * PyCCall_FASTCALL(PyObject *func, PyObject *const *args, Py_ssize_t nargs, PyObject *kwds)``:
+  call ``func`` with ``nargs`` positional arguments given by ``args[0]``, …, ``args[nargs-1]``.
   The parameter ``kwds`` can be NULL (no keyword arguments),
   a dict with ``name:value`` items or a tuple with keyword names.
   In the latter case, the keyword values are stored in the ``args``
   array, starting at ``args[nargs]``.
 
-The following four functions are generic getters,
-meant to be put into the ``tp_getset`` array:
+Macros to access the ``PyCCallRoot`` and ``PyCCallDef`` structures:
 
-- ``PyObject * PyCCall_GenericGetName(PyObject *func, void *ignored)``:
-  return ``cc_name`` for any instance supporting the C call protocol.
+- ``PyCCallRoot * PyCCall_CCALLROOT(PyObject *func)``:
+  pointer to the ``PyCCallRoot`` structure inside ``func``.
 
-- ``PyObject * PyCCall_GenericGetParent(PyObject *func, void *ignored)``:
-  return ``cc_parent`` for any instance supporting the C call protocol.
+- ``PyCCallDef * PyCCall_CCALLDEF(PyObject *func)``:
+  shorthand for ``PyCCall_CCALLROOT(func)->cr_ccall``.
+
+- ``PyObject * PyCCall_SELF(PyOject *func)``:
+  shorthand for ``PyCCall_CCALLROOT(func)->cr_self``.
+
+Generic getters, meant to be put into the ``tp_getset`` array:
+
+- ``PyObject * PyCCall_GenericGetName(PyObject *func, void *closure)``:
+  return ``cc_name``.
+
+- ``PyObject * PyCCall_GenericGetParent(PyObject *func, void *closure)``:
+  return ``cc_parent``.
   Raise ``AttributeError`` if ``cc_parent`` is NULL.
 
-- ``PyObject * PyCCall_GenericGetQualname(PyObject *func, void *ignored)``:
+- ``PyObject * PyCCall_GenericGetQualname(PyObject *func, void *closure)``:
   return a string suitable for using as ``__qualname__``.
   This uses the ``__qualname__`` of ``cc_parent`` if possible.
   Otherwise, this returns ``cc_name``.
 
-- ``PyObject * PyCCall_GenericGetSelf(PyObject *func, void *ignored)``:
-  return ``cr_self`` for any instance supporting the C call protocol.
+- ``PyObject * PyCCall_GenericGetSelf(PyObject *func, void *closure)``:
+  return ``cr_self``.
   Raise ``AttributeError`` if ``cr_self`` is NULL.
-
-None of the functions in this section is added to the stable ABI [#pep384]_.
 
 Profiling
 ---------
@@ -321,19 +346,20 @@ This is the new layout::
         PyObject    *m_weakreflist;
     } PyCFunctionObject;
 
-For functions of a module, ``m_ccall`` points to the ``_ccalldef`` field.
+For functions of a module and for unbound methods of extension types,
+``m_ccall`` points to the ``_ccalldef`` field.
 For bound methods, ``m_ccall`` points to the ``PyCCallDef``
 of the unbound method.
 
 **NOTE**: the new layout of ``method_descriptor`` changes it
 such that it no longer starts with ``PyDescr_COMMON``.
-This is really an implementation detail and it should cause few (if any)
+This is purely an implementation detail and it should cause few (if any)
 compatibility problems.
 
 C API functions
 ---------------
 
-The following function is added:
+The following function is added (also to the stable ABI [#pep384]_):
 
 - ``PyObject * PyCFunction_ClsNew(PyTypeObject *cls, PyMethodDef *ml, PyObject *self, PyObject *module, PyObject *parent)``:
   create a new object with object structure ``PyCFunctionObject`` and class ``cls``.
@@ -356,6 +382,33 @@ Heap types never inherit the C call protocol because
 that would not be safe (heap types can be changed dynamically).
 
 
+Performance
+===========
+
+This PEP should not impact the performance of existing code
+(in the positive or negative sense).
+It is meant to allow efficient new code to be written,
+not to make existing code faster.
+
+
+Stable ABI
+==========
+
+None of the functions, structures or constants dealing with the C call protocol
+are added to the stable ABI [#pep384]_.
+
+There are two reasons for this:
+first of all, the most useful feature of the C call protocol is probably the
+``METH_FASTCALL`` calling convention.
+Given that this is not even part of the public API (see also PEP 579, issue 6),
+it would be strange to add anything else from the C call protocol
+to the stable ABI.
+
+Second, we want the C call protocol to be extensible in the future.
+By not adding anything to the stable ABI,
+we are free to do that without restrictions.
+
+
 Backwards compatibility
 =======================
 
@@ -372,6 +425,9 @@ is not part of the stable ABI but it is very common
 (because of Argument Clinic).
 So, if one cannot support ``METH_FASTCALL``,
 it is hard to imagine a use case for ``PyCFunction_GetFlags``.
+The fact that ``PyCFunction_GET_FLAGS`` and ``PyCFunction_GetFlags``
+are not used at all by CPython outside of ``Objects/call.c``
+further shows that these functions are not particularly useful.
 
 Concluding: the only potential breakage is with C code
 which accesses the internals of ``PyCFunctionObject`` and ``PyMethodDescrObject``.
@@ -411,17 +467,63 @@ at implementing a ``tp_fastcall`` slot [#bpo29259]_.
 The main use case is built-in functions and methods.
 For those, the C function to be called does depend on the instance.
 
-However, the current protocol makes it easy to support the case
+Note that the current protocol makes it easy to support the case
 where the same C function is called for all instances:
 just use a single static ``PyCCallDef`` structure for every instance.
+
+Why CCALL_OBJCLASS?
+-------------------
+
+The flag ``CCALL_OBJCLASS`` is meant to support various cases
+where the class of a ``self`` argument must be checked, such as::
+
+    >>> list.append({}, None)
+    Traceback (most recent call last):
+      File "<stdin>", line 1, in <module>
+    TypeError: append() requires a 'list' object but received a 'dict'
+
+    >>> list.__len__({})
+    Traceback (most recent call last):
+      File "<stdin>", line 1, in <module>
+    TypeError: descriptor '__len__' requires a 'list' object but received a 'dict'
+
+    >>> float.__dict__["fromhex"](list, "0xff")
+    Traceback (most recent call last):
+      File "<stdin>", line 1, in <module>
+    TypeError: descriptor 'fromhex' for type 'float' doesn't apply to type 'list'
+
+In the reference implementation, only the first of these uses the new code.
+The other examples show that these kind of checks appear
+in multiple places, so it makes sense to add generic support for them.
+
+Why CCALL_SLICE_SELF?
+---------------------
+
+The flag ``CCALL_SLICE_SELF`` and the concept of self slicing
+are needed to support methods:
+the C function should not care
+whether it is called as unbound method or as bound method.
+In both cases, there should be a ``self`` argument
+and this is simply the first positional argument of an unbound method call.
+
+For example, ``list.append`` is a ``METH_O`` method.
+Both the calls ``list.append([], 42)`` and ``[].append(42)`` should
+translate to the C call ``list_append([], 42)``.
+
+Thanks to the proposed C call protocol, we can support this in such a way
+that both the unbound and the bound method share a ``PyCCallDef``
+structure (with the ``CCALL_SLICE_SELF`` flag set).
+
+Concluding, ``CCALL_SLICE_SELF`` has two advantages:
+there is no extra layer of indirection for calling
+and constructing bound methods does not require setting up a ``PyCCallDef`` structure.
 
 Replacing tp_print
 ------------------
 
-We re-purpose ``tp_print`` as ``tp_ccalloffset`` because this makes
+We repurpose ``tp_print`` as ``tp_ccalloffset`` because this makes
 it easier for external projects to backport the C call protocol
 to earlier Python versions.
-
 In particular, the Cython project has shown interest in doing that
 (see https://mail.python.org/pipermail/python-dev/2018-June/153927.html).
 
@@ -429,7 +531,7 @@ In particular, the Cython project has shown interest in doing that
 Reference implementation
 ========================
 
-A draft implementation can be found at
+The reference implementation can be found at
 https://github.com/jdemeyer/cpython/tree/pep580
 
 
