@@ -7,50 +7,51 @@ Content-Type: text/x-rst
 Created: 10-May-2018
 Python-Version: 3.8
 Post-History: 17-May-2018
-
+              23-June-2018
+              08-July-2018
 
 Abstract
 ========
 
-Extend the classes for built-in functions and methods to be more like Python functions. Specifically, built-in functions and methods will gain access to the module they are declared in, and built-in methods will have access to the class they belong to. This will allow tools like Cython to use the standard built-in function and method classes, thus gaining performance parity with built-in functions like ``len`` or ``print``.
-Performance of existing code is not expected to change significantly.
+Expose the "FastcallKeywords" convention used internally by CPython to third-party code, and make the ``inspect`` module use duck-typing.
+In combination this will allow third-party C extensions and tools like Cython to create objects that use the same calling conventions as built-in and Python functions, thus gaining performance parity with built-in functions like ``len`` or ``print``.
 
-One new function will be added to the C API to allow third-party code to create built-in functions in an efficient and portable manner.
+A small improvement in the performance of existing code is expected.
 
 Motivation
 ==========
 
-Currently third-party module authors face a dilemma when implementing
-functions in C. Either they can use one of the pre-existing built-in function 
+Currently third-party module authors face a dilemna when implementing
+functions in C. Either they can use one of the pre-existing built-in function
 or method classes or implement their own custom class in C.
-The first choice causes them to lose the ability to access module-level data; 
-the second choice is an additional maintenance burden and, more importantly,
+The first choice causes them to lose the ability to access the internals of the callable object.
+The second choice is an additional maintenance burden and, more importantly,
 has a significant negative impact on performance.
 
-This PEP aims to allow authors of third-party C modules, and tools like to Cython, to
-utilise the pre-existing built-in function or method classes without a loss of capabilities relative to a function implemented in Python.
-
-Enhanced access to the function's enviroment
---------------------------------------------
-
-Built-in functions will gain efficient access to the module in which they are declared,
-and if declared in a class, efficient access to that class as well.
-
-Performance
------------
-
-No significant change is expected.
+This PEP aims to allow authors of third-party C modules, and tools like to Cython, to utilize the faster calling convention used internally by CPython for built-in functions and methods, and to do so without a loss of capabilities relative to a function implemented in Python.
 
 Introspection
 -------------
 
-No changes to built-in functions are required to support introspection.
+The inspect module will fully support duck-typing when introspecting callables.
 
-The ``inspect.Signature.from_callable()`` function computes the signature of a callable. If an object has a ``__signature__`` 
-property, then ``inspect.Signature.from_callable()`` simply returns that. If a builtin-callable has a ``__text_signature__``
-then the ``__signature__`` is created from that.
+The ``inspect.Signature.from_callable()`` function computes the signature of a callable. If an object has a ``__signature__``
+property, then ``inspect.Signature.from_callable()`` simply returns that. To further support duck-typing, if a callable has a ``__text_signature__``
+then the ``__signature__`` will be created from that.
+
 This means that 3rd party builtin-functions can implement ``__text_signature__`` if sufficient,
 and the more expensive ``__signature__`` if necessary.
+
+Efficient calls to third-party callables
+----------------------------------------
+
+Currently the majority of calls are dispatched to ``function``\s and ``method_descriptor``\s in custom code, using the "FastcallKeywords" internal calling convention. This PEP proposes that this calling convention is implemented via a C function pointer. Third-party callables which implement this binary interface will have the potential to be called as fast as a built-in function.
+
+Continued prohibition of callable classes as base classes
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Currently any attempt to use ``function``, ``method`` or ``method_descriptor`` as a base class for a new class will fail with a ``TypeError``. This behaviour is desirable as it prevents errors when a subclass overrides the ``__call__`` method. If callables could be sub-classed then any call to a ``function`` or a ``method_descriptor`` would need an additional check that the ``__call__`` method had not been overridden. By exposing an additional call mechanism, the potential for errors  becomes greater. As a consequence, any third-partyy class implementing the addition call interface will not be usable as a base class.
+
 
 New classes and changes to existing classes
 ===========================================
@@ -64,12 +65,8 @@ Python visible changes
 
 #. Instances of the ``builtin_function`` class will retain the ``__module__`` property of ``builtin_function_or_method`` and gain the ``func_module`` and ``func_globals`` properties. The ``func_module`` allows access to the module to which the function belongs. Note that this is different from the ``__module__`` property which merely returns the name of the module. The ``func_globals`` property is equivalent to ``func_module.__dict__`` and is provided to mimic the Python function property of the same name.
 
-#. The ``method_descriptor`` class will become a sub-class of the new ``builtin_function`` class.
-
 #. When binding a ``method_descriptor`` instance to an instance of its owning class, a ``bound_method`` will be created instead of a ``builtin_function_or_method``. This means that the ``method_descriptors`` now mimic the behaviour of Python functions more closely. In other words, ``[].append`` becomes a ``bound_method`` instead of a ``builtin_function_or_method``.
 
-
-Note that ``method_descriptor`` instances will only have access to their module if their ``__objclass__`` class has access to its module. If PEP 573 is approved, then that will be possible.
 
 C API changes
 -------------
@@ -79,46 +76,72 @@ C API changes
 #. ``PyCFunction_NewEx()`` and ``PyCFunction_New()`` are deprecated and will return a ``PyBuiltinFunction`` if able, otherwise a ``builtin_function_or_method``.
 
 Retaining backwards compatibility in the C API and ABI
-------------------------------------------------------
+======================================================
 
-The ``PyCFunction_Type`` object will continue to exist for backwards compatibility in the ABI, but no
-instances of it would be created in the interpreter or the standard library.
+The proposed changes are fully backwards and forwards compatible at both the API and ABI level.
+
 
 Internal C changes
 ------------------
 
-The new C struct for built-in functions is::
+Two new flags will be allowed for the ``typeobject.tp_flags`` field.
+These are ``Py_TPFLAGS_EXTENDED_CALL`` and ``Py_TPFLAGS_FUNCTION_DESCRIPTOR``
+
+Py_TPFLAGS_EXTENDED_CALL
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+For any built-in class that sets ``Py_TPFLAGS_EXTENDED_CALL``
+The C struct corresponding to this built-in class must begin with the struct ``PyExtendedCallable`` which is defined as follows::
+
+    typedef PyObject *(*extended_call_ptr)(PyObject *callable, PyObject** args,
+                       int positional_argcount, PyTupleObject* kwnames);
 
     typedef struct {
         PyObject_HEAD
-        PyMethodDef m_ml; /* Description of the C function to call */
-        PyObject    *m_module; /* The func_module attribute, must be an actual module */
-        PyObject    *m_weakreflist; /* List of weak references */
-    } PyBuiltinFunctionObject;
+        extended_call_ptr ext_call;
+    } PyExtendedCallable;
 
-and the C struct for ``method_descriptor``\s changes to::
-
-    typedef struct {
-        PyBuiltinFunctionObject base;
-        PyTypeObject *m_objclass; /* The __objclass__ attibute */
-    } PyMethodDescrObject;
+Any class that sets the ``Py_TPFLAGS_EXTENDED_CALL`` cannot be used as a base class and a TypeError will be raised if any Python code tries to use it a base class.
 
 
-Possible Extensions
-===================
+Py_TPFLAGS_FUNCTION_DESCRIPTOR
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Callables for operators, like ``int.__add__``, could become instances of the ``method_descriptor`` class, instead of the ``slot_wrapper`` class.
-This would further reduce the number of classes representing built-in callables, but is not necessary to fulfil the above requirements.
+If this flag is set for a built-in class ``F``, then instances of that class are expected to behave the same as a Python function when used as a class attribute.
+Specifically, this mean that the value of ``c.m`` where ``C.m`` is an instanceof the built-in class ``F`` (and ``c`` is an instance of ``C``) must be a bound-method binding ``C.m`` and ``c``.
+Without this flag, it would be impossible for custom callables to behave like Python functions *and* be efficient as Python or built-in functions.
 
-If the ``slot__wrapper`` class were removed, then two new ``METH_`` flags would need to be added.
-The new flags would be ``METH_OO`` and ``METH_TRIO`` for two and three argument operators respectively.
 
+
+Changes to existing C structs
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The ``function``, ``method_descriptor`` and ``method`` classes will have their corresponding structs changed to
+start with the ``PyExtendedCallable`` struct.
+
+Third-party built-in classes using the new extended call interface
+------------------------------------------------------------------
+
+To enable call performance on a par with Python functions and built-in functions, third-party callables should set the ``Py_TPFLAGS_EXTENDED_CALL`` bit of ``tp_flags`` and ensure that the corresponding C struct starts with the ``PyExtendedCallable``.
+Any built-in class that has the ``Py_TPFLAGS_EXTENDED_CALL`` bit set must also implement the ``tp_call`` function and make sure its behaviour is consistent with the ``ext_call`` function.
+
+Performance implications of these changes
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Adding a function pointer to each callable, rather than each class of callable, enables the choice of dispatching function (the code to shuffle arguments about and do error checking) to be made when the callable object is created rather than when it is called. This should reduce the number of instructions executed between the call-site in the interpreter and the execution of the callee.
 
 
 Alternative Suggestions
 =======================
 
-`PEP 575 <https://www.python.org/dev/peps/pep-0575/>` is an alternative approach to solving the same problem as this PEP.
+PEP 580 <https://www.python.org/dev/peps/pep-0580/> is an alternative approach to solving the same problem as this PEP.
+
+
+
+Reference implementation
+========================
+
+A draft implementation can be found at https://github.com/markshannon/cpython/tree/pep-576-minimal
 
 
 Copyright
@@ -136,7 +159,3 @@ This document has been placed in the public domain.
    fill-column: 70
    coding: utf-8
    End:
-
-
-
-
