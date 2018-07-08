@@ -17,11 +17,11 @@ PYTHON=python3
 
 TARGETS= $(patsubst %.rst,%.html,$(wildcard pep-????.rst)) $(patsubst %.txt,%.html,$(wildcard pep-????.txt))  pep-0000.html
 
-all: pep-0000.txt $(TARGETS)
+all: pep-0000.rst $(TARGETS)
 
 $(TARGETS): pep2html.py
 
-pep-0000.txt: $(wildcard pep-????.txt) $(wildcard pep-????.rst) $(wildcard pep0/*.py)
+pep-0000.rst: $(wildcard pep-????.txt) $(wildcard pep-????.rst) $(wildcard pep0/*.py)
 	$(PYTHON) genpepindex.py .
 
 rss:
@@ -32,6 +32,7 @@ install:
 
 clean:
 	-rm pep-0000.txt
+	-rm pep-0000.rst
 	-rm *.html
 
 update:
