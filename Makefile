@@ -15,13 +15,13 @@ PYTHON=python3
 .rst.html:
 	@$(PYTHON) $(PEP2HTML) $<
 
-TARGETS= $(patsubst %.rst,%.html,$(wildcard pep-????.rst)) $(patsubst %.txt,%.html,$(wildcard pep-????.txt))  pep-0000.html
+TARGETS= $(patsubst %.rst,%.html,$(wildcard pep-????.rst)) $(patsubst %.txt,%.html,$(wildcard pep-????.txt)) pep-0000.html
 
-all: pep-0000.txt $(TARGETS)
+all: pep-0000.rst $(TARGETS)
 
 $(TARGETS): pep2html.py
 
-pep-0000.txt: $(wildcard pep-????.txt) $(wildcard pep-????.rst) $(wildcard pep0/*.py)
+pep-0000.rst: $(wildcard pep-????.txt) $(wildcard pep-????.rst) $(wildcard pep0/*.py) genpepindex.py
 	$(PYTHON) genpepindex.py .
 
 rss:
@@ -31,6 +31,7 @@ install:
 	echo "Installing is not necessary anymore. It will be done in post-commit."
 
 clean:
+	-rm pep-0000.rst
 	-rm pep-0000.txt
 	-rm *.html
 
