@@ -1,5 +1,5 @@
-Contributing Guideline
-======================
+Contributing Guidelines
+=======================
 
 To learn more about the purpose of PEPs and how to go about writing a PEP, please
 start reading at PEP 1 (pep-0001.txt in this repo). Note that PEP 0, the index PEP,
