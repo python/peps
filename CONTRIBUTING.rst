@@ -2,8 +2,8 @@ Contributing Guidelines
 =======================
 
 To learn more about the purpose of PEPs and how to go about writing a PEP, please
-start reading at PEP 1 (pep-0001.txt in this repo). Note that PEP 0, the index PEP,
-is now automatically generated, and not committed to the repo.
+start reading at PEP 1 (`pep-0001.txt <./pep-0001.txt>`_ in this repo). Note that
+PEP 0, the index PEP, is now automatically generated, and not committed to the repo.
 
 Before writing a new PEP
 ------------------------
