@@ -8,9 +8,9 @@ is now automatically generated, and not committed to the repo.
 Before writing a new PEP
 ------------------------
 
-Start with a discussion in [python-ideas](https://mail.python.org/mailman/listinfo/python-ideas)
+Start with a discussion in `python-ideas <https://mail.python.org/mailman/listinfo/python-ideas>`_
 mailing list to determine if the idea is PEP-able. More details about it in
-[PEP 1](https://www.python.org/dev/peps/pep-0001/#start-with-an-idea-for-python).
+`PEP 1 <https://www.python.org/dev/peps/pep-0001/#start-with-an-idea-for-python>`_.
 
 
 Commit messages
