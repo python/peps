@@ -132,7 +132,7 @@ def normalized_last_first(name):
     return len(unicodedata.normalize('NFC', name.last_first))
 
 def emit_title(text, anchor, output, *, symbol="="):
-    print(f".. _{anchor}:\n", file=output)
+    print(".. _{anchor}:\n".format(anchor=anchor), file=output)
     print(text, file=output)
     print(symbol*len(text), file=output)
     print(file=output)
@@ -270,10 +270,16 @@ def write_pep0(peps, output=sys.stdout):
     print(f"{'Name':{max_name_len}}  Email Address", file=output)
     print(author_table_separator, file=output)
     sorted_authors = sort_authors(authors_dict)
+    _author_fmt = "{author.last_first:{max_name_len}}  {author_email}"
     for author in sorted_authors:
         # Use the email from authors_dict instead of the one from 'author' as
         # the author instance may have an empty email.
-        print(f"{author.last_first:{max_name_len}}  {authors_dict[author]}", file=output)
+        _entry = _author_fmt.format(
+            author=author,
+            author_email=authors_dict[author],
+            max_name_len=max_name_len,
+        )
+        print(_entry, file=output)
     print(author_table_separator, file=output)
     print(file=output)
     print(file=output)

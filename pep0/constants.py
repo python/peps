@@ -4,10 +4,10 @@ title_length = 55
 author_length = 40
 table_separator = f"== ====  {'='*title_length} {'='*author_length}"
 column_format = (
-    f'%(type)1s%(status)1s %(number)4s  %(title)-{title_length}s %(authors)-s'
-)
+    '%(type)1s%(status)1s %(number)4s  %(title)-{title_length}s %(authors)-s'
+).format(title_length=title_length)
 
-header = u"""\
+header = """\
 PEP: 0
 Title: Index of Python Enhancement Proposals (PEPs)
 Version: N/A
