@@ -11,6 +11,12 @@ PEPs and how to go about writing a PEP, please start reading at PEP 1
 now automatically generated, and not committed to the repo.
 
 
+Contributing to PEPs
+====================
+
+See the `Contributing Guidelines <./CONTRIBUTING.rst>`.
+
+
 reStructuredText for PEPs
 =========================
 
