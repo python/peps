@@ -2,7 +2,7 @@
 text_type = str
 title_length = 55
 author_length = 40
-table_separator = f"== ====  {'='*title_length} {'='*author_length}"
+table_separator = "== ====  " + "="*title_length + " " + "="*author_length
 column_format = (
     '%(type)1s%(status)1s %(number)4s  %(title)-{title_length}s %(authors)-s'
 ).format(title_length=title_length)

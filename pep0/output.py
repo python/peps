@@ -253,9 +253,9 @@ def write_pep0(peps, output=sys.stdout):
         if status in ("Active", "Draft"):
             continue
         if status == "Accepted":
-            msg = f"    A - Accepted (Standards Track only) or Active proposal"
+            msg = "    A - Accepted (Standards Track only) or Active proposal"
         else:
-            msg = f"    {status[0]} - {status} proposal"
+            msg = "    {status[0]} - {status} proposal".format(status=status)
         print(msg, file=output)
         print(file=output)
 
@@ -265,9 +265,10 @@ def write_pep0(peps, output=sys.stdout):
     authors_dict = verify_email_addresses(peps)
     max_name = max(authors_dict.keys(), key=normalized_last_first)
     max_name_len = len(max_name.last_first)
-    author_table_separator = f"{'='*max_name_len}  {'='*len('email address')}"
+    author_table_separator = "="*max_name_len + "  " + "="*len("email address")
     print(author_table_separator, file=output)
-    print(f"{'Name':{max_name_len}}  Email Address", file=output)
+    _author_header_fmt = "{name:{max_name_len}}  Email Address"
+    print(_author_header_fmt.format(name="Name", max_name_len=max_name_len), file=output)
     print(author_table_separator, file=output)
     sorted_authors = sort_authors(authors_dict)
     _author_fmt = "{author.last_first:{max_name_len}}  {author_email}"
