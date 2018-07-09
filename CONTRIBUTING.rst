@@ -17,7 +17,7 @@ Commit messages
 ---------------
 
 When committing to a PEP, please always include the PEP number in the subject
-title. For example, `PEP NNN: <summary of changes>`.
+title. For example, ``PEP NNN: <summary of changes>``.
 
 
 Code of Conduct
