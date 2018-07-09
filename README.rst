@@ -14,7 +14,7 @@ now automatically generated, and not committed to the repo.
 Contributing to PEPs
 ====================
 
-See the `Contributing Guidelines <./CONTRIBUTING.rst>`.
+See the `Contributing Guidelines <./CONTRIBUTING.rst>`_.
 
 
 reStructuredText for PEPs
