@@ -6,7 +6,7 @@ start reading at PEP 1 (pep-0001.txt in this repo). Note that PEP 0, the index P
 is now automatically generated, and not committed to the repo.
 
 Before writing a new PEP
-========================
+------------------------
 
 Start with a discussion in [python-ideas](https://mail.python.org/mailman/listinfo/python-ideas)
 mailing list to determine if the idea is PEP-able. More details about it in
@@ -14,8 +14,16 @@ mailing list to determine if the idea is PEP-able. More details about it in
 
 
 Commit messages
-===============
+---------------
 
 When committing to a PEP, please always include the PEP number in the subject
 title. For example, `PEP NNN: <summary of changes>`.
 
+
+Code of Conduct
+---------------
+
+All interactions for this project are covered by the
+`PSF Code of Conduct <https://www.python.org/psf/codeofconduct/>`_. Everyone is
+expected to be open, considerate, and respectful of others no matter their
+position within the project.
