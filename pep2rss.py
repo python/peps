@@ -4,13 +4,12 @@
 # (standard post-commit args)
 
 import os, glob, time, datetime, stat, re, sys
-import codecs
 import PyRSS2Gen as rssgen
 
 RSS_PATH = os.path.join(sys.argv[1], 'peps.rss')
 
 def firstline_startingwith(full_path, text):
-    for line in codecs.open(full_path, encoding="utf-8"):
+    for line in open(full_path, encoding="utf-8"):
         if line.startswith(text):
             return line[len(text):].strip()
     return None
@@ -69,5 +68,5 @@ rss = rssgen.RSS2(
     lastBuildDate = datetime.datetime.now(),
     items = items)
 
-with codecs.open(RSS_PATH, 'w', encoding="utf-8") as fp:
+with open(RSS_PATH, 'w', encoding="utf-8") as fp:
     fp.write(rss.to_xml(encoding="utf-8"))
