@@ -70,4 +70,4 @@ rss = rssgen.RSS2(
     items = items)
 
 with codecs.open(RSS_PATH, 'w', encoding="utf-8") as fp:
-    fp.write(rss.to_xml())
+    fp.write(rss.to_xml(encoding="utf-8"))
