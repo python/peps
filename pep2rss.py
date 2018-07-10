@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 # usage: pep-hook.py $REPOS $REV
 # (standard post-commit args)
