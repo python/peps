@@ -99,11 +99,11 @@ class Author(object):
         name_parts = self.last.split()
         for index, part in enumerate(name_parts):
             if part[0].isupper():
+                base = u' '.join(name_parts[index:]).lower()
                 break
         else:
-            raise ValueError("last name missing a capital letter: %r"
-	                                                       % name_parts)
-        base = u' '.join(name_parts[index:]).lower()
+            # If no capitals, use the whole string
+            base = self.last.lower()
         return unicodedata.normalize('NFKD', base).encode('ASCII', 'ignore')
 
     def _last_name(self, full_name):
