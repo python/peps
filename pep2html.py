@@ -235,7 +235,7 @@ def fixfile(inpath, input_lines, outfile):
                 else:
                     mailtos.append(part)
             v = COMMASPACE.join(mailtos)
-        elif k.lower() in ('replaces', 'replaced-by', 'requires'):
+        elif k.lower() in ('replaces', 'superseded-by', 'requires'):
             otherpeps = ''
             for otherpep in re.split(',?\s+', v):
                 otherpep = int(otherpep)
@@ -409,7 +409,7 @@ class PEPHeaders(Transform):
                 for node in para:
                     if isinstance(node, nodes.reference):
                         node.replace_self(peps.mask_email(node, pep))
-            elif name in ('replaces', 'replaced-by', 'requires'):
+            elif name in ('replaces', 'superseded-by', 'requires'):
                 newbody = []
                 space = nodes.Text(' ')
                 for refpep in re.split(r',?\s+', body.astext()):
