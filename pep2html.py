@@ -235,7 +235,7 @@ def fixfile(inpath, input_lines, outfile):
                 else:
                     mailtos.append(part)
             v = COMMASPACE.join(mailtos)
-        elif k.lower() in ('replaces', 'replaced-by', 'requires'):
+        elif k.lower() in ('replaces', 'superseded-by', 'requires'):
             otherpeps = ''
             for otherpep in re.split(',?\s+', v):
                 otherpep = int(otherpep)
@@ -296,7 +296,7 @@ def fixfile(inpath, input_lines, outfile):
                     print(re.sub(
                         parts[1],
                         '<a href="%s">%s</a>' % (url, parts[1]),
-                        line, 1), end=' ', file=outfile)
+                        line, 1), end='', file=outfile)
                     continue
                 elif parts and '@' in parts[-1]:
                     # This is a pep email address line, so filter it.
@@ -305,7 +305,7 @@ def fixfile(inpath, input_lines, outfile):
                         print('<pre>', file=outfile)
                         need_pre = 0
                     print(re.sub(
-                        parts[-1], url, line, 1), end=' ', file=outfile)
+                        parts[-1], url, line, 1), end='', file=outfile)
                     continue
             line = fixpat.sub(lambda x, c=inpath: fixanchor(c, x), line)
             if need_pre:
@@ -409,7 +409,7 @@ class PEPHeaders(Transform):
                 for node in para:
                     if isinstance(node, nodes.reference):
                         node.replace_self(peps.mask_email(node, pep))
-            elif name in ('replaces', 'replaced-by', 'requires'):
+            elif name in ('replaces', 'superseded-by', 'requires'):
                 newbody = []
                 space = nodes.Text(' ')
                 for refpep in re.split(r',?\s+', body.astext()):
