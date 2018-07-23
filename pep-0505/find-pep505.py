@@ -8,7 +8,10 @@ Example usage:
 '''
 
 import ast
+import glob
+import os
 import sys
+import tokenize
 
 
 class NoneCoalesceIfBlockVisitor(ast.NodeVisitor):
@@ -379,15 +382,16 @@ def log(text, file_, start_line, stop_line=None):
     if stop_line is None:
         stop_line = start_line
 
-    with open(file_) as source:
+    try:
+        source = tokenize.open(file_)
+    except (SyntaxError, UnicodeDecodeError):
+        return
+
+    with source:
         print(''.join(source.readlines()[start_line-1:stop_line]))
 
 
 def main():
-    if len(sys.argv) < 2:
-        sys.stderr.write('Usage: python3 parse.py <files>\n')
-        sys.exit(1)
-
     def make_callback(text):
         return count_calls_decorator(
             lambda file_, start, stop: log(text, file_, start, stop)
@@ -400,8 +404,24 @@ def main():
     sni_callback = make_callback('Safe navigation `if` block')
     snt_callback = make_callback('Safe navigation ternary')
 
-    for file_ in sys.argv[1:]:
-        with open(file_) as source:
+    files = sys.argv[1:]
+    if files:
+        expanded_files = []
+        for file_ in files:
+            if '*' in file_:
+                expanded_files.extend(glob.glob(file_))
+            else:
+                expanded_files.append(file_)
+    else:
+        files = glob.glob(os.path.join(sys.prefix, 'Lib', '**', '*.py'))
+
+    for file_ in files:
+        try:
+            source = tokenize.open(file_)
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+
+        with source:
             try:
                 tree = ast.parse(source.read(), filename=file_)
             except SyntaxError:
