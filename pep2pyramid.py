@@ -24,6 +24,7 @@ Options:
 
 The optional arguments ``peps`` are either pep numbers or .txt files.
 """
+from __future__ import print_function
 
 import sys
 import os
@@ -116,9 +117,9 @@ def usage(code, msg=''):
         out = sys.stdout
     else:
         out = sys.stderr
-    print >> out, __doc__ % globals()
+    print(__doc__ % globals(), file=out)
     if msg:
-        print >> out, msg
+        print(msg, file=out)
     sys.exit(code)
 
 
@@ -205,8 +206,8 @@ def fixfile(inpath, input_lines, outfile):
     if pep:
         title = "PEP " + pep + " -- " + title
     r = random.choice(range(64))
-    print >> outfile, COMMENT
-    print >> outfile, '<div class="header">\n<table border="0" class="rfc2822">'
+    print(COMMENT, file=outfile)
+    print('<div class="header">\n<table border="0" class="rfc2822">', file=outfile)
     for k, v in header:
         if k.lower() in ('author', 'bdfl-delegate', 'discussions-to'):
             mailtos = []
@@ -252,10 +253,10 @@ def fixfile(inpath, input_lines, outfile):
                 v = cgi.escape(v[11:-2])
         else:
             v = cgi.escape(v)
-        print >> outfile, ('  <tr><th class="field-name">%s:&nbsp;</th>'
-                           '<td>%s</td></tr>' % (cgi.escape(k), v))
-    print >> outfile, '</table>'
-    print >> outfile, '</div>'
+        print(('  <tr><th class="field-name">%s:&nbsp;</th>'
+                           '<td>%s</td></tr>' % (cgi.escape(k), v)), file=outfile)
+    print('</table>', file=outfile)
+    print('</div>', file=outfile)
     need_pre = 1
     for line in infile:
         if line[0] == '\f':
@@ -264,8 +265,8 @@ def fixfile(inpath, input_lines, outfile):
             break
         if line[0].strip():
             if not need_pre:
-                print >> outfile, '</pre>'
-            print >> outfile, '<h3>%s</h3>' % line.strip()
+                print('</pre>', file=outfile)
+            print('<h3>%s</h3>' % line.strip(), file=outfile)
             need_pre = 1
         elif not line.strip() and need_pre:
             continue
@@ -277,29 +278,29 @@ def fixfile(inpath, input_lines, outfile):
                     # This is a PEP summary line, which we need to hyperlink
                     url = PEPURL % int(parts[1])
                     if need_pre:
-                        print >> outfile, '<pre>'
+                        print('<pre>', file=outfile)
                         need_pre = 0
-                    print >> outfile, re.sub(
+                    print(re.sub(
                         parts[1],
                         '<a href="/dev/peps/pep-%04d/">%s</a>' % (int(parts[1]),
-                            parts[1]), line, 1),
+                            parts[1]), line, 1), end=' ', file=outfile)
                     continue
                 elif parts and '@' in parts[-1]:
                     # This is a pep email address line, so filter it.
                     url = fixemail(parts[-1], pep)
                     if need_pre:
-                        print >> outfile, '<pre>'
+                        print('<pre>', file=outfile)
                         need_pre = 0
-                    print >> outfile, re.sub(
-                        parts[-1], url, line, 1),
+                    print(re.sub(
+                        parts[-1], url, line, 1), end=' ', file=outfile)
                     continue
             line = fixpat.sub(lambda x, c=inpath: fixanchor(c, x), line)
             if need_pre:
-                print >> outfile, '<pre>'
+                print('<pre>', file=outfile)
                 need_pre = 0
             outfile.write(line)
     if not need_pre:
-        print >> outfile, '</pre>'
+        print('</pre>', file=outfile)
     return title
 
 
@@ -351,7 +352,7 @@ def get_input_lines(inpath):
         infile = codecs.open(inpath, 'r', 'utf-8')
     except IOError as e:
         if e.errno != errno.ENOENT: raise
-        print >> sys.stderr, 'Error: Skipping missing PEP file:', e.filename
+        print('Error: Skipping missing PEP file:', e.filename, file=sys.stderr)
         sys.stderr.flush()
         return None, None
     lines = infile.read().splitlines(1) # handles x-platform line endings
@@ -370,12 +371,12 @@ def make_html(inpath):
     input_lines = get_input_lines(inpath)
     pep_type = get_pep_type(input_lines)
     if pep_type is None:
-        print >> sys.stderr, 'Error: Input file %s is not a PEP.' % inpath
+        print('Error: Input file %s is not a PEP.' % inpath, file=sys.stderr)
         sys.stdout.flush()
         return None
-    elif not PEP_TYPE_DISPATCH.has_key(pep_type):
-        print >> sys.stderr, ('Error: Unknown PEP type for input file %s: %s'
-                              % (inpath, pep_type))
+    elif pep_type not in PEP_TYPE_DISPATCH:
+        print(('Error: Unknown PEP type for input file %s: %s'
+                              % (inpath, pep_type)), file=sys.stderr)
         sys.stdout.flush()
         return None
     elif PEP_TYPE_DISPATCH[pep_type] == None:
@@ -387,15 +388,15 @@ def make_html(inpath):
          and (os.path.exists(outpath)
               and os.stat(inpath).st_mtime <= os.stat(outpath).st_mtime)):
         if settings.verbose:
-            print "Skipping %s (outfile up to date)"%(inpath)
+            print("Skipping %s (outfile up to date)"%(inpath))
         return
     if settings.verbose:
-        print inpath, "(%s)" % pep_type, "->", outpath
+        print(inpath, "(%s)" % pep_type, "->", outpath)
         sys.stdout.flush()
     outfile = codecs.open(outpath, "w", "utf-8")
     title = PEP_TYPE_DISPATCH[pep_type](inpath, input_lines, outfile)
     outfile.close()
-    os.chmod(outfile.name, 0664)
+    os.chmod(outfile.name, 0o664)
     write_pyramid_index(destDir, title)
     # for PEP 0, copy body to parent directory as well
     if pepnum == '0000':
@@ -409,7 +410,7 @@ def make_html(inpath):
 def set_up_pyramid(inpath):
     m = re.search(r'pep-(\d+)\.', inpath)
     if not m:
-        print >>sys.stderr, "Can't find PEP number in file name."
+        print("Can't find PEP number in file name.", file=sys.stderr)
         sys.exit(1)
     pepnum = m.group(1)
     destDir = os.path.join(settings.dest_dir_base, 'pep-%s' % pepnum)
@@ -424,13 +425,13 @@ def set_up_pyramid(inpath):
         fp = codecs.open(foofilename, 'w', 'utf-8')
         fp.write(CONTENT_HTML)
         fp.close()
-        os.chmod(foofilename, 0664)
+        os.chmod(foofilename, 0o664)
 
         #  write content.yml
         foofilename = os.path.join(destDir, 'content.yml')
         fp = codecs.open(foofilename, 'w', 'utf-8')
         fp.write(CONTENT_YML)
-        os.chmod(foofilename, 0664)
+        os.chmod(foofilename, 0o664)
     return destDir, needSvn, pepnum
 
 def write_pyramid_index(destDir, title):
@@ -439,7 +440,7 @@ def write_pyramid_index(destDir, title):
     title = title.replace('\\', '\\\\') # Escape existing backslashes
     fp.write(INDEX_YML % title.replace('"', '\\"'))
     fp.close()
-    os.chmod(filename, 0664)
+    os.chmod(filename, 0o664)
 
 def copy_aux_files(pep_path, dest_dir):
     """
@@ -451,7 +452,7 @@ def copy_aux_files(pep_path, dest_dir):
     for path in files:
         filename = os.path.basename(path)
         dest_path = os.path.join(dest_dir, filename)
-        print '%s -> %s' % (path, dest_path)
+        print('%s -> %s' % (path, dest_path))
         shutil.copy(path, dest_path)
 
 
@@ -490,7 +491,7 @@ def check_requirements():
                 % (REQUIRES['docutils'], docutils.__version__))
 
 def pep_type_error(inpath, pep_type):
-    print >> sys.stderr, 'Error: ' + PEP_TYPE_MESSAGES[pep_type] % locals()
+    print('Error: ' + PEP_TYPE_MESSAGES[pep_type] % locals(), file=sys.stderr)
     sys.stdout.flush()
 
 
@@ -507,11 +508,11 @@ def build_peps(args=None):
         except (KeyboardInterrupt, SystemExit):
             raise
         except:
-            print "While building PEPs: %s" % filename
+            print("While building PEPs: %s" % filename)
             if settings.keep_going:
                 ee, ev, et = sys.exc_info()
                 traceback.print_exception(ee, ev, et, file=sys.stdout)
-                print "--keep-going/-k specified, continuing"
+                print("--keep-going/-k specified, continuing")
                 continue
             else:
                 raise
@@ -550,6 +551,5 @@ def main(argv=None):
     build_peps(args)
 
 
-
 if __name__ == "__main__":
     main()
