@@ -36,6 +36,7 @@ import getopt
 import errno
 import random
 import time
+import traceback
 import shutil
 
 REQUIRES = {'python': '2.2',
