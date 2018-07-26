@@ -211,7 +211,7 @@ if os.name == "nt":
         def now(self):
             # convert 100-nanosecond intervals since 1601 to UNIX style seconds
             return ( _time._GetSystemTimeAsFileTime() / 10000000
-                   + NT_GetSystemTimeAsFileTimeClock.epoch
+                   + _NT_GetSystemTimeAsFileTimeClock.epoch
                    )
     ALL_CLOCKS.append( _SingletonClockEntry(_NT_GetSystemTimeAsFileTimeClock) )
 
