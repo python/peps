@@ -136,9 +136,9 @@ def fixanchor(current, match):
                 ltext.append(c)
                 break
         link = EMPTYSTRING.join(ltext)
-    elif text.endswith('.txt') and text <> current:
+    elif text.endswith('.txt') and text != current:
         link = PEPDIRURL + os.path.splitext(text)[0] + '/' + text
-    elif text.startswith('pep-') and text <> current:
+    elif text.startswith('pep-') and text != current:
         link = os.path.splitext(text)[0] + ".html"
     elif text.startswith('PEP'):
         pepnum = int(match.group('pepnum'))
@@ -350,7 +350,7 @@ def get_input_lines(inpath):
     try:
         infile = codecs.open(inpath, 'r', 'utf-8')
     except IOError, e:
-        if e.errno <> errno.ENOENT: raise
+        if e.errno != errno.ENOENT: raise
         print >> sys.stderr, 'Error: Skipping missing PEP file:', e.filename
         sys.stderr.flush()
         return None, None
