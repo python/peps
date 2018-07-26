@@ -241,7 +241,7 @@ def fixfile(inpath, input_lines, outfile):
                 try:
                     url = PEPCVSURL % int(pep)
                     v = '<a href="%s">%s</a> ' % (url, cgi.escape(date))
-                except ValueError, error:
+                except ValueError as error:
                     v = date
         elif k.lower() == 'content-type':
             url = PEPURL % 9
@@ -349,7 +349,7 @@ def get_pep_type(input_lines):
 def get_input_lines(inpath):
     try:
         infile = codecs.open(inpath, 'r', 'utf-8')
-    except IOError, e:
+    except IOError as e:
         if e.errno != errno.ENOENT: raise
         print >> sys.stderr, 'Error: Skipping missing PEP file:', e.filename
         sys.stderr.flush()
@@ -532,7 +532,7 @@ def main(argv=None):
         opts, args = getopt.getopt(
             argv, 'hd:fkq',
             ['help', 'destdir=', 'force', 'keep-going', 'quiet'])
-    except getopt.error, msg:
+    except getopt.error as msg:
         usage(1, msg)
 
     for opt, arg in opts:
