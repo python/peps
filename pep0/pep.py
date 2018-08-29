@@ -69,6 +69,9 @@ class Author(object):
         name_sep = name.index(last_name_fragment)
         self.first = name[:name_sep].rstrip()
         self.last = last_name_fragment
+        if self.last[1] == u'.':
+            # Add an escape to avoid docutils turning `v.` into `22.`.
+            self.last = u'\\' + self.last
         self.suffix = suffix
         if not self.first:
             self.last_first = self.last
