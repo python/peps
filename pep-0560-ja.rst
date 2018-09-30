@@ -50,7 +50,7 @@ the performance can be improved with the help of the proposed special methods:
 - Creation of generic classes is slow since the ``GenericMeta.__new__`` is
   very slow; we will not need it anymore.
 
-  ``GenericMeta.__ new__`` は非常に遅いのでジェネリッククラスの作成は遅いです。もう必要ありません。
+  ``GenericMeta.__new__`` は非常に遅いのでジェネリッククラスの作成は遅いです。もう必要ありません。
 
 - Very long method resolution orders (MROs) for generic classes will be
   half as long; they are present because we duplicate the ``collections.abc``
@@ -100,7 +100,7 @@ Hacks and bugs that will be removed by this proposal
 - Ugly ``sys._getframe`` hack. This one is particularly nasty since it looks
   like we can't remove it without changes outside ``typing``.
 
-  ひどい ``sys._getframe`` ハック。 タイピング以外の変更なしには無くせそうになかったので特に特に厄介した
+  ひどい ``sys._getframe`` ハック。 `typing` モジュール以外を変更するほかでは無くせそうになかったので特に特に厄介でした
 
 - Currently generics do dangerous things with private ABC caches
   to fix large memory consumption that grows at least as O(N\ :sup:`2`),
@@ -187,7 +187,7 @@ done by ``GenericMeta.__new__``. The original bases are stored as
 ``__orig_bases__`` in the class namespace (currently this is also done by
 the metaclass). For example
 
-矛盾したMROエラーを回避し、現在 ``GenericMeta.__ new__`` によって行われている他の操作を実行するには、属性の代わりにメソッドAPIを使用する必要があります。 元の基底はクラスの名前空間に ``__orig_bases__`` として格納されます（現在はメタクラスによっても行われています）。 例えば::
+矛盾したMROエラーを回避し、現在 ``GenericMeta.__new__`` によって行われている他の操作を実行するには、属性の代わりにメソッドAPIを使用する必要があります。 元の基底はクラスの名前空間に ``__orig_bases__`` として格納されます（現在はメタクラスによっても行われています）。 例えば::
 
   class GenericAlias:
       def __init__(self, origin, item):
@@ -234,7 +234,7 @@ the context of dynamic class creation. Correspondingly, ``types.new_class``
 will be updated to reflect the new class creation steps while maintaining
 the backwards compatibility
 
-``type.__ new__`` はMROエントリ解決を実行しません。 したがって、直接 ``type('Tokens', (List[int],), {})`` の呼び出しは失敗します。 これは、パフォーマンス上の理由から、暗黙的な変換の回数を最小限に抑えるために行われます。 代わりに、ヘルパー関数 ``resolve_bases`` が ``types`` モジュールに追加され、動的クラス作成のコンテキストで明示的な ``__mro_entries__`` 解決を可能にします。 同様に、 ``types.new_class`` は、後方互換性を維持しながら新しいクラス作成手順を反映するように更新されます::
+``type.__new__`` はMROエントリ解決を実行しません。 したがって、直接 ``type('Tokens', (List[int],), {})`` の呼び出しは失敗します。 これは、パフォーマンス上の理由から、暗黙的な変換の回数を最小限に抑えるために行われます。 代わりに、ヘルパー関数 ``resolve_bases`` が ``types`` モジュールに追加され、動的クラス作成のコンテキストで明示的な ``__mro_entries__`` 解決を可能にします。 同様に、 ``types.new_class`` は、後方互換性を維持しながら新しいクラス作成手順を反映するように更新されます::
 
   def new_class(name, bases=(), kwds=None, exec_body=None):
       resolved_bases = resolve_bases(bases)  # This step is added
