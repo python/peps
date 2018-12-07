@@ -1,0 +1,841 @@
+PEP: 583
+Title: A Concurrency Memory Model for Python
+Version: $Revision: 56116 $
+Last-Modified: $Date: 2007-06-28 12:53:41 -0700 (Thu, 28 Jun 2007) $
+Author: Jeffrey Yasskin <jyasskin@google.com>
+Status: Withdrawn
+Type: Informational
+Content-Type: text/x-rst
+Created: 22-Mar-2008
+Post-History:
+
+
+Abstract
+========
+
+This PEP describes how Python programs may behave in the presence of
+concurrent reads and writes to shared variables from multiple threads.
+We use a *happens before* relation to define when variable accesses
+are ordered or concurrent.  Nearly all programs should simply use locks
+to guard their shared variables, and this PEP highlights some of the
+strange things that can happen when they don't, but programmers often
+assume that it's ok to do "simple" things without locking, and it's
+somewhat unpythonic to let the language surprise them.  Unfortunately,
+avoiding surprise often conflicts with making Python run quickly, so
+this PEP tries to find a good tradeoff between the two.
+
+
+Rationale
+=========
+
+So far, we have 4 major Python implementations -- CPython, Jython_,
+IronPython_, and PyPy_ -- as well as lots of minor ones.  Some of
+these already run on platforms that do aggressive optimizations.  In
+general, these optimizations are invisible within a single thread of
+execution, but they can be visible to other threads executing
+concurrently.  CPython currently uses a `GIL`_ to ensure that other
+threads see the results they expect, but this limits it to a single
+processor.  Jython and IronPython run on Java's or .NET's threading
+system respectively, which allows them to take advantage of more cores
+but can also show surprising values to other threads.
+
+.. _Jython: http://www.jython.org/
+
+.. _IronPython: http://www.codeplex.com/Wiki/View.aspx?ProjectName=IronPython
+
+.. _PyPy: http://codespeak.net/pypy/dist/pypy/doc/home.html
+
+.. _GIL: http://en.wikipedia.org/wiki/Global_Interpreter_Lock
+
+So that threaded Python programs continue to be portable between
+implementations, implementers and library authors need to agree on
+some ground rules.
+
+
+A couple definitions
+====================
+
+Variable
+    A name that refers to an object.  Variables are generally
+    introduced by assigning to them, and may be destroyed by passing
+    them to ``del``.  Variables are fundamentally mutable, while
+    objects may not be.  There are several varieties of variables:
+    module variables (often called "globals" when accessed from within
+    the module), class variables, instance variables (also known as
+    fields), and local variables.  All of these can be shared between
+    threads (the local variables if they're saved into a closure).
+    The object in which the variables are scoped notionally has a
+    ``dict`` whose keys are the variables' names.
+
+Object
+    A collection of instance variables (a.k.a. fields) and methods.
+    At least, that'll do for this PEP.
+
+Program Order
+    The order that actions (reads and writes) happen within a thread,
+    which is very similar to the order they appear in the text.
+
+Conflicting actions
+    Two actions on the same variable, at least one of which is a write.
+
+Data race
+    A situation in which two conflicting actions happen at the same
+    time.  "The same time" is defined by the memory model.
+
+
+Two simple memory models
+========================
+
+Before talking about the details of data races and the surprising
+behaviors they produce, I'll present two simple memory models.  The
+first is probably too strong for Python, and the second is probably
+too weak.
+
+
+Sequential Consistency
+----------------------
+
+In a sequentially-consistent concurrent execution, actions appear to
+happen in a global total order with each read of a particular variable
+seeing the value written by the last write that affected that
+variable.  The total order for actions must be consistent with the
+program order.  A program has a data race on a given input when one of
+its sequentially consistent executions puts two conflicting actions
+next to each other.
+
+This is the easiest memory model for humans to understand, although it
+doesn't eliminate all confusion, since operations can be split in odd
+places.
+
+
+Happens-before consistency
+--------------------------
+
+The program contains a collection of *synchronization actions*, which
+in Python currently include lock acquires and releases and thread
+starts and joins.  Synchronization actions happen in a global total
+order that is consistent with the program order (they don't *have* to
+happen in a total order, but it simplifies the description of the
+model).  A lock release *synchronizes with* all later acquires of the
+same lock.  Similarly, given ``t = threading.Thread(target=worker)``:
+
+* A call to ``t.start()`` synchronizes with the first statement in
+  ``worker()``.
+
+* The return from ``worker()`` synchronizes with the return from
+  ``t.join()``.
+
+* If the return from ``t.start()`` happens before (see below) a call
+  to ``t.isAlive()`` that returns ``False``, the return from
+  ``worker()`` synchronizes with that call.
+
+We call the source of the synchronizes-with edge a *release* operation
+on the relevant variable, and we call the target an *acquire* operation.
+
+The *happens before* order is the transitive closure of the program
+order with the synchronizes-with edges.  That is, action *A* happens
+before action *B* if:
+
+* A falls before B in the program order (which means they run in the
+  same thread)
+* A synchronizes with B
+* You can get to B by following happens-before edges from A.
+
+An execution of a program is happens-before consistent if each read
+*R* sees the value of a write *W* to the same variable such that:
+
+* *R* does not happen before *W*, and
+* There is no other write *V* that overwrote *W* before *R* got a
+  chance to see it. (That is, it can't be the case that *W* happens
+  before *V* happens before *R*.)
+
+You have a data race if two conflicting actions aren't related by
+happens-before.
+
+
+An example
+''''''''''
+
+Let's use the rules from the happens-before model to prove that the
+following program prints "[7]"::
+
+    class Queue:
+        def __init__(self):
+            self.l = []
+            self.cond = threading.Condition()
+
+        def get():
+            with self.cond:
+                while not self.l:
+                    self.cond.wait()
+                ret = self.l[0]
+                self.l = self.l[1:]
+                return ret
+
+        def put(x):
+            with self.cond:
+                self.l.append(x)
+                self.cond.notify()
+
+    myqueue = Queue()
+
+    def worker1():
+        x = [7]
+        myqueue.put(x)
+
+    def worker2():
+        y = myqueue.get()
+        print y
+
+    thread1 = threading.Thread(target=worker1)
+    thread2 = threading.Thread(target=worker2)
+    thread2.start()
+    thread1.start()
+
+1. Because ``myqueue`` is initialized in the main thread before
+   ``thread1`` or ``thread2`` is started, that initialization happens
+   before ``worker1`` and ``worker2`` begin running, so there's no way
+   for either to raise a NameError, and both ``myqueue.l`` and
+   ``myqueue.cond`` are set to their final objects.
+
+2. The initialization of ``x`` in ``worker1`` happens before it calls
+   ``myqueue.put()``, which happens before it calls
+   ``myqueue.l.append(x)``, which happens before the call to
+   ``myqueue.cond.release()``, all because they run in the same
+   thread.
+
+3. In ``worker2``, ``myqueue.cond`` will be released and re-acquired
+   until ``myqueue.l`` contains a value (``x``). The call to
+   ``myqueue.cond.release()`` in ``worker1`` happens before that last
+   call to ``myqueue.cond.acquire()`` in ``worker2``.
+
+4. That last call to ``myqueue.cond.acquire()`` happens before
+   ``myqueue.get()`` reads ``myqueue.l``, which happens before
+   ``myqueue.get()`` returns, which happens before ``print y``, again
+   all because they run in the same thread.
+
+5. Because happens-before is transitive, the list initially stored in
+   ``x`` in thread1 is initialized before it is printed in thread2.
+
+Usually, we wouldn't need to look all the way into a thread-safe
+queue's implementation in order to prove that uses were safe.  Its
+interface would specify that puts happen before gets, and we'd reason
+directly from that.
+
+
+.. _hazards:
+
+Surprising behaviors with races
+===============================
+
+Lots of strange things can happen when code has data races. It's easy
+to avoid all of these problems by just protecting shared variables
+with locks. This is not a complete list of race hazards; it's just a
+collection that seem relevant to Python.
+
+In all of these examples, variables starting with ``r`` are local
+variables, and other variables are shared between threads.
+
+
+Zombie values
+-------------
+
+This example comes from the `Java memory model`_:
+
+    Initially ``p is q`` and ``p.x == 0``.
+
+    ==========  ========
+    Thread 1    Thread 2
+    ==========  ========
+    r1 = p      r6 = p
+    r2 = r1.x   r6.x = 3
+    r3 = q
+    r4 = r3.x
+    r5 = r1.x
+    ==========  ========
+
+    Can produce ``r2 == r5 == 0`` but ``r4 == 3``, proving that
+    ``p.x`` went from 0 to 3 and back to 0.
+
+A good compiler would like to optimize out the redundant load of
+``p.x`` in initializing ``r5`` by just re-using the value already
+loaded into ``r2``.  We get the strange result if thread 1 sees memory
+in this order:
+
+    ==========  ========  ============================================
+    Evaluation  Computes  Why
+    ==========  ========  ============================================
+    r1 = p
+    r2 = r1.x   r2 == 0
+    r3 = q      r3 is p
+    p.x = 3               Side-effect of thread 2
+    r4 = r3.x   r4 == 3
+    r5 = r2     r5 == 0   Optimized from r5 = r1.x because r2 == r1.x.
+    ==========  ========  ============================================
+
+
+Inconsistent Orderings
+----------------------
+
+From `N2177: Sequential Consistency for Atomics`_, and also known as
+Independent Read of Independent Write (IRIW).
+
+    Initially, ``a == b == 0``.
+
+    ========  ========  ========  ========
+    Thread 1  Thread 2  Thread 3  Thread 4
+    ========  ========  ========  ========
+    r1 = a    r3 = b    a = 1     b = 1
+    r2 = b    r4 = a
+    ========  ========  ========  ========
+
+    We may get ``r1 == r3 == 1`` and ``r2 == r4 == 0``, proving both
+    that ``a`` was written before ``b`` (thread 1's data), and that
+    ``b`` was written before ``a`` (thread 2's data).  See `Special
+    Relativity
+    <http://en.wikipedia.org/wiki/Relativity_of_simultaneity>`__ for a
+    real-world example.
+
+This can happen if thread 1 and thread 3 are running on processors
+that are close to each other, but far away from the processors that
+threads 2 and 4 are running on and the writes are not being
+transmitted all the way across the machine before becoming visible to
+nearby threads.
+
+Neither acquire/release semantics nor explicit memory barriers can
+help with this.  Making the orders consistent without locking requires
+detailed knowledge of the architecture's memory model, but Java
+requires it for volatiles so we could use documentation aimed at its
+implementers.
+
+.. _`N2177: Sequential Consistency for Atomics`:
+   http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2007/n2177.html
+
+
+A happens-before race that's not a sequentially-consistent race
+---------------------------------------------------------------
+
+From the POPL paper about the Java memory model [#JMM-popl].
+
+    Initially, ``x == y == 0``.
+
+    ============  ============
+    Thread 1      Thread 2
+    ============  ============
+    r1 = x        r2 = y
+    if r1 != 0:   if r2 != 0:
+      y = 42        x = 42
+    ============  ============
+
+    Can ``r1 == r2 == 42``???
+
+In a sequentially-consistent execution, there's no way to get an
+adjacent read and write to the same variable, so the program should be
+considered correctly synchronized (albeit fragile), and should only
+produce ``r1 == r2 == 0``.  However, the following execution is
+happens-before consistent:
+
+    ============  =====  ======
+    Statement     Value  Thread
+    ============  =====  ======
+    r1 = x        42     1
+    if r1 != 0:   true   1
+      y = 42             1
+    r2 = y        42     2
+    if r2 != 0:   true   2
+      x = 42             2
+    ============  =====  ======
+
+WTF, you are asking yourself.  Because there were no inter-thread
+happens-before edges in the original program, the read of x in thread
+1 can see any of the writes from thread 2, even if they only happened
+because the read saw them.  There *are* data races in the
+happens-before model.
+
+We don't want to allow this, so the happens-before model isn't enough
+for Python.  One rule we could add to happens-before that would
+prevent this execution is:
+
+    If there are no data races in any sequentially-consistent
+    execution of a program, the program should have sequentially
+    consistent semantics.
+
+Java gets this rule as a theorem, but Python may not want all of the
+machinery you need to prove it.
+
+
+Self-justifying values
+----------------------
+
+Also from the POPL paper about the Java memory model [#JMM-popl].
+
+    Initially, ``x == y == 0``.
+
+    ============  ============
+    Thread 1      Thread 2
+    ============  ============
+    r1 = x        r2 = y
+    y = r1        x = r2
+    ============  ============
+
+    Can ``x == y == 42``???
+
+In a sequentially consistent execution, no.  In a happens-before
+consistent execution, yes: The read of x in thread 1 is allowed to see
+the value written in thread 2 because there are no happens-before
+relations between the threads. This could happen if the compiler or
+processor transforms the code into:
+
+    ============  ============
+    Thread 1      Thread 2
+    ============  ============
+    y = 42        r2 = y
+    r1 = x        x = r2
+    if r1 != 42:
+      y = r1
+    ============  ============
+
+It can produce a security hole if the speculated value is a secret
+object, or points to the memory that an object used to occupy.  Java
+cares a lot about such security holes, but Python may not.
+
+.. _uninitialized values:
+
+Uninitialized values (direct)
+-----------------------------
+
+From several classic double-checked locking examples.
+
+    Initially, ``d == None``.
+
+    ==================  ====================
+    Thread 1            Thread 2
+    ==================  ====================
+    while not d: pass   d = [3, 4]
+    assert d[1] == 4
+    ==================  ====================
+
+    This could raise an IndexError, fail the assertion, or, without
+    some care in the implementation, cause a crash or other undefined
+    behavior.
+
+Thread 2 may actually be implemented as::
+
+    r1 = list()
+    r1.append(3)
+    r1.append(4)
+    d = r1
+
+Because the assignment to d and the item assignments are independent,
+the compiler and processor may optimize that to::
+
+    r1 = list()
+    d = r1
+    r1.append(3)
+    r1.append(4)
+
+Which is obviously incorrect and explains the IndexError.  If we then
+look deeper into the implementation of ``r1.append(3)``, we may find
+that it and ``d[1]`` cannot run concurrently without causing their own
+race conditions.  In CPython (without the GIL), those race conditions
+would produce undefined behavior.
+
+There's also a subtle issue on the reading side that can cause the
+value of d[1] to be out of date.  Somewhere in the implementation of
+``list``, it stores its contents as an array in memory. This array may
+happen to be in thread 1's cache.  If thread 1's processor reloads
+``d`` from main memory without reloading the memory that ought to
+contain the values 3 and 4, it could see stale values instead.  As far
+as I know, this can only actually happen on Alphas and maybe Itaniums,
+and we probably have to prevent it anyway to avoid crashes.
+
+
+Uninitialized values (flag)
+---------------------------
+
+From several more double-checked locking examples.
+
+    Initially, ``d == dict()`` and ``initialized == False``.
+
+    ===========================  ====================
+    Thread 1                     Thread 2
+    ===========================  ====================
+    while not initialized: pass  d['a'] = 3
+    r1 = d['a']                  initialized = True
+    r2 = r1 == 3
+    assert r2
+    ===========================  ====================
+
+    This could raise a KeyError, fail the assertion, or, without some
+    care in the implementation, cause a crash or other undefined
+    behavior.
+
+Because ``d`` and ``initialized`` are independent (except in the
+programmer's mind), the compiler and processor can rearrange these
+almost arbitrarily, except that thread 1's assertion has to stay after
+the loop.
+
+
+Inconsistent guarantees from relying on data dependencies
+---------------------------------------------------------
+
+This is a problem with Java ``final`` variables and the proposed
+`data-dependency ordering`_ in C++0x.
+
+    First execute::
+
+        g = []
+        def Init():
+            g.extend([1,2,3])
+            return [1,2,3]
+        h = None
+
+    Then in two threads:
+
+    ===================  ==========
+    Thread 1             Thread 2
+    ===================  ==========
+    while not h: pass    r1 = Init()
+    assert h == [1,2,3]  freeze(r1)
+    assert h == g        h = r1
+    ===================  ==========
+
+    If h has semantics similar to a Java ``final`` variable (except
+    for being write-once), then even though the first assertion is
+    guaranteed to succeed, the second could fail.
+
+Data-dependent guarantees like those ``final`` provides only work if
+the access is through the final variable.  It's not even safe to
+access the same object through a different route.  Unfortunately,
+because of how processors work, final's guarantees are only cheap when
+they're weak.
+
+.. _data-dependency ordering:
+   http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2008/n2556.html
+
+
+The rules for Python
+====================
+
+The first rule is that Python interpreters can't crash due to race
+conditions in user code.  For CPython, this means that race conditions
+can't make it down into C.  For Jython, it means that
+NullPointerExceptions can't escape the interpreter.
+
+Presumably we also want a model at least as strong as happens-before
+consistency because it lets us write a simple description of how
+concurrent queues and thread launching and joining work.
+
+Other rules are more debatable, so I'll present each one with pros and
+cons.
+
+
+Data-race-free programs are sequentially consistent
+---------------------------------------------------
+
+We'd like programmers to be able to reason about their programs as if
+they were sequentially consistent.  Since it's hard to tell whether
+you've written a happens-before race, we only want to require
+programmers to prevent sequential races.  The Java model does this
+through a complicated definition of causality, but if we don't want to
+include that, we can just assert this property directly.
+
+
+No security holes from out-of-thin-air reads
+--------------------------------------------
+
+If the program produces a self-justifying value, it could expose
+access to an object that the user would rather the program not see.
+Again, Java's model handles this with the causality definition.  We
+might be able to prevent these security problems by banning
+speculative writes to shared variables, but I don't have a proof of
+that, and Python may not need those security guarantees anyway.
+
+
+Restrict reorderings instead of defining happens-before
+--------------------------------------------------------
+
+The .NET [#CLR-msdn] and x86 [#x86-model] memory models are based on
+defining which reorderings compilers may allow.  I think that it's
+easier to program to a happens-before model than to reason about all
+of the possible reorderings of a program, and it's easier to insert
+enough happens-before edges to make a program correct, than to insert
+enough memory fences to do the same thing.  So, although we could
+layer some reordering restrictions on top of the happens-before base,
+I don't think Python's memory model should be entirely reordering
+restrictions.
+
+
+Atomic, unordered assignments
+-----------------------------
+
+Assignments of primitive types are already atomic.  If you assign
+``3<<72 + 5`` to a variable, no thread can see only part of the value.
+Jeremy Manson suggested that we extend this to all objects.  This
+allows compilers to reorder operations to optimize them, without
+allowing some of the more confusing `uninitialized values`_.  The
+basic idea here is that when you assign a shared variable, readers
+can't see any changes made to the new value before the assignment, or
+to the old value after the assignment. So, if we have a program like:
+
+    Initially, ``(d.a, d.b) == (1, 2)``, and ``(e.c, e.d) == (3, 4)``.
+    We also have ``class Obj(object): pass``.
+
+    =========================  =========================
+    Thread 1                   Thread 2
+    =========================  =========================
+    r1 = Obj()                 r3 = d
+    r1.a = 3                   r4, r5 = r3.a, r3.b
+    r1.b = 4                   r6 = e
+    d = r1                     r7, r8 = r6.c, r6.d
+    r2 = Obj()
+    r2.c = 6
+    r2.d = 7
+    e = r2
+    =========================  =========================
+
+    ``(r4, r5)`` can be ``(1, 2)`` or ``(3, 4)`` but nothing else, and
+    ``(r7, r8)`` can be either ``(3, 4)`` or ``(6, 7)`` but nothing
+    else.  Unlike if writes were releases and reads were acquires,
+    it's legal for thread 2 to see ``(e.c, e.d) == (6, 7) and (d.a,
+    d.b) == (1, 2)`` (out of order).
+
+This allows the compiler a lot of flexibility to optimize without
+allowing users to see some strange values.  However, because it relies
+on data dependencies, it introduces some surprises of its own.  For
+example, the compiler could freely optimize the above example to:
+
+    =========================  =========================
+    Thread 1                   Thread 2
+    =========================  =========================
+    r1 = Obj()                 r3 = d
+    r2 = Obj()                 r6 = e
+    r1.a = 3                   r4, r7 = r3.a, r6.c
+    r2.c = 6                   r5, r8 = r3.b, r6.d
+    r2.d = 7
+    e = r2
+    r1.b = 4
+    d = r1
+    =========================  =========================
+
+As long as it didn't let the initialization of ``e`` move above any of
+the initializations of members of ``r2``, and similarly for ``d`` and
+``r1``.
+
+This also helps to ground happens-before consistency.  To see the
+problem, imagine that the user unsafely publishes a reference to an
+object as soon as she gets it.  The model needs to constrain what
+values can be read through that reference.  Java says that every field
+is initialized to 0 before anyone sees the object for the first time,
+but Python would have trouble defining "every field".  If instead we
+say that assignments to shared variables have to see a value at least
+as up to date as when the assignment happened, then we don't run into
+any trouble with early publication.
+
+
+Two tiers of guarantees
+-----------------------
+
+Most other languages with any guarantees for unlocked variables
+distinguish between ordinary variables and volatile/atomic variables.
+They provide many more guarantees for the volatile ones.  Python can't
+easily do this because we don't declare variables.  This may or may
+not matter, since python locks aren't significantly more expensive
+than ordinary python code.  If we want to get those tiers back, we could:
+
+1. Introduce a set of atomic types similar to Java's [#Java-atomics]_
+   or C++'s [#Cpp-atomics]_.  Unfortunately, we couldn't assign to
+   them with ``=``.
+
+2. Without requiring variable declarations, we could also specify that
+   *all* of the fields on a given object are atomic.
+
+3. Extend the ``__slots__`` mechanism [#slots]_ with a parallel
+   ``__volatiles__`` list, and maybe a ``__finals__`` list.
+
+
+Sequential Consistency
+----------------------
+
+We could just adopt sequential consistency for Python.  This avoids
+all of the hazards_ mentioned above, but it prohibits lots of
+optimizations too.  As far as I know, this is the current model of
+CPython, but if CPython learned to optimize out some variable reads,
+it would lose this property.
+
+If we adopt this, Jython's ``dict`` implementation may no longer be
+able to use ConcurrentHashMap because that only promises to create
+appropriate happens-before edges, not to be sequentially consistent
+(although maybe the fact that Java volatiles are totally ordered
+carries over). Both Jython and IronPython would probably need to use
+`AtomicReferenceArray
+<http://java.sun.com/javase/6/docs/api/java/util/concurrent/atomic/AtomicReferenceArray.html>`__
+or the equivalent for any ``__slots__`` arrays.
+
+
+Adapt the x86 model
+-------------------
+
+The x86 model is:
+
+1. Loads are not reordered with other loads.
+2. Stores are not reordered with other stores.
+3. Stores are not reordered with older loads.
+4. Loads may be reordered with older stores to different locations but
+   not with older stores to the same location.
+5. In a multiprocessor system, memory ordering obeys causality (memory
+   ordering respects transitive visibility).
+6. In a multiprocessor system, stores to the same location have a
+   total order.
+7. In a multiprocessor system, locked instructions have a total order.
+8. Loads and stores are not reordered with locked instructions.
+
+In acquire/release terminology, this appears to say that every store
+is a release and every load is an acquire.  This is slightly weaker
+than sequential consistency, in that it allows `inconsistent
+orderings`_, but it disallows `zombie values`_ and the compiler
+optimizations that produce them.  We would probably want to weaken the
+model somehow to explicitly allow compilers to eliminate redundant
+variable reads.  The x86 model may also be expensive to implement on
+other platforms, although because x86 is so common, that may not
+matter much.
+
+
+Upgrading or downgrading to an alternate model
+----------------------------------------------
+
+We can adopt an initial memory model without totally restricting
+future implementations.  If we start with a weak model and want to get
+stronger later, we would only have to change the implementations, not
+programs.  Individual implementations could also guarantee a stronger
+memory model than the language demands, although that could hurt
+interoperability.  On the other hand, if we start with a strong model
+and want to weaken it later, we can add a ``from __future__ import
+weak_memory`` statement to declare that some modules are safe.
+
+
+Implementation Details
+======================
+
+The required model is weaker than any particular implementation.  This
+section tries to document the actual guarantees each implementation
+provides, and should be updated as the implementations change.
+
+
+CPython
+-------
+
+Uses the GIL to guarantee that other threads don't see funny
+reorderings, and does few enough optimizations that I believe it's
+actually sequentially consistent at the bytecode level.  Threads can
+switch between any two bytecodes (instead of only between statements),
+so two threads that concurrently execute::
+
+    i = i + 1
+
+with ``i`` initially ``0`` could easily end up with ``i==1`` instead
+of the expected ``i==2``.  If they execute::
+
+    i += 1
+
+instead, CPython 2.6 will always give the right answer, but it's easy
+to imagine another implementation in which this statement won't be
+atomic.
+
+
+PyPy
+----
+
+Also uses a GIL, but probably does enough optimization to violate
+sequential consistency.  I know very little about this implementation.
+
+
+Jython
+------
+
+Provides true concurrency under the `Java memory model`_ and stores
+all object fields (except for those in ``__slots__``?) in a
+`ConcurrentHashMap
+<http://java.sun.com/javase/6/docs/api/java/util/concurrent/ConcurrentHashMap.html>`__,
+which provides fairly strong ordering guarantees.  Local variables in
+a function may have fewer guarantees, which would become visible if
+they were captured into a closure that was then passed to another
+thread.
+
+
+IronPython
+----------
+
+Provides true concurrency under the CLR memory model, which probably
+protects it from `uninitialized values`_.  IronPython uses a locked
+map to store object fields, providing at least as many guarantees as
+Jython.
+
+
+References
+==========
+
+.. _Java Memory Model: http://java.sun.com/docs/books/jls/third_edition/html/memory.html
+
+.. _sequentially consistent: http://en.wikipedia.org/wiki/Sequential_consistency
+
+.. [#JMM-popl] The Java Memory Model, by Jeremy Manson, Bill Pugh, and
+   Sarita Adve
+   (http://www.cs.umd.edu/users/jmanson/java/journal.pdf). This paper
+   is an excellent introduction to memory models in general and has
+   lots of examples of compiler/processor optimizations and the
+   strange program behaviors they can produce.
+
+.. [#Cpp0x-memory-model] N2480: A Less Formal Explanation of the
+   Proposed C++ Concurrency Memory Model, Hans Boehm
+   (http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2007/n2480.html)
+
+.. [#CLR-msdn] Memory Models: Understand the Impact of Low-Lock
+   Techniques in Multithreaded Apps, Vance Morrison
+   (http://msdn2.microsoft.com/en-us/magazine/cc163715.aspx)
+
+.. [#x86-model] Intel(R) 64 Architecture Memory Ordering White Paper
+   (http://www.intel.com/products/processor/manuals/318147.pdf)
+
+.. [#Java-atomics] Package java.util.concurrent.atomic
+   (http://java.sun.com/javase/6/docs/api/java/util/concurrent/atomic/package-summary.html)
+
+.. [#Cpp-atomics] C++ Atomic Types and Operations, Hans Boehm and
+   Lawrence Crowl
+   (http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2007/n2427.html)
+
+.. [#slots] __slots__ (http://docs.python.org/ref/slots.html)
+
+.. [#] Alternatives to SC, a thread on the cpp-threads mailing list,
+   which includes lots of good examples.
+   (http://www.decadentplace.org.uk/pipermail/cpp-threads/2007-January/001287.html)
+
+.. [#safethread] python-safethread, a patch by Adam Olsen for CPython
+   that removes the GIL and statically guarantees that all objects
+   shared between threads are consistently
+   locked. (http://code.google.com/p/python-safethread/)
+
+
+Acknowledgements
+================
+
+Thanks to Jeremy Manson and Alex Martelli for detailed discussions on
+what this PEP should look like.
+
+
+Copyright
+=========
+
+This document has been placed in the public domain.
+
+
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   coding: utf-8
+   End:
+
