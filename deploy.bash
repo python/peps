@@ -1,3 +1,4 @@
+#!/bin/bash
 make package
 pip install awscli
 aws s3 cp --acl public-read build/peps.tar.gz s3://pythondotorg-assets-staging/peps.tar.gz
