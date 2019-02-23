@@ -34,6 +34,7 @@ clean:
 	-rm pep-0000.rst
 	-rm pep-0000.txt
 	-rm *.html
+	-rm -rf build
 
 update:
 	git pull https://github.com/python/peps.git
@@ -41,3 +42,15 @@ update:
 venv:
 	$(PYTHON) -m venv venv
 	./venv/bin/python -m pip install -U docutils
+
+package: all rss
+	mkdir -p build/peps
+	cp *.html build/peps/
+	cp *.png build/peps/
+	cp *.rss build/peps/
+	tar -C build -czf build/peps.tar.gz peps
+
+upload:	venv package
+	./venv/bin/python -m pip install awscli
+	./venv/bin/aws s3 cp --acl public-read build/peps.tar.gz s3://pythondotorg-assets-staging/peps.tar.gz
+	./venv/bin/aws s3 cp --acl public-read build/peps.tar.gz s3://pythondotorg-assets/peps.tar.gz
