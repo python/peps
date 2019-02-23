@@ -49,8 +49,3 @@ package: all rss
 	cp *.png build/peps/
 	cp *.rss build/peps/
 	tar -C build -czf build/peps.tar.gz peps
-
-upload:	venv package
-	./venv/bin/python -m pip install awscli
-	./venv/bin/aws s3 cp --acl public-read build/peps.tar.gz s3://pythondotorg-assets-staging/peps.tar.gz
-	./venv/bin/aws s3 cp --acl public-read build/peps.tar.gz s3://pythondotorg-assets/peps.tar.gz
