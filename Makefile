@@ -45,6 +45,8 @@ venv:
 
 package: all rss
 	mkdir -p build/peps
+	cp pep-*.txt build/peps/
+	cp pep-*.rst build/peps/
 	cp *.html build/peps/
 	cp *.png build/peps/
 	cp *.rss build/peps/
