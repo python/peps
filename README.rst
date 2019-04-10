@@ -21,10 +21,10 @@ reStructuredText for PEPs
 =========================
 
 Original PEP source should be written in reStructuredText format,
-which is a constrained version of plaintext, and is described in 
+which is a constrained version of plaintext, and is described in
 PEP 12.  Older PEPs were often written in a more mildly restricted
-plaintext format, as described in PEP 9.  The ``pep2html.py`` 
-processing and installation script knows how to produce the HTML 
+plaintext format, as described in PEP 9.  The ``pep2html.py``
+processing and installation script knows how to produce the HTML
 for either PEP format.
 
 For processing reStructuredText format PEPs, you need the docutils
