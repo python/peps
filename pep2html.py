@@ -523,6 +523,29 @@ def find_pep(pep_str):
         return rstpath
     return "pep-%04d.txt" % num
 
+def check_for_trailing_whitespace(input_lines, inpath):
+    """Check given input lines for trailing whitespace.
+
+    Returns None if there are no lines with trailing whitespace.
+    Returns a formatted error message if any line contains trailing whitespace.
+    """
+
+    trailing_whitespace_lines = list(filter(
+        lambda line: line[1].rstrip() != line[1].rstrip('\r\n'),
+        enumerate(input_lines)
+    ))
+    if not trailing_whitespace_lines:
+        return None
+
+    comma_separated_line_numbers = ", ".join(
+        str(line_index + 1) for (line_index, _) in trailing_whitespace_lines
+    )
+    return "Error: file '%s' contains trailing whitespace on lines %s" % (
+        inpath,
+        comma_separated_line_numbers,
+    )
+
+
 def make_html(inpath, verbose=0):
     input_lines = get_input_lines(inpath)
     if input_lines is None:
@@ -541,22 +564,12 @@ def make_html(inpath, verbose=0):
         pep_type_error(inpath, pep_type)
         return None
 
-    # Ensure PEP files do not have trailing whitespace
-    lines_with_trailing_whitespace = list(filter(
-        lambda line: line[1].rstrip() != line[1].rstrip('\r\n'),
-        enumerate(input_lines)
-    ))
-    # print(list(lines_with_trailing_whitespace)[:5])
-    if lines_with_trailing_whitespace:
-        comma_separated_line_numbers = ", ".join(
-            str(line_index + 1) for (line_index, _) in lines_with_trailing_whitespace
-        )
-        print(
-            "Error: PEP file {} contains trailing whitespace on lines {}"
-                .format(inpath, comma_separated_line_numbers),
-            file=sys.stderr,
-        )
+    # Ensure PEP sources do not have trailing whitespace
+    trailing_whitespace_message = check_for_trailing_whitespace(input_lines, inpath)
+    if trailing_whitespace_message:
+        print(trailing_whitespace_message, file=sys.stderr)
         return None
+
     outpath = os.path.splitext(inpath)[0] + ".html"
     if verbose:
         print(inpath, "(%s)" % pep_type, "->", outpath)
