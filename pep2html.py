@@ -66,7 +66,7 @@ PEPURL = 'pep-%04d.html'
 PEPCVSURL = ('https://hg.python.org/peps/file/tip/pep-%04d.txt')
 PEPDIRRUL = 'http://www.python.org/peps/'
 
-
+
 HOST = "dinsdale.python.org"                    # host for update
 HDIR = "/data/ftp.python.org/pub/www.python.org/peps" # target host directory
 LOCALVARS = "Local Variables:"
@@ -92,7 +92,7 @@ SPACE = ' '
 COMMASPACE = ', '
 
 
-
+
 def usage(code, msg=''):
     """Print usage message and exit.  Uses stderr if code != 0."""
     if code == 0:
@@ -105,7 +105,7 @@ def usage(code, msg=''):
     sys.exit(code)
 
 
-
+
 def fixanchor(current, match):
     text = match.group(0)
     link = None
@@ -132,7 +132,7 @@ def fixanchor(current, match):
     return escape(match.group(0)) # really slow, but it works...
 
 
-
+
 NON_MASKED_EMAILS = [
     'peps@python.org',
     'python-list@python.org',
@@ -155,7 +155,7 @@ def linkemail(address, pepno):
             '%s&#32;&#97;t&#32;%s</a>'
             % (parts[0], parts[1], pepno, parts[0], parts[1]))
 
-
+
 def fixfile(inpath, input_lines, outfile):
     try:
         from email.Utils import parseaddr
@@ -318,7 +318,7 @@ def fixfile(inpath, input_lines, outfile):
     print('</body>', file=outfile)
     print('</html>', file=outfile)
 
-
+
 docutils_settings = None
 """Runtime settings object used by Docutils.  Can be set by the client
 application when this module is imported."""
@@ -479,7 +479,7 @@ def fix_rst_pep(inpath, input_lines, outfile):
         settings_overrides={'traceback': 1, 'halt_level': 2})
     outfile.write(output.decode('utf-8'))
 
-
+
 def get_pep_type(input_lines):
     """
     Return the Content-Type of the input.  "text/plain" is the default.
@@ -499,7 +499,7 @@ def get_pep_type(input_lines):
             pep_type = 'text/plain'
     return pep_type
 
-
+
 def get_input_lines(inpath):
     try:
         infile = open(inpath, encoding='utf-8')
@@ -512,7 +512,7 @@ def get_input_lines(inpath):
     infile.close()
     return lines
 
-
+
 def find_pep(pep_str):
     """Find the .rst or .txt file indicated by a cmd line argument"""
     if os.path.exists(pep_str):
@@ -539,6 +539,23 @@ def make_html(inpath, verbose=0):
         return None
     elif PEP_TYPE_DISPATCH[pep_type] == None:
         pep_type_error(inpath, pep_type)
+        return None
+
+    # Ensure PEP files do not have trailing whitespace
+    lines_with_trailing_whitespace = list(filter(
+        lambda line: line[1].rstrip() != line[1].rstrip('\r\n'),
+        enumerate(input_lines)
+    ))
+    # print(list(lines_with_trailing_whitespace)[:5])
+    if lines_with_trailing_whitespace:
+        comma_separated_line_numbers = ", ".join(
+            str(line_index + 1) for (line_index, _) in lines_with_trailing_whitespace
+        )
+        print(
+            "Error: PEP file {} contains trailing whitespace on lines {}"
+                .format(inpath, comma_separated_line_numbers),
+            file=sys.stderr,
+        )
         return None
     outpath = os.path.splitext(inpath)[0] + ".html"
     if verbose:
@@ -578,7 +595,7 @@ def push_pep(htmlfiles, txtfiles, username, verbose, local=0):
 ##    if rc:
 ##        sys.exit(rc)
 
-
+
 PEP_TYPE_DISPATCH = {'text/plain': fixfile,
                      'text/x-rst': fix_rst_pep}
 PEP_TYPE_MESSAGES = {}
@@ -615,7 +632,7 @@ def pep_type_error(inpath, pep_type):
     print('Error: ' + PEP_TYPE_MESSAGES[pep_type] % locals(), file=sys.stderr)
     sys.stdout.flush()
 
-
+
 def browse_file(pep):
     import webbrowser
     file = find_pep(pep)
@@ -633,7 +650,7 @@ def browse_remote(pep):
     url = PEPDIRRUL + file
     webbrowser.open(url)
 
-
+
 def main(argv=None):
     # defaults
     update = 0
@@ -704,6 +721,6 @@ def main(argv=None):
                 browse_remote("0")
 
 
-
+
 if __name__ == "__main__":
     main()
