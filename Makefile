@@ -34,6 +34,7 @@ clean:
 	-rm pep-0000.rst
 	-rm pep-0000.txt
 	-rm *.html
+	-rm -rf build
 
 update:
 	git pull https://github.com/python/peps.git
@@ -41,3 +42,12 @@ update:
 venv:
 	$(PYTHON) -m venv venv
 	./venv/bin/python -m pip install -U docutils
+
+package: all rss
+	mkdir -p build/peps
+	cp pep-*.txt build/peps/
+	cp pep-*.rst build/peps/
+	cp *.html build/peps/
+	cp *.png build/peps/
+	cp *.rss build/peps/
+	tar -C build -czf build/peps.tar.gz peps

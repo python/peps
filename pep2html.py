@@ -82,10 +82,10 @@ to templates.  DO NOT USE THIS HTML FILE AS YOUR TEMPLATE!
 DTD = ('<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN"\n'
        '                      "http://www.w3.org/TR/REC-html40/loose.dtd">')
 
-fixpat = re.compile("((https?|ftp):[-_a-zA-Z0-9/.+~:?#$=&,]+)|(pep-\d+(.txt|.rst)?)|"
-                    "(RFC[- ]?(?P<rfcnum>\d+))|"
-                    "(PEP\s+(?P<pepnum>\d+))|"
-                    ".")
+fixpat = re.compile(r"((https?|ftp):[-_a-zA-Z0-9/.+~:?#$=&,]+)|(pep-\d+(.txt|.rst)?)|"
+                    r"(RFC[- ]?(?P<rfcnum>\d+))|"
+                    r"(PEP\s+(?P<pepnum>\d+))|"
+                    r".")
 
 EMPTYSTRING = ''
 SPACE = ' '
@@ -115,7 +115,7 @@ def fixanchor(current, match):
         ltext = list(text)
         while ltext:
             c = ltext.pop()
-            if c not in '();:,.?\'"<>':
+            if c not in '''();:,.?'"<>''':
                 ltext.append(c)
                 break
         link = EMPTYSTRING.join(ltext)
@@ -219,9 +219,9 @@ def fixfile(inpath, input_lines, outfile):
     print('</td></tr></table>', file=outfile)
     print('<div class="header">\n<table border="0">', file=outfile)
     for k, v in header:
-        if k.lower() in ('author', 'bdfl-delegate', 'discussions-to'):
+        if k.lower() in ('author', 'bdfl-delegate', 'discussions-to', 'sponsor'):
             mailtos = []
-            for part in re.split(',\s*', v):
+            for part in re.split(r',\s*', v):
                 if '@' in part:
                     realname, addr = parseaddr(part)
                     if k.lower() == 'discussions-to':
@@ -237,7 +237,7 @@ def fixfile(inpath, input_lines, outfile):
             v = COMMASPACE.join(mailtos)
         elif k.lower() in ('replaces', 'superseded-by', 'requires'):
             otherpeps = ''
-            for otherpep in re.split(',?\s+', v):
+            for otherpep in re.split(r',?\s+', v):
                 otherpep = int(otherpep)
                 otherpeps += '<a href="pep-%04d.html">%i</a> ' % (otherpep,
                                                                   otherpep)
@@ -401,7 +401,7 @@ class PEPHeaders(Transform):
                 # empty
                 continue
             para = body[0]
-            if name in ('author', 'bdfl-delegate'):
+            if name in ('author', 'bdfl-delegate', 'sponsor'):
                 for node in para:
                     if isinstance(node, nodes.reference):
                         node.replace_self(peps.mask_email(node))

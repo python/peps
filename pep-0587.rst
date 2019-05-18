@@ -1,0 +1,1106 @@
+PEP: 587
+Title: Python Initialization Configuration
+Author: Victor Stinner <vstinner@redhat.com>, Nick Coghlan <ncoghlan@gmail.com>
+BDFL-Delegate: Thomas Wouters <thomas@python.org>
+Discussions-To: python-dev@python.org
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 27-Mar-2019
+Python-Version: 3.8
+
+Abstract
+========
+
+Add a new C API to configure the Python Initialization providing finer
+control on the whole configuration and better error reporting.
+
+It becomes possible to read the configuration and modify it before it is
+applied. It also becomes possible to completely override how Python
+computes the module search paths (``sys.path``).
+
+Building a customized Python which behaves as regular Python becomes
+easier using the new ``Py_RunMain()`` function. Moreover, command line
+arguments passed to ``PyConfig.argv`` are now parsed the same way the
+regular Python parses command line options, and ``PyConfig.xoptions`` are
+handled as ``-X opt`` command line options.
+
+This extracts a subset of the API design from the PEP 432 development and
+refactoring work that is now considered sufficiently stable to make public
+(allowing 3rd party embedding applications access to the same configuration
+APIs that the native CPython CLI is now using).
+
+
+Rationale
+=========
+
+Python is highly configurable but its configuration evolved organically.
+The initialization configuration is scattered all around the code using
+different ways to set them: global configuration variables (ex:
+``Py_IsolatedFlag``), environment variables (ex: ``PYTHONPATH``),
+command line arguments (ex: ``-b``), configuration files (ex:
+``pyvenv.cfg``), function calls (ex: ``Py_SetProgramName()``). A
+straightforward and reliable way to configure Python is needed.
+
+Some configuration parameters are not accessible from the C API, or not
+easily. For example, there is no API to override the default values of
+``sys.executable``.
+
+Some options like ``PYTHONPATH`` can only be set using an environment
+variable which has a side effect on Python child processes.
+
+Some options also depends on other options: see `Priority and Rules`_.
+Python 3.7 API does not provide a consistent view of the overall
+configuration.
+
+The C API of Python 3.7 Initialization takes ``wchar_t*`` strings as
+input whereas the Python filesystem encoding is set during the
+initialization which can lead to mojibake.
+
+Python 3.7 APIs like ``Py_Initialize()`` aborts the process on memory
+allocation failure which is not convenient when Python is embedded.
+Moreover, ``Py_Main()`` could exit directly the process rather than
+returning an exit code. Proposed new API reports the error or exit code
+to the caller which can decide how to handle it.
+
+Implementing the PEP 540 (UTF-8 Mode) and the new ``-X dev`` correctly
+was almost impossible in Python 3.6. The code base has been deeply
+reworked in Python 3.7 and then in Python 3.8 to read the configuration
+into a structure with no side effect. It becomes possible to clear the
+configuration (release memory) and read again the configuration if the
+encoding changed . It is required to implement properly the UTF-8 which
+changes the encoding using ``-X utf8`` command line option. Internally,
+bytes ``argv`` strings are decoded from the filesystem encoding. The
+``-X dev`` changes the memory allocator (behaves as
+``PYTHONMALLOC=debug``), whereas it was not possible to change the
+memory allocation *while* parsing the command line arguments. The new
+design of the internal implementation not only allowed to implement
+properly ``-X utf8`` and ``-X dev``, it also allows to change the Python
+behavior way more easily, especially for corner cases like that, and
+ensure that the configuration remains consistent: see `Priority and
+Rules`_.
+
+This PEP is a partial implementation of PEP 432 which is the overall
+design.  New fields can be added later to ``PyConfig`` structure to
+finish the implementation of the PEP 432 (e.g. by adding a new partial
+initialization API which allows to configure Python using Python objects to
+finish the full initialization). However, those features are omitted from this
+PEP as even the native CPython CLI doesn't work that way - the public API
+proposal in this PEP is limited to features which have already been implemented
+and adopted as private APIs for us in the native CPython CLI.
+
+
+Python Initialization C API
+===========================
+
+This PEP proposes to add the following new structures, functions and
+macros.
+
+New structures (4):
+
+* ``PyConfig``
+* ``PyInitError``
+* ``PyPreConfig``
+* ``PyWideStringList``
+
+New functions (17):
+
+* ``Py_PreInitialize(config)``
+* ``Py_PreInitializeFromBytesArgs(config, argc, argv)``
+* ``Py_PreInitializeFromArgs(config, argc, argv)``
+* ``PyWideStringList_Append(list, item)``
+* ``PyWideStringList_Insert(list, index, item)``
+* ``PyConfig_SetString(config,config_str, str)``
+* ``PyConfig_SetBytesString(config, config_str, str)``
+* ``PyConfig_SetBytesArgv(config, argc, argv)``
+* ``PyConfig_SetArgv(config, argc, argv)``
+* ``PyConfig_Read(config)``
+* ``PyConfig_Clear(config)``
+* ``Py_InitializeFromConfig(config)``
+* ``Py_InitializeFromBytesArgs(config, argc, argv)``
+* ``Py_InitializeFromArgs(config, argc, argv)``
+* ``Py_BytesMain(argc, argv)``
+* ``Py_RunMain()``
+* ``Py_ExitInitError(err)``
+
+New macros (9):
+
+* ``PyPreConfig_INIT``
+* ``PyConfig_INIT``
+* ``Py_INIT_OK()``
+* ``Py_INIT_ERR(MSG)``
+* ``Py_INIT_NO_MEMORY()``
+* ``Py_INIT_EXIT(EXITCODE)``
+* ``Py_INIT_IS_ERROR(err)``
+* ``Py_INIT_IS_EXIT(err)``
+* ``Py_INIT_FAILED(err)``
+
+This PEP also adds ``_PyRuntimeState.preconfig`` (``PyPreConfig`` type)
+and ``PyInterpreterState.config`` (``PyConfig`` type) fields to these
+internal structures. ``PyInterpreterState.config`` becomes the new
+reference configuration, replacing global configuration variables and
+other private variables.
+
+
+PyWideStringList
+----------------
+
+``PyWideStringList`` is a list of ``wchar_t*`` strings.
+
+Example to initialize a string from C static array::
+
+    static wchar_t* argv[2] = {
+        L"-c",
+        L"pass",
+    };
+    PyWideStringList config_argv = PyWideStringList_INIT;
+    config_argv.length = Py_ARRAY_LENGTH(argv);
+    config_argv.items = argv;
+
+``PyWideStringList`` structure fields:
+
+* ``length`` (``Py_ssize_t``)
+* ``items`` (``wchar_t**``)
+
+Methods:
+
+* ``PyInitError PyWideStringList_Append(PyWideStringList *list, const wchar_t *item)``:
+  Append *item* to *list*.
+* ``PyInitError PyWideStringList_Insert(PyWideStringList *list, Py_ssize_t index, const wchar_t *item)``:
+  Insert *item* into *list* at *index*. If *index* is greater than
+  *list* length, just append *item* to *list*.
+
+If *length* is non-zero, *items* must be non-NULL and all strings must
+be non-NULL.
+
+PyInitError
+-----------
+
+``PyInitError`` is a structure to store an error message or an exit code
+for the Python Initialization. For an error, it stores the C function
+name which created the error.
+
+Example::
+
+    PyInitError alloc(void **ptr, size_t size)
+    {
+        *ptr = PyMem_RawMalloc(size);
+        if (*ptr == NULL) {
+            return Py_INIT_NO_MEMORY();
+        }
+        return Py_INIT_OK();
+    }
+
+    int main(int argc, char **argv)
+    {
+        void *ptr;
+        PyInitError err = alloc(&ptr, 16);
+        if (Py_INIT_FAILED(err)) {
+            Py_ExitInitError(err);
+        }
+        PyMem_Free(ptr);
+        return 0;
+    }
+
+``PyInitError`` fields:
+
+* ``exitcode`` (``int``):
+  argument passed to ``exit()``, only set by ``Py_INIT_EXIT()``.
+* ``err_msg`` (``const char*``): error message
+* private ``_func`` field: used by ``Py_INIT_ERR()`` to store the C
+  function name which created the error.
+* private ``_type`` field: for internal usage only.
+
+Macro to create an error:
+
+* ``Py_INIT_OK()``: Success.
+* ``Py_INIT_ERR(err_msg)``: Initialization error with a message.
+* ``Py_INIT_NO_MEMORY()``: Memory allocation failure (out of memory).
+* ``Py_INIT_EXIT(exitcode)``: Exit Python with the specified exit code.
+
+Other macros and functions:
+
+* ``Py_INIT_IS_ERROR(err)``: Is the result an error?
+* ``Py_INIT_IS_EXIT(err)``: Is the result an exit?
+* ``Py_INIT_FAILED(err)``: Is the result an error or an exit? Similar
+  to ``Py_INIT_IS_ERROR(err) || Py_INIT_IS_EXIT(err)``.
+* ``Py_ExitInitError(err)``: Call ``exit(exitcode)`` on Unix or
+  ``ExitProcess(exitcode)`` if the result is an exit, call
+  ``Py_FatalError(err_msg)`` if the result is an error. Must not be
+  called if the result is a success.
+
+Pre-Initialization with PyPreConfig
+-----------------------------------
+
+``PyPreConfig`` structure is used to pre-initialize Python:
+
+* Set the memory allocator
+* Configure the LC_CTYPE locale
+* Set the UTF-8 mode
+
+Example using the pre-initialization to enable the UTF-8 Mode::
+
+    PyPreConfig preconfig = PyPreConfig_INIT;
+    preconfig.utf8_mode = 1;
+
+    PyInitError err = Py_PreInitialize(&preconfig);
+    if (Py_INIT_FAILED(err)) {
+        Py_ExitInitError(err);
+    }
+
+    /* at this point, Python will speak UTF-8 */
+
+    Py_Initialize();
+    /* ... use Python API here ... */
+    Py_Finalize();
+
+Functions to pre-initialize Python:
+
+* ``PyInitError Py_PreInitialize(const PyPreConfig *config)``
+* ``PyInitError Py_PreInitializeFromBytesArgs(const PyPreConfig *config, int argc, char **argv)``
+* ``PyInitError Py_PreInitializeFromArgs(const PyPreConfig *config, int argc, wchar_t **argv)``
+
+These functions can be called with *config* set to ``NULL``.
+
+If Python is initialized with command line arguments, the command line
+arguments must also be passed to pre-initialize Python, since they have
+an effect on the pre-configuration like encodings. For example, the
+``-X utf8`` command line option enables the UTF-8 Mode.
+
+These functions can be called with *config* set to ``NULL``. The caller
+is responsible to handle error or exit using ``Py_INIT_FAILED()`` and
+``Py_ExitInitError()``.
+
+``PyPreConfig`` fields:
+
+* ``allocator`` (``char*``, default: ``NULL``):
+  Name of the memory allocator (ex: ``"malloc"``).
+* ``coerce_c_locale`` (``int``, default: 0):
+  If equals to 2, coerce the C locale; if equals to 1, read the LC_CTYPE
+  locale to decide if it should be coerced.
+* ``coerce_c_locale_warn`` (``int``, default: 0):
+  If non-zero, emit a warning if the C locale is coerced.
+* ``dev_mode`` (``int``, default: 0):
+  See ``PyConfig.dev_mode``.
+* ``isolated`` (``int``, default: 0):
+  See ``PyConfig.isolated``.
+* ``legacy_windows_fs_encoding`` (``int``, Windows only, default: 0):
+  If non-zero, disable UTF-8 Mode, set the Python filesystem encoding to
+  ``mbcs``, set the filesystem error handler to ``replace``.
+* ``use_environment`` (``int``, default: 1):
+  See ``PyConfig.use_environment``.
+* ``utf8_mode`` (``int``, default: 0):
+  If non-zero, enable the UTF-8 mode.
+
+``PyPreConfig`` private field, for internal use only:
+
+* ``_config_version`` (``int``, default: config version):
+  Configuration version, used for ABI compatibility.
+
+The C locale coercion (PEP 538) and the UTF-8 Mode (PEP 540) are
+disabled by default in ``PyPreConfig``. Set ``coerce_c_locale``,
+``coerce_c_locale_warn`` and ``utf8_mode`` to ``-1`` to let Python
+enable them depending on the user configuration. In this case, it's
+safer to explicitly pre-initialize Python to ensure that encodings are
+configured before the Python initialization starts. Example to get the
+same encoding as regular Python::
+
+    PyPreConfig preconfig = PyPreConfig_INIT;
+    preconfig.coerce_c_locale = -1;
+    preconfig.coerce_c_locale_warn = -1;
+    preconfig.utf8_mode = -1;
+
+    PyInitError err = Py_PreInitialize(&preconfig);
+    if (Py_INIT_FAILED(err)) {
+        Py_ExitInitError(err);
+    }
+
+
+Initialization with PyConfig
+----------------------------
+
+The ``PyConfig`` structure contains all parameters to configure Python.
+
+Example setting the program name::
+
+    PyInitError err;
+    PyConfig config = PyConfig_INIT;
+
+    err = PyConfig_SetString(&config.program_name, L"my_program");
+    if (_Py_INIT_FAILED(err)) {
+        Py_ExitInitError(err);
+    }
+
+    err = Py_InitializeFromConfig(&config);
+    PyConfig_Clear(&config);
+
+    if (Py_INIT_FAILED(err)) {
+        Py_ExitInitError(err);
+    }
+
+``PyConfig`` methods:
+
+* ``PyInitError PyConfig_SetString(PyConfig *config, wchar_t **config_str, const wchar_t *str)``:
+  Copy the wide character string *str* into ``*config_str``.
+* ``PyInitError PyConfig_SetBytesString(PyConfig *config, wchar_t **config_str, const char *str)``:
+  Decode *str* using ``Py_DecodeLocale()`` and set the result into
+  ``*config_str``. Pre-initialize Python if needed to ensure that
+  encodings are properly configured.
+* ``PyInitError PyConfig_SetArgv(PyConfig *config, int argc, wchar_t **argv)``:
+  Set command line arguments from wide character strings.
+* ``PyInitError PyConfig_SetBytesArgv(PyConfig *config, int argc, char **argv)``:
+  Set command line arguments: decode bytes using ``Py_DecodeLocale()``.
+  Pre-initialize Python if needed to ensure that encodings are properly
+  configured.
+* ``PyInitError PyConfig_Read(PyConfig *config)``:
+  Read all Python configuration. Fields which are already set are left
+  unchanged.
+* ``void PyConfig_Clear(PyConfig *config)``:
+  Release configuration memory.
+
+Functions to initialize Python:
+
+* ``PyInitError Py_InitializeFromConfig(const PyConfig *config)``:
+  Initialize Python from *config* configuration. *config* can be
+  ``NULL``.
+
+The caller of these methods and functions is responsible to handle
+failure or exit using ``Py_INIT_FAILED()`` and ``Py_ExitInitError()``.
+
+``PyConfig`` fields:
+
+* ``argv`` (``PyWideStringList``, default: empty):
+  Command line arguments, ``sys.argv``.
+  It is parsed and updated by default, set ``parse_argv`` to 0 to avoid
+  that.
+* ``base_exec_prefix`` (``wchar_t*``, default: ``NULL``):
+  ``sys.base_exec_prefix``.
+* ``base_prefix`` (``wchar_t*``, default: ``NULL``):
+  ``sys.base_prefix``.
+* ``buffered_stdio`` (``int``, default: 1):
+  If equals to 0, enable unbuffered mode, making the stdout and stderr streams
+  unbuffered.
+* ``bytes_warning`` (``int``, default: 0):
+  If equals to 1, issue a warning when comparing ``bytes`` or
+  ``bytearray`` with ``str``, or comparing ``bytes`` with ``int``. If
+  equal or greater to 2, raise a ``BytesWarning`` exception.
+* ``check_hash_pycs_mode`` (``wchar_t*``, default: ``"default"``):
+  ``--check-hash-based-pycs`` command line option value (see PEP 552).
+* ``configure_c_stdio`` (``int``, default: 1):
+  If non-zero, configure C standard streams (``stdio``, ``stdout``,
+  ``stdout``).  For example, set their mode to ``O_BINARY`` on Windows.
+* ``dev_mode`` (``int``, default: 0):
+  Development mode
+* ``dll_path`` (``wchar_t*``, Windows only, default: ``NULL``):
+  Windows DLL path.
+* ``dump_refs`` (``int``, default: 0):
+  If non-zero, dump all objects which are still alive at exit
+* ``exec_prefix`` (``wchar_t*``, default: ``NULL``):
+  ``sys.exec_prefix``.
+* ``executable`` (``wchar_t*``, default: ``NULL``):
+  ``sys.executable``.
+* ``faulthandler`` (``int``, default: 0):
+  If non-zero, call ``faulthandler.enable()``.
+* ``filesystem_encoding`` (``wchar_t*``, default: ``NULL``):
+  Filesystem encoding, ``sys.getfilesystemencoding()``.
+* ``filesystem_errors`` (``wchar_t*``, default: ``NULL``):
+  Filesystem encoding errors, ``sys.getfilesystemencodeerrors()``.
+* ``use_hash_seed`` (``int``, default: 0),
+  ``hash_seed`` (``unsigned long``, default: 0):
+  Randomized hash function seed.
+* ``home`` (``wchar_t*``, default: ``NULL``):
+  Python home directory.
+* ``import_time`` (``int``, default: 0):
+  If non-zero, profile import time.
+* ``inspect`` (``int``, default: 0):
+  Enter interactive mode after executing a script or a command.
+* ``install_signal_handlers`` (``int``, default: 1):
+  Install signal handlers?
+* ``interactive`` (``int``, default: 0):
+  Interactive mode.
+* ``legacy_windows_stdio`` (``int``, Windows only, default: 0):
+  If non-zero, use ``io.FileIO`` instead of ``WindowsConsoleIO`` for
+  ``sys.stdin``, ``sys.stdout`` and ``sys.stderr``.
+* ``malloc_stats`` (``int``, default: 0):
+  If non-zero, dump memory allocation statistics at exit.
+* ``module_search_path_env`` (``wchar_t*``, default: ``NULL``):
+  ``PYTHONPATH`` environment variale value.
+* ``use_module_search_paths`` (``int``, default: 0),
+  ``module_search_paths`` (``PyWideStringList``, default: empty):
+  ``sys.path``.
+* ``optimization_level`` (``int``, default: 0):
+  Compilation optimization level.
+* ``parse_argv`` (``int``, default: 1):
+  If non-zero, parse ``argv`` command line arguments and update
+  ``argv``.
+* ``parser_debug`` (``int``, default: 0):
+  If non-zero, turn on parser debugging output (for expert only,
+  depending on compilation options).
+* ``pathconfig_warnings`` (``int``, default: 1):
+  If equal to 0, suppress warnings when computing the path
+  configuration.
+* ``prefix`` (``wchar_t*``, default: ``NULL``):
+  ``sys.prefix``.
+* ``program_name`` (``wchar_t*``, default: ``NULL``):
+  Program name.
+* ``program`` (``wchar_t*``, default: ``NULL``):
+  ``argv[0]`` or an empty string.
+* ``pycache_prefix`` (``wchar_t*``, default: ``NULL``):
+  ``.pyc`` cache prefix.
+* ``quiet`` (``int``, default: 0):
+  Quiet mode. For example, don't display the copyright and version
+  messages even in interactive mode.
+* ``run_command`` (``wchar_t*``, default: ``NULL``):
+  ``-c COMMAND`` argument.
+* ``run_filename`` (``wchar_t*``), default: ``NULL``:
+  ``python3 SCRIPT`` argument.
+* ``run_module`` (``wchar_t*``, default: ``NULL``):
+  ``python3 -m MODULE`` argument.
+* ``show_alloc_count`` (``int``, default: 0):
+  Show allocation counts at exit?
+* ``show_ref_count`` (``int``, default: 0):
+  Show total reference count at exit?
+* ``site_import`` (``int``, default: 1):
+  Import the ``site`` module at startup?
+* ``skip_source_first_line`` (``int``, default: 0):
+  Skip the first line of the source?
+* ``stdio_encoding`` (``wchar_t*``, default: ``NULL``),
+  ``stdio_errors`` (``wchar_t*``, default: ``NULL``):
+  Encoding and encoding errors of ``sys.stdin``, ``sys.stdout``
+  and ``sys.stderr``.
+* ``tracemalloc`` (``int``, default: 0):
+  If non-zero, call ``tracemalloc.start(value)``.
+* ``user_site_directory`` (``int``, default: 1):
+  If non-zero, add user site directory to ``sys.path``.
+* ``verbose`` (``int``, default: 0):
+  If non-zero, enable verbose mode.
+* ``warnoptions`` (``PyWideStringList``, default: empty):
+  Options of the ``warnings`` module to build warnings filters.
+* ``write_bytecode`` (``int``, default: 1):
+  If non-zero, write ``.pyc`` files.
+* ``xoptions`` (``PyWideStringList``, default: empty):
+  ``sys._xoptions``.
+
+``PyConfig`` private fields, for internal use only:
+
+* ``_config_version`` (``int``, default: config version):
+  Configuration version, used for ABI compatibility.
+* ``_install_importlib`` (``int``, default: 1):
+  Install importlib?
+* ``_init_main`` (``int``, default: 1):
+  If equal to 0, stop Python initialization before the "main" phase
+  (see PEP 432).
+
+By default, the ``argv`` arguments are parsed as regular Python command
+line arguments and ``argv`` is updated to strip parsed Python arguments:
+see `Command Line Arguments`_. Set ``parse_argv`` to 0 to avoid parsing
+and updating ``argv``. If ``argv`` is empty, an empty string is added to
+ensure that ``sys.argv`` always exists and is never empty.
+
+The ``xoptions`` options are parsed to set other options: see `-X
+Options`_.
+
+More complete example modifying the configuration before calling
+``PyConfig_Read()``, and then modify the read configuration::
+
+    PyInitError init_python(const char *program_name)
+    {
+        PyInitError err;
+        PyConfig config = PyConfig_INIT;
+
+        /* Set the program name before reading the configuraton
+           (decode byte string from the locale encoding) */
+        err = PyConfig_SetBytesString(&config.program_name,
+                                      program_name);
+        if (_Py_INIT_FAILED(err)) {
+            goto fail;
+        }
+
+        /* Read all configuration at once */
+        err = PyConfig_Read(&config);
+        if (_Py_INIT_FAILED(err)) {
+            goto fail;
+        }
+
+        /* Append our custom search path to sys.path */
+        err = PyWideStringList_Append(&config.module_search_paths,
+                                      L"/path/to/more/modules");
+        if (_Py_INIT_FAILED(err)) {
+            goto fail;
+        }
+
+        /* Override executable computed by PyConfig_Read() */
+        err = PyConfig_SetString(&config, &config.executable, L"my_executable");
+        if (_Py_INIT_FAILED(err)) {
+            goto fail;
+        }
+
+        err = Py_InitializeFromConfig(&config);
+
+        /* Py_InitializeFromConfig() copied config which must now be
+           cleared to release memory */
+        PyConfig_Clear(&config);
+
+        return err;
+
+    fail:
+        PyConfig_Clear(&config);
+        Py_ExitInitError(err);
+    }
+
+.. note::
+   ``PyConfig`` does not have any field for extra inittab functions:
+   ``PyImport_AppendInittab()`` and ``PyImport_ExtendInittab()``
+   functions are still relevant (and can be called before Python
+   initialization).
+
+
+Initialization with constant PyConfig
+-------------------------------------
+
+When no ``PyConfig`` method is used but only
+``Py_InitializeFromConfig()``, the caller is responsible for managing
+``PyConfig`` memory. In that case, constant strings and constant string
+lists can be used to avoid dynamically allocated memory. It can be used
+for most simple configurations.
+
+Example of Python initialization enabling the isolated mode::
+
+    PyConfig config = PyConfig_INIT;
+    config.isolated = 1;
+
+    PyInitError err = Py_InitializeFromConfig(&config);
+    if (Py_INIT_FAILED(err)) {
+        Py_ExitInitError(err);
+    }
+    /* ... use Python API here ... */
+    Py_Finalize();
+
+``PyConfig_Clear()`` is not needed in this example since ``config`` does
+not contain any dynamically allocated string:
+``Py_InitializeFromConfig`` is responsible to fill other fields and
+manage the memory.
+
+For convenience, two other functions are provided for constant
+``PyConfig``:
+
+* ``PyInitError Py_InitializeFromArgs(const PyConfig *config, int argc, wchar_t **argv)``
+* ``PyInitError Py_InitializeFromBytesArgs(const PyConfig *config, int argc, char **argv)``
+
+They be called with *config* set to ``NULL``. The caller of these
+functions is responsible to handle failure or exit using
+``Py_INIT_FAILED()`` and ``Py_ExitInitError()``.
+
+
+Path Configuration
+------------------
+
+``PyConfig`` contains multiple fields for the path configuration:
+
+* Path configuration input fields:
+
+  * ``home``
+  * ``module_search_path_env``
+  * ``pathconfig_warnings``
+
+* Path configuration output fields:
+
+  * ``dll_path`` (Windows only)
+  * ``exec_prefix``
+  * ``executable``
+  * ``prefix``
+  * ``use_module_search_paths``, ``module_search_paths``
+
+Set ``pathconfig_warnings`` to 0 to suppress warnings when computing the
+path configuration.
+
+It is possible to completely ignore the function computing the default
+path configuration by setting explicitly all path configuration output
+fields listed above. A string is considered as set even if it's an empty
+string. ``module_search_paths`` is considered as set if
+``use_module_search_paths`` is set to 1. In this case, path
+configuration input fields are ignored as well.
+
+If ``base_prefix`` or ``base_exec_prefix`` fields are not set, they
+inherit their value from ``prefix`` and ``exec_prefix`` respectively.
+
+If ``site_import`` is non-zero, ``sys.path`` can be modified by the
+``site`` module. For example, if ``user_site_directory`` is non-zero,
+the user site directory is added to ``sys.path`` (if it exists).
+
+
+Isolate Python
+--------------
+
+The default configuration is designed to behave as a regular Python.
+To embed Python into an application, it's possible to tune the
+configuration to better isolated the embedded Python from the system:
+
+* Set ``isolated`` to 1 to ignore environment variables and not prepend
+  the current directory to ``sys.path``.
+* Set the `Path Configuration`_ ("output fields") to ignore the function
+  computing the default path configuration.
+
+
+Py_BytesMain()
+--------------
+
+Python 3.7 provides a high-level ``Py_Main()`` function which requires
+to pass command line arguments as ``wchar_t*`` strings. It is
+non-trivial to use the correct encoding to decode bytes. Python has its
+own set of issues with C locale coercion and UTF-8 Mode.
+
+This PEP adds a new ``Py_BytesMain()`` function which takes command line
+arguments as bytes::
+
+    int Py_BytesMain(int argc, char **argv)
+
+Py_RunMain()
+------------
+
+The new ``Py_RunMain()`` function executes the command
+(``PyConfig.run_command``), the script (``PyConfig.run_filename``) or
+the module (``PyConfig.run_module``) specified on the command line or in
+the configuration, and then finalizes Python. It returns an exit status
+that can be passed to the ``exit()`` function.
+
+Example of customized Python in isolated mode::
+
+    #include <Python.h>
+
+    int main(int argc, char *argv[])
+    {
+        PyConfig config = PyConfig_INIT;
+        config.isolated = 1;
+
+        PyInitError err = Py_InitializeFromBytesArgs(&config, argc, argv);
+        if (Py_INIT_FAILED(err)) {
+            Py_ExitInitError(err);
+        }
+
+        /* put more configuration code here if needed */
+
+        return Py_RunMain();
+    }
+
+The example is a basic implementation of the "System Python Executable"
+discussed in PEP 432.
+
+
+Memory allocations and Py_DecodeLocale()
+----------------------------------------
+
+Python memory allocation functions like ``PyMem_RawMalloc()`` must not
+be used before Python pre-initialization, whereas calling directly
+``malloc()`` and ``free()`` is always safe.
+
+For ``PyPreConfig`` and constant ``PyConfig``, the caller is responsible
+for managing dynamically allocated memory; constant strings and constant
+string lists can be used to avoid memory allocations.
+
+Dynamic ``PyConfig`` requires to call ``PyConfig_Clear()`` to release
+memory.
+
+``Py_DecodeLocale()`` must not be called before the pre-initialization.
+
+
+Backwards Compatibility
+=======================
+
+This PEP only adds a new API: it leaves the existing API unchanged and
+has no impact on the backwards compatibility.
+
+The implementation ensures that the existing API is compatible with the
+new API. For example, ``PyConfig`` uses the value of global
+configuration variables as default values.
+
+
+Annex: Python Configuration
+===========================
+
+Priority and Rules
+------------------
+
+Priority of configuration parameters, highest to lowest:
+
+* ``PyConfig``
+* ``PyPreConfig``
+* Configuration files
+* Command line options
+* Environment variables
+* Global configuration variables
+
+Priority of warning options, highest to lowest:
+
+* ``PyConfig.warnoptions``
+* ``PyConfig.dev_mode`` (add ``"default"``)
+* ``PYTHONWARNINGS`` environment variables
+* ``-W WARNOPTION`` command line argument
+* ``PyConfig.bytes_warning`` (add ``"error::BytesWarning"`` if greater
+  than 1, or add ``"default::BytesWarning``)
+
+Rules on ``PyConfig`` parameters:
+
+* If ``isolated`` is non-zero, ``use_environment`` and
+  ``user_site_directory`` are set to 0.
+* If ``legacy_windows_fs_encoding`` is non-zero, ``utf8_mode`` is set to
+  0.
+* If ``dev_mode`` is non-zero, ``allocator`` is set to ``"debug"``,
+  ``faulthandler`` is set to 1, and ``"default"`` filter is added to
+  ``warnoptions``. But the ``PYTHONMALLOC`` environment variable has the
+  priority over ``dev_mode`` to set the memory allocator.
+* If ``base_prefix`` is not set, it inherits ``prefix`` value.
+* If ``base_exec_prefix`` is not set, it inherits ``exec_prefix`` value.
+* If the ``python._pth`` configuration file is present, ``isolated`` is
+  set to 1 and ``site_import`` is set to 0; but ``site_import`` is set
+  to 1 if ``python._pth`` contains ``import site``.
+
+Rules on ``PyConfig`` and ``PyPreConfig`` parameters:
+
+* If ``PyPreConfig.legacy_windows_fs_encoding`` is non-zero,
+  set ``PyConfig.utf8_mode`` to 0, set ``PyConfig.filesystem_encoding``
+  to ``mbcs``, and set ``PyConfig.filesystem_errors`` to ``replace``.
+
+Configuration Files
+-------------------
+
+Python configuration files:
+
+* ``pyvenv.cfg``
+* ``python._pth`` (Windows only)
+* ``pybuilddir.txt`` (Unix only)
+
+Global Configuration Variables
+------------------------------
+
+Global configuration variables mapped to ``PyPreConfig`` fields:
+
+========================================  ================================
+Variable                                  Field
+========================================  ================================
+``Py_IgnoreEnvironmentFlag``              ``use_environment`` (NOT)
+``Py_IsolatedFlag``                       ``isolated``
+``Py_LegacyWindowsFSEncodingFlag``        ``legacy_windows_fs_encoding``
+``Py_UTF8Mode``                           ``utf8_mode``
+========================================  ================================
+
+(NOT) means that the ``PyPreConfig`` value is the oposite of the global
+configuration variable value.
+
+Global configuration variables mapped to ``PyConfig`` fields:
+
+========================================  ================================
+Variable                                  Field
+========================================  ================================
+``Py_BytesWarningFlag``                   ``bytes_warning``
+``Py_DebugFlag``                          ``parser_debug``
+``Py_DontWriteBytecodeFlag``              ``write_bytecode`` (NOT)
+``Py_FileSystemDefaultEncodeErrors``      ``filesystem_errors``
+``Py_FileSystemDefaultEncoding``          ``filesystem_encoding``
+``Py_FrozenFlag``                         ``pathconfig_warnings`` (NOT)
+``Py_HasFileSystemDefaultEncoding``       ``filesystem_encoding``
+``Py_HashRandomizationFlag``              ``use_hash_seed``, ``hash_seed``
+``Py_IgnoreEnvironmentFlag``              ``use_environment`` (NOT)
+``Py_InspectFlag``                        ``inspect``
+``Py_InteractiveFlag``                    ``interactive``
+``Py_IsolatedFlag``                       ``isolated``
+``Py_LegacyWindowsStdioFlag``             ``legacy_windows_stdio``
+``Py_NoSiteFlag``                         ``site_import`` (NOT)
+``Py_NoUserSiteDirectory``                ``user_site_directory`` (NOT)
+``Py_OptimizeFlag``                       ``optimization_level``
+``Py_QuietFlag``                          ``quiet``
+``Py_UnbufferedStdioFlag``                ``buffered_stdio`` (NOT)
+``Py_VerboseFlag``                        ``verbose``
+``_Py_HasFileSystemDefaultEncodeErrors``  ``filesystem_errors``
+========================================  ================================
+
+(NOT) means that the ``PyConfig`` value is the oposite of the global
+configuration variable value.
+
+``Py_LegacyWindowsFSEncodingFlag`` and ``Py_LegacyWindowsStdioFlag`` are
+only available on Windows.
+
+Command Line Arguments
+----------------------
+
+Usage::
+
+    python3 [options]
+    python3 [options] -c COMMAND
+    python3 [options] -m MODULE
+    python3 [options] SCRIPT
+
+
+Command line options mapped to pseudo-action on ``PyPreConfig`` fields:
+
+================================  ================================
+Option                            ``PyConfig`` field
+================================  ================================
+``-E``                            ``use_environment = 0``
+``-I``                            ``isolated = 1``
+``-X dev``                        ``dev_mode = 1``
+``-X utf8``                       ``utf8_mode = 1``
+``-X utf8=VALUE``                 ``utf8_mode = VALUE``
+================================  ================================
+
+Command line options mapped to pseudo-action on ``PyConfig`` fields:
+
+================================  ================================
+Option                            ``PyConfig`` field
+================================  ================================
+``-b``                            ``bytes_warning++``
+``-B``                            ``write_bytecode = 0``
+``-c COMMAND``                    ``run_command = COMMAND``
+``--check-hash-based-pycs=MODE``  ``_check_hash_pycs_mode = MODE``
+``-d``                            ``parser_debug++``
+``-E``                            ``use_environment = 0``
+``-i``                            ``inspect++`` and ``interactive++``
+``-I``                            ``isolated = 1``
+``-m MODULE``                     ``run_module = MODULE``
+``-O``                            ``optimization_level++``
+``-q``                            ``quiet++``
+``-R``                            ``use_hash_seed = 0``
+``-s``                            ``user_site_directory = 0``
+``-S``                            ``site_import``
+``-t``                            ignored (kept for backwards compatibility)
+``-u``                            ``buffered_stdio = 0``
+``-v``                            ``verbose++``
+``-W WARNING``                    add ``WARNING`` to ``warnoptions``
+``-x``                            ``skip_source_first_line = 1``
+``-X OPTION``                     add ``OPTION`` to ``xoptions``
+================================  ================================
+
+``-h``, ``-?`` and ``-V`` options are handled without ``PyConfig``.
+
+-X Options
+----------
+
+-X options mapped to pseudo-action on ``PyConfig`` fields:
+
+================================  ================================
+Option                            ``PyConfig`` field
+================================  ================================
+``-X dev``                        ``dev_mode = 1``
+``-X faulthandler``               ``faulthandler = 1``
+``-X importtime``                 ``import_time = 1``
+``-X pycache_prefix=PREFIX``      ``pycache_prefix = PREFIX``
+``-X showalloccount``             ``show_alloc_count = 1``
+``-X showrefcount``               ``show_ref_count = 1``
+``-X tracemalloc=N``              ``tracemalloc = N``
+================================  ================================
+
+Environment Variables
+---------------------
+
+Environment variables mapped to ``PyPreConfig`` fields:
+
+=================================  =============================================
+Variable                           ``PyPreConfig`` field
+=================================  =============================================
+``PYTHONCOERCECLOCALE``            ``coerce_c_locale``, ``coerce_c_locale_warn``
+``PYTHONDEVMODE``                  ``dev_mode``
+``PYTHONLEGACYWINDOWSFSENCODING``  ``legacy_windows_fs_encoding``
+``PYTHONMALLOC``                   ``allocator``
+``PYTHONUTF8``                     ``utf8_mode``
+=================================  =============================================
+
+Environment variables mapped to ``PyConfig`` fields:
+
+=================================  ====================================
+Variable                           ``PyConfig`` field
+=================================  ====================================
+``PYTHONDEBUG``                    ``parser_debug``
+``PYTHONDEVMODE``                  ``dev_mode``
+``PYTHONDONTWRITEBYTECODE``        ``write_bytecode``
+``PYTHONDUMPREFS``                 ``dump_refs``
+``PYTHONEXECUTABLE``               ``program_name``
+``PYTHONFAULTHANDLER``             ``faulthandler``
+``PYTHONHASHSEED``                 ``use_hash_seed``, ``hash_seed``
+``PYTHONHOME``                     ``home``
+``PYTHONINSPECT``                  ``inspect``
+``PYTHONIOENCODING``               ``stdio_encoding``, ``stdio_errors``
+``PYTHONLEGACYWINDOWSSTDIO``       ``legacy_windows_stdio``
+``PYTHONMALLOCSTATS``              ``malloc_stats``
+``PYTHONNOUSERSITE``               ``user_site_directory``
+``PYTHONOPTIMIZE``                 ``optimization_level``
+``PYTHONPATH``                     ``module_search_path_env``
+``PYTHONPROFILEIMPORTTIME``        ``import_time``
+``PYTHONPYCACHEPREFIX,``           ``pycache_prefix``
+``PYTHONTRACEMALLOC``              ``tracemalloc``
+``PYTHONUNBUFFERED``               ``buffered_stdio``
+``PYTHONVERBOSE``                  ``verbose``
+``PYTHONWARNINGS``                 ``warnoptions``
+=================================  ====================================
+
+``PYTHONLEGACYWINDOWSFSENCODING`` and ``PYTHONLEGACYWINDOWSSTDIO`` are
+specific to Windows.
+
+
+Annex: Python 3.7 API
+=====================
+
+Python 3.7 has 4 functions in its C API to initialize and finalize
+Python:
+
+* ``Py_Initialize()``, ``Py_InitializeEx()``: initialize Python
+* ``Py_Finalize()``, ``Py_FinalizeEx()``: finalize Python
+
+Python 3.7 can be configured using `Global Configuration Variables`_,
+`Environment Variables`_, and the following functions:
+
+* ``PyImport_AppendInittab()``
+* ``PyImport_ExtendInittab()``
+* ``PyMem_SetAllocator()``
+* ``PyMem_SetupDebugHooks()``
+* ``PyObject_SetArenaAllocator()``
+* ``Py_SetPath()``
+* ``Py_SetProgramName()``
+* ``Py_SetPythonHome()``
+* ``Py_SetStandardStreamEncoding()``
+* ``PySys_AddWarnOption()``
+* ``PySys_AddXOption()``
+* ``PySys_ResetWarnOptions()``
+
+There is also a high-level ``Py_Main()`` function.
+
+
+Python Issues
+=============
+
+Issues that will be fixed by this PEP, directly or indirectly:
+
+* `bpo-1195571 <https://bugs.python.org/issue1195571>`_: "simple
+  callback system for Py_FatalError"
+* `bpo-11320 <https://bugs.python.org/issue11320>`_:
+  "Usage of API method Py_SetPath causes errors in Py_Initialize()
+  (Posix ony)"
+* `bpo-13533 <https://bugs.python.org/issue13533>`_: "Would like
+  Py_Initialize to play friendly with host app"
+* `bpo-14956 <https://bugs.python.org/issue14956>`_: "custom PYTHONPATH
+  may break apps embedding Python"
+* `bpo-19983 <https://bugs.python.org/issue19983>`_: "When interrupted
+  during startup, Python should not call abort() but exit()"
+* `bpo-22213 <https://bugs.python.org/issue22213>`_: "Make pyvenv style
+  virtual environments easier to configure when embedding Python". This
+  PEP more or
+* `bpo-22257 <https://bugs.python.org/issue22257>`_: "PEP 432: Redesign
+  the interpreter startup sequence"
+* `bpo-29778 <https://bugs.python.org/issue29778>`_: "_Py_CheckPython3
+  uses uninitialized dllpath when embedder sets module path with
+  Py_SetPath"
+* `bpo-30560 <https://bugs.python.org/issue30560>`_: "Add
+  Py_SetFatalErrorAbortFunc: Allow embedding program to handle fatal
+  errors".
+* `bpo-31745 <https://bugs.python.org/issue31745>`_: "Overloading
+  "Py_GetPath" does not work"
+* `bpo-32573 <https://bugs.python.org/issue32573>`_: "All sys attributes
+  (.argv, ...) should exist in embedded environments".
+* `bpo-34725 <https://bugs.python.org/issue34725>`_:
+  "Py_GetProgramFullPath() odd behaviour in Windows"
+* `bpo-36204 <https://bugs.python.org/issue36204>`_: "Deprecate calling
+  Py_Main() after Py_Initialize()? Add Py_InitializeFromArgv()?"
+* `bpo-33135 <https://bugs.python.org/issue33135>`_: "Define field
+  prefixes for the various config structs". The PEP now defines well
+  how warnings options are handled.
+
+Issues of the PEP implementation:
+
+* `bpo-16961 <https://bugs.python.org/issue16961>`_: "No regression
+  tests for -E and individual environment vars"
+* `bpo-20361 <https://bugs.python.org/issue20361>`_: "-W command line
+  options and PYTHONWARNINGS environmental variable should not override
+  -b / -bb command line options"
+* `bpo-26122 <https://bugs.python.org/issue26122>`_: "Isolated mode
+  doesn't ignore PYTHONHASHSEED"
+* `bpo-29818 <https://bugs.python.org/issue29818>`_:
+  "Py_SetStandardStreamEncoding leads to a memory error in debug mode"
+* `bpo-31845 <https://bugs.python.org/issue31845>`_:
+  "PYTHONDONTWRITEBYTECODE and PYTHONOPTIMIZE have no effect"
+* `bpo-32030 <https://bugs.python.org/issue32030>`_: "PEP 432: Rewrite
+  Py_Main()"
+* `bpo-32124 <https://bugs.python.org/issue32124>`_: "Document functions
+  safe to be called before Py_Initialize()"
+* `bpo-33042 <https://bugs.python.org/issue33042>`_: "New 3.7 startup
+  sequence crashes PyInstaller"
+* `bpo-33932 <https://bugs.python.org/issue33932>`_: "Calling
+  Py_Initialize() twice now triggers a fatal error (Python 3.7)"
+* `bpo-34008 <https://bugs.python.org/issue34008>`_: "Do we support
+  calling Py_Main() after Py_Initialize()?"
+* `bpo-34170 <https://bugs.python.org/issue34170>`_: "Py_Initialize():
+  computing path configuration must not have side effect (PEP 432)"
+* `bpo-34589 <https://bugs.python.org/issue34589>`_: "Py_Initialize()
+  and Py_Main() should not enable C locale coercion"
+* `bpo-34639 <https://bugs.python.org/issue34639>`_:
+  "PYTHONCOERCECLOCALE is ignored when using -E or -I option"
+* `bpo-36142 <https://bugs.python.org/issue36142>`_: "Add a new
+  _PyPreConfig step to Python initialization to setup memory allocator
+  and encodings"
+* `bpo-36202 <https://bugs.python.org/issue36202>`_: "Calling
+  Py_DecodeLocale() before _PyPreConfig_Write() can produce mojibake"
+* `bpo-36301 <https://bugs.python.org/issue36301>`_: "Add
+  _Py_PreInitialize() function"
+* `bpo-36443 <https://bugs.python.org/issue36443>`_: "Disable
+  coerce_c_locale and utf8_mode by default in _PyPreConfig?"
+* `bpo-36444 <https://bugs.python.org/issue36444>`_: "Python
+  initialization: remove _PyMainInterpreterConfig"
+* `bpo-36471 <https://bugs.python.org/issue36471>`_: "PEP 432, PEP 587:
+  Add _Py_RunMain()"
+* `bpo-36763 <https://bugs.python.org/issue36763>`_: "PEP 587: Rework
+  initialization API to prepare second version of the PEP"
+* `bpo-36775 <https://bugs.python.org/issue36775>`_: "Rework filesystem
+  codec implementation"
+* `bpo-36900 <https://bugs.python.org/issue36900>`_: "Use _PyCoreConfig
+  rather than global configuration variables"
+
+Issues related to this PEP:
+
+* `bpo-12598 <https://bugs.python.org/issue12598>`_: "Move sys variable
+  initialization from import.c to sysmodule.c"
+* `bpo-15577 <https://bugs.python.org/issue15577>`_: "Real argc and argv
+  in embedded interpreter"
+* `bpo-16202 <https://bugs.python.org/issue16202>`_: "sys.path[0]
+  security issues"
+* `bpo-18309 <https://bugs.python.org/issue18309>`_: "Make python
+  slightly more relocatable"
+* `bpo-25631 <https://bugs.python.org/issue25631>`_: "Segmentation fault
+  with invalid Unicode command-line arguments in embedded Python"
+* `bpo-26007 <https://bugs.python.org/issue26007>`_: "Support embedding
+  the standard library in an executable"
+* `bpo-31210 <https://bugs.python.org/issue31210>`_: "Can not import
+  modules if sys.prefix contains DELIM".
+* `bpo-31349 <https://bugs.python.org/issue31349>`_: "Embedded
+  initialization ignores Py_SetProgramName()"
+* `bpo-33919 <https://bugs.python.org/issue33919>`_: "Expose
+  _PyCoreConfig structure to Python"
+* `bpo-35173 <https://bugs.python.org/issue35173>`_: "Re-use already
+  existing functionality to allow Python 2.7.x (both embedded and
+  standalone) to locate the module path according to the shared library"
+
+
+Version History
+===============
+
+* Version 3:
+
+  * ``PyConfig``: Add ``configure_c_stdio`` and ``parse_argv``;
+    rename ``_frozen`` to ``pathconfig_warnings``.
+  * Rename functions using bytes strings and wide character strings. For
+    example, ``Py_PreInitializeFromWideArgs()`` becomes
+    ``Py_PreInitializeFromArgs()``, and ``PyConfig_SetArgv()`` becomes
+    ``PyConfig_SetBytesArgv()``.
+  * Add ``PyWideStringList_Insert()`` function.
+  * New "Path configuration", "Isolate Python", "Python Issues"
+    and "Version History" sections.
+  * ``PyConfig_SetString()`` and ``PyConfig_SetBytesString()`` now
+    requires the configuration as the first argument.
+  * Rename ``Py_UnixMain()`` to ``Py_BytesMain()``
+
+* Version 2: Add ``PyConfig`` methods (ex: ``PyConfig_Read()``), add
+  ``PyWideStringList_Append()``, rename ``PyWideCharList`` to
+  ``PyWideStringList``.
+* Version 1: Initial version.
+
+Copyright
+=========
+
+This document has been placed in the public domain.

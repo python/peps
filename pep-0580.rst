@@ -1,12 +1,20 @@
 PEP: 580
 Title: The C call protocol
 Author: Jeroen Demeyer <J.Demeyer@UGent.be>
-Status: Draft
+BDFL-Delegate: Petr Viktorin
+Status: Rejected
 Type: Standards Track
 Content-Type: text/x-rst
 Created: 14-Jun-2018
 Python-Version: 3.8
 Post-History: 20-Jun-2018, 22-Jun-2018, 16-Jul-2018
+
+
+Rejection Notice
+================
+
+This PEP is rejected in favor of PEP 590, which proposes a simpler public
+C API for callable objects.
 
 
 Abstract
@@ -30,17 +38,27 @@ it does not affect the Python language or standard library.
 Motivation
 ==========
 
-Currently, the Python bytecode interpreter has various optimizations
-for calling instances of ``builtin_function_or_method``,
-``method_descriptor``, ``method`` and ``function``.
-However, none of these classes is subclassable.
-Therefore, these optimizations are not available to
-user-defined extension types.
+The standard function/method classes ``builtin_function_or_method``
+and ``method_descriptor`` allow very efficiently calling C code.
+However, they are not subclassable, making them unsuitable for many applications:
+for example, they offer limited introspection support
+(signatures only using ``__text_signature__``, no arbitrary ``__qualname__``,
+no ``inspect.getfile()``).
+It's also not possible to store additional data to implement something like
+``functools.partial`` or ``functools.lru_cache``.
+So, there are many reasons why users would want to implement custom
+function/method classes (in a duck-typing sense) in C.
+Unfortunately, such custom classes are necessarily slower than
+the standard CPython function classes:
+the bytecode interpreter has various optimizations
+which are specific to instances of
+``builtin_function_or_method``, ``method_descriptor``, ``method`` and ``function``.
 
-If this PEP is implemented, then the checks
-for ``builtin_function_or_method`` and ``method_descriptor``
+This PEP also allows to simplify existing code:
+checks for ``builtin_function_or_method`` and ``method_descriptor``
 could be replaced by simply checking for and using the C call protocol.
-This simplifies existing code.
+Future PEPs may implement the C call protocol for more classes,
+enabling even further simplifications.
 
 We also design the C call protocol such that it can easily
 be extended with new features in the future.
@@ -48,16 +66,37 @@ be extended with new features in the future.
 For more background and motivation, see PEP 579.
 
 
-Basic idea
-==========
+Overview
+========
 
 Currently, CPython has multiple optimizations for fast calling
 for a few specific function classes.
-Calling instances of these classes using the ``tp_call`` slot is slower
-than using the optimizations.
-The basic idea of this PEP is to allow user-defined extension types
-(not Python classes) to use these optimizations also,
-both as caller and as callee.
+A good example is the implementation of the opcode ``CALL_FUNCTION``,
+which has the following structure
+(`see the actual code <https://github.com/python/cpython/blob/7a2368063f25746d4008a74aca0dc0b82f86ff7b/Python/ceval.c#L4592>`_)::
+
+    if (PyCFunction_Check(func)) {
+        return _PyCFunction_FastCallKeywords(func, stack, nargs, kwnames);
+    }
+    else if (Py_TYPE(func) == &PyMethodDescr_Type) {
+        return _PyMethodDescr_FastCallKeywords(func, stack, nargs, kwnames);
+    }
+    else {
+        if (PyMethod_Check(func) && PyMethod_GET_SELF(func) != NULL) {
+            /* ... */
+        }
+        if (PyFunction_Check(func)) {
+            return _PyFunction_FastCallKeywords(func, stack, nargs, kwnames);
+        }
+        else {
+            return _PyObject_FastCallKeywords(func, stack, nargs, kwnames);
+        }
+    }
+
+Calling instances of these special-cased classes
+using the ``tp_call`` slot is slower than using the optimizations.
+The basic idea of this PEP is to enable such optimizations
+for user C code, both as caller and as callee.
 
 The existing class ``builtin_function_or_method`` and a few others
 use a ``PyMethodDef`` structure for describing the underlying C function and its signature.
@@ -82,6 +121,11 @@ These two fields together are referred to as a ``PyCCallRoot`` structure.
 The new protocol for efficiently calling objects using these new structures
 is called the "C call protocol".
 
+**NOTE**: In this PEP, the phrases "unbound method" and "bound method"
+refer to generic behavior, not to specific classes.
+For example, an unbound method gets turned into a bound method
+after applying ``__get__``.
+
 
 New data structures
 ===================
@@ -94,8 +138,8 @@ It must be a strictly positive integer.
 At that offset, a ``PyCCallRoot`` structure appears::
 
     typedef struct {
-        PyCCallDef *cr_ccall;
-        PyObject   *cr_self;     /* __self__ argument for methods */
+        const PyCCallDef *cr_ccall;
+        PyObject         *cr_self;  /* __self__ argument for methods */
     } PyCCallRoot;
 
 The ``PyCCallDef`` structure contains everything needed to describe how
@@ -122,38 +166,35 @@ Parent
 ------
 
 The ``cc_parent`` field (accessed for example by a ``__parent__``
-or ``__objclass__`` descriptor from Python code) can be any Python object.
-For methods of extension types, this is set to the class.
-For functions of modules, this is set to the module.
-However, custom classes are free to set ``cc_parent`` to whatever they want,
-it can also be ``NULL``.
-It is only used by the C call protocol if the ``CCALL_OBJCLASS`` flag is set.
+or ``__objclass__`` descriptor from Python code) can be any Python
+object, or NULL.
+Custom classes are free to set ``cc_parent`` to whatever they want.
+It is only used by the C call protocol if the
+``CCALL_OBJCLASS`` flag is set.
 
-The parent serves multiple purposes: for methods of extension types
-(more precisely, when the flag ``CCALL_OBJCLASS`` is set),
-it is used for type checks like the following::
+For methods of extension types, ``cc_parent`` points to the class
+that defines the method (which may be a superclass of ``type(self)``).
+This is currently non-trivial to retrieve from a method's code.
+In the future, this can be used to access the module state via
+the defining class. See the rationale of PEP 573 for details.
+
+When the flag ``CCALL_OBJCLASS`` is set (as it will be for methods of
+extension types), ``cc_parent`` is used for type checks like the following::
 
     >>> list.append({}, "x")
     Traceback (most recent call last):
       File "<stdin>", line 1, in <module>
     TypeError: descriptor 'append' requires a 'list' object but received a 'dict'
 
-PEP 573 specifies that every function should have access to the
-module in which it is defined.
-It is recommended to use the parent for this,
-which works directly for functions of a module.
-For methods, this works indirectly through the class,
-assuming that the class has a pointer to the module.
-
-The parent would also typically be used to implement ``__qualname__``.
-The new C API function ``PyCCall_GenericGetQualname()`` does exactly that.
-
-**NOTE**: for functions of modules,
-the parent is exactly the same as ``__self__``.
+For functions of modules, ``cc_parent`` is set to the module.
+Currently, this is exactly the same as ``__self__``.
 However, using ``__self__`` for the module is a quirk of the current implementation:
 in the future, we want to allow functions which use ``__self__``
 in the normal way, for implementing methods.
 Such functions can still use ``cc_parent`` instead to refer to the module.
+
+The parent would also typically be used to implement ``__qualname__``.
+The new C API function ``PyCCall_GenericGetQualname()`` does exactly that.
 
 Using tp_print
 --------------
@@ -221,32 +262,22 @@ signature flags:
 - ``CCALL_O``:
   ``cc_func(PyObject *self, PyObject *arg)``
 
-The flag ``CCALL_FUNCARG`` may be combined with any of these.
+The flag ``CCALL_DEFARG`` may be combined with any of these.
 If so, the C function takes an additional argument
-as first argument before ``self``.
-This argument is used to pass the function object (see NOTE 1 below).
+as first argument before ``self``,
+namely a const pointer to the ``PyCCallDef`` structure used for this call.
 For example, we have the following signature:
 
-- ``CCALL_FUNCARG | CCALL_VARARGS``:
-  ``cc_func(PyObject *func, PyObject *self, PyObject *args)``
+- ``CCALL_DEFARG | CCALL_VARARGS``:
+  ``cc_func(const PyCCallDef *def, PyObject *self, PyObject *args)``
 
-One exception is ``CCALL_FUNCARG | CCALL_NOARGS``:
+One exception is ``CCALL_DEFARG | CCALL_NOARGS``:
 the ``unused`` argument is dropped, so the signature becomes
 
-- ``CCALL_FUNCARG | CCALL_NOARGS``:
-  ``cc_func(PyObject *func, PyObject *self)``
+- ``CCALL_DEFARG | CCALL_NOARGS``:
+  ``cc_func(const PyCCallDef *def, PyObject *self)``
 
-**NOTE 1**: with "function object", we mean the ``self`` in ``__call__``.
-In the case of bound methods, it is currently unspecified
-whether this refers
-to the bound method or the original function (which is wrapped by the bound method).
-In the reference implementation, the bound method is passed.
-In the future, this may change to the wrapped function.
-Despite this ambiguity, the implementation of bound methods
-guarantees that ``PyCCall_CCALLDEF(func)``
-points to the ``PyCCallDef`` of the original function.
-
-**NOTE 2**: unlike the existing ``METH_...`` flags,
+**NOTE**: unlike the existing ``METH_...`` flags,
 the ``CCALL_...`` constants do not necessarily represent single bits.
 So checking ``if (cc_flags & CCALL_VARARGS)`` is not a valid way
 for checking the signature.
@@ -338,12 +369,11 @@ The __name__ attribute
 The C call protocol requires that the function has a ``__name__``
 attribute which is of type ``str`` (not a subclass).
 
-Furthermore, this must be idempotent in the sense
-that getting the ``__name__`` attribute twice in a row must return
-exactly the same Python object.
-This implies that it cannot be a temporary object, it must be stored somewhere.
+Furthermore, the object returned by ``__name__`` must be stored somewhere;
+it cannot be a temporary object.
 This is required because ``PyEval_GetFuncName``
-uses a borrowed reference to the ``__name__`` attribute.
+uses a borrowed reference to the ``__name__`` attribute
+(see also [#badcapi]_).
 
 Generic API functions
 ---------------------
@@ -372,13 +402,13 @@ In other words, ``PyCCall_Check(func)`` must be true.
 
 Macros to access the ``PyCCallRoot`` and ``PyCCallDef`` structures:
 
-- ``PyCCallRoot *PyCCall_CCALLROOT(PyObject *func)``:
+- ``const PyCCallRoot *PyCCall_CCALLROOT(PyObject *func)``:
   pointer to the ``PyCCallRoot`` structure inside ``func``.
 
-- ``PyCCallDef *PyCCall_CCALLDEF(PyObject *func)``:
+- ``const PyCCallDef *PyCCall_CCALLDEF(PyObject *func)``:
   shorthand for ``PyCCall_CCALLROOT(func)->cr_ccall``.
 
-- ``PyCCallDef *PyCCall_FLAGS(PyObject *func)``:
+- ``uint32_t PyCCall_FLAGS(PyObject *func)``:
   shorthand for ``PyCCall_CCALLROOT(func)->cr_ccall->cc_flags``.
 
 - ``PyObject *PyCCall_SELF(PyOject *func)``:
@@ -419,7 +449,11 @@ the implementation becomes very similar, but they remain separate classes
 The ``PyCCallDef`` structure is simply stored
 as part of the object structure.
 Both classes use ``PyCFunctionObject`` as object structure.
-This is the new layout for both classes::
+This is the new layout for both classes:
+
+.. _PyCFunctionObject:
+
+::
 
     typedef struct {
         PyObject_HEAD
@@ -503,6 +537,8 @@ performance improvements are discussed:
 - https://mail.python.org/pipermail/python-dev/2018-July/154740.html
 
 - https://mail.python.org/pipermail/python-dev/2018-July/154775.html
+
+- https://mail.python.org/pipermail/python-dev/2019-April/156954.html
 
 
 Stable ABI
@@ -625,7 +661,7 @@ Another minor advantage is that we could
 make the error messages for a wrong call signature
 more uniform between Python methods and built-in methods.
 In the following example, Python is undecided whether
-a method takes 2 or 3 arguments::
+a method takes 1 or 2 arguments::
 
     >>> class List(list):
     ...     def myappend(self, item):
@@ -645,6 +681,31 @@ since it cannot distinguish at runtime between
 a function (without ``self`` argument) and a bound method (with ``self`` argument).
 The ``CCALL_SELFARG`` flag makes this difference explicit.
 
+Why CCALL_DEFARG?
+-----------------
+
+The flag ``CCALL_DEFARG`` gives the callee access to the ``PyCCallDef *``.
+There are various use cases for this:
+
+1. The callee can use the ``cc_parent`` field, which is useful for PEP 573.
+
+2. Applications are free to extend the ``PyCCallDef`` structure with user-defined
+   fields, which can then be accessed analogously.
+
+3. In the case where the ``PyCCallDef`` structure
+   is part of the object structure
+   (this is true for example for `PyCFunctionObject`_),
+   an appropriate offset can be subtracted from the ``PyCCallDef`` pointer
+   to get a pointer to the callable object defining that ``PyCCallDef``.
+
+An earlier version of this PEP defined a flag ``CCALL_FUNCARG``
+instead of ``CCALL_DEFARG`` which would pass the callable object
+to the callee.
+This had similar use cases, but there was some ambiguity for
+bound methods: should the "callable object" be the bound method
+object or the original function wrapped by the method?
+By passing the ``PyCCallDef *`` instead, this ambiguity is gone
+since the bound method uses the ``PyCCallDef *`` from the wrapped function.
 
 Replacing tp_print
 ------------------
@@ -664,11 +725,40 @@ See https://mail.python.org/pipermail/python-dev/2018-July/154238.html
 for comments on the difference between PEP 576 and PEP 580.
 
 
+Discussion
+==========
+
+Links to threads on the ``python-dev`` mailing list
+where this PEP has been discussed:
+
+- https://mail.python.org/pipermail/python-dev/2018-June/153938.html
+
+- https://mail.python.org/pipermail/python-dev/2018-June/153984.html
+
+- https://mail.python.org/pipermail/python-dev/2018-July/154238.html
+
+- https://mail.python.org/pipermail/python-dev/2018-July/154470.html
+
+- https://mail.python.org/pipermail/python-dev/2018-July/154571.html
+
+- https://mail.python.org/pipermail/python-dev/2018-September/155166.html
+
+- https://mail.python.org/pipermail/python-dev/2018-October/155403.html
+
+- https://mail.python.org/pipermail/python-dev/2019-March/156853.html
+
+- https://mail.python.org/pipermail/python-dev/2019-March/156879.html
+
+
 Reference implementation
 ========================
 
 The reference implementation can be found at
 https://github.com/jdemeyer/cpython/tree/pep580
+
+For an example of using the C call protocol,
+the following branch implements ``functools.lru_cache`` using PEP 580:
+https://github.com/jdemeyer/cpython/tree/lru580
 
 
 References
@@ -680,6 +770,8 @@ References
 .. [#bpo29259] Add tp_fastcall to PyTypeObject: support FASTCALL calling convention for all callable objects,
                https://bugs.python.org/issue29259
 
+.. [#badcapi] Bad C API,
+              https://pythoncapi.readthedocs.io/bad_api.html#bad-c-api
 
 Copyright
 =========
