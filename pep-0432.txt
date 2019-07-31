@@ -2,13 +2,17 @@ PEP: 432
 Title: Restructuring the CPython startup sequence
 Version: $Revision$
 Last-Modified: $Date$
-Author: Nick Coghlan <ncoghlan@gmail.com>
+Author: Nick Coghlan <ncoghlan@gmail.com>,
+        Victor Stinner <vstinner@redhat.com>,
+        Eric Snow <ericsnowcurrently@gmail.com>
+Discussions-To: capi-sig@python.org
 Status: Draft
 Type: Standards Track
 Content-Type: text/x-rst
+Requires: 587
 Created: 28-Dec-2012
-Python-Version: 3.8
-Post-History: 28-Dec-2012, 2-Jan-2013
+Python-Version: 3.9
+Post-History: 28-Dec-2012, 2-Jan-2013, 30-Mar-2019
 
 
 Abstract
@@ -21,10 +25,23 @@ CPython's startup behaviour when creating an alternate executable or
 embedding it as a Python execution engine inside a larger application.
 
 When implementation of this proposal is completed, interpreter startup will
-consist of two clearly distinct and independently configurable phases:
+consist of three clearly distinct and independently configurable phases:
 
-* Python runtime initialization
+* Python core runtime preinitialization
+
+  * setting up memory management
+  * determining the encodings used for system interfaces (including settings
+    passed in for later configuration phase)
+
+* Python core runtime initialization
+
+  * ensuring C API is ready for use
+  * ensuring builtin and frozen modules are accessible
+
 * Main interpreter configuration
+
+  * ensuring external modules are accessible
+  * (Note: the name of this phase is quite likely to change)
 
 Changes are also proposed that impact main module execution and subinterpreter
 initialization.
@@ -34,14 +51,59 @@ resolution for most of these should become clearer as the reference
 implementation is developed.
 
 
+PEP Status
+==========
+
+As described further below, the practical constraints on improving the public
+API used to configure an embedded CPython interpreter are currently being
+explored by way of private updates to the initialisation API used by the main
+CPython CLI application.
+
+As long as that is the case, the Discussions-To header in the PEP will remain
+set to ``capi-sig@python.org``.
+
+However, as coherent and feasible proposals to address subsets of the problem
+are identified, they may be spun out to as separate PEPs, which will then be
+added to this PEP as dependencies.
+
+So far, the following subproposals have been extracted:
+
+* PEP 587 (Python Initialization Configuration): this splits out the
+  preinitialization stage, but otherwise keeps the combined ``Py_Initialize*``
+  model that configures a Python interpreter with a ready-to-run ``__main__``
+  module in a single step. While this is still a nice improvement over the
+  pre-PEP status quo and gets embedding applications back on an equal footing
+  with the private APIs exposed to the default CPython CLI in the Python 3.7
+  release, it doesn't yet allow for more of the configuration code to be
+  migrated out of C and into frozen Python modules.
+
+For PEP 432 itself, it is now expected that once enough subproposals are
+eventually split out, the only things left to be propose in PEP 432 itself will
+be actually shipping a ``system-python`` executable (which would run in isolated
+mode by default and ignore all user-level settings) and enhancing the ``zipapp``
+module to support the creation of single-file executables from pure Python
+scripts. Once that is the case, the ``Discussions-To`` PEP header will be
+removed, and the PEP will be submitted back to ``python-dev`` for further
+discussion.
+
+In the meantime, the PEP will continue to be used as a draft specification for
+the aspects of the proposed startup sequence redesign that don't yet have their
+own dedicated PEP.
+
+
 Proposal
 ========
 
 This PEP proposes that initialization of the CPython runtime be split into
-two clearly distinct phases:
+three clearly distinct phases:
 
+* core runtime preinitialization
 * core runtime initialization
 * main interpreter configuration
+
+(Earlier versions proposed only two phases, but experience with attempting to
+implement the PEP as an internal CPython refactoring showed that at least 3
+phases are needed to get clear separation of concerns)
 
 The proposed design also has significant implications for:
 
@@ -51,15 +113,23 @@ The proposed design also has significant implications for:
 In the new design, the interpreter will move through the following
 well-defined phases during the initialization sequence:
 
+* Uninitialized - haven't even started the pre-initialization phase yet
 * Pre-Initialization - no interpreter available
 * Runtime Initialized - main interpreter partially available,
   subinterpreter creation not yet available
 * Initialized - main interpreter fully available, subinterpreter creation
   available
 
+PEP 587 is a more detailed proposal that covers separating out the
+Pre-Initialization phase from the last two phases, but doesn't allow embedding
+applications to run arbitrary code while in the "Runtime Initialized" state
+(instead, initializing the core runtime will also always fully initialize the
+main interpreter, as that's the way the native CPython CLI still works in
+Python 3.8).
+
 As a concrete use case to help guide any design changes, and to solve a known
 problem where the appropriate defaults for system utilities differ from those
-for running user scripts, this PEP also proposes the creation and
+for running user scripts, this PEP proposes the creation and
 distribution of a separate system Python (``system-python``) executable
 which, by default, operates in "isolated mode" (as selected by the CPython
 ``-I`` switch), as well as the creation of an example stub binary that just
@@ -73,9 +143,9 @@ occur in order to make the startup sequence easier to maintain is already a
 substantial change, and attempting to make those other changes at the same time
 will make the change significantly more invasive and much harder to review.
 However, such proposals may be suitable topics for follow-on PEPs or patches
-- one key benefit of this PEP is decreasing the coupling between the internal
-storage model and the configuration interface, so such changes should be easier
-once this PEP has been implemented.
+- one key benefit of this PEP and its related subproposals is decreasing the
+coupling between the internal storage model and the configuration interface,
+so such changes should be easier once this PEP has been implemented.
 
 
 Background
@@ -107,6 +177,11 @@ system indefinitely, this PEP proposes to start simplifying the status quo by
 introducing a more structured startup sequence, with the aim of making these
 further feature requests easier to implement.
 
+Originally the entire proposal was maintained in this one PEP, but that proved
+impractical, so as parts of the proposed design stabilised, they are now split
+out into their own PEPs, allowing progress to be made, even while the details
+of the overall design are still evolving.
+
 
 Key Concerns
 ============
@@ -118,16 +193,26 @@ needs to take into account.
 Maintainability
 ---------------
 
-The current CPython startup sequence is difficult to understand, and even
-more difficult to modify. It is not clear what state the interpreter is in
-while much of the initialization code executes, leading to behaviour such
+The CPython startup sequence as of Python 3.6 was difficult to understand, and
+even more difficult to modify. It was not clear what state the interpreter was
+in while much of the initialization code executed, leading to behaviour such
 as lists, dictionaries and Unicode values being created prior to the call
 to ``Py_Initialize`` when the ``-X`` or ``-W`` options are used [1_].
 
 By moving to an explicitly multi-phase startup sequence, developers should
-only need to understand which features are not available in the main
-interpreter configuration phase, as the vast majority of the configuration
-process will now take place during that phase.
+only need to understand:
+
+* which APIs and features are available prior to pre-configuration (essentially
+  none, except for the pre-configuration API itself)
+* which APIs and features are available prior to core runtime configuration, and
+  will implicitly run the pre-configuration with default settings that match the
+  behaviour of Python 3.6 if the pre-configuration hasn't been run explicitly
+* which APIs and features are only available after the main interpreter has been
+  fully configured (which will hopefully be a relatively small subset of the
+  full C API)
+
+The first two aspects of that are covered by PEP 587, while the details of the
+latter distinction are still being considered.
 
 By basing the new design on a combination of C structures and Python
 data types, it should also be easier to modify the system in the
@@ -157,14 +242,14 @@ dominated by IO operations. However, to monitor the impact of any changes,
 a simple benchmark can be used to check how long it takes to start and then
 tear down the interpreter::
 
-   python3 -m timeit -s "from subprocess import call" "call(['./python', '-c', 'pass'])"
+   python3 -m timeit -s "from subprocess import call" "call(['./python', '-Sc', 'pass'])"
 
-Current numbers on my system for Python 3.7 (using the 3.5
-subprocess and timeit modules to execute the check, all with non-debug
-builds)::
+Current numbers on my system for Python 3.7 (as built by the Fedora project)::
 
-    $ python3 -m timeit -s "from subprocess import call" "call(['./python', '-c', 'pass'])"
-    100 loops, best of 3: 13.9 msec per loop
+    $ python3 -m timeit -s "from subprocess import call" "call(['python3', '-Sc', 'pass'])"
+    50 loops, best of 5: 6.48 msec per loop
+
+(TODO: run this microbenchmark with perf rather than the stdlib timeit)
 
 This PEP is not expected to have any significant effect on the startup time,
 as it is aimed primarily at *reordering* the existing initialization
@@ -178,92 +263,8 @@ sophisticated microbenchmark will be developed to assist in investigation.
 Required Configuration Settings
 ===============================
 
-A comprehensive configuration scheme requires that an embedding application
-be able to control the following aspects of the final interpreter state:
-
-* Whether or not to use randomised hashes (and if used, potentially specify
-  a specific random seed)
-* Whether or not to enable the import system (required by CPython's
-  build process when freezing the importlib._bootstrap bytecode)
-* The "Where is Python located?" elements in the ``sys`` module:
-
-  * ``sys.executable``
-  * ``sys.base_exec_prefix``
-  * ``sys.base_prefix``
-  * ``sys.exec_prefix``
-  * ``sys.prefix``
-
-* The path searched for imports from the filesystem (and other path hooks):
-
-  * ``sys.path``
-
-* The command line arguments seen by the interpreter:
-
-  * ``sys.argv``
-
-* The filesystem encoding used by:
-
-  * ``sys.getfsencoding``
-  * ``os.fsencode``
-  * ``os.fsdecode``
-
-* The IO encoding (if any), error handling, and buffering used by:
-
-  * ``sys.stdin``
-  * ``sys.stdout``
-  * ``sys.stderr``
-
-* The initial warning system state:
-
-  * ``sys.warnoptions``
-
-* Arbitrary extended options (e.g. to automatically enable ``faulthandler``):
-
-  * ``sys._xoptions``
-
-* Whether or not to implicitly cache bytecode files:
-
-  * ``sys.dont_write_bytecode``
-
-* Whether or not to enforce correct case in filenames on case-insensitive
-  platforms
-
-  * ``os.environ["PYTHONCASEOK"]``
-
-* The other settings exposed to Python code in ``sys.flags``:
-
-  * ``debug`` (Enable debugging output in the pgen parser)
-  * ``inspect`` (Enter interactive interpreter after __main__ terminates)
-  * ``interactive`` (Treat stdin as a tty)
-  * ``optimize`` (__debug__ status, .pyc optimization marker, strip doc strings)
-  * ``no_user_site`` (don't add the user site directory to sys.path)
-  * ``no_site`` (don't implicitly import site during startup)
-  * ``ignore_environment`` (whether environment vars are used during config)
-  * ``verbose`` (enable a variety of additional debugging messages)
-  * ``bytes_warning`` (warnings/errors for implicit str/bytes interaction)
-  * ``quiet`` (disable banner output even if verbose is also enabled or
-    stdin is a tty and the interpreter is launched in interactive mode)
-
-* Whether or not CPython's signal handlers should be installed
-* What code (if any) should be executed as ``__main__``:
-
-  * Nothing (just create an empty module)
-  * A filesystem path referring to a Python script (source or bytecode)
-  * A filesystem path referring to a valid ``sys.path`` entry (typically
-    a directory or zipfile)
-  * A given string (equivalent to the "-c" option)
-  * A module or package (equivalent to the "-m" option)
-  * Standard input as a script (i.e. a non-interactive stream)
-  * Standard input as an interactive interpreter session
-
-<TBD: What, if anything, is still missing from this list?>
-
-Note that this just covers settings that are currently configurable in some
-manner when using the main CPython executable. While this PEP aims to make
-adding additional configuration settings easier in the future, it
-deliberately avoids adding any new settings of its own (except where such
-additional settings arise naturally in the course of migrating existing
-settings to the new structure).
+See PEP 587 for a detailed listing of CPython interpreter configuration settings
+and the various means available for setting them.
 
 
 Implementation Strategy
@@ -278,47 +279,39 @@ implementation of the import system in Python 3.3, there is no clear way to
 structure a draft implementation that won't be prone to the kinds of merge
 conflicts that afflicted the original attempt.
 
-Accordingly, the implementation strategy now being proposed is to implement this
-refactoring as a private API for CPython 3.7, before exposing the new functions
-and structures as public API elements in CPython 3.8.
+Accordingly, the implementation strategy was revised to instead first implement
+this refactoring as a private API for CPython 3.7, and then review the viability
+of exposing the new functions and structures as public API elements in CPython
+3.8.
 
-The affected APIs with a leading underscore, as they would be named in CPython
-3.7:
+After the initial merge, Victor Stinner then proceeded to actually migrate
+settings to the new structure in order to successfully implement the PEP 540
+UTF-8 mode changes (which required the ability to track all settings that had
+previously been decoded with the locale encoding, and decode them again using
+UTF-8 instead). Eric Snow also migrated a number of internal subsystems over as
+part of making the subinterpreter feature more robust.
 
-* ``_Py_IsRuntimeInitialized``
-* ``_Py_InitializeRuntime``
-* ``_PyRuntimeConfig``
-* ``_PyRuntimeConfig_INIT``
-* ``_Py_ReadHashSeed``
-* ``_Py_ConfigureMainInterpreter``
-* ``_PyMainInterpreterConfig``
-* ``_PyInterpreterConfig``
-* ``_Py_ReadMainInterpreterConfig``
-* ``_PyRun_PrepareMain``
-* ``_PyRun_ExecMain``
-* ``_Py_InterpreterState_Main``
-
-New APIs described in the rest of the PEP with a leading underscore are
-intended to be retained permanently as private CPython implementation details.
-
-The principle benefit of this approach is allowing the refactoring to adopt the
-new configuration structures to be handled on a setting by setting basis
-over the course of the 3.7 and 3.8 development cycles, rather than having to
-migrate them in a single monolithic change. It also means any new settings
-introduced for these releases can be handled using the new approach from the
-start, even if some existing settings have yet to be migrated.
-
-If all existing settings are successfully migrated to the new initialization
-model in time for the 3.7.0a4 release in December 2017, then the proposal would
-be to make the APIs public for the 3.7.0b1 release in January 2018, rather
-than waiting for 3.8.
+That work showed that the detailed design originally proposed in this PEP had a
+range of practical issues, so Victor designed and implemented an improved
+private API (inspired by an earlier iteration of this PEP), which PEP 587
+proposes to promote to a public API in Python 3.8.
 
 
 Design Details
 ==============
 
-(Note: details here are still very much in flux, but preliminary feedback
-is appreciated anyway)
+.. note::
+
+    The API details here are still very much in flux. The header files that show
+    the current state of the private API are mainly:
+
+    * https://github.com/python/cpython/blob/master/Include/cpython/coreconfig.h
+    * https://github.com/python/cpython/blob/master/Include/cpython/pystate.h
+    * https://github.com/python/cpython/blob/master/Include/cpython/pylifecycle.h
+
+    PEP 587 covers the aspects of the API that are considered potentially stable
+    enough to make public. Where a proposed API is covered by that PEP,
+    "(see PEP 587)" is added to the text below.
 
 The main theme of this proposal is to initialize the core language runtime
 and create a partially initialized interpreter state for the main interpreter
@@ -328,6 +321,11 @@ simplifying a number of operations that currently need to rely on basic C
 functionality rather than being able to use the richer data structures provided
 by the CPython C API.
 
+PEP 587 covers a subset of that task, which is splitting out the components that
+even the existing "May be called before ``Py_Initialize``" interfaces need (like
+memory allocators and operating system interface encoding details) into a
+separate pre-configuration step.
+
 In the following, the term "embedding application" also covers the standard
 CPython command line application.
 
@@ -335,31 +333,52 @@ CPython command line application.
 Interpreter Initialization Phases
 ---------------------------------
 
-Three distinct interpreter initialisation phases are proposed:
+The following distinct interpreter initialisation phases are proposed:
 
-* Pre-Initialization:
+* Uninitialized:
+
+  * Not really a phase, but the absence of a phase
+  * ``Py_IsInitializing()`` returns ``0``
+  * ``Py_IsRuntimeInitialized()`` returns ``0``
+  * ``Py_IsInitialized()`` returns ``0``
+  * The embedding application determines which memory allocator to use, and
+    which encoding to use to access operating system interfaces (or chooses
+    to delegate those decisions to the Python runtime)
+  * Application starts the initialization process by calling one of the
+    ``Py_PreInitialize`` APIs (see PEP 587)
+
+* Runtime Pre-Initialization:
 
   * no interpreter is available
+  * ``Py_IsInitializing()`` returns ``1``
   * ``Py_IsRuntimeInitialized()`` returns ``0``
   * ``Py_IsInitialized()`` returns ``0``
   * The embedding application determines the settings required to initialize
     the core CPython runtime and create the main interpreter and moves to the
     next phase by calling ``Py_InitializeRuntime``
+  * Note: as of PEP 587, the embedding application instead calls ``Py_Main()``,
+    ``Py_UnixMain``, or one of the ``Py_Initialize`` APIs, and hence jumps
+    directly to the Initialized state.
 
-* Initializing:
+* Main Interpreter Initialization:
 
   * the builtin data types and other core runtime services are available
   * the main interpreter is available, but only partially configured
+  * ``Py_IsInitializing()`` returns ``1``
   * ``Py_IsRuntimeInitialized()`` returns ``1``
   * ``Py_IsInitialized()`` returns ``0``
   * The embedding application determines and applies the settings
     required to complete the initialization process by calling
-    ``Py_ReadMainInterpreterConfig`` and ``Py_ConfigureMainInterpreter``.
+    ``Py_InitializeMainInterpreter``
+  * Note: as of PEP 587, this state is not reachable via any public API, it
+    only exists as an implicit internal state while one of the ``Py_Initialize``
+    functions is running
 
 * Initialized:
 
   * the main interpreter is available and fully operational, but
     ``__main__`` related metadata is incomplete
+  * ``Py_IsInitializing()`` returns ``0``
   * ``Py_IsRuntimeInitialized()`` returns ``1``
   * ``Py_IsInitialized()`` returns ``1``
 
@@ -372,33 +391,45 @@ proposed System Python interpreter.
 
 An embedding application may still continue to leave initialization almost
 entirely under CPython's control by using the existing ``Py_Initialize``
-API. Alternatively, if an embedding application wants greater control
+or ``Py_Main()`` APIs - backwards compatibility will be preserved.
+
+Alternatively, if an embedding application wants greater control
 over CPython's initial state, it will be able to use the new, finer
 grained API, which allows the embedding application greater control
-over the initialization process::
+over the initialization process.
 
-    /* Phase 1: Pre-Initialization */
-    PyRuntimeConfig runtime_config = PyRuntimeConfig_INIT;
-    PyMainInterpreterConfig interpreter_config;
-    /* Easily control the core configuration */
-    runtime_config.ignore_environment = 1; /* Ignore environment variables */
-    runtime_config.use_hash_seed = 0;      /* Full hash randomisation */
-    Py_InitializeRuntime(&runtime_config);
-    /* Phase 2: Initializing */
-    /* Optionally preconfigure some settings here - they will then be
-     * used to derive other settings */
-    Py_ReadMainInterpreterConfig(&interpreter_config);
-    /* Can completely override derived settings here */
-    Py_ConfigureMainInterpreter(&interpreter_config);
-    /* Phase 3: Initialized */
-    /* If an embedding application has no real concept of a main module
-     * it can just stop the initialization process here.
-     * Alternatively, it can launch __main__ via the relevant API functions.
-     */
+PEP 587 covers an initial iteration of that API, separating out the
+pre-initialization phase without attempting to separate core runtime
+initialization from main interpreter initialization.
 
 
-Pre-Initialization Phase
-------------------------
+Uninitialized State
+-------------------
+
+The uninitialized state is where an embedding application determines the settings
+which are required in order to be able to correctly pass configurations settings
+to the embedded Python runtime.
+
+This covers telling Python which memory allocator to use, as well as which text
+encoding to use when processing provided settings.
+
+PEP 587 defines the settings needed to exit this state in its ``PyPreConfig``
+struct.
+
+A new query API will allow code to determine if the interpreter hasn't even
+started the initialization process::
+
+    int Py_IsInitializing();
+
+The query for a completely uninitialized environment would then be
+``!(Py_Initialized() || Py_Initializing())``.
+
+
+Runtime Pre-Initialization Phase
+--------------------------------
+
+.. note:: In PEP 587, the settings for this phase are not yet separated out,
+   and are instead only available through the combined ``PyConfig`` struct
 
 The pre-initialization phase is where an embedding application determines
 the settings which are absolutely required before the CPython runtime can be
@@ -407,7 +438,7 @@ category are those related to the randomised hash algorithm - the hash
 algorithms must be consistent for the lifetime of the process, and so they
 must be in place before the core interpreter is created.
 
-The specific settings needed are a flag indicating whether or not to use a
+The essential settings needed are a flag indicating whether or not to use a
 specific seed value for the randomised hashes, and if so, the specific value
 for the seed (a seed value of zero disables randomised hashing). In addition,
 due to the possible use of ``PYTHONHASHSEED`` in configuring the hash
@@ -416,15 +447,28 @@ variables must also be addressed early. Finally, to support the CPython
 build process, an option is offered to completely disable the import
 system.
 
-The proposed API for this step in the startup sequence is::
+The proposed APIs for this step in the startup sequence are::
 
-    void Py_InitializeRuntime(const PyRuntimeConfig *config);
+    PyInitError Py_InitializeRuntime(
+        const PyRuntimeConfig *config
+    );
 
-Like ``Py_Initialize``, this part of the new API treats initialization failures
-as fatal errors. While that's still not particularly embedding friendly,
-the operations in this step *really* shouldn't be failing, and changing them
-to return error codes instead of aborting would be an even larger task than
-the one already being proposed.
+    PyInitError Py_InitializeRuntimeFromArgs(
+        const PyRuntimeConfig *config, int argc, char **argv
+    );
+
+    PyInitError Py_InitializeRuntimeFromWideArgs(
+        const PyRuntimeConfig *config, int argc, wchar_t **argv
+    );
+
+If ``Py_IsInitializing()`` is false, the ``Py_InitializeRuntime`` functions will
+implicitly call the corresponding ``Py_PreInitialize`` function. The
+``use_environment`` setting will be passed down, while other settings will be
+processed according to their defaults, as described in PEP 587.
+
+The ``PyInitError`` return type is defined in PEP 587, and allows an embedding
+application to gracefully handle Python runtime initialization failures,
+rather than having the entire process abruptly terminated by ``Py_FatalError``.
 
 The new ``PyRuntimeConfig`` struct holds the settings required for preliminary
 configuration of the core runtime and creation of the main interpreter::
@@ -432,10 +476,10 @@ configuration of the core runtime and creation of the main interpreter::
     /* Note: if changing anything in PyRuntimeConfig, also update
      * PyRuntimeConfig_INIT */
     typedef struct {
-        bool ignore_environment;  /* -E switch, -I switch */
-        int use_hash_seed;        /* PYTHONHASHSEED */
-        unsigned long hash_seed;  /* PYTHONHASHSEED */
-        bool _disable_importlib;  /* Needed by freeze_importlib */
+        bool use_environment;     /* as in PyPreConfig, PyConfig from PEP 587 */
+        int use_hash_seed;        /* PYTHONHASHSEED, as in PyConfig from PEP 587 */
+        unsigned long hash_seed;  /* PYTHONHASHSEED, as in PyConfig from PEP 587 */
+        bool _install_importlib;  /* Needed by freeze_importlib */
     } PyRuntimeConfig;
 
     /* Rely on the "designated initializer" feature of C99 */
@@ -449,8 +493,8 @@ of a struct instance with sensible defaults::
 
     PyRuntimeConfig runtime_config = PyRuntimeConfig_INIT;
 
-``ignore_environment`` controls the processing of all Python related
-environment variables. If the flag is false, then environment variables are
+``use_environment`` controls the processing of all Python related
+environment variables. If the flag is true, then ``PYTHONHASHSEED`` is
 processed normally. Otherwise, all Python-specific environment variables
 are considered undefined (exceptions may be made for some OS specific
 environment variables, such as those used on Mac OS X to communicate
@@ -462,7 +506,7 @@ be used. It is positive, then the value in ``hash_seed`` will be used
 to seed the random number generator. If the ``hash_seed`` is zero in this
 case, then the randomised hashing is disabled completely.
 
-If ``use_hash_seed`` is negative (and ``ignore_environment`` is zero),
+If ``use_hash_seed`` is negative (and ``use_environment`` is true),
 then CPython will inspect the ``PYTHONHASHSEED`` environment variable. If the
 environment variable is not set, is set to the empty string, or to the value
 ``"random"``, then randomised hashes with a random seed will be used. If the
@@ -486,7 +530,7 @@ the empty string or the value ``"random"``, both ``use_hash_seed`` and
 ``hash_seed``. On success the function will return zero. A non-zero return
 value indicates an error (most likely in the conversion to an integer).
 
-The ``_disable_importlib`` setting is used as part of the CPython build
+The ``_install_importlib`` setting is used as part of the CPython build
 process to create an interpreter with no import capability at all. It is
 considered private to the CPython development team (hence the leading
 underscore), as the only currently supported use case is to permit compiler
@@ -496,9 +540,8 @@ changes that invalidate the previously frozen bytecode for
 The aim is to keep this initial level of configuration as small as possible
 in order to keep the bootstrapping environment consistent across
 different embedding applications. If we can create a valid interpreter state
-without the setting, then the setting should go in the configuration passed
-to ``Py_ConfigureMainInterpreter()`` rather than in the core runtime
-configuration.
+without the setting, then the setting should appear solely in the comprehensive
+``PyConfig`` struct rather than in the core runtime configuration.
 
 A new query API will allow code to determine if the interpreter is in the
 bootstrapping state between the core runtime initialization and the creation of
@@ -508,7 +551,11 @@ interpreter initialization process::
     int Py_IsRuntimeInitialized();
 
 Attempting to call ``Py_InitializeRuntime()`` again when
-``Py_IsRuntimeInitialized()`` is already true is a fatal error.
+``Py_IsRuntimeInitialized()`` is already true is reported as a user
+configuration error. (TBC, as existing public initialisation APIs support being
+called multiple times without error, and simply ignore changes to any
+write-once settings. It may make sense to keep that behaviour rather than trying
+to make the new API stricter than the old one)
 
 As frozen bytecode may now be legitimately run in an interpreter which is not
 yet fully initialized, ``sys.flags`` will gain a new ``initialized`` flag.
@@ -558,22 +605,32 @@ object rather than in C process globals.
 
 Any call to ``Py_InitializeRuntime()`` must have a matching call to
 ``Py_Finalize()``. It is acceptable to skip calling
-``Py_ConfigureMainInterpreter()`` in between (e.g. if attempting to read the
+``Py_InitializeMainInterpreter()`` in between (e.g. if attempting to build the
 main interpreter configuration settings fails).
 
 
 Determining the remaining configuration settings
 ------------------------------------------------
 
-The next step in the initialization sequence is to determine the full
+The next step in the initialization sequence is to determine the remaining
 settings needed to complete the process. No changes are made to the
-interpreter state at this point. The core API for this step is::
+interpreter state at this point. The core APIs for this step are::
 
-    int Py_ReadMainInterpreterConfig(PyMainInterpreterConfig *config);
+    int Py_BuildPythonConfig(
+        PyConfigAsObjects *py_config, const PyConfig *c_config
+    );
 
-The config argument should be a pointer to a config struct (which may be
-a temporary one stored on the C stack). For any already configured value
-(i.e. any non-NULL pointer), CPython will sanity check the supplied value,
+    int Py_BuildPythonConfigFromArgs(
+        PyConfigAsObjects *py_config, const PyConfig *c_config, int argc, char **argv
+    );
+
+    int Py_BuildPythonConfigFromWideArgs(
+        PyConfigAsObjects *py_config, const PyConfig *c_config, int argc, wchar_t **argv
+    );
+
+The ``py_config`` argument should be a pointer to a PyConfigAsObjects struct
+(which may be a temporary one stored on the C stack). For any already configured
+value (i.e. any non-NULL pointer), CPython will sanity check the supplied value,
 but otherwise accept it as correct.
 
 A struct is used rather than a Python dictionary as the struct is easier
@@ -582,24 +639,28 @@ CPython version and only a read-only view needs to be exposed to Python
 code (which is relatively straightforward, thanks to the infrastructure
 already put in place to expose ``sys.implementation``).
 
-Unlike ``Py_Initialize`` and ``Py_InitializeRuntime``, this call will raise
-an exception and report an error return rather than exhibiting fatal errors
-if a problem is found with the config data.
+Unlike ``Py_InitializeRuntime``, this call will raise a Python exception and
+report an error return rather than returning a Python initialization specific
+C struct if a problem is found with the config data.
 
 Any supported configuration setting which is not already set will be
 populated appropriately in the supplied configuration struct. The default
 configuration can be overridden entirely by setting the value *before*
-calling ``Py_ReadMainInterpreterConfig``. The provided value will then also be
+calling ``Py_BuildPythonConfig``. The provided value will then also be
 used in calculating any other settings derived from that value.
 
 Alternatively, settings may be overridden *after* the
-``Py_ReadMainInterpreterConfig`` call (this can be useful if an embedding
+``Py_BuildPythonConfig`` call (this can be useful if an embedding
 application wants to adjust a setting rather than replace it completely,
 such as removing ``sys.path[0]``).
 
+The ``c_config`` argument is an optional pointer to a ``PyConfig`` structure,
+as defined in PEP 587. If provided, it is used in preference to reading settings
+directly from the environment or process global state.
+
 Merely reading the configuration has no effect on the interpreter state: it
 only modifies the passed in configuration struct. The settings are not
-applied to the running interpreter until the ``Py_ConfigureMainInterpreter``
+applied to the running interpreter until the ``Py_InitializeMainInterpreter``
 call (see below).
 
 
@@ -616,10 +677,16 @@ or not the interpreter is the main interpreter will be configured on a per
 interpreter basis. Other fields will be reviewed for whether or not they can
 feasibly be made interpreter specific over the course of the implementation.
 
-The ``PyMainInterpreterConfig`` struct holds the settings required to
-complete the main interpreter configuration. These settings are also all
-passed through unmodified to subinterpreters. Fields are always pointers to
-Python data types, with unset values indicated by ``NULL``::
+.. note:: The list of config fields below is currently out of sync with PEP 587.
+   Where they differ, PEP 587 takes precedence.
+
+The ``PyConfigAsObjects`` struct mirrors the ``PyConfig`` struct from PEP 587,
+but uses full Python objects to store values, rather than C level data types.
+It adds ``raw_argv`` and ``argv`` list fields, so later initialisation steps
+don't need to accept those separately.
+
+Fields are always pointers to Python data types, with unset values indicated by
+``NULL``::
 
     typedef struct {
         /* Argument processing */
@@ -693,11 +760,11 @@ Python data types, with unset values indicated by ``NULL``::
         PyBoolObject *show_banner;    /* -q switch (inverted) */
         PyBoolObject *inspect_main;   /* -i switch, PYTHONINSPECT */
 
-    } PyMainInterpreterConfig;
+    } PyConfigAsObjects;
 
 The ``PyInterpreterConfig`` struct holds the settings that may vary between
 the main interpreter and subinterpreters. For the main interpreter, these
-settings are automatically populated by ``Py_ConfigureMainInterpreter()``.
+settings are automatically populated by ``Py_InitializeMainInterpreter()``.
 
 ::
 
@@ -709,31 +776,33 @@ As these structs consist solely of object pointers, no explicit initializer
 definitions are needed - C99's default initialization of struct memory to zero
 is sufficient.
 
-<TBD: did I miss anything?>
 
-
-Completing the interpreter initialization
------------------------------------------
+Completing the main interpreter initialization
+----------------------------------------------
 
 The final step in the initialization process is to actually put the
 configuration settings into effect and finish bootstrapping the main
 interpreter up to full operation::
 
-    int Py_ConfigureMainInterpreter(const PyMainInterpreterConfig *config);
+    int Py_InitializeMainInterpreter(const PyConfigAsObjects *config);
 
-Like ``Py_ReadMainInterpreterConfig``, this call will raise an exception and
+Like ``Py_BuildPythonConfig``, this call will raise an exception and
 report an error return rather than exhibiting fatal errors if a problem is
-found with the config data.
+found with the config data. (TBC, as existing public initialisation APIs support
+being called multiple times without error, and simply ignore changes to any
+write-once settings. It may make sense to keep that behaviour rather than trying
+to make the new API stricter than the old one)
 
 All configuration settings are required - the configuration struct
-should always be passed through ``Py_ReadMainInterpreterConfig`` to ensure it
+should always be passed through ``Py_BuildPythonConfig`` to ensure it
 is fully populated.
 
-After a successful call ``Py_IsInitialized()`` will become true. The caveats
-described above for the interpreter during the phase where only the core
-runtime is initialized will no longer hold.
+After a successful call ``Py_IsInitialized()`` will become true and
+``Py_IsInitializing()`` will become false. The caveats described above for the
+interpreter during the phase where only the core runtime is initialized will
+no longer hold.
 
-Attempting to call ``Py_ConfigureMainInterpreter()`` again when
+Attempting to call ``Py_InitializeMainInterpreter()`` again when
 ``Py_IsInitialized()`` is true is an error.
 
 However, some metadata related to the ``__main__`` module may still be
@@ -763,6 +832,11 @@ state if ``import site`` is later explicitly executed in the process.
 
 Preparing the main module
 -------------------------
+
+.. note:: In PEP 587, ``PyRun_PrepareMain`` and ``PyRun_ExecMain`` are not
+   exposed separately, and are instead accessed through a ``Py_RunMain`` API
+   that both prepares and executes main, and then finalizes the Python
+   interpreter.
 
 This subphase completes the population of the ``__main__`` module
 related metadata, without actually starting execution of the ``__main__``
@@ -830,6 +904,12 @@ configuration system)
 Executing the main module
 -------------------------
 
+.. note:: In PEP 587, ``PyRun_PrepareMain`` and ``PyRun_ExecMain`` are not
+   exposed separately, and are instead accessed through a ``Py_RunMain`` API
+   that both prepares and executes main, and then finalizes the Python
+   interpreter.
+
+
 This subphase covers the execution of the actual ``__main__`` module code.
 
 It is handled by calling the following API::
@@ -874,17 +954,16 @@ Internal Storage of Configuration Data
 
 The interpreter state will be updated to include details of the configuration
 settings supplied during initialization by extending the interpreter state
-object with an embedded copy of the ``PyRuntimeConfig``,
-``PyMainInterpreterConfig`` and ``PyInterpreterConfig`` structs.
+object with at least an embedded copy of the ``PyConfigAsObjects`` and
+``PyInterpreterConfig`` structs.
 
 For debugging purposes, the configuration settings will be exposed as
 a ``sys._configuration`` simple namespace (similar to ``sys.flags`` and
 ``sys.implementation``. The attributes will be themselves by simple namespaces
-corresponding to the three levels of configurations setting:
+corresponding to the two levels of configuration setting:
 
-* ``runtime``
-* ``main_interpreter``
-* ``interpreter``
+* ``all_interpreters``
+* ``active_interpreter``
 
 Field names will match those in the configuration structs, except for
 ``hash_seed``, which will be deliberately excluded.
@@ -939,8 +1018,8 @@ Most of the APIs proposed in this PEP are excluded from the stable ABI, as
 embedding a Python interpreter involves a much higher degree of coupling
 than merely writing an extension module.
 
-The only newly exposed API that will be part of the stable ABI is the
-``Py_IsRuntimeInitialized()`` query.
+The only newly exposed APIs that will be part of the stable ABI are the
+``Py_IsInitializing()`` and ``Py_IsRuntimeInitialized()`` queries.
 
 
 Build time configuration
@@ -955,9 +1034,9 @@ Backwards Compatibility
 -----------------------
 
 Backwards compatibility will be preserved primarily by ensuring that
-``Py_ReadMainInterpreterConfig()`` interrogates all the previously defined
+``Py_BuildPythonConfig()`` interrogates all the previously defined
 configuration settings stored in global variables and environment variables,
-and that ``Py_ConfigureMainInterpreter()`` writes affected settings back to
+and that ``Py_InitializeMainInterpreter()`` writes affected settings back to
 the relevant locations.
 
 One acknowledged incompatibility is that some environment variables which
@@ -980,10 +1059,6 @@ does today, ensuring that ``sys.argv`` is not populated until a subsequent
 prior to ``Py_Initialize()`` will
 continue to do so, and will also support being called prior to
 ``Py_InitializeRuntime()``.
-
-To minimise unnecessary code churn, and to ensure the backwards compatibility
-is well tested, the main CPython executable may continue to use some elements
-of the old style initialization API. (very much TBC)
 
 
 A System Python Executable
@@ -1027,45 +1102,34 @@ argument parsing infrastructure for use during the initializing phase.
 Open Questions
 ==============
 
-* Error details for ``Py_ReadMainInterpreterConfig`` and
-  ``Py_ConfigureMainInterpreter`` (these should become clearer as the
+* Error details for ``Py_BuildPythonConfig`` and
+  ``Py_InitializeMainInterpreter`` (these should become clearer as the
   implementation progresses)
 
 
 Implementation
 ==============
 
-A reference implementation is available as a feature branch in Nick Coghlan's
-CPython sandbox on BitBucket [2_].
+The reference implementation is being developed as a private API refactoring
+within the CPython reference interpreter (as attempting to maintain it as an
+independent project proved impractical).
 
-It implements the ``_Py_InitializeRuntime`` and ``_Py_ConfigureMainInterpreter``
-aspects of the refactoring as a private API. All ``_PyRuntimeConfig`` settings
-are included, but currently only the "install signal handlers" setting is
-implemented for the main interpreter configuration.
-
-The feature branch is a couple of iterations behind the API design in the PEP
-so the exact interfaces currently available are:
-
-* ``_Py_IsCoreInitialized`` (rename pending: ``_Py_IsRuntimeInitialized``)
-* ``_Py_InitializeCore`` (rename pending: ``_Py_InitializeRuntime``)
-* ``_PyCoreConfig`` (rename pending: ``_Py_RuntimeConfig``)
-* ``_PyCoreConfig_INIT`` (rename pending: ``_Py_RuntimeConfig_INIT``)
-* ``_Py_ReadHashSeed``
-* ``_Py_InitializeMainInterpreter`` (rename pending: ``_Py_ConfigureMainInterpreter``)
-* ``_PyMainInterpreterConfig``
-* ``_PyMainInterpreterConfig_INIT``
-* ``_Py_ReadMainInterpreterConfig``
+PEP 587 extracts a subset of the proposal that is considered sufficiently stable
+to be worth proposing as a public API for Python 3.8.
 
 
-The Status Quo
-==============
+The Status Quo (as of Python 3.6)
+=================================
 
 The current mechanisms for configuring the interpreter have accumulated in
 a fairly ad hoc fashion over the past 20+ years, leading to a rather
 inconsistent interface with varying levels of documentation.
 
+Also see PEP 587 for further discussion of the existing settings and their
+handling.
+
 (Note: some of the info below could probably be cleaned up and added to the
-C API documentation for 3.6 - it's all CPython specific, so it
+C API documentation for 3.x - it's all CPython specific, so it
 doesn't belong in the language reference)
 
 

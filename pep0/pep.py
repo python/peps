@@ -69,6 +69,9 @@ class Author(object):
         name_sep = name.index(last_name_fragment)
         self.first = name[:name_sep].rstrip()
         self.last = last_name_fragment
+        if self.last[1] == u'.':
+            # Add an escape to avoid docutils turning `v.` into `22.`.
+            self.last = u'\\' + self.last
         self.suffix = suffix
         if not self.first:
             self.last_first = self.last
@@ -158,7 +161,7 @@ class PEP(object):
     # required or not.
     headers = (('PEP', True), ('Title', True), ('Version', False),
                ('Last-Modified', False), ('Author', True),
-               ('BDFL-Delegate', False),
+               ('Sponsor', False), ('BDFL-Delegate', False),
                ('Discussions-To', False), ('Status', True), ('Type', True),
                ('Content-Type', False), ('Requires', False),
                ('Created', True), ('Python-Version', False),
@@ -253,7 +256,7 @@ class PEP(object):
         author_list = []
         for regex in (angled, paren, simple):
             # Watch out for commas separating multiple names.
-            regex += u'(,\s*)?'
+            regex += r'(,\s*)?'
             for match in re.finditer(regex, data):
                 # Watch out for suffixes like 'Jr.' when they are comma-separated
                 # from the name and thus cause issues when *all* names are only
