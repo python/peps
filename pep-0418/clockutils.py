@@ -9,7 +9,7 @@
 # or:
 # http://www.mail-archive.com/python-dev@python.org/msg66174.html
 # http://www.mail-archive.com/python-dev@python.org/msg66179.html
-#       - Cameron Simpson <cs@zip.com.au> 02apr2012
+#       - Cameron Simpson <cs@cskk.id.au> 02apr2012
 #
 
 from collections import namedtuple

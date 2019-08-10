@@ -161,7 +161,7 @@ class PEP(object):
     # required or not.
     headers = (('PEP', True), ('Title', True), ('Version', False),
                ('Last-Modified', False), ('Author', True),
-               ('BDFL-Delegate', False),
+               ('Sponsor', False), ('BDFL-Delegate', False),
                ('Discussions-To', False), ('Status', True), ('Type', True),
                ('Content-Type', False), ('Requires', False),
                ('Created', True), ('Python-Version', False),
@@ -256,7 +256,7 @@ class PEP(object):
         author_list = []
         for regex in (angled, paren, simple):
             # Watch out for commas separating multiple names.
-            regex += u'(,\s*)?'
+            regex += r'(,\s*)?'
             for match in re.finditer(regex, data):
                 # Watch out for suffixes like 'Jr.' when they are comma-separated
                 # from the name and thus cause issues when *all* names are only
