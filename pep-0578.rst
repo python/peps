@@ -3,12 +3,13 @@ Title: Python Runtime Audit Hooks
 Version: $Revision$
 Last-Modified: $Date$
 Author: Steve Dower <steve.dower@python.org>
-Status: Draft
+BDFL-Delegate: Christian Heimes <christian@python.org>
+Status: Accepted
 Type: Standards Track
 Content-Type: text/x-rst
 Created: 16-Jun-2018
 Python-Version: 3.8
-Post-History: 
+Post-History: 28-March-2019, 07-May-2019
 
 Abstract
 ========
@@ -117,9 +118,6 @@ send and receive audit hook messages::
    # Raise an event with all auditing hooks
    int PySys_Audit(const char *event, PyObject *args);
 
-   # Internal API used during Py_Finalize() - not publicly accessible
-   void _Py_ClearAuditHooks(void);
-
 The new Python APIs for receiving and raising audit hooks are::
 
    # Add an auditing hook
@@ -132,7 +130,9 @@ The new Python APIs for receiving and raising audit hooks are::
 Hooks are added by calling ``PySys_AddAuditHook()`` from C at any time,
 including before ``Py_Initialize()``, or by calling
 ``sys.addaudithook()`` from Python code. Hooks cannot be removed or
-replaced.
+replaced. For CPython, hooks added from C are global, while hooks added
+from Python are only for the current interpreter. Global hooks are
+executed before interpreter hooks.
 
 When events of interest are occurring, code can either call
 ``PySys_Audit()`` from C (while the GIL is held) or ``sys.audit()``. The
@@ -140,41 +140,54 @@ string argument is the name of the event, and the tuple contains
 arguments. A given event name should have a fixed schema for arguments,
 which should be considered a public API (for each x.y version release),
 and thus should only change between feature releases with updated
-documentation.
+documentation. To minimize overhead and simplify handling in native code
+hook implementations, named arguments are not supported.
 
 For maximum compatibility, events using the same name as an event in
 the reference interpreter CPython should make every attempt to use
 compatible arguments. Including the name or an abbreviation of the
 implementation in implementation-specific event names will also help
 prevent collisions. For example, a ``pypy.jit_invoked`` event is clearly
-distinguised from an ``ipy.jit_invoked`` event.
+distinguished from an ``ipy.jit_invoked`` event. Events raised from
+Python modules should include their module or package name in the event
+name.
+
+While event names may be arbitrary UTF-8 strings, for consistency across
+implementations it is recommended to use valid Python dotted names and
+avoid encoding specific details in the name. For example, an ``import``
+event with the module name ``spam`` as an argument is preferable to a
+``spam module imported`` event with no arguments. Avoid using embedded
+null characters or you may upset those who implement hooks using C.
 
 When an event is audited, each hook is called in the order it was added
-with the event name and tuple. If any hook returns with an exception
-set, later hooks are ignored and *in general* the Python runtime should
-terminate. This is intentional to allow hook implementations to decide
-how to respond to any particular event. The typical responses will be to
-log the event, abort the operation with an exception, or to immediately
-terminate the process with an operating system exit call.
+(as much as is possible), passing the event name and arguments. If any
+hook returns with an exception set, later hooks are ignored and *in
+general* the Python runtime should terminate - exceptions from hooks are
+not intended to be handled or treated as expected occurrences. This
+allows hook implementations to decide how to respond to any particular
+event. The typical responses will be to log the event, abort the
+operation with an exception, or to immediately terminate the process with
+an operating system exit call.
 
 When an event is audited but no hooks have been set, the ``audit()``
 function should impose minimal overhead. Ideally, each argument is a
-reference to existing data rather than a value calculated just for the
+reference to existing data rather than a value calculated just for the
 auditing call.
 
 As hooks may be Python objects, they need to be freed during
-``Py_Finalize()``. To do this, we add an internal API
-``_Py_ClearAuditHooks()`` that releases any Python hooks and any
-memory held. This is an internal function with no public export, and
-we recommend it raise its own audit event for all current hooks to
-ensure that unexpected calls are observed.
+interpreter or runtime finalization. These should not be triggered at
+any other time, and should raise an event hook to ensure that any
+unexpected calls are observed.
 
 Below in `Suggested Audit Hook Locations`_, we recommend some important
-operations that should raise audit events.
+operations that should raise audit events. In general, events should be
+raised at the lowest possible level. Given the choice between raising an
+event from Python code or native code, raising from native code should be
+preferred.
 
 Python implementations should document which operations will raise
 audit events, along with the event schema. It is intentional that
-``sys.addaudithook(print)`` be a trivial way to display all messages.
+``sys.addaudithook(print)`` is a trivial way to display all messages.
 
 Verified Open Hook
 ------------------
@@ -183,40 +196,47 @@ Most operating systems have a mechanism to distinguish between files
 that can be executed and those that can not. For example, this may be an
 execute bit in the permissions field, a verified hash of the file
 contents to detect potential code tampering, or file system path
-restrictions. These are an important security mechanism for preventing
-execution of data or code that is not approved for a given environment.
-Currently, Python has no way to integrate with these when launching
-scripts or importing modules.
+restrictions. These are an important security mechanism for ensuring
+that only code that has been approved for a given environment is
+executed.
+
+Most kernels offer ways to restrict or audit binaries loaded and executed
+by the kernel. File types owned by Python appear as regular data and
+these features do not apply. This open hook allows Python embedders to
+integrate with operating system support when launching scripts or
+importing Python code.
 
 The new public C API for the verified open hook is::
 
    # Set the handler
    typedef PyObject *(*hook_func)(PyObject *path, void *userData)
-   int PyImport_SetOpenForImportHook(hook_func handler, void *userData)
+   int PyFile_SetOpenCodeHook(hook_func handler, void *userData)
 
    # Open a file using the handler
-   PyObject *PyImport_OpenForImport(const char *path)
+   PyObject *PyFile_OpenCode(const char *path)
 
 The new public Python API for the verified open hook is::
 
    # Open a file using the handler
-   importlib.util.open_for_import(path : str) -> io.IOBase
+   io.open_code(path : str) -> io.IOBase
 
 
-The ``importlib.util.open_for_import()`` function is a drop-in
-replacement for ``open(str(pathlike), 'rb')``. Its default behaviour is
-to open a file for raw, binary access. To change the behaviour a new
+The ``io.open_code()`` function is a drop-in replacement for
+``open(abspath(str(pathlike)), 'rb')``. Its default behaviour is to
+open a file for raw, binary access. To change the behaviour a new
 handler should be set. Handler functions only accept ``str`` arguments.
-The C API ``PyImport_OpenForImport`` function assumes UTF-8 encoding.
+The C API ``PyFile_OpenCode`` function assumes UTF-8 encoding. Paths
+must be absolute, and it is the responsibility of the caller to ensure
+the full path is correctly resolved.
 
-A custom handler may be set by calling ``PyImport_SetOpenForImportHook()``
-from C at any time, including before ``Py_Initialize()``. However, if a
-hook has already been set then the call will fail. When
-``open_for_import()`` is called with a hook set, the hook will be passed
-the path and its return value will be returned directly. The returned
-object should be an open file-like object that supports reading raw
-bytes. This is explicitly intended to allow a ``BytesIO`` instance if
-the open handler has already read the entire file into memory.
+A custom handler may be set by calling ``PyFile_SetOpenCodeHook()`` from
+C at any time, including before ``Py_Initialize()``. However, if a hook
+has already been set then the call will fail. When ``open_code()`` is
+called with a hook set, the hook will be passed the path and its return
+value will be returned directly. The returned object should be an open
+file-like object that supports reading raw bytes. This is explicitly
+intended to allow a ``BytesIO`` instance if the open handler has already
+read the entire file into memory.
 
 Note that these hooks can import and call the ``_io.open()`` function on
 CPython without triggering themselves. They can also use ``_io.BytesIO``
@@ -227,14 +247,33 @@ raise an exception of its choice, as well as performing any other
 logging.
 
 All import and execution functionality involving code from a file will
-be changed to use ``open_for_import()`` unconditionally. It is important
-to note that calls to ``compile()``, ``exec()`` and ``eval()`` do not go
+be changed to use ``open_code()`` unconditionally. It is important to
+note that calls to ``compile()``, ``exec()`` and ``eval()`` do not go
 through this function - an audit hook that includes the code from these
 calls is the best opportunity to validate code that is read from the
 file. Given the current decoupling between import and execution in
-Python, most imported code will go through both ``open_for_import()``
-and the log hook for ``compile``, and so care should be taken to avoid
+Python, most imported code will go through both ``open_code()`` and the
+log hook for ``compile``, and so care should be taken to avoid
 repeating verification steps.
+
+File accesses that are not intentionally planning to execute code are
+not expected to use this function. This includes loading pickles, XML
+or YAML files, where code execution is generally considered malicious
+rather than intentional. These operations should provide their own
+auditing events, preferably distinguishing between normal functionality
+(for example, ``Unpickler.load``) and code execution
+(``Unpickler.find_class``).
+
+A few examples: if the file type normally requires an execute bit (on
+POSIX) or would warn when marked as having been downloaded from the
+internet (on Windows), it should probably use ``open_code()`` rather
+than plain ``open()``. Opening ZIP files using the ``ZipFile`` class
+should use ``open()``, while opening them via ``zipimport`` should use
+``open_code()`` to signal the correct intent. Code that uses the wrong
+function for a particular context may bypass the hook, which in CPython
+and the standard library should be considered a bug. Using a combination
+of ``open_code`` hooks and auditing hooks is necessary to trace all
+executed sources in the presence of arbitrary code.
 
 There is no Python API provided for changing the open hook. To modify
 import behavior from Python code, use the existing functionality
@@ -256,10 +295,10 @@ call will have any effect. (Including existence tests in
 security-critical code allows another vector to bypass auditing, so it
 is preferable that the function always exist.)
 
-``importlib.util.open_for_import(path)`` should at a minimum always
-return ``_io.open(path, 'rb')``. Code using the function should make no
-further assumptions about what may occur, and implementations other than
-CPython are not required to let developers override the behavior of this
+``io.open_code(path)`` should at a minimum always return
+``_io.open(path, 'rb')``. Code using the function should make no further
+assumptions about what may occur, and implementations other than CPython
+are not required to let developers override the behavior of this
 function with a hook.
 
 Suggested Audit Hook Locations
@@ -283,18 +322,18 @@ see which operations provide audit events.
 .. csv-table:: Table 1: Suggested Audit Hooks
    :header: "API Function", "Event Name", "Arguments", "Rationale"
    :widths: 2, 2, 3, 6
-   
+
    ``PySys_AddAuditHook``, ``sys.addaudithook``, "", "Detect when new
    audit hooks are being added.
    "
-   ``PyImport_SetOpenForImportHook``, ``setopenforimporthook``, "", "
-   Detects any attempt to set the ``open_for_import`` hook.
+   ``PyFile_SetOpenCodeHook``, ``cpython.PyFile_SetOpenCodeHook``, "
+   ", "Detects any attempt to set the ``open_code`` hook.
    "
    "``compile``, ``exec``, ``eval``, ``PyAst_CompileString``,
    ``PyAST_obj2mod``", ``compile``, "``(code, filename_or_none)``", "
    Detect dynamic code compilation, where ``code`` could be a string or
    AST. Note that this will be called for regular imports of source
-   code, including those that were opened with ``open_for_import``.
+   code, including those that were opened with ``open_code``.
    "
    "``exec``, ``eval``, ``run_mod``", ``exec``, "``(code_object,)``", "
    Detect dynamic execution of code objects. This only occurs for
@@ -306,9 +345,9 @@ see which operations provide audit events.
    file. All arguments other than the module name may be ``None`` if
    they are not used or available.
    "
-   "``open``", ``open``, "``(path, mode, flags)``", "Detect when a file
-   is about to be opened. *path* and *mode* are the usual parameters to
-   ``open`` if available, while *flags* is provided instead of *mode*
+   "``open``", ``io.open``, "``(path, mode, flags)``", "Detect when a
+   file is about to be opened. *path* and *mode* are the usual parameters
+   to ``open`` if available, while *flags* is provided instead of *mode*
    in some cases.
    "
    ``PyEval_SetProfile``, ``sys.setprofile``, "", "Detect when code is
@@ -343,7 +382,7 @@ see which operations provide audit events.
 .. csv-table:: Table 2: Potential CPython Audit Hooks
    :header: "API Function", "Event Name", "Arguments", "Rationale"
    :widths: 2, 2, 3, 6
-   
+
    ``_PySys_ClearAuditHooks``, ``sys._clearaudithooks``, "", "Notifies
    hooks they are being cleaned up, mainly in case the event is
    triggered unexpectedly. This event cannot be aborted.
@@ -366,8 +405,8 @@ see which operations provide audit events.
    ``_ctypes._CData``, ``ctypes.cdata``, "``(ptr_as_int,)``", "Detect
    when code is accessing arbitrary memory using ``ctypes``.
    "
-   "``new_mmap_object``",``mmap.__new__``,"``(fileno, map_size, access, 
-   offset)``", "Detects creation of mmap objects. On POSIX, access may 
+   "``new_mmap_object``",``mmap.__new__``,"``(fileno, map_size, access,
+   offset)``", "Detects creation of mmap objects. On POSIX, access may
    have been calculated from the ``prot`` and ``flags`` arguments.
    "
    ``sys._getframe``, ``sys._getframe``, "``(frame_object,)``", "Detect
@@ -378,9 +417,9 @@ see which operations provide audit events.
    "
    "``socket.bind``, ``socket.connect``, ``socket.connect_ex``,
    ``socket.getaddrinfo``, ``socket.getnameinfo``, ``socket.sendmsg``,
-   ``socket.sendto``", ``socket.address``, "``(address,)``", "Detect
-   access to network resources. The address is unmodified from the
-   original call.
+   ``socket.sendto``", ``socket.address``, "``(socket, address,)``", "
+   Detect access to network resources. The address is unmodified from
+   the original call.
    "
    "``member_get``, ``func_get_code``, ``func_get_[kw]defaults``
    ",``object.__getattr__``,"``(object, attr)``","Detect access to
@@ -388,9 +427,9 @@ see which operations provide audit events.
    members that are marked as restricted, and members that may allow
    bypassing imports.
    "
-   "``urllib.urlopen``",``urllib.Request``,"``(url, data, headers, 
-   method)``", "Detects URL requests. 
-   " 
+   "``urllib.urlopen``",``urllib.Request``,"``(url, data, headers,
+   method)``", "Detects URL requests.
+   "
 
 Performance Impact
 ==================
@@ -454,14 +493,14 @@ have been added and modify their behaviour appropriately.
 Currently, we are not aware of any legitimate reasons for a program to
 behave differently in the presence of audit hooks.
 
-Both application-level APIs ``sys.audit`` and
-``importlib.util.open_for_import`` are always present and functional,
-regardless of whether the regular ``python`` entry point or some
-alternative entry point is used. Callers cannot determine whether any
-hooks have been added (except by performing side-channel analysis), nor
-do they need to. The calls should be fast enough that callers do not
-need to avoid them, and the program is responsible for ensuring that
-any added hooks are fast enough to not affect application performance.
+Both application-level APIs ``sys.audit`` and ``io.open_code`` are
+always present and functional, regardless of whether the regular
+``python`` entry point or some alternative entry point is used. Callers
+cannot determine whether any hooks have been added (except by performing
+side-channel analysis), nor do they need to. The calls should be fast
+enough that callers do not need to avoid them, and the program is
+responsible for ensuring that any added hooks are fast enough to not
+affect application performance.
 
 The argument that this is "security by obscurity" is valid, but
 irrelevant. Security by obscurity is only an issue when there are no
@@ -498,7 +537,7 @@ they enable defenders to integrate Python into their environment in ways
 that are currently not possible.
 
 Since audit hooks have the ability to safely prevent an operation
-occuring, this feature does enable the ability to provide some level of
+occurring, this feature does enable the ability to provide some level of
 sandboxing. In most cases, however, the intention is to enable logging
 rather than creating a sandbox.
 
