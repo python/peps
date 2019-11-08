@@ -38,7 +38,7 @@ class NoneCoalesceIfBlockVisitor(ast.NodeVisitor):
         ...     else:
         ...         self.b = c
 
-    ...where `a` is a name and other characters represent any abitrary
+    ...where `a` is a name and other characters represent any arbitrary
     expression.
 
     In the two latter forms, the search criterion is an assignment of `a`
@@ -144,7 +144,7 @@ class NoneCoalesceTernaryVisitor(ast.NodeVisitor):
         >>> a if a is not None else b
         >>> b if a is None else a
 
-    ...where a is an identifier and b is an abitrary expression.
+    ...where a is an identifier and b is an arbitrary expression.
     '''
 
     def __init__(self, file_, callback):
@@ -294,7 +294,7 @@ class SafeNavTernaryVisitor(ast.NodeVisitor):
         >>> a.foo if a is not None else b
         >>> b if a is None else a.foo
 
-    ...where `a` is an identifier, `b` is an abitrary expression, and `foo` is
+    ...where `a` is an identifier, `b` is an arbitrary expression, and `foo` is
     an attribute, index, or function invocation.
     '''
 
