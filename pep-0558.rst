@@ -1,11 +1,12 @@
 PEP: 558
 Title: Defined semantics for locals()
 Author: Nick Coghlan <ncoghlan@gmail.com>
+BDFL-Delegate: Nathaniel J. Smith
 Status: Draft
 Type: Standards Track
 Content-Type: text/x-rst
 Created: 2017-09-08
-Python-Version: 3.7
+Python-Version: 3.9
 Post-History: 2017-09-08
 
 
@@ -32,11 +33,11 @@ Other implementations such as PyPy are currently replicating that behaviour,
 up to and including replication of local variable mutation bugs that
 can arise when a trace hook is installed [1]_.
 
-While we consider CPython's current behaviour when no trace hooks are installed
-acceptable and desirable, we consider the current behaviour when trace hooks
-are installed to be problematic, as it causes bugs like [1]_ *without* reliably
-enabling the desired functionality of allowing debuggers like ``pdb`` to mutate
-local variables [3]_.
+While this PEP considers CPython's current behaviour when no trace hooks are
+installed to be acceptable (and largely desirable), it considers the current
+behaviour when trace hooks are installed to be problematic, as it causes bugs
+like [1]_ *without* even reliably enabling the desired functionality of allowing
+debuggers like ``pdb`` to mutate local variables [3]_.
 
 
 Proposal
@@ -69,6 +70,10 @@ For tracing mode, this PEP proposes changes to CPython's behaviour at function
 scope that bring the ``locals()`` builtin semantics closer to those used in
 regular operation, while also making the related frame API semantics clearer
 and easier for interactive debuggers to rely on.
+
+The proposed tracing mode changes also affect the semantics of frame object
+references obtained through other means, such as via a traceback, or via the
+``sys._getframe()`` API.
 
 
 New ``locals()`` documentation
@@ -110,6 +115,13 @@ For reference, the current documentation of this builtin reads as follows:
 
     Note: The contents of this dictionary should not be modified; changes may
     not affect the values of local and free variables used by the interpreter.
+
+(In other words: the status quo is that the semantics and behaviour of
+``locals()`` are currently formally implementation defined, whereas the proposed
+state after this PEP is that the only implementation defined behaviour will be
+that encountered at function scope when a tracing function is defined, with the
+behaviour in all other cases being defined by the language and library
+references)
 
 
 Module scope
@@ -194,12 +206,11 @@ may not affect the values of local and free variables used by the interpreter."
 This PEP proposes to change that text to instead say:
 
     At function scope (including for generators and coroutines), [this function]
-    returns a
-    dynamic snapshot of the function's local variables and any nonlocal cell
-    references. In this case, changes made via the snapshot are *not* written
-    back to the corresponding local variables or nonlocal cell references, and
-    any such changes to the snapshot will be overwritten if the snapshot is
-    subsequently refreshed (e.g. by another call to ``locals()``).
+    returns a dynamic snapshot of the function's local variables and any
+    nonlocal cell references. In this case, changes made via the snapshot are
+    *not* written back to the corresponding local variables or nonlocal cell
+    references, and any such changes to the snapshot will be overwritten if the
+    snapshot is subsequently refreshed (e.g. by another call to ``locals()``).
 
     CPython implementation detail: the dynamic snapshot for the currently
     executing frame will be implicitly refreshed before each call to the trace
@@ -251,40 +262,33 @@ defined ``locals()`` builtin, trace functions necessarily use the implementation
 dependent ``frame.f_locals`` interface, as a frame reference is what gets
 passed to hook implementations.
 
-In regular operation, nothing will change - ``frame.f_locals`` will be a direct
-reference to the dynamic snapshot, and ``locals()`` will return a reference to
-that snapshot. This reflects the fact that it's only CPython's tracing mode
-semantics that are currently problematic.
-
-In tracing mode, however, we will change ``frame.f_locals`` to instead return
-a dedicated proxy type (probably implemented as a private subclass of
+Instead of being a direct reference to the dynamic snapshot returned by
+``locals()``, ``frame.f_locals`` will be updated to instead return a dedicated
+proxy type (implemented as a private subclass of the existing
 ``types.MappingProxyType``) that has two internal attributes not exposed as
 part of either the Python or public C API:
 
-* *mapping*: the dynamic snapshot that would be returned by ``frame.f_locals``
-  during regular operation
+* *mapping*: the dynamic snapshot that is returned by the ``locals()`` builtin
 * *frame*: the underlying frame that the snapshot is for
 
-The ``locals()`` builtin would be aware of this proxy type, and continue to
-return a reference to the dynamic snapshot even when in tracing mode.
+``__setitem__`` and ``__delitem__`` operations on the proxy will affect not only
+the dynamic snapshot, but *also* the corresponding fast local or cell reference
+on the underlying frame.
 
-As long as the process remains in tracing mode, then ``__setitem__`` and
-``__delitem__`` operations on the proxy will affect not only the dynamic
-snapshot, but *also* the corresponding fast local or cell reference on the
-underlying frame.
-
-If the process leaves tracing mode (i.e. all previously installed trace hooks
-are uninstalled), then any already created proxy objects will remain in place,
-but their ``__setitem__`` and ``__delitem__`` methods will skip mutating
-the underlying frame.
+The ``locals()`` builtin will be made aware of this proxy type, and continue to
+return a reference to the dynamic snapshot rather than to the write-through
+proxy.
 
 At the C API layer, ``PyEval_GetLocals()`` will implement the same semantics
-as the Python level ``locals()`` builtin, and a new ``PyFrame_GetLocals(frame)``
-accessor API will be provided to allow the proxy bypass logic to be encapsulated
-entirely inside the frame implementation. The C level equivalent of accessing
-``pyframe.f_locals`` in Python will be to access ``cframe->f_locals`` directly
-(the one difference is that the Python descriptor will continue to include an
-implicit snapshot refresh).
+as the Python level ``locals()`` builtin, and a new
+``PyFrame_GetPyLocals(frame)`` accessor API will be provided to allow the
+function level proxy bypass logic to be encapsulated entirely inside the frame
+implementation.
+
+The C level equivalent of accessing ``pyframe.f_locals`` in Python will be a
+new ``PyFrame_GetLocalsAttr(frame)`` API. Like the Python level descriptor, the
+new API will implicitly refresh the dynamic snapshot at function scope before
+returning a reference to the write-through proxy.
 
 The ``PyFrame_LocalsToFast()`` function will be changed to always emit
 ``RuntimeError``, explaining that it is no longer a supported operation, and
@@ -321,27 +325,59 @@ The proposal in this PEP aims to retain the first two properties (to maintain
 backwards compatibility with as much code as possible) while ensuring that
 simply installing a trace hook can't enable rebinding of function locals via
 the ``locals()`` builtin (whereas enabling rebinding via
-``inspect.currentframe().f_locals`` is fully intended).
+``frame.f_locals`` inside the tracehook implementation is fully intended).
 
 
-Ensuring any semantic changes are restricted to tracing mode
+Keeping ``locals()`` as a dynamic snapshot at function scope
 ------------------------------------------------------------
 
-It would be possible to say that ``frame.f_locals`` should *always* return a
-write-through proxy, even in regular operation.
+It would theoretically be possible to change the semantics of the ``locals()``
+builtin to return the write-through proxy at function scope, rather than
+continuing to return a dynamic snapshot.
 
-This PEP avoids that option for a couple of key reasons, one pragmatic and one
-more philosophical:
+This PEP doesn't (and won't) propose this as it's a backwards incompatible
+change in practice, even though code that relies on the current behaviour is
+technically operating in an undefined area of the language specification.
 
-* Object allocations and method wrappers aren't free, and tracing functions
-  aren't the only operations that access frame locals from outside the function.
-  Restricting the changes to tracing mode means that the additional memory and
-  execution time overhead of these changes are going to be as close to zero in
-  regular operation as we can possibly make them
-* "Don't change what isn't broken": the current tracing mode problems are caused
-  by a requirement that's specific to tracing mode (support for external
-  rebinding of function local variable references), so it makes sense to also
-  restrict any related fixes to tracing mode
+Consider the following code snippet::
+
+    def example():
+        x = 1
+        locals()["x"] = 2
+        print(x)
+
+Even with a trace hook installed, that function will consistently print ``1``
+on the current reference interpreter implementation::
+
+    >>> example()
+    1
+    >>> import sys
+    >>> def basic_hook(*args):
+    ...     return basic_hook
+    ...
+    >>> sys.settrace(basic_hook)
+    >>> example()
+    1
+
+Similarly, ``locals()`` can be passed to the ``exec()`` and ``eval()`` builtins
+at function scope without risking unexpected rebinding of local variables.
+
+Provoking the reference interpreter into incorrectly mutating the local variable
+state requires a more complex setup where a nested function closes over a
+variable being rebound in the outer function, and due to the use of either
+threads, generators, or coroutines, it's possible for a trace function to start
+running for the nested function before the rebinding operation in the outer
+function, but finish running after the rebinding operation has taken place (in
+which case the rebinding will be reverted, which is the bug reported in [1]_).
+
+In addition to preserving the de facto semantics which have been in place since
+PEP 227 introduced nested scopes in Python 2.1, the other benefit of restricting
+the write-through proxy support to the implementation-defined frame object API
+is that it means that only interpreter implementations which emulate the full
+frame API need to offer the write-through capability at all, and that
+JIT-compiled implementations only need to enable it when a frame introspection
+API is invoked, or a trace hook is installed, not whenever ``locals()`` is
+accessed at function scope.
 
 
 What happens with the default args for ``eval()`` and ``exec()``?
@@ -350,7 +386,46 @@ What happens with the default args for ``eval()`` and ``exec()``?
 These are formally defined as inheriting ``globals()`` and ``locals()`` from
 the calling scope by default.
 
-There doesn't seem to be any reason for the PEP to change this.
+There isn't any need for the PEP to change these defaults, so it doesn't.
+
+
+Changing the frame API semantics in regular operation
+-----------------------------------------------------
+
+Earlier versions of this PEP proposed having the semantics of the frame
+``f_locals`` attribute depend on whether or not a tracing hook was currently
+installed - only providing the write-through proxy behaviour when a tracing hook
+was active, and otherwise behaving the same as the ``locals()`` builtin.
+
+That was adopted as the original design proposal for a couple of key reasons,
+one pragmatic and one more philosophical:
+
+* Object allocations and method wrappers aren't free, and tracing functions
+  aren't the only operations that access frame locals from outside the function.
+  Restricting the changes to tracing mode meant that the additional memory and
+  execution time overhead of these changes would as close to zero in regular
+  operation as we can possibly make them.
+* "Don't change what isn't broken": the current tracing mode problems are caused
+  by a requirement that's specific to tracing mode (support for external
+  rebinding of function local variable references), so it made sense to also
+  restrict any related fixes to tracing mode
+
+However, actually attempting to implement and document that dynamic approach
+highlighted the fact that it makes for a really subtle runtime state dependent
+behaviour distinction in how ``frame.f_locals`` works, and creates several
+new edge cases around how ``f_locals`` behaves as trace functions are added
+and removed.
+
+Accordingly, the design was switched to the current one, where
+``frame.f_locals`` is always a write-through proxy, and ``locals()`` is always
+a dynamic snapshot, which is both simpler to implement and easier to explain.
+
+Regardless of how the CPython reference implementation chooses to handle this,
+optimising compilers and interpreters also remain free to impose additional
+restrictions on debuggers, by making local variable mutation through frame
+objects an opt-in behaviour that may disable some optimisations (just as the
+emulation of CPython's frame API is already an opt-in flag in some Python
+implementations).
 
 
 Historical semantics at function scope
@@ -389,8 +464,8 @@ reference implementation, rather than being deliberately designed.
 Implementation
 ==============
 
-The reference implementation update is TBD - when available, it will be linked
-from [2]_.
+The reference implementation update is in development as a draft pull
+request on GitHub ([6]_).
 
 
 Acknowledgements
@@ -418,6 +493,9 @@ References
 
 .. [5] CPython's C API for installing trace hooks
    (https://docs.python.org/3/c-api/init.html#c.PyEval_SetTrace)
+
+.. [6] PEP 558 reference implementation
+   (https://github.com/python/cpython/pull/3640/files)
 
 
 Copyright
