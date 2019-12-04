@@ -1,5 +1,5 @@
 PEP: 458
-Title: Surviving a Compromise of PyPI
+Title: Securing the Link from PyPI to the End User
 Version: $Revision$
 Last-Modified: $Date$
 Author: Trishank Karthik Kuppusamy <trishank@nyu.edu>,
