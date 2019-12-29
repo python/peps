@@ -7,7 +7,7 @@ Type: Standards Track
 Content-Type: text/x-rst
 Created: 2017-09-08
 Python-Version: 3.9
-Post-History: 2017-09-08, 2019-05-22, 2019-05-30
+Post-History: 2017-09-08, 2019-05-22, 2019-05-30, 2019-12-30
 
 
 Abstract
@@ -122,7 +122,7 @@ builtin to read as follows:
     of previously created snapshots.
 
 
-There would also be a versionchanged note for Python 3.8:
+There would also be a versionchanged note for Python 3.9:
 
     In prior versions, the semantics of mutating the mapping object returned
     from ``locals()`` were formally undefined. In CPython specifically,
@@ -143,7 +143,7 @@ For reference, the current documentation of this builtin reads as follows:
     not affect the values of local and free variables used by the interpreter.
 
 (In other words: the status quo is that the semantics and behaviour of
-``locals()`` are currently formally implementation defined, whereas the proposed
+``locals()`` are formally implementation defined, whereas the proposed
 state after this PEP is that the only implementation defined behaviour will be
 that associated with whether or not the implementation emulates the CPython
 frame API, with the behaviour in all other cases being defined by the language
@@ -310,45 +310,62 @@ mutating operations on the proxy itself. This means that if a reference to the
 proxy is obtained from within the function, the proxy won't implicitly pick up
 name binding operations that take place as the function executes - the
 ``f_locals`` attribute on the frame will need to be accessed again in order to
-trigger a refresh (this aspect of the frame level behaviour could potentially be
-revisited for Python 3.9, or even during the Python 3.8 beta cycle - it's only a
-question of increasing the implementation complexity in the interpreter to get
-the proxy to report a "live" view of the frame state, rather than being a
-fundamentally intractable problem).
+trigger a refresh.
 
 ``__setitem__`` and ``__delitem__`` operations on the proxy will affect not only
 the dynamic snapshot, but *also* the corresponding fast local or cell reference
 on the underlying frame.
 
+After a frame has finished executing, cell references can still be updated via
+the proxy, but the link back to the underlying frame is explicitly broken to
+avoid creating a persistent reference cycle that unexpectedly keeps frames
+alive.
+
 Other MutableMapping methods will behave as expected for a mapping with these
 essential method semantics.
-
-The C level equivalent of accessing ``pyframe.f_locals`` in Python will be a
-new ``PyFrame_GetLocalsAttr(frame)`` API. Like the Python level descriptor, the
-new API will implicitly create the write-through proxy object for function level
-frames if it doesn't already exist, and update the stored mapping to ensure it
-reflects the current state of the function local variables and closure
-references.
-
-The ``PyFrame_LocalsToFast()`` function will be changed to always emit
-``RuntimeError``, explaining that it is no longer a supported operation, and
-affected code should be updated to rely on the write-through fast locals
-proxy instead.
 
 
 Making the behaviour at function scope less surprising
 ------------------------------------------------------
 
 The ``locals()`` builtin will be made aware of the new fast locals proxy type,
-and when it detects it, will return a fresh snapshot of the local namespace
-(i.e. the equivalent of ``dict(frame.f_locals)``) rather than returning the
-proxy directly.
+and when it detects it on a frame, will return a fresh snapshot of the local
+namespace (i.e. the equivalent of ``dict(frame.f_locals)``) rather than
+returning the proxy directly.
 
-At the C API layer, ``PyEval_GetLocals()`` will implement the same semantics
-as the Python level ``locals()`` builtin, and a new
-``PyFrame_GetPyLocals(frame)`` accessor API will be provided to allow the
-function level namespace snapshot logic to be encapsulated entirely inside
-the frame implementation.
+
+Changes to the public CPython C API
+-----------------------------------
+
+The existing ``PyEval_GetLocals()`` API returns a borrowed reference, which
+means it cannot be updated to return the new dynamic snapshots at function
+scope. Instead, it will return a borrowed reference to the internal mapping
+maintained by the fast locals proxy. This shared mapping will behave similarly
+to the existing shared mapping in Python 3.8 and earlier, but the exact
+conditions under which it gets refreshed will be different. Specifically:
+
+* accessing the Python level ``f_locals`` frame attribute
+* any call to ``PyFrame_GetPyLocals()`` or ``PyFrame_GetLocalsAttribute()``
+  for the frame
+* any call to ``PyEval_GetLocals()`` or the Python ``locals()`` builtin while
+  the frame is running
+
+A new ``PyFrame_GetPyLocals(frame)`` API will be provided such that
+``PyFrame_GetPyLocals(PyEval_GetFrame())`` directly matches the
+semantics of the Python ``locals()`` builtin, returning a shallow copy of the
+internal mapping at function scope, rather than a direct reference to it.
+
+A new ``PyFrame_GetLocalsAttribute(frame)`` API will be provided as the C level
+equivalent of accessing ``pyframe.f_locals`` in Python. Like the Python level
+descriptor, the new API will implicitly create the write-through proxy object
+for function level frames if it doesn't already exist, and update the stored
+mapping to ensure it reflects the current state of the function local variables
+and closure references.
+
+The ``PyFrame_LocalsToFast()`` function will be changed to always emit
+``RuntimeError``, explaining that it is no longer a supported operation, and
+affected code should be updated to use ``PyFrame_GetPyLocals(frame)`` or
+``PyFrame_GetLocalsAttribute(frame)`` instead.
 
 
 Design Discussion
@@ -451,6 +468,16 @@ These are formally defined as inheriting ``globals()`` and ``locals()`` from
 the calling scope by default.
 
 There isn't any need for the PEP to change these defaults, so it doesn't.
+
+However, usage of the C level ``PyEval_GetLocals()`` API in the CPython
+reference implementation will need to be reviewed to determine which cases
+should be changed to use ``PyFrame_GetPyLocals(PyEval_GetFrame())`` instead.
+
+These changes will also have potential performance implications, especially
+for functions with large numbers of local variables (e.g. if these functions
+are called in a loop, calling ``locals()`` once before the loop will give the
+same semantics and performance characteristics as the status quo, whereas
+relying on the implicit default would create a new snapshot on each iteration).
 
 
 Changing the frame API semantics in regular operation
