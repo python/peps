@@ -33,10 +33,8 @@ module initialization and finalization) and PEP 489
 
 While this PEP takes an additional step towards fully solving the problems that
 PEP 3121 and PEP 489 started tackling, it does not attempt to resolve *all*
-remaining concerns. In particular, at least the first access to the module state
-from slot methods (``nb_add``, etc) remains slower than accessing that state
-from other extension methods. Standard caching techniques can be used to speed
-up subsequent access.
+remaining concerns. In particular, access to the module state
+from slot methods (``nb_add``, etc) is not solved.
 
 
 Terminology
@@ -75,6 +73,29 @@ Heap Type
 ---------
 
 A type object created at run time.
+
+
+Defining Class
+--------------
+
+The defining class of a method (either bound or unbound) is the class on which
+the method was defined.
+A class that merely inherits the method from its base is not the defining class.
+
+For example, ``int`` is the defining class of ``True.to_bytes``,
+``True.__floor__`` and ``int.__repr__``.
+
+In C, the defining class is the one defined with the corresponding
+``tp_methods`` or "tp slots" [#tp-slots]_ entry.
+For methods defined in Python, the defining class is saved in the
+`__class__` closure cell.
+
+
+C-API
+-----
+
+The "Python/C API" as described in Python documentation.
+CPython implements the C-API, but other implementations exist.
 
 
 Rationale
@@ -118,7 +139,7 @@ the following pieces of information:
 
 * The instance it is called on (``self``)
 * The underlying function
-* The class the method was defined in
+* The *defining class*, i. e. the class the method was defined in
 * The corresponding module
 * The module state
 
@@ -196,7 +217,7 @@ using them:
 
 * Pass the defining class to the underlying C function.
 
-  The defining class is readily available at the time the built-in
+  In CPython, the defining class is readily available at the time the built-in
   method object (``PyCFunctionObject``) is created, so it can be stored
   in a new struct that extends ``PyCFunctionObject``.
 
@@ -226,13 +247,11 @@ Two possible solutions have been proposed to this problem:
   ``__typeslots__`` [#typeslots-mail]_.  This is technically feasible and fast,
   but quite invasive.
 
-Due to the invasiveness of the latter approach, this PEP proposes adding an MRO
-walking helper for use in slot method implementations, deferring the more complex
-alternative as a potential future optimisation.
-
 Modules affected by this concern also have the option of using
 `thread-local state`_ or `PEP 567 context variables`_ as a caching mechanism, or
 else defining their own reload-friendly lookup caching scheme.
+
+Solving the issue generally is deferred to a future PEP.
 
 .. _thread-local state: https://docs.python.org/3/c-api/init.html#thread-local-storage-support
 .. _PEP 567 context variables: https://docs.python.org/3/c-api/contextvars.html
@@ -244,24 +263,30 @@ Specification
 Adding module references to heap types
 --------------------------------------
 
-The ``PyHeapTypeObject`` struct will get a new member, ``PyObject *ht_module``,
-that can store a pointer to the module object for which the type was defined.
-It will be ``NULL`` by default, and should not be modified after the type
-object is created.
-
-A new factory method will be added for creating modules::
+A new factory method will be added to the C-API for creating modules::
 
     PyObject* PyType_FromModuleAndSpec(PyObject *module,
                                        PyType_Spec *spec,
                                        PyObject *bases)
 
-This acts the same as ``PyType_FromSpecWithBases``, and additionally sets
-``ht_module`` to the provided module object.
+This acts the same as ``PyType_FromSpecWithBases``, and additionally associates
+the provided module object with the new type. (In CPython, this will set
+``ht_module`` described below.)
 
 Additionally, an accessor, ``PyObject * PyType_GetModule(PyTypeObject *)``
 will be provided.
-It will return the ``ht_module`` if a heap type with module pointer set
-is passed in, otherwise it will set ``TypeError`` and return NULL.
+It will return the type's associated module if one is set,
+otherwise it will set ``TypeError`` and return NULL.
+When given a static type, it will always set ``TypeError`` and return NULL.
+
+To implement this in CPython, the ``PyHeapTypeObject`` struct will get a
+new member, ``PyObject *ht_module``, that will store a pointer to the
+associated module.
+It will be ``NULL`` by default and should not be modified after the type
+object is created.
+
+The ``ht_module`` member will not be inherited by subclasses; it needs to be
+set using ``PyType_FromSpecWithBases`` for each individual type that needs it.
 
 Usually, creating a class with ``ht_module`` set will create a reference
 cycle involving the class and the module.
@@ -274,20 +299,16 @@ through ``f_globals`` will also break the new cycles through ``ht_module``.
 Passing the defining class to extension methods
 -----------------------------------------------
 
-Since PEP 590 [#pep-590]_ was accepted for Python 3.8, ``PyCFunction``
-implements the vectorcall protocol.
-This PEP builds on top of PEP 590 to provide C implemented methods with
-context about their defining class (and thus their defining module).
-
-A new signature flag, ``METH_METHOD``, will be added. Conceptually, it adds
-``defining_class`` to the function signature.
+A new signature flag, ``METH_METHOD``, will be added for use in
+``PyMethodDef.ml_flags``. Conceptually, it adds ``defining_class``
+to the function signature.
 To make the initial implementation easier, the flag can only be used as
 ``(METH_FASTCALL | METH_KEYWORDS | METH_METHOD)``.
 (It can't be used with other flags like ``METH_O`` or bare ``METH_FASTCALL``,
 though it may be combined with ``METH_CLASS`` or ``METH_STATIC``).
 
-A corresponding new C signature, ``PyCMethod``, is added to the ``PyCFunction``
-set of signatures::
+C functions for methods defined using this flag combination will be called
+using a new C signature called ``PyCMethod``::
 
     PyObject *PyCMethod(PyObject *self,
                         PyTypeObject *defining_class,
@@ -300,8 +321,8 @@ in the future (or even in the initial implementation of this PEP).
 However, ``METH_METHOD`` should always be an *additional* flag, i.e., the
 defining class should only be passed in if needed.
 
-To hold the extra information, a new structure extending ``PyCFunctionObject``
-will be added::
+In CPython, a new structure extending ``PyCFunctionObject`` will be added
+to hold the extra information::
 
     typedef struct {
         PyCFunctionObject func;
@@ -322,7 +343,8 @@ Argument Clinic
 ---------------
 
 To support passing the defining class to methods using Argument Clinic,
-a new converter will be added to clinic.py: ``defining_class``.
+a new converter called ``defining_class`` will be added to CPython's Argument
+Clinic tool.
 
 Each method may only have one argument using this converter, and it must
 appear after ``self``, or, if ``self`` is not used, as the first argument.
@@ -332,28 +354,8 @@ When used, Argument Clinic will select
 ``METH_FASTCALL | METH_KEYWORDS | METH_METHOD`` as the calling convention.
 The argument will not appear in ``__text_signature__``.
 
-This will be compatible with ``__init__`` and ``__new__`` methods, where an
-MRO walker will be used to pass the defining class from clinic generated
-code to the user's function.
-
-
-Slot methods
-------------
-
-To allow access to `per-module state`_ from slot methods, an MRO walker
-will be implemented::
-
-    PyTypeObject *PyType_DefiningTypeFromSlotFunc(PyTypeObject *type,
-                                                  int slot, void *func)
-
-The walker will go through bases of heap-allocated ``type``
-and search for class that defines ``func`` at its ``slot``.
-
-The ``func`` does not need to be inherited by ``type`` (i.e. it may have been
-overridden in a subclass). The only requirement for the walker to find the
-defining class is that the defining class must be heap-allocated.
-
-On failure, exception is set and NULL is returned.
+The new converter will initially not be compatible with ``__init__`` and
+``__new__`` methods, which cannot use the ``METH_METHOD`` convention.
 
 
 Helpers
@@ -376,39 +378,28 @@ setting any exception.
 Modules Converted in the Initial Implementation
 -----------------------------------------------
 
-To validate the approach, several modules will be modified during
-the initial implementation:
-
-The ``zipimport``, ``_io``, ``_elementtree``, and ``_csv`` modules
-will be ported to PEP 489 multiphase initialization.
+To validate the approach, the ``_elementtree`` module will be modified during
+the initial implementation.
 
 
 Summary of API Changes and Additions
 ====================================
 
-New functions:
+The following will be added to Python C-API:
 
-* ``PyType_FromModuleAndSpec``
-* ``PyType_GetModule``
-* ``PyType_GetModuleState``
-* ``PyType_DefiningTypeFromSlotFunc``
+   * ``PyType_FromModuleAndSpec`` function
+   * ``PyType_GetModule`` function
+   * ``PyType_GetModuleState`` function
+   * ``METH_METHOD`` call flag
+   * ``PyCMethod`` function signature
 
-New macros:
+The following additions will be added as CPython implementation details,
+and won't be documented:
 
-* ``PyCFunction_GET_CLASS``
-
-New types:
-
-* ``PyCMethodObject``
-
-Modified structures:
-
-* _heaptypeobject - added ``ht_module``
-
-Other changes:
-
-* ``METH_METHOD`` call flag
-* ``defining_class`` converter in clinic
+   * ``PyCFunction_GET_CLASS`` macro
+   * ``PyCMethodObject`` struct
+   * ``ht_module`` member of ``_heaptypeobject``
+   * ``defining_class`` converter in Argument Clinic
 
 
 Backwards Compatibility
@@ -427,6 +418,19 @@ a patchset is at [#gh-patch]_.
 
 Possible Future Extensions
 ==========================
+
+Slot methods
+------------
+
+A way of passing defining class (or module state) to slot methods may be
+added in the future.
+
+A previous version of this PEP proposed a helper function that would determine
+a defining class by searching the MRO for a class that defines a slot to a
+particular function. However, this approach would fail if a class is mutated
+(which is, for heap types, possible from Python code).
+Solving this problem is left to future discussions.
+
 
 Easy creation of types with module references
 ---------------------------------------------
@@ -454,6 +458,8 @@ they may be added.
 
 References
 ==========
+
+.. [#tp-slots] https://docs.python.org/3/c-api/typeobj.html#tp-slots
 
 .. [#typeslots-mail] [Import-SIG] On singleton modules, heap types, and subinterpreters
    (https://mail.python.org/pipermail/import-sig/2015-July/001035.html)
