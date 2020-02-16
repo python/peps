@@ -22,6 +22,18 @@ reference implementation for most execution scopes, with some adjustments to the
 behaviour at function scope to make it more predictable and independent of the
 presence or absence of tracing functions.
 
+In addition, it proposes that the following functions be added to the stable
+Python C API/ABI::
+
+    PyObject * PyLocals_Get();
+    int PyLocals_GetReturnsCopy();
+    PyObject * PyLocals_GetCopy();
+    PyObject * PyLocals_GetView();
+    int PyLocals_RefreshViews();
+
+It also proposes the addition of several supporting functions and type
+definitions to the CPython C API.
+
 
 Rationale
 =========
@@ -43,9 +55,9 @@ debuggers like ``pdb`` to mutate local variables [3]_.
 Review of the initial PEP and the draft implementation then identified an
 opportunity for simplification of both the documentation and implementation
 of the function level ``locals()`` behaviour by updating it to return an
-independent snapshot of the function locals and closure variables on each call,
-rather than continuing to return the semi-dynamic snapshot that it has
-historically returned in CPython.
+independent snapshot of the function locals and closure variables on each
+call, rather than continuing to return the semi-dynamic intermittently updated
+shared copy that it has historically returned in CPython.
 
 
 Proposal
@@ -115,12 +127,13 @@ builtin to read as follows:
     object.
 
     At function scope (including for generators and coroutines), each call to
-    ``locals()`` instead returns a fresh snapshot of the function's local
-    variables and any nonlocal cell references. In this case, changes made via
-    the snapshot are *not* written back to the corresponding local variables or
-    nonlocal cell references, and binding, rebinding, or deleting local
-    variables and nonlocal cell references does *not* affect the contents
-    of previously created snapshots.
+    ``locals()`` instead returns a fresh dictionary containing the current
+    bindings of the function's local variables and any nonlocal cell references.
+    In this case, name binding changes made via the returned dict are *not*
+    written back to the corresponding local variables or nonlocal cell
+    references, and binding, rebinding, or deleting local variables and nonlocal
+    cell references does *not* affect the contents of previously returned
+    dictionaries.
 
 
 There would also be a versionchanged note for Python 3.9:
@@ -130,8 +143,8 @@ There would also be a versionchanged note for Python 3.9:
     the mapping returned at function scope could be implicitly refreshed by
     other operations, such as calling ``locals()`` again, or the interpreter
     implicitly invoking a Python level trace function. Obtaining the legacy
-    CPython behaviour now requires explicit calls to update the originally
-    returned snapshot from a freshly updated one.
+    CPython behaviour now requires explicit calls to update the initially
+    returned dictionary with the results of subsequent calls to ``locals()``.
 
 
 For reference, the current documentation of this builtin reads as follows:
@@ -233,12 +246,13 @@ may not affect the values of local and free variables used by the interpreter."
 This PEP proposes to change that text to instead say:
 
     At function scope (including for generators and coroutines), each call to
-    ``locals()`` instead returns a fresh snapshot of the function's local
-    variables and any nonlocal cell references. In this case, changes made via
-    the snapshot are *not* written back to the corresponding local variables or
-    nonlocal cell references, and binding, rebinding, or deleting local
-    variables and nonlocal cell references does *not* affect the contents
-    of previously created snapshots.
+    ``locals()`` instead returns a fresh dictionary containing the current
+    bindings of the function's local variables and any nonlocal cell references.
+    In this case, name binding changes made via the returned dict are *not*
+    written back to the corresponding local variables or nonlocal cell
+    references, and binding, rebinding, or deleting local variables and nonlocal
+    cell references does *not* affect the contents of previously returned
+    dictionaries.
 
 This part of the proposal *does* require changes to the CPython reference
 implementation, as CPython currently returns a shared mapping object that may
@@ -338,48 +352,159 @@ namespace (i.e. the equivalent of ``dict(frame.f_locals)``) rather than
 returning the proxy directly.
 
 
+Changes to the stable C API/ABI
+-------------------------------
+
+Unlike Python code, extension module functions that call in to the Python C API
+can be called from any kind of Python scope. This means it isn't obvious from
+the context whether ``locals()`` will return a snapshot or not, as it depends
+on the scope of the calling Python code, not the C code itself.
+
+This means it is desirable to offer C APIs that give predictable, scope
+independent, behaviour. However, it is also desirable to allow C code to
+exactly mimic the behaviour of Python code at the same scope.
+
+To enable mimicing the behaviour of Python code, the stable C ABI would gain
+the following new functions::
+
+    PyObject * PyLocals_Get();
+    int PyLocals_GetReturnsCopy();
+
+``PyLocals_Get()`` is directly equivalent to the Python ``locals()`` builtin.
+It returns a new reference to the local namespace mapping for the active
+Python frame at module and class scope, and when using ``exec()`` or ``eval()``.
+It returns a shallow copy of the active namespace at
+function/coroutine/generator scope.
+
+``PyLocals_GetReturnsCopy()`` returns zero if ``PyLocals_Get()`` returns a
+direct reference to the local namespace mapping, and a non-zero value if it
+returns a shallow copy. This allows extension module code to determine the
+potential impact of mutating the mapping returned by ``PyLocals_Get()`` without
+needing access to the details of the running frame object.
+
+To allow extension module code to behave consistently regardless of the active
+Python scope, the stable C ABI would gain the following new functions::
+
+    PyObject * PyLocals_GetCopy();
+    PyObject * PyLocals_GetView();
+    int PyLocals_RefreshViews();
+
+``PyLocals_GetCopy()`` returns a new dict instance populated from the current
+locals namespace. Roughly equivalent to ``dict(locals())`` in Python code, but
+avoids the double-copy in the case where ``locals()`` already returns a shallow
+copy.
+
+``PyLocals_GetView()`` returns a new read-only mapping proxy instance for the
+current locals namespace. This view is immediately updated for all local
+variable changes at module and class scope, and when using exec() or eval().
+It is updated at implementation dependent times at function/coroutine/generator
+scope (accessing the existing ``PyEval_GetLocals()`` API, or any of the
+``PyLocals_Get*`` APIs, including calling ``PyLocals_GetView()`` again, will
+always force an update).
+
+``PyLocals_RefreshViews()`` updates any views previously returned by
+``PyLocals_GetView()`` with the current status of the frame. A non-zero return
+value indicates that an error occurred with the update, and the views may not
+accurately reflect the current state of the frame. The Python exception state
+will be set in such cases. This function also refreshes the shared dynamic
+snapshot returned by ``PyEval_GetLocals()`` in optimised scopes.
+
+The existing ``PyEval_GetLocals()`` API will retain its existing behaviour in
+CPython (mutable locals at class and module scope, shared dynamic snapshot
+otherwise). However, its documentation will be updated to note that the
+conditions under which the shared dynamic snapshot get updated have changed.
+
+The ``PyEval_GetLocals()`` documentation will also be updated to recommend
+replacing usage of this API with whichever of the new APIs is most appropriate
+for the use case:
+
+* Use ``PyLocals_Get()`` to exactly match the semantics of the Python level
+  ``locals()`` builtin.
+* Use ``PyLocals_GetView()`` for read-only access to the current locals
+  namespace.
+* Use ``PyLocals_GetCopy()`` for a regular mutable dict that contains a copy of
+  the current locals namespace, but has no ongoing connection to the active
+  frame.
+* Query ``PyLocals_GetReturnsCopy()`` explicitly to implement custom handling
+  (e.g. raising a meaningful exception) for scopes where ``PyLocals_Get()``
+  would return a shallow copy rather than granting read/write access to the
+  locals namespace.
+
+
 Changes to the public CPython C API
 -----------------------------------
 
 The existing ``PyEval_GetLocals()`` API returns a borrowed reference, which
-means it cannot be updated to return the new dynamic snapshots at function
+means it cannot be updated to return the new shallow copies at function
 scope. Instead, it will return a borrowed reference to the internal mapping
 maintained by the fast locals proxy. This shared mapping will behave similarly
 to the existing shared mapping in Python 3.8 and earlier, but the exact
 conditions under which it gets refreshed will be different. Specifically:
 
 * accessing the Python level ``f_locals`` frame attribute
-* any call to ``PyFrame_GetPyLocals()`` or ``PyFrame_GetLocalsAttribute()``
-  for the frame
-* any call to ``PyEval_GetLocals()``, ``PyEval_GetPyLocals()`` or the Python
-  ``locals()`` builtin while the frame is running
+* any call to ``PyFrame_GetLocals()``, ``PyFrame_GetLocalsCopy()``,
+  ``PyFrame_GetLocalsView()``, ``_PyFrame_BorrowLocals()``, or
+  ``PyFrame_RefreshLocalsViews()`` for the frame
+* any call to ``PyLocals_Get()``, ``PyLocals_GetCopy()``, ``PyLocals_GetView()``,
+  ``PyLocals_RefreshViews()``, or the Python ``locals()`` builtin while the
+  frame is running
 
-A new ``PyFrame_GetPyLocals(frame)`` API will be provided such that
-``PyFrame_GetPyLocals(PyEval_GetFrame())`` directly matches the
-semantics of the Python ``locals()`` builtin, returning a shallow copy of the
-internal mapping at function scope, rather than a direct reference to it.
+(Even though ``PyEval_GetLocals()`` is part of the stable C API/ABI, the
+specifics of when the namespace it returns gets refreshed are still an
+interpreter implementation detail)
 
-A new ``PyEval_GetPyLocals()`` API will be provided as a convenience wrapper
-for the above operation that is suitable for inclusion in the stable ABI.
+The additions to the public CPython C API are the frame level enhancements
+needed to support the stable C API/ABI updates::
 
-A new ``PyFrame_GetLocalsAttribute(frame)`` API will be provided as the C level
-equivalent of accessing ``pyframe.f_locals`` in Python. Like the Python level
-descriptor, the new API will implicitly create the write-through proxy object
-for function level frames if it doesn't already exist, and update the stored
-mapping to ensure it reflects the current state of the function local variables
-and closure references.
+    PyObject * PyFrame_GetLocals(frame);
+    int PyFrame_GetLocalsReturnsCopy(frame);
+    PyObject * PyFrame_GetLocalsCopy(frame);
+    PyObject * PyFrame_GetLocalsView(frame);
+    int PyFrame_RefreshLocalsViews(frame);
+    PyObject * _PyFrame_BorrowLocals(frame);
+
+``PyFrame_GetLocals(frame)`` is the underlying API for ``PyLocals_Get()``.
+
+``PyFrame_GetLocalsReturnsCopy(frame)`` is the underlying API for
+``PyLocals_GetReturnsCopy()``.
+
+``PyFrame_GetLocalsCopy(frame)`` is the underlying API for
+``PyLocals_GetCopy()``.
+
+``PyFrame_GetLocalsView(frame)`` is the underlying API for ``PyLocals_GetView()``.
+
+``PyFrame_RefreshLocalsViews(frame)`` is the underlying API for
+``PyLocals_RefreshViews()``. In the draft reference implementation, it is also
+needed in CPython when accessing the frame ``f_locals`` attribute directly from
+the frame struct, or the mapping returned by ``_PyFrame_BorrowLocals(frame)``,
+and ``PyFrame_GetLocalsReturnsCopy()`` is true for that frame (otherwise the
+locals proxy may report stale information).
+
+``_PyFrame_BorrowLocals(frame)`` is the underlying API for
+``PyEval_GetLocals()``. The underscore prefix is intended to discourage use and
+to indicate that code using it is unlikely to be portable across
+implementations. However, it is documented and visible to the linker because
+the dynamic snapshot stored inside the write-through proxy is otherwise
+completely inaccessible from C code (in the draft reference implementation,
+the struct definition for the fast locals proxy itself is deliberately kept
+private to the frame implementation, so not even the rest of CPython can see
+it - instances must be manipulated via the Python mapping C API).
 
 The ``PyFrame_LocalsToFast()`` function will be changed to always emit
 ``RuntimeError``, explaining that it is no longer a supported operation, and
-affected code should be updated to use ``PyFrame_GetPyLocals(frame)`` or
-``PyFrame_GetLocalsAttribute(frame)`` instead.
+affected code should be updated to use ``PyFrame_GetLocals(frame)``,
+``PyFrame_GetLocalsCopy(frame)``, or ``PyFrame_GetLocalsView(frame)`` instead.
 
+In addition to the above documented interfaces, the draft reference
+implementation also exposes the following undocumented interfaces::
 
-Additions to the stable ABI
----------------------------
+    PyTypeObject _PyFastLocalsProxy_Type;
+    #define _PyFastLocalsProxy_CheckExact(self) \
+        (Py_TYPE(self) == &_PyFastLocalsProxy_Type)
 
-The new ``PyEval_GetPyLocals()`` API will be added to the stable ABI. The other
-new C API functions will be part of the CPython specific API only.
+This type is what the reference implementation actually stores in ``f_locals``
+for optimized frames (i.e. when ``PyFrame_GetLocalsReturnsCopy()`` returns
+true).
 
 
 Design Discussion
@@ -476,8 +601,8 @@ accessed at function scope.
 
 Returning snapshots from ``locals()`` at function scope also means that static
 analysis for function level code will be more reliable, as only access to the
-frame machinery will allow mutation of local and nonlocal variables in a way
-that's hidden from static analysis.
+frame machinery will allow rebinding of local and nonlocal variable
+references in a way that is hidden from static analysis.
 
 
 What happens with the default args for ``eval()`` and ``exec()``?
@@ -486,22 +611,22 @@ What happens with the default args for ``eval()`` and ``exec()``?
 These are formally defined as inheriting ``globals()`` and ``locals()`` from
 the calling scope by default.
 
-There isn't any need for the PEP to change these defaults, so it doesn't.
+There isn't any need for the PEP to change these defaults, so it doesn't, and
+``exec()`` and ``eval()`` will start running in a shallow copy of the local
+namespace when that is what ``locals()`` returns.
 
-However, usage of the C level ``PyEval_GetLocals()`` API in the CPython
-reference implementation will need to be reviewed to determine which cases
-need to be changed to use the new ``PyEval_GetPyLocals()`` API instead.
-
-These changes will also have potential performance implications, especially
+This behaviour will have potential performance implications, especially
 for functions with large numbers of local variables (e.g. if these functions
-are called in a loop, calling ``locals()`` once before the loop and then passing
-the namespace into the function explicitly will give the same semantics and
-performance characteristics as the status quo, whereas relying on the implicit
-default would create a new snapshot on each iteration).
+are called in a loop, calling ``gloabls()`` and ``locals()`` once before the
+loop and then passing the namespace into the function explicitly will give the
+same semantics and performance characteristics as the status quo, whereas
+relying on the implicit default would create a new shallow copy of the local
+namespace on each iteration).
 
 (Note: the reference implementation draft PR has updated the ``locals()`` and
-``vars()`` builtins to use ``PyEval_GetPyLocals()``, but has not yet
-updated the default local namespace arguments for ``eval()`` and ``exec()``).
+``vars()``, ``eval()``, and ``exec()`` builtins to use ``PyLocals_Get()``. The
+``dir()`` builtin still uses ``PyEval_GetLocals()``, since it's only using it
+to make a list from the keys).
 
 
 Changing the frame API semantics in regular operation
@@ -577,6 +702,47 @@ only make sense in terms of the historical evolution of the language and the
 reference implementation, rather than being deliberately designed.
 
 
+Proposing several additions to the stable C API/ABI
+---------------------------------------------------
+
+Historically, the CPython C API (and subsequently, the stable ABI) has
+exposed only a single API function related to the Python ``locals`` builtin:
+``PyEval_GetLocals()``. However, as it returns a borrowed reference, it is
+not possible to adapt that interface directly to supporting the new ``locals()``
+semantics proposed in this PEP.
+
+An earlier iteration of this PEP proposed a minimalist adaptation to the new
+semantics: one C API function that behaved like the Python ``locals()`` builtin,
+and another that behaved like the ``frame.f_locals`` descriptor (creating and
+returning the write-through proxy if necessary).
+
+The feedback [8]_ on that version of the C API was that it was too heavily based
+on how the Python level semantics were implemented, and didn't account for the
+behaviours that authors of C extensions were likely to *need*.
+
+The broader API now being proposed came from grouping the potential reasons for
+wanting to access the Python ``locals()`` namespace from an extension module
+into the following cases:
+
+* needing to exactly replicate the semantics of the Python level ``locals()``
+  operation. This is the ``PyLocals_Get()`` API.
+* needing to behave differently depending on whether writes to the result of
+  ``PyLocals_Get()`` will be visible to Python code or not. This is handled by
+  the ``PyLocals_GetReturnsCopy()`` query API.
+* always wanting a mutable namespace that has been pre-populated from the
+  current Python ``locals()`` namespace, but *not* wanting any changes to
+  be visible to Python code. This is the ``PyLocals_GetCopy()`` API.
+* always wanting a read-only view of the current locals namespace, without
+  incurring the runtime overhead of making a full copy each time. This is the
+  ``PyLocals_GetView()`` and ``PyLocals_RefreshViews()`` APIs.
+
+Historically, these kinds of checks and operations would only have been
+possible if a Python implementation emulated the full CPython frame API. With
+the proposed API, extension modules can instead ask more clearly for the
+semantics that they actually need, giving Python implementations more
+flexibility in how they provide those capabilities.
+
+
 Implementation
 ==============
 
@@ -590,6 +756,9 @@ Acknowledgements
 Thanks to Nathaniel J. Smith for proposing the write-through proxy idea in
 [1]_ and pointing out some critical design flaws in earlier iterations of the
 PEP that attempted to avoid introducing such a proxy.
+
+Thanks to Steve Dower and Petr Viktorin for asking that more attention be paid
+to the developer experience of the proposed C API additions [8]_.
 
 
 References
@@ -615,6 +784,9 @@ References
 
 .. [7] Nathaniel's review of possible function level semantics for locals()
    (https://mail.python.org/pipermail/python-dev/2019-May/157738.html)
+
+.. [8] Discussion of more intentionally designed C API enhancements
+   (https://discuss.python.org/t/pep-558-defined-semantics-for-locals/2936/3)
 
 
 Copyright
