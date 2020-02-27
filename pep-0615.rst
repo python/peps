@@ -91,8 +91,11 @@ The initial design of the ``zoneinfo.ZoneInfo`` class has several constructors.
 The primary constructor takes a single argument, ``key``, which is a string
 indicating the name of a zone file in the system time zone database (e.g.
 ``"America/New_York"``, ``"Europe/London"``), and returns a ``ZoneInfo``
-constructed from the first matching TZif file on the search path (see the
-data-sources_ section for more details).
+constructed from the first matching data source on search path (see the
+data-sources_ section for more details). All zone information must be eagerly
+read from the data source (usually a TZif file) upon construction, and may
+not change during the lifetime of the object (this restriction applies to all
+``ZoneInfo`` constructors).
 
 One somewhat unusual guarantee made by this constructor is that calls with
 identical arguments must return *identical* objects. Specifically, for all
@@ -122,7 +125,8 @@ behavior for end users.
     guarantee made here only requires that as long as two references exist to
     the result of identical constructor calls, they must be references to the
     same object. This is consistent with a reference counted cache where
-    ``ZoneInfo`` objects are ejected when no references to them exist — it is
+    ``ZoneInfo`` objects are ejected when no references to them exist (for
+    example, a cache implemented with a ``weakref.WeakValueDictionary``) — it is
     allowed but not required or recommended to implement this with a "strong"
     cache, where all ``ZoneInfo`` files are kept alive indefinitely.
 
@@ -135,6 +139,15 @@ identical to the primary constructor, but returns a new object on each call.
 This is likely most useful for testing purposes, or to deliberately induce
 "different zone" semantics between datetimes with the same nominal time zone.
 
+Even if an object constructed by this method would have been a cache miss, it
+must not be entered into the cache; in other words, the following assertion
+should always be true:
+
+.. code-block::
+
+    >>> a = ZoneInfo.nocache(key)
+    >>> b = ZoneInfo(key)
+    >>> a is not b
 
 .. code-block::
 
@@ -151,6 +164,29 @@ stream objects have mutable state and so determining whether two inputs are
 identical is difficult or impossible, and it is likely that users constructing
 from a file specifically want to load from that file and not a cache.
 
+As with ``ZoneInfo.nocache``, objects constructed by this method must not be
+added to the cache.
+
+Behavior during data updates
+############################
+
+If a source of time zone data is updated during a run of the interpreter, it
+will not invalidate any caches or modify any existing ``ZoneInfo`` objects, but
+newly constructed ``ZoneInfo`` objects should come from the updated data
+source.
+
+This means that the point at which a ``ZoneInfo`` file is updated depends
+primarily on the semantics of the caching behavior. The only guaranteed way to
+get a ``ZoneInfo`` file from an updated data source is to induce a cache miss,
+either by bypassing the cache and using ``ZoneInfo.nocache`` or by clearing the
+cache.
+
+.. note::
+
+    The specified cache behavior does not require that the cache be lazily
+    populated — it is consistent with the specification (though not
+    recommended) to eagerly pre-populate the cache with time zones that have
+    never been constructed.
 
 .. _Representations:
 
@@ -185,31 +221,54 @@ should return the empty string::
 Pickle serialization
 ####################
 
-There are two reasonable options for the pickling behavior of ``ZoneInfo``
-files: serialize the key when available and reconstruct the object from from
-the files on disk during deserialization, or serialize all the data in the
-object (including all transitions).  This PEP proposes to choose the *second*
-behavior, and unconditionally serialize all transition data.
+Rather than serializing all transition data, ``ZoneInfo`` objects will be
+serialized by key, and ``ZoneInfo`` objects constructed from raw files (even
+those with a value for ``key`` specified) cannot be pickled.
 
-The first behavior makes for much smaller files, but may result in different
-behavior if the object is unpickled in an environment with a different version
-of the time zone database.  For example, a pickle for
-``ZoneFile("Asia/Qostanay")`` generated from version 2019c of the database
-would fail to deserialize in an environment with version 2018a, since the
-``"Asia/Qostanay"`` zone was added in 2018h.  More subtle failures are also
-possible if offsets or the timing of offset changes has changed between the two
-versions.
+The behavior of a ``ZoneInfo`` file depends on how it was constructed:
 
-Serializing only the key would also fail for objects created from a file
-without specifying a key, and so a fallback mechanism serializing all
-transitions would need to be provided anyway, bringing additional maintenance
-burdens.
+1. ``ZoneInfo(key)``: When constructed with the primary constructor, a
+   ``ZoneInfo`` object will be serialized by key, and when deserialized the
+   will use the primary constructor in the deserializing process, and thus be
+   expected to be the same object as other references to the same time zone.
+   For example, if ``europe_berlin_pkl`` is a string containing a pickle
+   constructed from ``ZoneInfo("Europe/Berlin")``, one would expect the
+   following behavior:
 
-There are many other failures that can occur when using ``pickle`` to send
-objects between non-identical environments, but nevertheless it is still
-commonly done, and so it seems that the benefit of smaller file sizes is likely
-outweighed by the costs.
+   .. code-block::
 
+       >>> a = ZoneInfo("Europe/Berlin")
+       >>> b = pickle.loads(europe_berlin_pkl)
+       >>> a is b
+       True
+
+2. ``ZoneInfo.nocache(key)``: When constructed from the cache-bypassing
+   constructor, the ``ZoneInfo`` object will still be serialized by key, but
+   when deserialized, it will use the cache bypassing constructor. If
+   ``europe_berlin_pkl_nc`` is a string containing a pickle constructed from
+   ``ZoneInfo.nocache("Europe/Berlin")``, one would expect the following
+   behavior:
+
+   .. code-block::
+
+       >>> a = ZoneInfo("Europe/Berlin")
+       >>> b = pickle.loads(europe_berlin_pkl_nc)
+       >>> a is b
+       False
+
+3. ``ZoneInfo.from_file(fobj, /, key=None)``: When constructed from a file, the
+   ``ZoneInfo`` object will raise an exception on pickling. If an end user
+   wants to pickle a ``ZoneInfo`` constructed from a file, it is recommended
+   that they use a wrapper type or a custom serialization function: either
+   serializing by key or storing the contents of the file object and
+   serializing that.
+
+This method of serialization requires that the time zone data for the required
+key be available on both the serializing and deserializing side, similar to the
+way that references to classes and functions are expected to exist in both the
+serializing and deserializing environments. It also means that no guarantees
+are made about the consistency of results when unpickling a ``ZoneInfo``
+pickled in an environment with a different version of the time zone data.
 
 .. _data-sources:
 
@@ -232,7 +291,7 @@ System time zone information
 ############################
 
 Many Unix-like systems deploy time zone data by default, or provide a canonical
-time zone data package (often called ``tzdata``, as it is on Arch Linux, RedHat
+time zone data package (often called ``tzdata``, as it is on Arch Linux, Fedora,
 and Debian).  Whenever possible, it would be preferable to defer to the system
 time zone information, because this allows time zone information for all
 language stacks to be updated and maintained in one place.  Python distributors
@@ -359,7 +418,9 @@ search path at runtime.
 
 .. code-block::
 
-    def set_tzpath(tzpaths: Optional[Sequence[Union[str, Pathlike]]]) -> None:
+    def set_tzpath(
+        tzpaths: Optional[Sequence[Union[str, os.PathLike]]] = None
+    ) -> None:
         ...
 
 When called with a sequence of paths, this function sets ``zoneinfo.TZPATH`` to
@@ -512,43 +573,17 @@ should be updated, (other than ``pip``, which has a natural mechanism for
 updates and notifications) and since it is not critical to the operation of the
 module, it seems prudent to defer any such proposal.
 
-Incorporating Windows' native time zone support
------------------------------------------------
+Support for leap seconds
+------------------------
 
-Windows has a non-IANA source of time zone information, along with public APIs
-for accessing the data.  Theoretically these could be supported in the
-``zoneinfo`` module, but in practice they would not map cleanly enough to TZif
-files to provide a good platform-independent experience, and a specialized API
-supporting Windows time zones is a niche enough concern that it would be better
-provided by a third party package.
+In addition to time zone offset and name rules, the IANA time zone database
+also provides a source of leap second data. This is deemed out of scope because
+``datetime.datetime`` currently has no support for leap seconds, and the
+question of leap second data can be deferred until leap second support is
+added.
 
-The current Windows system time zones are provided by ``tzres.dll``, which
-contains a list of simple rules for either fixed offsets or time zones with 2
-DST transitions per year (DST start and DST end).  The rules use
-Windows-specific names such as "Eastern Standard Time" as opposed to
-"America/New_York", and they contain no historical data.
-
-Even if it were simple to unambiguously map IANA time zones to a
-Windows-specific time zone name, the lack of historical data makes
-Windows-style time zones sufficiently different that they cannot be used as a
-drop-in replacement for the IANA database.  They are also restricted to either
-0 or 2 DST transitions per year, occurring on a regular schedule.  This means
-that, for example, the "Africa/Casablanca" time zone cannot be accurately
-represented using its Windows equivalent, because for many years Morocco has
-observed Daylight Saving Time during the summer months *except* during Ramadan,
-and thus has 4 transitions per year in years where Ramadan overlaps with the
-DST period.
-
-Considering there is no easy way to use Microsoft's preferred APIs to emulate
-IANA time zone support, it is best left to third parties (or at least a
-different PEP) to provide a dedicated Windows time zone support library.  In
-fact, the ``dateutil`` package already provides ``dateutil.tz.win``
-[#dateutil-tzwin]_, which contains ``tzinfo`` classes utilizing Windows system
-time zone data.
-
-If Microsoft were to provide a public system for accessing IANA time zone data,
-even if it were somewhat unusual compared to access patterns on Unix-like
-systems, the ``zoneinfo`` module should add support for it.
+The first-party ``tzdata`` package should ship the leap second data, even if it
+is not used by the ``zoneinfo`` module.
 
 Using a ``pytz``-like interface
 -------------------------------
@@ -684,6 +719,46 @@ There are several other schemes that were considered and weakly rejected:
    usually found in ``PATH``-like variables, and it would be hard to discover
    mistakes in your implementation.
 
+Windows support via Microsoft's ICU API
+=======================================
+
+Windows does not ship the time zone database as TZif files, but as of Windows
+10's 2017 Creators Update, Microsoft has provided an API for interacting with
+the International Components for Unicode (ICU) project [#icu-project]_
+[#ms-icu-documentation]_ , which includes an API for accessing time zone data —
+sourced from the IANA time zone database. [#icu-timezone-api]_
+
+Providing bindings for this would allow for a mostly seamless cross-platform
+experience for users on sufficiently recent versions of Windows — even without
+falling back to the ``tzdata`` package.
+
+This is a promising area, but is less mature than the remainder of the proposal,
+and so there are several open issues with regards to Windows support:
+
+1. None of the popular third party time zone libraries provide support for ICU
+   (``dateutil``'s native windows time zone support relies on legacy time zones
+   provided in the Windows Registry [#dateutil-tzwin]_, which would be
+   unsuitable as a drop-in replacement for TZif files), so this would need to
+   be developed *de novo* in the standard library, rather than first maturing
+   in the third party ecosystem.
+2. The most likely implementation for this would be to have ``TZPATH`` default
+   to empty on Windows and have a search path precedence of ``TZPATH`` > ICU
+   > ``tzdata``, but this prevents end users from forcing the use of ``tzdata``
+   by setting an empty ``TZPATH``.
+
+   Two possible solutions for this are:
+
+   1. Add a mechanism to disable ICU globally independent of setting
+      ``TZPATH``.
+   2. Add a cross-platform mechanism to give ``tzdata`` the highest
+      precedence.
+3. This is not part of the reference implementation and it is uncertain whether
+   it can be ready and vetted in time for the Python 3.9 feature freeze. It is
+   an open question whether a failure to implement native Windows support in
+   3.9 should defer the release of ``zoneinfo`` or if only the ICU-based
+   Windows support should be deferred.
+
+
 Footnotes
 =========
 
@@ -763,6 +838,18 @@ References
 .. [#pkgutil_data]
     ``pkgutil.get_data`` documentation
     https://docs.python.org/3/library/pkgutil.html#pkgutil.get_data
+
+.. [#icu-project]
+    ICU TimeZone classes
+    http://userguide.icu-project.org/datetime/timezone
+
+.. [#ms-icu-documentation]
+    Microsoft documentation for International Components for Unicode (ICU)
+    `https://docs.microsoft.com/en-us/windows/win32/intl/international-components-for-unicode--icu- <https://docs.microsoft.com/en-us/windows/win32/intl/international-components-for-unicode--icu->`_
+
+.. [#icu-timezone-api]
+    ``icu::TimeZone`` class documentation
+    https://unicode-org.github.io/icu-docs/apidoc/released/icu4c/classicu_1_1TimeZone.html
 
 
 Other time zone implementations:
