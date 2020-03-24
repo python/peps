@@ -1,0 +1,197 @@
+PEP: 9999
+Title: New PEG parser for CPython
+Version: $Revision$
+Last-Modified: $Date$
+Author: Guido van Rossum <guido@python.org>,
+ Pablo Galindo <pablogsal@gmail.com>,
+ Lysandros Nikolaou <lisandrosnik@gmail.com>
+Discussions-To: Python-Dev <python-dev@python.org>
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 24-March-2020
+
+
+========
+Overview
+========
+
+This PEP proposes to substitue the current LL(1)-based parser of CPython
+by a new PEG-based parser. This new parser will allow to eliminate the multiple
+"hacks" that exist in the current grammar to circunvent the LL(1)-limitation
+while substantially reducing the maintainance costs in some areas related to the
+compiling pipeline such as the grammar, the parser and the AST generation. The new PEG
+parser will also lift the LL(1) restriction over the current Python grammar.
+
+=========
+Rationale
+=========
+
+The current Python grammar is an LL(1)-based grammar. A grammar can be said
+to be LL(1) if it can be parser by an LL(1) parser, which in turn is defined
+as a top-down parser that parses the input from Left to right, performing
+Leftmost derivation of the sentence, and can only use 1 token of lookahead
+when parsing a sentence. LL(1) parsers and grammars are usually known for being
+efficient and simple to implement and generate (the current parser is actually
+generated from the grammar file) but the reality is that expressing some constructs
+currently present in the Python language is notably difficult or impossible with
+such restriction.
+
+As LL(1) parsers can only look one token lookahead to disinguish possibilities, some
+rules in the grammar may be ambiguous. For instance the rule::
+
+    rule: A | B
+  
+is ambiguous if the first sets (the collection of all the terminals that a certain rule
+can start with) of both *A* and *B* have some elements in common. This is due to the fact
+that if the parser sees a token in the input program that both *A* and *B* can start with
+is impossible for it to deduce which option must be followed as no further token of the program
+can be examined to disambiguate. This problem happens very commonly in the Python grammar,
+for instance in the rule for assignment expressions::
+
+    namedexpr_test: NAME [':=' test]
+
+This simple rule is not compatible with the Python grammar as *NAME* is among the elements of the
+first set of the rule *test*. To work around this limitation the actual rule that appears in the
+current grammar is::
+
+    namedexpr_test: test [':=' test]
+
+This is a much broad rule that the previous one allowing constructs like ``[x for x in
+y] := [1,2,3]`` and the way the rule is limited to its desired form is by disallowing
+these unwanted constructions when transforming the parse tree to the abstract syntax
+tree. This is not only inelegant but a considerable maintainace burden as it couples
+the AST creation routines with the actual parsing, making the actual grammarfile not reflect
+correctly what the *actual* grammar is (that is, the collection of all valid Python programs).
+
+Similar workarounds appears in multiple other rules of the current grammar. Some times
+this problem is unsolvable. For instance in `bpo-12782: Multiple context expressions do
+not support parentheses for continuation across lines
+<http://bugs.python.org/issue12782>`_ that shows how making an LL(1) rule that supports
+writting::
+
+
+  with (
+      open("a_really_long_foo") as foo,
+      open("a_really_long_baz") as baz,
+      open("a_really_long_bar") as bar
+  ):
+    ...
+
+is not possible due to the fact that the first sets of the grammar items that can
+appear as context managers include the open parenthesis, making the rule ambiguous.
+This rule is not only consistent with other pars of the language (like the rule for
+multiple imports) but is also very usefull to auto-formatter tools as parenthesized
+groups are normally used to group together elements to be formatted together (in the
+same way the tools operate on the contents of lists, sets...). This limitation also makes
+
+
+Additionally, another limitation of LL(1) grammars is that left-recursion is not
+supported. This makes writing some rules very unnatural and far from how programmers
+thing about the program. For instance this construct::
+
+  expr: expr '+' term | term
+
+cannot be parsed by an LL(1) parser. The traditional remedy is to rewrite the grammar to
+circunvent the problem::
+
+  expr: term ('+' term)*
+
+The problem that appears with this form is that the parse tree is forced to have a very unnatural
+shape. This is because with this rule, for the input program ``a + b + c`` the parse tree will be
+flatten (``['a', '+', 'b', '+', 'c']``) and must be post-processed to construct a left-recursive
+parse tree (``[['a', '+', 'b'], '+', 'c']``). Being forced to write the second rule not only makes
+the parse tree not reflect correctly the desired associativity but also imposes further presure in
+further compilation stages to detect and post-process these cases.
+
+One last problem of the current parser is that there is a huge coupling between the AST
+generation routines and the particular shape of the produced parse trees. This makes
+the code for generating the AST specially complicated as many actions are implicit. For
+instance, the AST generation code knows what alternatives of a certain rule are produce
+based on the number of child nodes present in a given parse node. This makes the code
+difficult to follow as this property is not explicit and not directly related to the
+grammar file and is very influenced by implementation details (like the one in the
+previous paragraph). As a result of this, a consierable ammount of the AST generation
+code needs to deal with inspecting and reasoning about the particular shape of the
+parse trees that it receives.
+
+The new parser machinery that we propose tackles all this problems while lifting the
+aformentioned LL(1) restriction in the Grammar.
+
+=============
+Specification
+=============
+
+A PEG (Parser Expression Grammar) grammar differs from a context-free grammar (like the current one)
+in the fact that the way is written reflects more how the parser will operate when parsing it. The fundamental
+techincal difference is that the choice operator is ordered. This means that when writting::
+
+  rule: A | B | C
+
+a context-free-grammar parser (like an LL(1) parser) will generate constructions that given an input string
+will *deduce* wich alternative (*A*, *B* or *C*) must be followd while a PEG parser will check if the first
+alternative succeeds and only if it fails it will continue with the second one or the third one in the order
+in which they are written. This makes the choice operator not conmutative. Compared with LL(1) parsers, PEG
+parser have infinite lookahead (this means that they can consider an arbitrary number of tokens before deciding
+for a rule). Our proposed implementation (as is commonly done) uses a techique called "packrat parsing" which
+which not only loads the entire program in memory before parsing it, but also allows the parser to backtrack
+arbitrarily. This is made efficient by memoizing the rules already matched for each position. The cost of the
+memoization cache is that the parser will naturally use more memory than a simple LL(1) parser, which normally
+are table-based. We will explain later in this document why we consider this cost acceptable.
+
+PEG parsers normally do not support left recursion but we have implemented a technique similar to the one described
+in Medeiros et al. [1]_ but using the memoization cache instead of static variables. This approach is closer to the
+one described in Warth et al. [2]_. This allows us to write not only simple left-recursive rules but also more
+complicated rules that involve indirect indirect left-recusion like::
+
+  rule1: rule2 | 'a'
+  rule2: rule3 | 'b'
+  rule3: rule1 | 'c'
+
+and "hidden left-recursion" like::
+
+  rule: 'optional'? rule '@' some_other_rule
+
+In order to avoid the intermediate steps that obscure the relationship between the grammar and the AST generation the
+proposed PEG parser allows to generate directly AST pieces for a rule via grammar actions. Grammar actions are pieces
+of C code that are executed when a grammar rule is succesfully parsed. This allows to directly describe how the AST
+is composed in the grammar itself, making it more clear and maintainable. This AST generation process is supported
+by the use of some helper functions that factor common AST object manipulations and some other required operations that
+are not directly related to the grammar.
+
+The new proposed PEG parser contains the following pieces:
+
+* A parser generator that can read a grammar file and produce a PEG parser
+  written in Python or C that can parse said grammar.
+
+* A PEG meta-grammar that automatically generates a Python parser that is used
+  for the parser generator itself (this means that there are no manually-written
+  parsers).
+
+* A generated parser (using the parser generator) that can directly produce C and
+  Python AST objects directly.
+
+==========================
+Performance and validation
+==========================
+
+TBD
+
+==============
+Rejected Ideas
+==============
+
+.. [#GUIDO_PEG]
+   Guido series on PEG parsing
+   https://medium.com/@gvanrossum_83706/peg-parsing-series-de5d41b2ed60
+
+.. [1] Medeiros et al.
+   https://arxiv.org/pdf/1509.02439v1.pdf 
+
+.. [2] Warth et al.
+   http://web.cs.ucla.edu/~todd/research/pepm08.pdf
+=========
+Copyright
+=========
+
+This document has been placed in the public domain.
