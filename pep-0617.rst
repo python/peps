@@ -1,0 +1,740 @@
+PEP: 0617
+Title: New PEG parser for CPython
+Version: $Revision$
+Last-Modified: $Date$
+Author: Guido van Rossum <guido@python.org>,
+ Pablo Galindo <pablogsal@gmail.com>,
+ Lysandros Nikolaou <lisandrosnik@gmail.com>
+Discussions-To: Python-Dev <python-dev@python.org>
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 24-March-2020
+
+
+========
+Overview
+========
+
+This PEP proposes to replace the current LL(1)-based parser of CPython
+with a new PEG-based parser. This new parser will allow eliminating the multiple
+"hacks" that exist in the current grammar to circumvent the LL(1)-limitation
+while substantially reducing the maintenance costs in some areas related to the
+compiling pipeline such as the grammar, the parser and the AST generation. The new PEG
+parser will also lift the LL(1) restriction over the current Python grammar.
+
+===========================
+Background on LL(1) parsers
+===========================
+
+The current Python grammar is an LL(1)-based grammar. A grammar can be said to be
+LL(1) if it can be parsed by an LL(1) parser, which in turn is defined as a
+top-down parser that parses the input from left to right, performing leftmost
+derivation of the sentence, and can only use one token of lookahead when parsing a
+sentence. The traditional approach to construct or generate an LL(1) parser is to
+produce a *parse table* which encodes the possible transitions between all possible
+states of the parser. These tables are normally constructed from the *first sets*
+and the *follow sets* of the grammar:
+
+* Given a rule, the *first set* are the collection of all terminals that can occur
+  first in a full derivation of that rule. Intuitively this helps the parser decide
+  among multiple alternatives if a rule can have multiple possibilities. For
+  instance, given the rule ::
+
+      rule: A | B
+
+  if only ``A`` can start with the terminal *a* and only ``B`` can start with the
+  terminal *b* and the parser sees the token *b* when parsing this rule, it knows
+  that it needs to follow the non-terminal ``B``.
+
+* Given a rule, the *follow set* are the collection of terminals that can appear
+  immediately to the right of that rule in a partial derivation. Intuitively this
+  solves the problem in which a rule can expand to the empty string. For instance,
+  given this rule::
+
+    rule: A 'b'
+
+  if the parser has the token *b* and the rule A can only start with the token *a*
+  we know it is an invalid program but if A can be expanded also to the empty string
+  (called an ε-production) then we can consume the next token, 'b'. Therefore, *b*
+  is in the *follow set*  of ``A``.
+
+
+The Python grammar does not allow ε-productions so the *follow sets* are not
+needed when creating the parse tables. Currently, in CPython, a parser generator
+program reads the grammar and produces a parsing table representing a set of
+deterministic finite automata (DFA) that can be included in a C program, the
+parser, which is a pushdown automaton that uses this data to produce a Concrete
+Syntax Tree (CST) sometimes known directly as a "parse tree". In this process, the
+*first sets* are used indirectly when generating the DFAs.
+
+LL(1) parsers and grammars are usually known for being efficient and simple to
+implement and generate the but the reality is that expressing some constructs
+currently present in the Python language is notably difficult or impossible with
+such a restriction. As LL(1) parsers can only look one token ahead to distinguish
+possibilities, some rules in the grammar may be ambiguous. For instance the rule::
+
+    rule: A | B
+
+is ambiguous if the *first sets* of both ``A`` and ``B`` have some elements in
+common. This is because if the parser sees a token in the input
+program that both *A* and *B* can start with it is impossible for it to deduce
+which option to expand as no further token of the program can be examined to
+disambiguate. As will be shown later in this document, the current LL(1)-based
+grammar suffers a lot from this scenario.
+
+Also, it is relevant to note (as other sections of this document will deal with this
+concept) that a given grammar cannot be LL(1) if it is left recursive. A grammar is
+left-recursive if and only if there exists a nonterminal that can derive to a
+sentential form with itself as the leftmost symbol. For instance this rule::
+
+    rule: rule 'a'
+
+is left-recursive because the rule can be expanded to an expression that starts
+with itself. As will be described later, left-recursion can be very useful to
+express some desired properties directly in the grammar and the lack of
+it can lead to some undesired scenarios.
+
+=========================
+Background on PEG parsers
+=========================
+
+A PEG (Parsing Expression Grammar) grammar differs from a context-free grammar
+(like the current one) in the fact that the way it is written more closely
+reflects how the parser will operate when parsing it. The fundamental technical
+difference is that the choice operator is ordered. This means that when writing::
+
+  rule: A | B | C
+
+a context-free-grammar parser (like an LL(1) parser) will generate constructions
+that given an input string will *deduce* which alternative (``A``, ``B`` or ``C``)
+must be expanded, while a PEG parser will check if the first alternative succeeds
+and only if it fails, will it continue with the second or the third one in the
+order in which they are written. This makes the choice operator not commutative.
+
+Unlike LL(1) parsers PEG-based parsers cannot be ambiguous: if a string parses,
+it has exactly one valid parse tree. This means that a PEG-based parser cannot
+suffer from the ambiguity problems described in the previous section.
+
+PEG parsers are usually constructed as a recursive descent parser in which every
+rule in the grammar corresponds to a function in the program implementing the
+parser and the parsing expression (the "expansion" or "definition" of the rule)
+represents the "code" in said function. Each parsing function conceptually takes
+an input string as its argument, and yields one of the following results:
+
+* A "success" result. This result indicates that the expression can be parsed by
+  that rule and the function may optionally move forward or consume one or more
+  characters of the input string supplied to it.
+* A "failure" result, in which case no input is consumed.
+
+Notice that "failure" results do not imply that the program is incorrect or a
+parsing failure because as the choice operator is ordered, a "failure" result
+merely indicates "try the following option". A direct implementation of a PEG
+parser as a recursive descent parser will present exponential time performance in
+the worst case as compared with LL(1) parsers, PEG parsers have infinite lookahead
+(this means that they can consider an arbitrary number of tokens before deciding
+for a rule). Usually, PEG parsers avoid this exponential time complexity with a
+technique called "packrat parsing" [1]_ which not only loads the entire
+program in memory before parsing it but also allows the parser to backtrack
+arbitrarily. This is made efficient by memoizing the rules already matched for
+each position. The cost of the memoization cache is that the parser will naturally
+use more memory than a simple LL(1) parser, which normally are table-based. We
+will explain later in this document why we consider this cost acceptable.
+
+=========
+Rationale
+=========
+
+In this section, we describe a list of problems that are present in the current parser
+machinery in CPython that motivates the need for a new parser.
+
+---------------------------------
+Some rules are not actually LL(1)
+---------------------------------
+
+Although the Python grammar is technically an LL(1) grammar (because is parsed by
+an LL(1) parser) several rules are not LL(1) and several workarounds are
+implemented in the grammar and in other parts of CPython to deal with this. For
+example, consider the rule for assignment expressions::
+
+    namedexpr_test: NAME [':=' test]
+
+This simple rule is not compatible with the Python grammar as *NAME* is among the
+elements of the *first set* of the rule *test*. To work around this limitation the
+actual rule that appears in the current grammar is::
+
+    namedexpr_test: test [':=' test]
+
+Which is a much broader rule than the previous one allowing constructs like ``[x
+for x in y] := [1,2,3]``. The way the rule is limited to its desired form is by
+disallowing these unwanted constructions when transforming the parse tree to the
+abstract syntax tree. This is not only inelegant but a considerable maintenance
+burden as it forces the AST creation routines and the compiler into a situation in
+which they need to know how to separate valid programs from invalid programs,
+which should be a responsibility solely of the parser. This also leads to the
+actual grammar file not reflecting correctly what the *actual* grammar is (that
+is, the collection of all valid Python programs).
+
+Similar workarounds appear in multiple other rules of the current grammar.
+Sometimes this problem is unsolvable. For instance, `bpo-12782: Multiple context
+expressions do not support parentheses for continuation across lines
+<http://bugs.python.org/issue12782>`_ shows how making an LL(1) rule that supports
+writing::
+
+  with (
+      open("a_really_long_foo") as foo,
+      open("a_really_long_baz") as baz,
+      open("a_really_long_bar") as bar
+  ):
+    ...
+
+is not possible since the first sets of the grammar items that can
+appear as context managers include the open parenthesis, making the rule
+ambiguous. This rule is not only consistent with other parts of the language (like
+the rule for multiple imports), but is also very useful to auto-formatting tools,
+as parenthesized groups are normally used to group elements to be
+formatted together (in the same way the tools operate on the contents of lists,
+sets...).
+
+-----------------------
+Complicated AST parsing
+-----------------------
+
+Another problem of the current parser is that there is a huge coupling between the
+AST generation routines and the particular shape of the produced parse trees. This
+makes the code for generating the AST especially complicated as many actions and
+choices are implicit. For instance, the AST generation code knows what
+alternatives of a certain rule are produced based on the number of child nodes
+present in a given parse node. This makes the code difficult to follow as this
+property is not directly related to the grammar file and is influenced by
+implementation details. As a result of this, a considerable amount of the AST
+generation code needs to deal with inspecting and reasoning about the particular
+shape of the parse trees that it receives.
+
+----------------------
+Lack of left recursion
+----------------------
+
+As described previously, a limitation of LL(1) grammars is that they cannot allow
+left-recursion. This makes writing some rules very unnatural and far from how
+programmers normally think about the program. For instance this construct (a simpler
+variation of several rules present in the current grammar)::
+
+  expr: expr '+' term | term
+
+cannot be parsed by an LL(1) parser. The traditional remedy is to rewrite the
+grammar to circumvent the problem::
+
+  expr: term ('+' term)*
+
+The problem that appears with this form is that the parse tree is forced to have a
+very unnatural shape. This is because with this rule, for the input program ``a +
+b + c`` the parse tree will be flattened (``['a', '+', 'b', '+', 'c']``) and must
+be post-processed to construct a left-recursive parse tree (``[['a', '+', 'b'],
+'+', 'c']``). Being forced to write the second rule not only leads to the parse
+tree not correctly reflecting the desired associativity, but also imposes further
+pressure on later compilation stages to detect and post-process these cases.
+
+-----------------------
+Intermediate parse tree
+-----------------------
+
+The last problem present in the current parser is the intermediate creation of a
+parse tree or Concrete Syntax Tree that is later transformed to an Abstract Syntax
+Tree. Although the construction of a CST is very common in parser and compiler
+pipelines, in CPython this intermediate CST is not used by anything else (it is
+only indirectly exposed by the *parser* module and a surprisingly small part of
+the code in the CST production is reused in the module). Which is worse: the whole
+tree is kept in memory, keeping many branches that consist of chains of nodes with
+a single child. This has shown to consume a considerable ammount of memory (for
+instance in `bpo-26451: Excessive peak memory consumption by the Python
+parser <https://bugs.python.org/issue26415>`_).
+
+Having to produce an intermediate result between the grammar and the AST is not only
+undesirable but also makes the AST generation step much more complicated, raising
+considerably the maintenance burden.
+
+===========================
+The new proposed PEG parser
+===========================
+
+The new proposed PEG parser contains the following pieces:
+
+* A parser generator that can read a grammar file and produce a PEG parser
+  written in Python or C that can parse said grammar.
+
+* A PEG meta-grammar that automatically generates a Python parser that is used
+  for the parser generator itself (this means that there are no manually-written
+  parsers).
+
+* A generated parser (using the parser generator) that can directly produce C and
+  Python AST objects.
+
+--------------
+Left recursion
+--------------
+
+PEG parsers normally do not support left recursion but we have implemented a
+technique similar to the one described in Medeiros et al. [2]_ but using the
+memoization cache instead of static variables. This approach is closer to the one
+described in Warth et al. [3]_. This allows us to write not only simple left-recursive
+rules but also more complicated rules that involve indirect left-recursion like::
+
+  rule1: rule2 | 'a'
+  rule2: rule3 | 'b'
+  rule3: rule1 | 'c'
+
+and "hidden left-recursion" like::
+
+  rule: 'optional'? rule '@' some_other_rule
+
+------
+Syntax
+------
+
+The grammar consists of a sequence of rules of the form: ::
+
+   rule_name: expression
+
+Optionally, a type can be included right after the rule name, which
+specifies the return type of the C or Python function corresponding to
+the rule: ::
+
+   rule_name[return_type]: expression
+
+If the return type is omitted, then a ``void *`` is returned in C and an
+``Any`` in Python.
+
+The full meta-grammar for the grammars supported by the PEG generator is:
+
+::
+
+    start[Grammar]: grammar ENDMARKER { grammar }
+
+    grammar[Grammar]:
+        | metas rules { Grammar(rules, metas) }
+        | rules { Grammar(rules, []) }
+
+    metas[MetaList]:
+        | meta metas { [meta] + metas }
+        | meta { [meta] }
+
+    meta[MetaTuple]:
+        | "@" NAME NEWLINE { (name.string, None) }
+        | "@" a=NAME b=NAME NEWLINE { (a.string, b.string) }
+        | "@" NAME STRING NEWLINE { (name.string, literal_eval(string.string)) }
+
+    rules[RuleList]:
+        | rule rules { [rule] + rules }
+        | rule { [rule] }
+
+    rule[Rule]:
+        | rulename ":" alts NEWLINE INDENT more_alts DEDENT {
+              Rule(rulename[0], rulename[1], Rhs(alts.alts + more_alts.alts)) }
+        | rulename ":" NEWLINE INDENT more_alts DEDENT { Rule(rulename[0], rulename[1], more_alts) }
+        | rulename ":" alts NEWLINE { Rule(rulename[0], rulename[1], alts) }
+
+    rulename[RuleName]:
+        | NAME '[' type=NAME '*' ']' {(name.string, type.string+"*")}
+        | NAME '[' type=NAME ']' {(name.string, type.string)}
+        | NAME {(name.string, None)}
+
+    alts[Rhs]:
+        | alt "|" alts { Rhs([alt] + alts.alts)}
+        | alt { Rhs([alt]) }
+
+    more_alts[Rhs]:
+        | "|" alts NEWLINE more_alts { Rhs(alts.alts + more_alts.alts) }
+        | "|" alts NEWLINE { Rhs(alts.alts) }
+
+    alt[Alt]:
+        | items '$' action { Alt(items + [NamedItem(None, NameLeaf('ENDMARKER'))], action=action) }
+        | items '$' { Alt(items + [NamedItem(None, NameLeaf('ENDMARKER'))], action=None) }
+        | items action { Alt(items, action=action) }
+        | items { Alt(items, action=None) }
+
+    items[NamedItemList]:
+        | named_item items { [named_item] + items }
+        | named_item { [named_item] }
+
+    named_item[NamedItem]:
+        | NAME '=' ~ item {NamedItem(name.string, item)}
+        | item {NamedItem(None, item)}
+        | it=lookahead {NamedItem(None, it)}
+
+    lookahead[LookaheadOrCut]:
+        | '&' ~ atom {PositiveLookahead(atom)}
+        | '!' ~ atom {NegativeLookahead(atom)}
+        | '~' {Cut()}
+
+    item[Item]:
+        | '[' ~ alts ']' {Opt(alts)}
+        |  atom '?' {Opt(atom)}
+        |  atom '*' {Repeat0(atom)}
+        |  atom '+' {Repeat1(atom)}
+        |  sep=atom '.' node=atom '+' {Gather(sep, node)}
+        |  atom {atom}
+
+    atom[Plain]:
+        | '(' ~ alts ')' {Group(alts)}
+        | NAME {NameLeaf(name.string) }
+        | STRING {StringLeaf(string.string)}
+
+    # Mini-grammar for the actions
+
+    action[str]: "{" ~ target_atoms "}" { target_atoms }
+
+    target_atoms[str]:
+        | target_atom target_atoms { target_atom + " " + target_atoms }
+        | target_atom { target_atom }
+
+    target_atom[str]:
+        | "{" ~ target_atoms "}" { "{" + target_atoms + "}" }
+        | NAME { name.string }
+        | NUMBER { number.string }
+        | STRING { string.string }
+        | "?" { "?" }
+        | ":" { ":" }
+
+
+Grammar Expressions
+~~~~~~~~~~~~~~~~~~~
+
+``# comment``
+'''''''''''''
+
+Python-style comments.
+
+``e1 e2``
+'''''''''
+
+Match e1, then match e2.
+
+::
+
+   rule_name: first_rule second_rule
+
+.. _e1-e2-1:
+
+``e1 | e2``
+'''''''''''
+
+Match e1 or e2.
+
+The first alternative can also appear on the line after the rule name
+for formatting purposes. In that case, a \| must be used before the
+first alternative, like so:
+
+::
+
+   rule_name[return_type]:
+       | first_alt
+       | second_alt
+
+``( e )``
+'''''''''
+
+Match e.
+
+::
+
+   rule_name: (e)
+
+A slightly more complex and useful example includes using the grouping
+operator together with the repeat operators:
+
+::
+
+   rule_name: (e1 e2)*
+
+``[ e ] or e?``
+'''''''''''''''
+
+Optionally match e.
+
+::
+
+   rule_name: [e]
+
+A more useful example includes defining that a trailing comma is
+optional:
+
+::
+
+   rule_name: e (',' e)* [',']
+
+.. _e-1:
+
+``e*``
+''''''
+
+Match zero or more occurrences of e.
+
+::
+
+   rule_name: (e1 e2)*
+
+.. _e-2:
+
+``e+``
+''''''
+
+Match one or more occurrences of e.
+
+::
+
+   rule_name: (e1 e2)+
+
+``s.e+``
+''''''''
+
+Match one or more occurrences of e, separated by s. The generated parse
+tree does not include the separator. This is otherwise identical to
+``(e (s e)*)``.
+
+::
+
+   rule_name: ','.e+
+
+.. _e-3:
+
+``&e``
+''''''
+
+Succeed if e can be parsed, without consuming any input.
+
+.. _e-4:
+
+``!e``
+''''''
+
+Fail if e can be parsed, without consuming any input.
+
+An example taken from the proposed Python grammar specifies that a primary
+consists of an atom, which is not followed by a ``.`` or a ``(`` or a
+``[``:
+
+::
+
+   primary: atom !'.' !'(' !'['
+
+.. _e-5:
+
+``~``
+''''''
+
+Commit to the current alternative, even if it fails to parse.
+
+::
+
+   rule_name: '(' ~ some_rule ')' | some_alt
+
+In this example, if a left parenthesis is parsed, then the other
+alternative won’t be considered, even if some_rule or ‘)’ fail to be
+parsed.
+
+Variables in the Grammar
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+A subexpression can be named by preceding it with an identifier and an
+``=`` sign. The name can then be used in the action (see below), like this: ::
+
+   rule_name[return_type]: '(' a=some_other_rule ')' { a }
+
+---------------
+Grammar actions
+---------------
+
+To avoid the intermediate steps that obscure the relationship between the
+grammar and the AST generation the proposed PEG parser allows directly generating
+AST nodes for a rule via grammar actions. Grammar actions are C expressions that
+are evaluated when a grammar rule is successfully parsed. This allows to directly
+describe how the AST is composed in the grammar itself, making it more clear and
+maintainable. This AST generation process is supported by the use of some helper
+functions that factor out common AST object manipulations and some other required
+operations that are not directly related to the grammar.
+
+To indicate these actions each alternative can be followed by a the action code
+inside curly-braces, which specifies the return value of the alternative:::
+
+   rule_name[return_type]:
+       | first_alt1 first_alt2 { first_alt1 }
+       | second_alt1 second_alt2 { second_alt1 }
+
+If the action is omitted and C code is being generated, then there are two
+different possibilities: 1. If there’s a single name in the alternative, this gets
+returned. 2. If not, a dummy name object gets returned (this case should be avoided).
+
+If Python code is being generated, then a list with all the parsed
+expressions get returned if no action is specified (this is meant for debugging).
+
+As an illustrative example this simple grammar file allows to directly generate a full
+parser that can parse simple aritmetic expressions and that returns a valid Python AST:
+
+::
+
+    start[mod_ty]: a=stmt* $ { Module(a, NULL, p->arena) }
+    stmt[stmt_ty]: a=expr_stmt { a }
+    expr_stmt[stmt_ty]: a=expression NEWLINE { _Py_Expr(a, EXTRA) }
+    expression[expr_ty]: ( l=expression '+' r=term { _Py_BinOp(l, Add, r, EXTRA) }
+                        | l=expression '-' r=term { _Py_BinOp(l, Sub, r, EXTRA) }
+                        | t=term { t }
+                        )
+    term[expr_ty]: ( l=term '*' r=factor { _Py_BinOp(l, Mult, r, EXTRA }
+                  | l=term '/' r=factor { _Py_BinOp(l, Div, r, EXTRA) }
+                  | f=factor { f }
+                  )
+    factor[expr_ty]: ('(' e=expression ')' { e }
+                    | a=atom { a }
+                    )
+    atom[expr_ty]: ( n=NAME { n }
+                  | n=NUMBER { n }
+                  | s=STRING { s }
+                  )
+
+here ``EXTRA`` is a macro that expands to ``start_lineno, start_col_offset,
+end_lineno, end_col_offset, p->arena``, being the values for this variables
+automatically injected by the parser; ``p`` points to an object
+that holds on to all state for the parser.
+
+==============
+Migration plan
+==============
+
+This section describes the migration plan when porting to the new PEG-based parser
+if this PEP is accepted. The migration will be executed in a series of steps that allow
+initially to fallback to the previous parser if needed:
+
+1.  Before Python 3.9 beta 1, include the new PEG-based parser machinery in CPython
+    with a command-line flag and environment variable that allows switching between
+    the new and the old parsers together with explicit APIs that allow invoking the
+    new and the old parsers independently. At this step, all Python APIs like ``ast.parse``
+    and ``compile`` will use the parser set by the flags or the environment variable and
+    the default parser will be the current parser.
+
+2.  After Python 3.9 Beta 1 the default parser will be the new parser.
+
+3.  Between Python 3.9 and Python 3.10, the old parser and related code (like the
+    "parser" module) will be kept until a new Python release happens (Python 3.10). In
+    the meanwhile and until the old parser is removed, **no new Python Grammar
+    addition will be added that requires the peg parser**. This means that the grammar
+    will be kept LL(1) until the old parser is removed.
+
+4.  In Python 3.10, remove the old parser, the command-line flag, the environment
+    variable and the "parser" module and related code.
+
+==========================
+Performance and validation
+==========================
+
+We have done extensive timing and validation of the new parser, and
+this gives us confidence that the new parser is of high enough quality
+to replace the current parser.
+
+----------
+Validation
+----------
+
+To start with validation, we regularly compile the entire Python 3.8
+stdlib and compare every aspect of the resulting AST with that
+produced by the standard compiler. (In the process we found a few bugs
+in the standard parser's treatment of line and column numbers, which
+we have all fixed upstream via a series of issues and PRs.)
+
+We have also occasionally compiled a much larger codebase (the 100
+most popular packages on PyPI) and this has helped us find a (very)
+few additional bugs in the new parser.
+
+(One area we have not explored extensively is rejection of all wrong
+programs. We have unit tests that check for a certain number of
+explicit rejections, but more work could be done, e.g. by using a
+fuzzer that inserts random subtle bugs into existing code. We're open
+to help in this area.)
+
+-----------
+Performance
+-----------
+
+We have tuned the performance of the new parser to come within 10% of
+the current parser both in speed and memory consumption. While the
+PEG/packrat parsing algorithm inherently consumes more memory than the
+current LL(1) parser, we have an advantage because we don't construct
+an intermediate CST.
+
+Below are some benchmarks. These are focused on compiling source code
+to bytecode, because this is the most realistic situation. Returning
+an AST to Python code is not as representative, because the process to
+convert the *internal* AST (only accessible to C code) to an
+*external* AST (an instance of ``ast.AST``) takes more time than the
+parser itself.
+
+All measurements reported here are done on a recent MacBook Pro,
+taking the median of three runs. No particular care was taken to stop
+other applications running on the same machine.
+
+The first timings are for our canonical test file, which has 100,000
+lines endlessly repeating the following three lines::
+
+    1 + 2 + 4 + 5 + 6 + 7 + 8 + 9 + 10 + ((((((11 * 12 * 13 * 14 * 15 + 16 * 17 + 18 * 19 * 20))))))
+    2*3 + 4*5*6
+    12 + (2 * 3 * 4 * 5 + 6 + 7 * 8)
+
+- Just parsing and throwing away the internal AST takes 1.16 seconds
+  with a max RSS of 681 MiB.
+
+- Parsing and converting to ``ast.AST`` takes 6.34 seconds, max RSS
+  1029 MiB.
+
+- Parsing and compiling to bytecode takes 1.28 seconds, max RSS 681
+  MiB.
+
+- With the current parser, parsing and compiling takes 1.44 seconds,
+  max RSS 836 MiB.
+
+For this particular test file, the new parser is faster and uses less
+memory than the current parser (compare the last two bullets).
+
+We also did timings with a more realistic payload, the entire Python
+3.8 stdlib. This payload consists of 1,641 files, 749,570 lines,
+27,622,497 bytes. (Though 11 files can't be compiled by any Python 3
+parser due to encoding issues, sometimes intentional.)
+
+- Compiling and throwing away the internal AST took 2.141 seconds.
+  That's 350,040 lines/sec, or 12,899,367 bytes/sec. The max RSS was
+  74 MiB (the largest file in the stdlib is much smaller than out
+  canonical test file).
+
+- Compiling to bytecode took 3.290 seconds. That's 227,861 lines/sec,
+  or 8,396,942 bytes/sec. Max RSS 77 MiB.
+
+- Compiling to bytecode using the current parser took 3.367 seconds.
+  That's 222,620 lines/sec, or 8,203,780 bytes/sec. Max RSS 70 MiB.
+
+Comparing the last two bullets we find that the new parser is slightly
+faster but uses slightly (about 10%) more memory. We believe this is
+acceptable. (Also, there are probably some more tweaks we can make to
+reduce memory usage.)
+
+==========
+References
+==========
+
+.. [#GUIDO_PEG]
+   Guido's series on PEG parsing
+   https://medium.com/@gvanrossum_83706/peg-parsing-series-de5d41b2ed60
+
+.. [1] Ford, Bryan
+   http://pdos.csail.mit.edu/~baford/packrat/thesis
+
+.. [2] Medeiros et al.
+   https://arxiv.org/pdf/1509.02439v1.pdf
+
+.. [3] Warth et al.
+   http://web.cs.ucla.edu/~todd/research/pepm08.pdf
+
+
+=========
+Copyright
+=========
+
+This document has been placed in the public domain.
