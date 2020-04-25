@@ -1,8 +1,9 @@
 from docutils import nodes
-from docutils.transforms import Transform, parts
+from docutils import transforms
+from docutils.transforms import parts
 
 
-class PEPContents(Transform):
+class PEPContents(transforms.Transform):
 
     """
     Insert an empty table of contents topic and a transform placeholder into
