@@ -1,9 +1,9 @@
 from docutils import nodes
-from docutils.transforms import Transform
-from docutils.parsers.rst import states, Directive
+import docutils.transforms as transforms
+from docutils.parsers.rst import states
 
 
-class PEPTitle(Transform):
+class PEPTitle(transforms.Transform):
 
     """
     Insert an empty table of contents topic and a transform placeholder into

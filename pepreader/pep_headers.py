@@ -1,7 +1,9 @@
 import re
 
-from docutils import nodes, utils
-from docutils.transforms import peps, Transform
+from docutils import nodes
+from docutils import utils
+from docutils import transforms
+from docutils.transforms import peps
 
 
 class DataError(Exception):
@@ -9,7 +11,7 @@ class DataError(Exception):
 
 
 # PEPHeaders is identical to docutils.transforms.peps.Headers excepting bdfl-delegate, sponsor & superseeded-by
-class PEPHeaders(Transform):
+class PEPHeaders(transforms.Transform):
 
     """
     Process fields in a PEP's initial RFC-2822 header.

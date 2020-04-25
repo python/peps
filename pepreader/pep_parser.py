@@ -1,7 +1,7 @@
 from sphinx import parsers
-from .pep_headers import PEPHeaders
-from .pep_title import PEPTitle
-from .pep_contents import PEPContents
+from . import pep_headers
+from . import pep_title
+from . import pep_contents
 
 
 
@@ -16,8 +16,8 @@ class PEPParser(parsers.RSTParser):
     def get_transforms(self):
         transforms = super().get_transforms()
         transforms.extend([
-            PEPHeaders,
-            PEPTitle,
-            PEPContents,
+            pep_headers.PEPHeaders,
+            pep_title.PEPTitle,
+            pep_contents.PEPContents,
         ])
         return transforms
