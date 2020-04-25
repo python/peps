@@ -7,6 +7,7 @@ __version__ = '1.0.0'
 def setup(app: Sphinx):
     """Initialize Sphinx extension."""
     from .pep_parser import PEPParser
+    from .generate_pep_index import create_pep_zero
 
     app.add_source_parser(PEPParser)
 
