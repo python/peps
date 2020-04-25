@@ -174,6 +174,6 @@ class PEPContents(Transform):
         self.document.note_implicit_target(topic)
         pending = nodes.pending(parts.Contents)
         topic += pending
-        self.document.children[0].insert(1, topic)
+        self.document.children[0].insert(2, topic)
         self.document.note_pending(pending)
 
