@@ -1,4 +1,5 @@
 import re
+from pathlib import Path
 
 from docutils import nodes
 from docutils import utils
@@ -28,6 +29,10 @@ class PEPHeaders(transforms.Transform):
         if not len(self.document):
             # @@@ replace these DataErrors with proper system messages
             raise DataError("Document tree is empty.")
+
+        if not Path(self.document["source"]).match("pep-*"):
+            # not a PEP file
+            return
 
         header = self.document[0]
         if not isinstance(header, nodes.field_list) or "rfc2822" not in header["classes"]:

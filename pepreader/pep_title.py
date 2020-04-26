@@ -1,3 +1,4 @@
+from pathlib import Path
 from docutils import nodes
 import docutils.transforms as transforms
 from docutils.parsers.rst import states
@@ -14,6 +15,10 @@ class PEPTitle(transforms.Transform):
     default_priority = 335
 
     def apply(self):
+        if not Path(self.document["source"]).match("pep-*"):
+            # not a PEP file
+            return
+
         # Directory to hold the PEP's RFC2822 header details, to extract a titke string
         pep_header_details = {}
 
