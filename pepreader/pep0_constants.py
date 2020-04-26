@@ -1,17 +1,20 @@
 # -*- coding: utf-8 -*-
+from functools import partial
 text_type = str
 title_length = 55
 author_length = 40
 table_separator = "== ====  " + "="*title_length + " " + "="*author_length
-column_format = (
-    '%(type)1s%(status)1s %(number)4s  %(title)-{title_length}s %(authors)-s'
-).format(title_length=title_length)
+# column format is called as a function with a mapping containing field values
+column_format = partial(
+    "{type}{status}{number: >5}  {title: <{title_length}} {authors}".format,
+    title_length=title_length
+)
 
 header = """\
 PEP: 0
 Title: Index of Python Enhancement Proposals (PEPs)
 Version: N/A
-Last-Modified: %s
+Last-Modified: {last_modified}
 Author: python-dev <python-dev@python.org>
 Status: Active
 Type: Informational
@@ -31,7 +34,7 @@ references = """\
 .. [2] View PEP history online: https://github.com/python/peps
 """
 
-footer = """\
+footer = """\
 ..
    Local Variables:
    mode: indented-text
