@@ -5,7 +5,7 @@
 
 import sys
 from pathlib import Path
-sys.path.append(Path('.').absolute())
+sys.path.extend(str(Path('./pepreader').absolute()))
 
 
 # -- Project information -----------------------------------------------------
