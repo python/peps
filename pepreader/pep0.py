@@ -1,18 +1,15 @@
 # -*- coding: utf-8 -*-
 """Code for handling object representation of a PEP."""
-from __future__ import absolute_import
 import re
-import sys
 import textwrap
 import unicodedata
 
 from email.parser import HeaderParser
 
-from . import constants
+from . import pep0_constants
 
 
 class PEPError(Exception):
-
     def __init__(self, error, pep_file, pep_number=None):
         super(PEPError, self).__init__(error)
         self.filename = pep_file
@@ -21,9 +18,9 @@ class PEPError(Exception):
     def __str__(self):
         error_msg = super(PEPError, self).__str__()
         if self.number is not None:
-            return "PEP %d: %r" % (self.number, error_msg)
+            return f"PEP {self.number}: {error_msg}"
         else:
-            return "(%s): %r" % (self.filename, error_msg)
+            return f"({self.filename}): {error_msg}"
 
 
 class PEPParseError(PEPError):
@@ -69,16 +66,16 @@ class Author(object):
         name_sep = name.index(last_name_fragment)
         self.first = name[:name_sep].rstrip()
         self.last = last_name_fragment
-        if self.last[1] == u'.':
+        if self.last[1] == ".":
             # Add an escape to avoid docutils turning `v.` into `22.`.
-            self.last = u'\\' + self.last
+            self.last = "\\" + self.last
         self.suffix = suffix
         if not self.first:
             self.last_first = self.last
         else:
-            self.last_first = u', '.join([self.last, self.first])
+            self.last_first = ", ".join([self.last, self.first])
             if self.suffix:
-                self.last_first += u', ' + self.suffix
+                self.last_first += ", " + self.suffix
         if self.last == "van Rossum":
             # Special case for our beloved BDFL. :)
             if self.first == "Guido":
@@ -86,8 +83,8 @@ class Author(object):
             elif self.first == "Just":
                 self.nick = "JvR"
             else:
-                raise ValueError("unknown van Rossum %r!" % self)
-            self.last_first += " (%s)" % (self.nick,)
+                raise ValueError(f"unknown van Rossum {self}!")
+            self.last_first += f" ({self.nick})"
         else:
             self.nick = self.last
 
@@ -102,14 +99,15 @@ class Author(object):
         name_parts = self.last.split()
         for index, part in enumerate(name_parts):
             if part[0].isupper():
-                base = u' '.join(name_parts[index:]).lower()
+                base = " ".join(name_parts[index:]).lower()
                 break
         else:
             # If no capitals, use the whole string
             base = self.last.lower()
-        return unicodedata.normalize('NFKD', base).encode('ASCII', 'ignore')
+        return unicodedata.normalize("NFKD", base)
 
-    def _last_name(self, full_name):
+    @staticmethod
+    def _last_name(full_name):
         """Find the last name (or nickname) of a full name.
 
         If no last name (e.g, 'Aahz') then return the full name.  If there is
@@ -118,7 +116,7 @@ class Author(object):
         through a comma, then drop the suffix.
 
         """
-        name_partition = full_name.partition(u',')
+        name_partition = full_name.partition(",")
         no_suffix = name_partition[0].strip()
         suffix = name_partition[2].strip()
         name_parts = no_suffix.split()
@@ -128,7 +126,7 @@ class Author(object):
         else:
             assert part_count > 2
             if name_parts[-2].islower():
-                return u' '.join(name_parts[-2:]), suffix
+                return " ".join(name_parts[-2:]), suffix
             else:
                 return name_parts[-1], suffix
 
@@ -159,117 +157,118 @@ class PEP(object):
     # The various RFC 822 headers that are supported.
     # The second item in the nested tuples represents if the header is
     # required or not.
-    headers = (('PEP', True), ('Title', True), ('Version', False),
-               ('Last-Modified', False), ('Author', True),
-               ('Sponsor', False), ('BDFL-Delegate', False),
-               ('Discussions-To', False), ('Status', True), ('Type', True),
-               ('Content-Type', False), ('Requires', False),
-               ('Created', True), ('Python-Version', False),
-               ('Post-History', False), ('Replaces', False),
-               ('Superseded-By', False), ('Resolution', False),
-               )
+    headers = (
+        ("PEP", True), ("Title", True), ("Version", False),
+        ("Last-Modified", False), ("Author", True), ("Sponsor", False),
+        ("BDFL-Delegate", False), ("Discussions-To", False), ("Status", True),
+        ("Type", True), ("Content-Type", False), ("Requires", False),
+        ("Created", True), ("Python-Version", False), ("Post-History", False),
+        ("Replaces", False), ("Superseded-By", False), ("Resolution", False),
+    )
     # Valid values for the Type header.
-    type_values = (u"Standards Track", u"Informational", u"Process")
+    type_values = ("Standards Track", "Informational", "Process")
     # Valid values for the Status header.
     # Active PEPs can only be for Informational or Process PEPs.
-    status_values = (u"Accepted", u"Provisional",
-                     u"Rejected", u"Withdrawn", u"Deferred",
-                     u"Final", u"Active", u"Draft", u"Superseded")
+    status_values = (
+        "Accepted", "Provisional", "Rejected", "Withdrawn",
+        "Deferred", "Final", "Active", "Draft", "Superseded",
+    )
 
-    def __init__(self, pep_file):
+    def __init__(self, pep_file: str, filename: str):
         """Init object from an open PEP file object."""
         # Parse the headers.
-        self.filename = pep_file
+        self.filename = filename
         pep_parser = HeaderParser()
-        metadata = pep_parser.parse(pep_file)
+        metadata = pep_parser.parsestr(pep_file)
         header_order = iter(self.headers)
+        current_header = ""
         try:
             for header_name in metadata.keys():
                 current_header, required = next(header_order)
                 while header_name != current_header and not required:
                     current_header, required = next(header_order)
                 if header_name != current_header:
-                    raise PEPError("did not deal with "
-                                   "%r before having to handle %r" %
-                                   (header_name, current_header),
-                                   pep_file.name)
+                    raise PEPError(
+                        "did not deal with "
+                        f"{header_name} before having to handle {current_header}",
+                        filename,
+                    )
         except StopIteration:
-            raise PEPError("headers missing or out of order",
-                                pep_file.name)
+            raise PEPError("headers missing or out of order", filename)
         required = False
         try:
             while not required:
                 current_header, required = next(header_order)
             else:
-                raise PEPError("PEP is missing its %r" % (current_header,),
-                               pep_file.name)
+                raise PEPError(f"PEP is missing its '{current_header}' header", filename)
         except StopIteration:
             pass
         # 'PEP'.
         try:
-            self.number = int(metadata['PEP'])
+            self.number = int(metadata["PEP"])
         except ValueError:
-            raise PEPParseError("PEP number isn't an integer", pep_file.name)
+            raise PEPParseError("PEP number isn't an integer", filename)
         # 'Title'.
-        self.title = metadata['Title']
+        self.title = metadata["Title"]
         # 'Type'.
-        type_ = metadata['Type']
+        type_ = metadata["Type"]
         if type_ not in self.type_values:
-            raise PEPError('%r is not a valid Type value' % (type_,),
-                           pep_file.name, self.number)
+            raise PEPError(f"{type_} is not a valid Type value", filename, self.number)
         self.type_ = type_
         # 'Status'.
-        status = metadata['Status']
+        status = metadata["Status"]
         if status not in self.status_values:
             if status == "April Fool!":
                 # See PEP 401 :)
                 status = "Rejected"
             else:
-                raise PEPError("%r is not a valid Status value" %
-                               (status,), pep_file.name, self.number)
+                raise PEPError(f"{status} is not a valid Status value", filename, self.number)
         # Special case for Active PEPs.
-        if (status == u"Active" and
-                self.type_ not in ("Process", "Informational")):
-            raise PEPError("Only Process and Informational PEPs may "
-                           "have an Active status", pep_file.name,
-                           self.number)
+        if status == "Active" and self.type_ not in ("Process", "Informational"):
+            raise PEPError(
+                "Only Process and Informational PEPs may " "have an Active status",
+                filename,
+                self.number,
+            )
         # Special case for Provisional PEPs.
-        if (status == u"Provisional" and self.type_ != "Standards Track"):
-            raise PEPError("Only Standards Track PEPs may "
-                           "have a Provisional status", pep_file.name,
-                           self.number)
+        if status == "Provisional" and self.type_ != "Standards Track":
+            raise PEPError(
+                "Only Standards Track PEPs may " "have a Provisional status",
+                filename,
+                self.number,
+            )
         self.status = status
         # 'Author'.
-        authors_and_emails = self._parse_author(metadata['Author'])
+        authors_and_emails = self._parse_author(metadata["Author"])
         if len(authors_and_emails) < 1:
-            raise PEPError("no authors found", pep_file.name,
-                           self.number)
+            raise PEPError("no authors found", filename, self.number)
         self.authors = list(map(Author, authors_and_emails))
 
-    def _parse_author(self, data):
+    @staticmethod
+    def _parse_author(data):
         """Return a list of author names and emails."""
         # XXX Consider using email.utils.parseaddr (doesn't work with names
         # lacking an email address.
-        angled = constants.text_type(r'(?P<author>.+?) <(?P<email>.+?)>')
-        paren = constants.text_type(r'(?P<email>.+?) \((?P<author>.+?)\)')
-        simple = constants.text_type(r'(?P<author>[^,]+)')
+        angled = pep0_constants.text_type(r"(?P<author>.+?) <(?P<email>.+?)>")
+        paren = pep0_constants.text_type(r"(?P<email>.+?) \((?P<author>.+?)\)")
+        simple = pep0_constants.text_type(r"(?P<author>[^,]+)")
         author_list = []
         for regex in (angled, paren, simple):
             # Watch out for commas separating multiple names.
-            regex += r'(,\s*)?'
+            regex += r"(,\s*)?"
             for match in re.finditer(regex, data):
                 # Watch out for suffixes like 'Jr.' when they are comma-separated
                 # from the name and thus cause issues when *all* names are only
                 # separated by commas.
                 match_dict = match.groupdict()
-                author = match_dict['author']
-                if not author.partition(' ')[1] and author.endswith('.'):
+                author = match_dict["author"]
+                if not author.partition(" ")[1] and author.endswith("."):
                     prev_author = author_list.pop()
-                    author = ', '.join([prev_author, author])
-                if u'email' not in match_dict:
-                    email = ''
+                    author = ", ".join([prev_author, author])
+                if "email" not in match_dict:
+                    email = ""
                 else:
-                    email = match_dict['email']
+                    email = match_dict["email"]
                 author_list.append((author, email))
             else:
                 # If authors were found then stop searching as only expect one
@@ -280,36 +279,37 @@ class PEP(object):
 
     @property
     def type_abbr(self):
-        """Return the how the type is to be represented in the index."""
+        """Return how the type is to be represented in the index."""
         return self.type_[0].upper()
 
     @property
     def status_abbr(self):
         """Return how the status should be represented in the index."""
-        if self.status in ('Draft', 'Active'):
-            return u' '
+        if self.status in ("Draft", "Active"):
+            return " "
         else:
             return self.status[0].upper()
 
     @property
     def author_abbr(self):
         """Return the author list as a comma-separated with only last names."""
-        return u', '.join(x.nick for x in self.authors)
+        return ", ".join(x.nick for x in self.authors)
 
     @property
     def title_abbr(self):
         """Shorten the title to be no longer than the max title length."""
-        if len(self.title) <= constants.title_length:
+        if len(self.title) <= pep0_constants.title_length:
             return self.title
-        wrapped_title = textwrap.wrap(self.title, constants.title_length - 4)
-        return wrapped_title[0] + u' ...'
+        wrapped_title = textwrap.wrap(self.title, pep0_constants.title_length - 4)
+        return wrapped_title[0] + " ..."
 
-    def __unicode__(self):
+    def __str__(self):
         """Return the line entry for the PEP."""
-        pep_info = {'type': self.type_abbr, 'number': str(self.number),
-                'title': self.title_abbr, 'status': self.status_abbr,
-                'authors': self.author_abbr}
-        return constants.column_format % pep_info
-
-    if sys.version_info[0] > 2:
-        __str__ = __unicode__
+        pep_info = {
+            "type": self.type_abbr,
+            "number": str(self.number),
+            "title": self.title_abbr,
+            "status": self.status_abbr,
+            "authors": self.author_abbr,
+        }
+        return pep0_constants.column_format(**pep_info)
