@@ -1,15 +1,19 @@
-PEP: 9999
-Title: Sphinx Index Page
 
-.. peps documentation master file, created by
-   sphinx-quickstart on Thu Apr 23 17:23:18 2020.
-   You can adapt this file completely to your liking, but it should at least
-   contain the root `toctree` directive.
+Python Enhancement Proposals (PEPs)
+***********************************
+
+
+
+Welcome!
+
+To get started, have a look at the :doc:`PEP Index<pep-0000>`
+
 
 
 .. toctree::
    :maxdepth: 3
    :titlesonly:
+   :hidden:
    :glob:
    :caption: Sphinx Table of Contents:
 

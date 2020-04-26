@@ -1,3 +1,4 @@
+from pathlib import Path
 from docutils import nodes
 from docutils import transforms
 from docutils.transforms import parts
@@ -13,6 +14,9 @@ class PEPContents(transforms.Transform):
     default_priority = 380
 
     def apply(self):
+        if not Path(self.document["source"]).match("pep-*"):
+            # not a PEP file
+            return
         title = nodes.title('', 'contents')
         topic = nodes.topic('', title, classes=['contents'])
         name = nodes.fully_normalize_name('contents')
