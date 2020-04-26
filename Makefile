@@ -8,7 +8,7 @@ PYTHON=python3
 all: sphinx
 
 sphinx:
-	sphinx-build -j auto -b html . build
+	$(PYTHON) build.py
 
 rss:
 	$(PYTHON) pep2rss.py .
