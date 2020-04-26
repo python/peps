@@ -112,4 +112,3 @@ class PEPHeaders(transforms.Transform):
                 para[:] = [nodes.reference("", pep_type, refuri=uri)]
             elif name == "version" and len(body):
                 utils.clean_rcs_keywords(para, self.rcs_keyword_substitutions)
-
