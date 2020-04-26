@@ -3,20 +3,19 @@
 # -- Path setup --------------------------------------------------------------
 
 
-import os
 import sys
-sys.path.append(os.path.abspath('.'))
+from pathlib import Path
+sys.path.append(Path('.').absolute())
 
 
 # -- Project information -----------------------------------------------------
 
 project = 'PEPs'
-copyright = '2020, AUTHNAME'
-author = 'AUTHNAME'
+copyright = '2020, PEP Authors'
+author = 'PEP Authors'
 
 # The full version, including alpha/beta/rc tags
-release = '1.0.0'
-version = "1.x"
+# release = '1.0.0'
 
 html_title = "Python Enhancement Proposals (PEPs)"
 html_short_title = "PEPs Home"

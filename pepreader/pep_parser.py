@@ -4,9 +4,6 @@ from . import pep_title
 from . import pep_contents
 
 
-
-
-
 class PEPParser(parsers.RSTParser):
     supported = ("pep", "python-enhancement-proposal")
 
