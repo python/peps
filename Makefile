@@ -3,26 +3,12 @@
 #
 # Not really important, but convenient.
 
-PEP2HTML=pep2html.py
-
 PYTHON=python3
 
-.SUFFIXES: .txt .html .rst
+all: sphinx
 
-.txt.html:
-	@$(PYTHON) $(PEP2HTML) $<
-
-.rst.html:
-	@$(PYTHON) $(PEP2HTML) $<
-
-TARGETS= $(patsubst %.rst,%.html,$(wildcard pep-????.rst)) $(patsubst %.txt,%.html,$(wildcard pep-????.txt)) pep-0000.html
-
-all: pep-0000.rst $(TARGETS)
-
-$(TARGETS): pep2html.py
-
-pep-0000.rst: $(wildcard pep-????.txt) $(wildcard pep-????.rst) $(wildcard pep0/*.py) genpepindex.py
-	$(PYTHON) genpepindex.py .
+sphinx:
+	sphinx-build -j auto -b html . build
 
 rss:
 	$(PYTHON) pep2rss.py .
@@ -32,7 +18,6 @@ install:
 
 clean:
 	-rm pep-0000.rst
-	-rm pep-0000.txt
 	-rm *.html
 	-rm -rf build
 
@@ -41,13 +26,10 @@ update:
 
 venv:
 	$(PYTHON) -m venv venv
-	./venv/bin/python -m pip install -U docutils
+	./venv/bin/python -m pip install -U docutils sphinx
 
 package: all rss
-	mkdir -p build/peps
-	cp pep-*.txt build/peps/
-	cp pep-*.rst build/peps/
-	cp *.html build/peps/
-	cp *.png build/peps/
-	cp *.rss build/peps/
-	tar -C build -czf build/peps.tar.gz peps
+	mkdir -p package/peps
+	cp -R build/. package/peps
+	cp *.rss package/peps
+	tar -C package -czf package/peps.tar.gz peps
