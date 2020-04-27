@@ -62,23 +62,29 @@ class Author(object):
 
     def __init__(self, author_and_email_tuple):
         """Parse the name and email address of an author."""
+        self.first = self.last = ''
+
         name, email = author_and_email_tuple
         self.first_last = name.strip()
         self.email = email.lower()
-        last_name_fragment, suffix = self._last_name(name)
-        name_sep = name.index(last_name_fragment)
-        self.first = name[:name_sep].rstrip()
-        self.last = last_name_fragment
-        if self.last[1] == u'.':
-            # Add an escape to avoid docutils turning `v.` into `22.`.
-            self.last = u'\\' + self.last
-        self.suffix = suffix
-        if not self.first:
-            self.last_first = self.last
+
+        name_dict = self._parse_name(name)
+        self.suffix = name_dict.get("suffix")
+        if name_dict.get("name"):
+            self.last_first = name_dict["name"]
+            self.nick = name_dict["name"]
         else:
-            self.last_first = u', '.join([self.last, self.first])
-            if self.suffix:
-                self.last_first += u', ' + self.suffix
+            self.first = name_dict["forename"].rstrip()
+            self.last = name_dict["surname"]
+            if self.last[1] == ".":
+                # Add an escape to avoid docutils turning `v.` into `22.`.
+                self.last = "\\" + self.last
+            self.last_first = ", ".join([self.last, self.first])
+            self.nick = self.last
+
+        if self.suffix:
+            self.last_first += ", " + self.suffix
+
         if self.last == "van Rossum":
             # Special case for our beloved BDFL. :)
             if self.first == "Guido":
@@ -86,10 +92,8 @@ class Author(object):
             elif self.first == "Just":
                 self.nick = "JvR"
             else:
-                raise ValueError("unknown van Rossum %r!" % self)
-            self.last_first += " (%s)" % (self.nick,)
-        else:
-            self.nick = self.last
+                raise ValueError(f"unknown van Rossum {self}!")
+            self.last_first += f" ({self.nick})"
 
     def __hash__(self):
         return hash(self.first_last)
@@ -109,28 +113,64 @@ class Author(object):
             base = self.last.lower()
         return unicodedata.normalize('NFKD', base).encode('ASCII', 'ignore')
 
-    def _last_name(self, full_name):
-        """Find the last name (or nickname) of a full name.
+    @staticmethod
+    def _parse_name(full_name):
+        """Decompose a full name into parts.
 
-        If no last name (e.g, 'Aahz') then return the full name.  If there is
-        a leading, lowercase portion to the last name (e.g., 'van' or 'von')
-        then include it.  If there is a suffix (e.g., 'Jr.') that is appended
-        through a comma, then drop the suffix.
+        If a mononym (e.g, 'Aahz') then return the full name. If there are
+        suffixes in the name (e.g. ', Jr.' or 'III'), then find and extract
+        them. If there is a middle initial followed by a full stop, then
+        combine the following words into a surname (e.g. N. Vander Weele). If
+        there is a leading, lowercase portion to the last name (e.g. 'van' or
+        'von') then include it in the surname.
 
         """
-        name_partition = full_name.partition(u',')
-        no_suffix = name_partition[0].strip()
-        suffix = name_partition[2].strip()
-        name_parts = no_suffix.split()
-        part_count = len(name_parts)
-        if part_count == 1 or part_count == 2:
-            return name_parts[-1], suffix
-        else:
-            assert part_count > 2
+        possible_suffixes = ["Jr", "Jr.", "II", "III"]
+        special_cases = ["The Python core team and community"]
+
+        if full_name in special_cases:
+            return {"name": full_name}
+
+        suffix_partition = full_name.partition(",")
+        pre_suffix = suffix_partition[0].strip()
+        suffix = suffix_partition[2].strip()
+
+        name_parts = pre_suffix.split(" ")
+        num_parts = len(name_parts)
+        name = {"suffix": suffix}
+
+        if num_parts == 0:
+            raise ValueError("Name is empty!")
+        elif num_parts == 1:
+            name.update(name=name_parts[0])
+        elif num_parts == 2:
+            name.update(forename=name_parts[0], surname=name_parts[1])
+        elif num_parts > 2:
+            # handles III etc.
+            if name_parts[-1] in possible_suffixes:
+                new_suffix = " ".join([*name_parts[-1:], suffix]).strip()
+                name_parts.pop(-1)
+                name.update(suffix=new_suffix)
+
+            # handles von, van, v. etc.
             if name_parts[-2].islower():
-                return u' '.join(name_parts[-2:]), suffix
+                forename = " ".join(name_parts[:-2])
+                surname = " ".join(name_parts[-2:])
+                name.update(forename=forename, surname=surname)
+
+            # handles double surnames after a middle initial (e.g. N. Vander Weele)
+            elif any(s.endswith(".") for s in name_parts):
+                split_position = [i for i, x in enumerate(name_parts) if x.endswith(".")][-1] + 1
+                forename = " ".join(name_parts[:split_position])
+                surname = " ".join(name_parts[split_position:])
+                name.update(forename=forename, surname=surname)
+
             else:
-                return name_parts[-1], suffix
+                forename = " ".join(name_parts[:-1])
+                surname = " ".join(name_parts[-1:])
+                name.update(forename=forename, surname=surname)
+
+        return name
 
 
 class PEP(object):
