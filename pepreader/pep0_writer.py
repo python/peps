@@ -197,8 +197,8 @@ class PEPZeroWriter:
         for pep_category in pep_categories:
             category = pep_category[0]
             anchor = pep_category[1]
-            peps = pep_category[2]
-            self.emit_pep_category(category, anchor, peps)
+            peps_in_category = pep_category[2]
+            self.emit_pep_category(category, anchor, peps_in_category)
 
         self.emit_newline()
 
