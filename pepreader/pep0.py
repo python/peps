@@ -67,7 +67,7 @@ class Author(object):
 
         name_dict = self._parse_name(name)
         self.suffix = name_dict.get("suffix")
-        if name_dict.get("name"):
+        if "name" in name_dict:
             self.last_first = name_dict["name"]
             self.nick = name_dict["name"]
         else:
@@ -89,7 +89,7 @@ class Author(object):
             elif self.first == "Just":
                 self.nick = "JvR"
             else:
-                raise ValueError(f"unknown van Rossum {self}!")
+                raise ValueError(f"unknown van Rossum ({name})!")
             self.last_first += f" ({self.nick})"
 
     def __hash__(self):
