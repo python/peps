@@ -112,12 +112,14 @@ class Author(object):
 
     @staticmethod
     def _parse_name(full_name):
-        """Find the last name (or nickname) of a full name.
+        """Decompose a full name into parts.
 
-        If no last name (e.g, 'Aahz') then return the full name.  If there is
-        a leading, lowercase portion to the last name (e.g., 'van' or 'von')
-        then include it.  If there is a suffix (e.g., 'Jr.') that is appended
-        through a comma, then drop the suffix.
+        If a mononym (e.g, 'Aahz') then return the full name. If there are
+        suffixes in the name (e.g. ', Jr.' or 'III'), then find and extract
+        them. If there is a middle initial followed by a full stop, then
+        combine the following words into a surname (e.g. N. Vander Weele). If
+        there is a leading, lowercase portion to the last name (e.g. 'van' or
+        'von') then include it in the surname.
 
         """
         possible_suffixes = ["Jr", "Jr.", "II", "III"]
@@ -137,9 +139,9 @@ class Author(object):
         if num_parts == 0:
             raise ValueError("Name is empty!")
         elif num_parts == 1:
-            name.update({"name": name_parts[0]})
+            name.update(name=name_parts[0])
         elif num_parts == 2:
-            name.update({"forename": name_parts[0], "surname": name_parts[1]})
+            name.update(forename=name_parts[0], surname=name_parts[1])
         elif num_parts > 2:
             # handles III etc.
             if name_parts[-1] in possible_suffixes:
@@ -151,17 +153,19 @@ class Author(object):
             if name_parts[-2].islower():
                 forename = " ".join(name_parts[:-2])
                 surname = " ".join(name_parts[-2:])
-                name.update({"forename": forename, "surname": surname})
-            # handles double surnames after a middle initial (e.g.
+                name.update(forename=forename, surname=surname)
+
+            # handles double surnames after a middle initial (e.g. N. Vander Weele)
             elif any(s.endswith(".") for s in name_parts):
                 split_position = [i for i, x in enumerate(name_parts) if x.endswith(".")][-1] + 1
                 forename = " ".join(name_parts[:split_position])
                 surname = " ".join(name_parts[split_position:])
-                name.update({"forename": forename, "surname": surname})
+                name.update(forename=forename, surname=surname)
+
             else:
                 forename = " ".join(name_parts[:-1])
                 surname = " ".join(name_parts[-1:])
-                name.update({"forename": forename, "surname": surname})
+                name.update(forename=forename, surname=surname)
 
         return name
 
