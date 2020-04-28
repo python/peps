@@ -17,13 +17,37 @@ class PEPContents(transforms.Transform):
         if not Path(self.document["source"]).match("pep-*"):
             # not a PEP file
             return
-        title = nodes.title('', 'contents')
+        title = nodes.title('', 'Contents')
         topic = nodes.topic('', title, classes=['contents'])
         name = nodes.fully_normalize_name('contents')
         if not self.document.has_name(name):
             topic['names'].append(name)
         self.document.note_implicit_target(topic)
-        pending = nodes.pending(parts.Contents)
+        pending = nodes.pending(Contents)
         topic += pending
         self.document.children[0].insert(2, topic)
         self.document.note_pending(pending)
+
+
+class Contents(parts.Contents):
+    def apply(self):
+        try: # let the writer (or output software) build the contents list?
+            toc_by_writer = self.document.settings.use_latex_toc
+        except AttributeError:
+            toc_by_writer = False
+
+        details = self.startnode.details
+        startnode = self.document[0]
+        self.toc_id = self.startnode.parent['ids'][0]
+        self.backlinks = self.document.settings.toc_backlinks
+
+        if toc_by_writer:
+            # move customization settings to the parent node
+            self.startnode.parent.attributes.update(details)
+            self.startnode.parent.remove(self.startnode)
+        else:
+            contents = self.build_contents(startnode)
+            if len(contents):
+                self.startnode.replace_self(contents)
+            else:
+                self.startnode.parent.parent.remove(self.startnode.parent)
