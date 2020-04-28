@@ -30,8 +30,14 @@ class PEPContents(transforms.Transform):
 
 
 class Contents(parts.Contents):
+    def __init__(self, document, startnode=None):
+        super().__init__(document, startnode)
+        self.toc_id = None
+        self.backlinks = None
+
     def apply(self):
-        try: # let the writer (or output software) build the contents list?
+        # let the writer (or output software) build the contents list?
+        try:
             toc_by_writer = self.document.settings.use_latex_toc
         except AttributeError:
             toc_by_writer = False
