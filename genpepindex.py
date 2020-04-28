@@ -19,6 +19,7 @@ from __future__ import print_function
 
 import sys
 import os
+import csv
 import codecs
 
 from operator import attrgetter
@@ -33,6 +34,14 @@ def main(argv):
     else:
         path = argv[1]
 
+    with open("AUTHORS.csv", "r", encoding="UTF8") as f:
+        read = csv.DictReader(f, delimiter=";")
+        author_data = {}
+        for line in read:
+            full_name = line.pop("Full Name").strip().strip("\"")
+            details = {k.strip().strip("\""): v.strip().strip("\"") for k, v in line.items()}
+            author_data[full_name] = details
+
     peps = []
     if os.path.isdir(path):
         for file_path in os.listdir(path):
@@ -44,7 +53,7 @@ def main(argv):
             if file_path.startswith("pep-") and file_path.endswith((".txt", "rst")):
                 with codecs.open(abs_file_path, 'r', encoding='UTF-8') as pep_file:
                     try:
-                        pep = PEP(pep_file)
+                        pep = PEP(pep_file, author_data)
                         if pep.number != int(file_path[4:-4]):
                             raise PEPError('PEP number does not match file name',
                                            file_path, pep.number)
@@ -57,12 +66,13 @@ def main(argv):
         peps.sort(key=attrgetter('number'))
     elif os.path.isfile(path):
         with open(path, 'r') as pep_file:
-            peps.append(PEP(pep_file))
+            peps.append(PEP(pep_file, author_data))
     else:
         raise ValueError("argument must be a directory or file path")
 
     with codecs.open('pep-0000.rst', 'w', encoding='UTF-8') as pep0_file:
         write_pep0(peps, pep0_file)
+
 
 if __name__ == "__main__":
     main(sys.argv)
