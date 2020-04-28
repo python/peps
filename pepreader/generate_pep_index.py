@@ -16,6 +16,7 @@ to allow it to be processed as normal.
 
 """
 import re
+import csv
 from operator import attrgetter
 from pathlib import Path
 
@@ -33,6 +34,14 @@ def create_pep_zero(_, env, docnames):
     peps = []
     pep_pat = re.compile(r"pep-\d{4}")  # Path.match() doesn't support regular expressions
 
+    with open("AUTHORS.csv", "r", encoding="UTF8") as f:
+        read = csv.DictReader(f, delimiter=";")
+        author_data = {}
+        for line in read:
+            full_name = line.pop("Full Name").strip().strip("\"")
+            details = {k.strip().strip("\""): v.strip().strip("\"") for k, v in line.items()}
+            author_data[full_name] = details
+
     for file_path in path.iterdir():
         if not file_path.is_file():
             continue  # Skip directories etc.
@@ -41,7 +50,7 @@ def create_pep_zero(_, env, docnames):
         if pep_pat.match(str(file_path)) and file_path.suffix in (".txt", ".rst"):
             file_path_absolute = path.joinpath(file_path).absolute()
             pep_text = file_path_absolute.read_text("UTF8")
-            pep = pep0.PEP(pep_text, file_path_absolute)
+            pep = pep0.PEP(pep_text, file_path_absolute, author_data)
             if pep.number != int(file_path.stem[4:]):
                 raise pep0.PEPError(f'PEP number does not match file name ({file_path})', file_path, pep.number)
             peps.append(pep)
