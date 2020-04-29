@@ -35,7 +35,7 @@ def create_pep_zero(_, env, docnames):
     pep_pat = re.compile(r"pep-\d{4}")  # Path.match() doesn't support regular expressions
 
     with open("AUTHORS.csv", "r", encoding="UTF8") as f:
-        read = csv.DictReader(f, delimiter=";")
+        read = csv.DictReader(f, quotechar='"', skipinitialspace=True)
         author_data = {}
         for line in read:
             full_name = line.pop("Full Name").strip().strip("\"")
