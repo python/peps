@@ -35,7 +35,7 @@ def main(argv):
         path = argv[1]
 
     with open("AUTHORS.csv", "r", encoding="UTF8") as f:
-        read = csv.DictReader(f, delimiter=";")
+        read = csv.DictReader(f, quotechar='"', skipinitialspace=True)
         author_data = {}
         for line in read:
             full_name = line.pop("Full Name").strip().strip("\"")
