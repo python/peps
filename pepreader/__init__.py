@@ -13,6 +13,6 @@ def setup(app: Sphinx):
 
     app.connect("env-before-read-docs", create_pep_zero)
     app.add_source_parser(PEPParser)
-    app.add_role('pep', PEPRole())
+    app.add_role('pep', PEPRole(), override=True)
 
     return {'version': __version__, 'parallel_read_safe': True, 'parallel_write_safe': True}
