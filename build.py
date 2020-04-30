@@ -43,6 +43,6 @@ if __name__ == '__main__':
 
     app = Sphinx(
         source_directory, configuration_directory, build_directory, doctree_directory, builder,
-        confoverrides=config_overrides, warningiserror=args.fail_on_warning, keep_going=args.fail_on_warning,
+        confoverrides=config_overrides, warningiserror=args.fail_on_warning,
     )
     app.build()
