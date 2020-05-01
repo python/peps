@@ -842,7 +842,6 @@ The module also provides the following class::
 
          Supported code: source text.
 
-
 Uncaught Exceptions
 -------------------
 
@@ -1045,7 +1044,7 @@ The module also provides the following channel-related classes::
          If the other end is not currently receiving then return
          False.  Otherwise return True.
 
-      release():
+      release() -> bool:
 
          This is the same as "RecvChannel.release(), but applied
          to the sending end of the channel.
@@ -1064,7 +1063,6 @@ The module also provides the following channel-related classes::
 Note that ``send_buffer()`` is similar to how
 ``multiprocessing.Connection`` works. [mp-conn]_
 
-
 Channel Association
 -------------------
 
@@ -1073,29 +1071,205 @@ interpreters.  This association effectively means "the channel end
 is available to that interpreter".  It has ramifications on
 introspection and on how channels are automatically closed.
 
+If an interpreter is not associated with a channel end, it is not
+allowed to use that end.  In that case send() or recv() would fail for
+the respective end.  Also, an interpreter can be associated with both
+ends or with only one end.
+
 When a channel is created, both ends are immediately associated with
 the current interpreter.  When a channel end is passed to an interpreter
-via ``Interpreter.run(..., channels=...)`` then that interpreter is
-associated with the channel end.  Likewise when a channel end is sent
+via ``Interpreter.run(..., channels=...)`` then the interpreter is
+associated with that channel end.  Likewise when a channel end is sent
 through another channel, the receiving interpreter is associated with
 the sent channel end.
 
-A channel end is explicitly released by an interpreter through the
-``release()`` method.  It is also done automatically for an interpreter
-when the last ``*Channel`` object for the end in that interpreter is
-garbage-collected, as though ``release()`` were called.
-
-Calling ``*Channel.close()`` automatically releases the channel in all
-interpreters for both ends.
-
-Once the number of associated interpreters on both ends drops
-to 0, the channel is actually closed.  The Python runtime will
-garbage-collect all closed channels, though it may not happen
-immediately.
+A channel end is explicitly un-associated for the currently interpreter
+through the ``release()`` method.  It is also done automatically for an
+interpreter when the last ``*Channel`` object for the end in that
+interpreter is garbage-collected, as though ``release()`` were called.
 
 Consequently, ``*Channel.interpreters`` means those to which the
 channel end was sent, still hold a reference to the channel end, and
 haven't called ``release()``.
+
+Un-associating an interpreter from one end does not automatically cause
+it to be done for the other end.  Once an interpreter has been
+un-associated from a channel end, it can no longer use that end nor can
+it be associated with that end again.
+
+Calling ``*Channel.close()`` automatically un-associates both channel
+ends for all interpreters.
+
+Automatic Channel Closing
+-------------------------
+
+Once 0 interpreters are associated with one of the channel ends, the
+entire channel is automatically closed.  The Python runtime will
+garbage-collect all closed channels, though it may not happen
+immediately.
+
+If the channel is closed from the "recv" end then the channel is closed
+immediately.  If it's the "send" end then the channel is closed once it
+is empty.
+
+Closing a Non-Empty Channel
+---------------------------
+
+...
+
+
+
+* add a more detailed description of channel lifespan
+
+A state machine diagram may be most effective.  Relevant questions:
+
+ * How does an interpreter detach from the receiving end of a channel
+   that is never empty?
+ * What happens if an interpreter deletes the last reference to a
+   non-empty channel?
+ * On the receiving end, or on the sending end?
+
+
+
+
+
+empty / not empty
+
+recv.release()
+send.release()
+
+recv.close()
+recv.close(force=True)
+send.close()
+send.close(force=True)
+
+The lifespan of channels is the most complex part of this proposal.
+Here's a summary of how it works.
+
+Every channel tracks the interpreters associated with each of its ends
+(send, rexc).  An interpreter is associated as soon as it gains access
+to the channel end (when created, when passed to ``Interpreter.run()``,
+when passed through a channel).  An interpreter may send or recv only
+when it is associated with the corresponding end of the channel.
+
+An interpreter becomes automatically un-associated with a channel end
+as soon as it has no more references to (objects for) that end.  The
+``release()`` method can also be used to explicitly un-associate the
+end.
+
+
+Here is an example of how channel state changes as they get used:
+
++---------------+-----------+--------+------+------+
+| interp A      | interp B  | chan   | recv | send |
++===============+===========+========+======+======+
+| new chan      |           |    0   |  A   |  A   |
++---------------+-----------+--------+------+------+
+| run B (recv)  |           |    0   |  AB  |  A   |
++---------------+-----------+--------+------+------+
+| send  "a"     |           |    1   |  AB  |  A   |
++---------------+-----------+--------+------+------+
+|               | recv "a"  |    0   |  AB  |  A   |
++---------------+-----------+--------+------+------+
+| send "b"      |           |    1   |  AB  |  A   |
++---------------+-----------+--------+------+------+
+| send "c"      |           |    2   |  AB  |  A   |
++---------------+-----------+--------+------+------+
+|               | recv "b"  |    1   |  AB  |  A   |
++---------------+-----------+--------+------+------+
+
+At this point there are 2 items queued up, waiting to be received.
+Both interpreters are associated with the "recv" end of the channel
+and interpreter A is associated with the "send" end.
+
+If we keep going, let's say that there is no chance interpreter A will
+use the recv end, so we can release it and keep going.
+
++---------------+-----------+--------+------+------+
+| interp A      | interp B  | chan   | recv | send |
++===============+===========+========+======+======+
+| send "d"      |           |    2   |  AB  |  A   |
++---------------+-----------+--------+------+------+
+| release recv  |           |    2   |  B   |  A   |
++---------------+-----------+--------+------+------+
+| send "e"      |           |    3   |  B   |  A   |
++---------------+-----------+--------+------+------+
+
+If "c" were a marker that the work is done then interpreter B would
+stop running.  The channel would stay open even through no interpreters
+are associated with the recv end.  Interpreter 1 can keep sending to it.
+
++---------------+-----------+--------+------+------+
+| interp A      | interp B  | chan   | recv | send |
++===============+===========+========+======+======+
+|               | recv "c"  |    2   |  B   |  A   |
++---------------+-----------+--------+------+------+
+|               | <end>     |    2   |      |  A   |
++---------------+-----------+--------+------+------+
+| send "f"      |           |    3   |      |  A   |
++---------------+-----------+--------+------+------+
+
+At that point the channel might not be used any more.  It stays open
+with 3 items queued up (uh-oh, a memory leak).  Let's say that the
+original interpreter i
+
++---------------+-----------+--------+------+------+
+| interp A      | interp B  | chan   | recv | send |
++===============+===========+========+======+======+
+| release       |           |    3   |  A   |  A   |
++---------------+-----------+--------+------+------+
+| send "f"      |           |    3   |  A   |  A   |
++---------------+-----------+--------+------+------+
+
++---------------+-----------+-----------+----------+--------+------+------+
+| interp A      | interp B  | interp C  | interp D | chan X | recv | send |
++===============+===========+===========+==========+========+======+======+
+| new chan (X)  |           |           |          |    0   |  A   |  A   |
++---------------+-----------+-----------+----------+--------+------+------+
+| run B (sendX) |           |           |          |    0   |  A   |  AB  |
++---------------+-----------+-----------+----------+--------+------+------+
+| sendX "a"     |           |           |          |    1   |  A   |  AB  |
++---------------+-----------+-----------+----------+--------+------+------+
+| run C (recvX) |           |           |          |    1   |  AC  |  AB  |
++---------------+-----------+-----------+----------+--------+------+------+
+|               | sendX "b" |           |          |    2   |  AC  |  AB  |
++---------------+-----------+-----------+----------+--------+------+------+
+|               |           | recvX "a" |          |    1   |  AC  |  AB  |
++---------------+-----------+-----------+----------+--------+------+------+
+| run D (bothX) |           |           |          |    1   |  ACD |  ABD |
++---------------+-----------+-----------+----------+--------+------+------+
+| release sendX |           |           |          |    1   |  ACD |   BD |
++---------------+-----------+-----------+----------+--------+------+------+
+|               |           |           |          |        |      |      |
++---------------+-----------+-----------+----------+--------+------+------+
+|               |           |           |          |        |      |      |
++---------------+-----------+-----------+----------+--------+------+------+
+
++---------------+-----------+-----------+----------+--------+------+------+--------+------+------+
+| interp A      | interp B  | interp C  | interp D | chan X | recv | send | chan Y | recv | send |
++===============+===========+===========+==========+========+======+======+========+======+======+
+| new chan (X)  |           |           |          |    0   |  A   |  A   |        |      |      |
++---------------+-----------+-----------+----------+--------+------+------+--------+------+------+
+| new chan (Y)  |           |           |          |    0   |  A   |  A   |    0   |  A   |  A   |
++---------------+-----------+-----------+----------+--------+------+------+--------+------+------+
+| run B (sendX) |           |           |          |    0   |  A   |  AB  |    0   |  A   |  AB  |
++---------------+-----------+-----------+----------+--------+------+------+--------+------+------+
+| sendX "A"     |           |           |          |    1   |  A   |  AB  |    0   |  A   |  AB  |
++---------------+-----------+-----------+----------+--------+------+------+--------+------+------+
+| run C (recvX) |           |           |          |    1   |  AC  |  AB  |    0   |  AC  |  AB  |
++---------------+-----------+-----------+----------+--------+------+------+--------+------+------+
+|               | sendX "B" |           |          |    2   |  AC  |  AB  |    0   |  AC  |  AB  |
++---------------+-----------+-----------+----------+--------+------+------+--------+------+------+
+|               |           | recvX "A" |          |    1   |  AC  |  AB  |    0   |  AC  |  AB  |
++---------------+-----------+-----------+----------+--------+------+------+--------+------+------+
+| run D (bothX) |           |           |          |    1   |  ACD |  ABD |    0   |  ACD |  ABD |
++---------------+-----------+-----------+----------+--------+------+------+--------+------+------+
+| release sendX |           |           |          |    1   |  ACD |   BD |    0   |  ACD |   BD |
++---------------+-----------+-----------+----------+--------+------+------+--------+------+------+
+|               |           |           |          |        |      |      |        |      |      |
++---------------+-----------+-----------+----------+--------+------+------+--------+------+------+
+|               |           |           |          |        |      |      |        |      |      |
++---------------+-----------+-----------+----------+--------+------+------+--------+------+------+
 
 
 .. _isolated-mode:
@@ -1190,22 +1364,6 @@ Furthermore, we anticipate that users will want to run in a thread much
 more often than not.  So it would make sense to make this the default
 behavior.  We would add a kw-only param "threaded" (default ``True``)
 to ``run()`` to allow the run-in-the-current-thread operation.
-
-
-TODO
-======
-
-* add a more detailed description of channel lifespan
-
-A state machine diagram may be most effective.  Relevant questions:
-
- * How does an interpreter detach from the receiving end of a channel
-   that is never empty?
- * What happens if an interpreter deletes the last reference to a
-   non-empty channel?
- * On the receiving end, or on the sending end?
-
-* run the CPython test suite in a subinterpreter and see what shakes out
 
 
 Deferred Functionality
