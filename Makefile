@@ -10,11 +10,14 @@ all: sphinx
 sphinx:
 	$(PYTHON) build.py
 
+fail_on_warning:
+	$(PYTHON) build.py -f
+
+check_links:
+	$(PYTHON) build.py -c
+
 rss:
 	$(PYTHON) pep2rss.py .
-
-install:
-	echo "Installing is not necessary anymore. It will be done in post-commit."
 
 clean:
 	-rm pep-0000.rst
