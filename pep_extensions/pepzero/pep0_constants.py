@@ -1,9 +1,9 @@
-# -*- coding: utf-8 -*-
 from functools import partial
-text_type = str
+
 title_length = 55
 author_length = 40
 table_separator = "== ====  " + "="*title_length + " " + "="*author_length
+
 # column format is called as a function with a mapping containing field values
 column_format = partial(
     "{type}{status}{number: >5}  {title: <{title_length}} {authors}".format,

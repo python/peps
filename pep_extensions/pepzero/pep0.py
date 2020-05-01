@@ -207,9 +207,9 @@ class PEP(object):
         """Return a list of author names and emails."""
         # XXX Consider using email.utils.parseaddr (doesn't work with names
         # lacking an email address.
-        angled = pep0_constants.text_type(r"(?P<author>.+?) <(?P<email>.+?)>")
-        paren = pep0_constants.text_type(r"(?P<email>.+?) \((?P<author>.+?)\)")
-        simple = pep0_constants.text_type(r"(?P<author>[^,]+)")
+        angled = "(?P<author>.+?) <(?P<email>.+?)>"
+        paren = "(?P<email>.+?) \((?P<author>.+?)\)"
+        simple = "(?P<author>[^,]+)"
         author_list = []
         for regex in (angled, paren, simple):
             # Watch out for commas separating multiple names.

@@ -1,7 +1,9 @@
 from docutils import nodes
 from docutils import transforms
 from docutils.transforms import peps
-import pepreader
+import pep_extensions.config
+
+pep_url = pep_extensions.config.pep_url
 
 
 class PEPZero(transforms.Transform):
@@ -28,8 +30,6 @@ class PEPZeroSpecial(nodes.SparseNodeVisitor):
     - Link PEP numbers in the second column of 4-column tables to the PEPs
       themselves.
     """
-
-    pep_url = pepreader.pep_url
 
     def __init__(self, document):
         super().__init__(document)
@@ -70,7 +70,7 @@ class PEPZeroSpecial(nodes.SparseNodeVisitor):
                 try:
                     pep = int(text)
                     ref = (self.document.settings.pep_base_url
-                           + self.pep_url.format(pep))
+                           + pep_url.format(pep))
                     p[0] = nodes.reference(text, text, refuri=ref)
                 except ValueError:
                     pass

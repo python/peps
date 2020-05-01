@@ -209,7 +209,7 @@ class PEPZeroWriter:
         for pep in peps:
             if pep.number - prev_pep > 1:
                 self.emit_newline()
-            self.output(pep0_constants.text_type(pep))
+            self.output(str(pep))
             prev_pep = pep.number
 
         self.emit_table_separator()
