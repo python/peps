@@ -1,11 +1,9 @@
-# Rules to only make the required HTML versions, not all of them,
-# without the user having to keep track of which.
-#
-# Not really important, but convenient.
-
-PYTHON=python3
+# Builds PEP files to HTML using sphinx
+# Also contains testing targets
 
 all: sphinx
+
+PYTHON=python3
 
 sphinx:
 	$(PYTHON) build.py
@@ -18,11 +16,6 @@ check_links:
 
 rss:
 	$(PYTHON) pep2rss.py .
-
-clean:
-	-rm pep-0000.rst
-	-rm *.html
-	-rm -rf build
 
 update:
 	git pull https://github.com/python/peps.git
