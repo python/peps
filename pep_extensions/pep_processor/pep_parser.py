@@ -1,7 +1,9 @@
 from sphinx import parsers
-from . import pep_headers
-from . import pep_title
-from . import pep_contents
+
+from pep_extensions.pep_processor import pep_headers
+from pep_extensions.pep_processor import pep_title
+from pep_extensions.pep_processor import pep_contents
+from pep_extensions.pep_processor import pep_target_notes
 
 
 class PEPParser(parsers.RSTParser):
@@ -16,5 +18,6 @@ class PEPParser(parsers.RSTParser):
             pep_headers.PEPHeaders,
             pep_title.PEPTitle,
             pep_contents.PEPContents,
+            pep_target_notes.PEPTargetNotes,
         ])
         return transforms

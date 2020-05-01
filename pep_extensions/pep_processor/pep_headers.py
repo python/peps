@@ -5,8 +5,13 @@ from docutils import nodes
 from docutils import utils
 from docutils import transforms
 from docutils.transforms import peps
-from pepreader import pep_zero
-import pepreader
+
+from pep_extensions.pep_processor import pep_zero
+import pep_extensions.config
+
+pep_url = pep_extensions.config.pep_url
+pep_vcs_url = pep_extensions.config.pep_vcs_url
+rcs_keyword_substitutions = pep_extensions.config.rcs_keyword_substitutions
 
 
 class DataError(Exception):
@@ -21,11 +26,6 @@ class PEPHeaders(transforms.Transform):
     """
 
     default_priority = 330
-
-    pep_url = pepreader.pep_url
-    pep_cvs_url = "https://github.com/python/peps/blob/master/pep-{:0>4}.txt"
-
-    rcs_keyword_substitutions = [(re.compile(r"\$[a-zA-Z]+: (.+) \$$"), r"\1")]
 
     def apply(self):
         if not len(self.document):
@@ -47,7 +47,7 @@ class PEPHeaders(transforms.Transform):
             value = pep_field[1].astext()
             try:
                 pep = int(value)
-                cvs_url = self.pep_cvs_url.format(pep)
+                cvs_url = pep_vcs_url.format(pep)
             except ValueError:
                 pep = value
                 msg = self.document.reporter.warning(
@@ -105,17 +105,17 @@ class PEPHeaders(transforms.Transform):
                     newbody.append(nodes.reference(
                         refpep, refpep,
                         refuri=(self.document.settings.pep_base_url
-                                + self.pep_url.format(pepno))))
+                                + pep_url.format(pepno))))
                     newbody.append(space)
                 para[:] = newbody[:-1]  # drop trailing space
             elif name == "last-modified":
-                utils.clean_rcs_keywords(para, self.rcs_keyword_substitutions)
+                utils.clean_rcs_keywords(para, rcs_keyword_substitutions)
                 if cvs_url:
                     date = para.astext()
                     para[:] = [nodes.reference("", date, refuri=cvs_url)]
             elif name == "content-type":
                 pep_type = para.astext()
-                uri = self.document.settings.pep_base_url + self.pep_url.format(12)
+                uri = self.document.settings.pep_base_url + pep_url.format(12)
                 para[:] = [nodes.reference("", pep_type, refuri=uri)]
             elif name == "version" and len(body):
-                utils.clean_rcs_keywords(para, self.rcs_keyword_substitutions)
+                utils.clean_rcs_keywords(para, rcs_keyword_substitutions)

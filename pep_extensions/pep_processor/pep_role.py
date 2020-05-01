@@ -1,5 +1,7 @@
 from sphinx import roles
-import pepreader
+import pep_extensions.config
+
+pep_url = pep_extensions.config.pep_url
 
 
 class PEPRole(roles.PEP):
@@ -8,6 +10,6 @@ class PEPRole(roles.PEP):
         base_url = self.inliner.document.settings.pep_base_url
         ret = self.target.split('#', 1)
         if len(ret) == 2:
-            return base_url + (pepreader.pep_url + '#{}').format(int(ret[0]), ret[1])
+            return base_url + (pep_url + '#{}').format(int(ret[0]), ret[1])
         else:
-            return base_url + pepreader.pep_url.format(int(ret[0]))
+            return base_url + pep_url.format(int(ret[0]))
