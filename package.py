@@ -39,6 +39,13 @@ if __name__ == '__main__':
             tag.name = "tt"
             [x.unwrap() if x.name else x for x in tag.contents]
 
+        for tag in contents.findAll("div", class_="highlight-default"):
+            tag.div.unwrap()
+            tag.pre.unwrap()
+            tag.name = "pre"
+            tag["class"] = "literal-block"
+            tag.string = "\n" + tag.text.strip() + "\n"
+
         # Remove Sphinx Header
         contents.h1.decompose()
 
