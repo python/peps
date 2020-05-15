@@ -34,6 +34,11 @@ if __name__ == '__main__':
             tag.append("]")
             tag["class"].remove("brackets")
 
+        # Reformat <code> tags to <tt>
+        for tag in list(contents.findAll("code")):
+            tag.name = "tt"
+            [x.unwrap() if x.name else x for x in tag.contents]
+
         # Remove Sphinx Header
         contents.h1.decompose()
 
