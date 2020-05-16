@@ -17,6 +17,11 @@ if __name__ == '__main__':
         soup = BeautifulSoup(file_path.read_text(encoding="UTF8"), 'lxml')
         contents = soup.find('div', class_="body").div
 
+        # Handle PEP 0
+        if int(file_path.stem[-4:]) == 0:
+            [tag.p.unwrap() if tag.p else tag for tag in contents.findAll("th")]
+            [tag.p.unwrap() if tag.p else tag for tag in contents.findAll("td")]
+
         # Removes <p> tags from list item elements
         for tag in contents.findAll("li"):
             try:
