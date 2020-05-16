@@ -55,7 +55,7 @@ if __name__ == '__main__':
         # Transform blockquotes
         for tag in contents.findAll("blockquote"):
             tag.div.unwrap()
-            if tag.p:
+            if tag.p and len(tag.contents) == 1:
                 tag.p.unwrap()
 
         # Remove Sphinx Header
