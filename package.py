@@ -24,11 +24,10 @@ if __name__ == '__main__':
 
         # Removes <p> tags from list item elements
         for tag in contents.findAll("li"):
-            try:
+            if tag.p and len(tag.contents) == 1:
                 tag.p.unwrap()
-            except AttributeError:
-                # If no <p> tag to unwrap
-                pass
+            elif "ul" in [t.name for t in tag.contents]:
+                tag.p.unwrap()
 
         # Removes all permalink elements
         [tag.decompose() for tag in contents.findAll(class_="headerlink")]
