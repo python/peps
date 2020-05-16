@@ -39,12 +39,19 @@ if __name__ == '__main__':
             tag.name = "tt"
             [x.unwrap() if x.name else x for x in tag.contents]
 
+        # Reformat code literal blocks
         for tag in contents.findAll("div", class_="highlight-default"):
             tag.div.unwrap()
             tag.pre.unwrap()
             tag.name = "pre"
             tag["class"] = "literal-block"
             tag.string = "\n" + tag.text.strip() + "\n"
+
+        # Transform blockquotes
+        for tag in contents.findAll("blockquote"):
+            tag.div.unwrap()
+            if tag.p:
+                tag.p.unwrap()
 
         # Remove Sphinx Header
         contents.h1.decompose()
