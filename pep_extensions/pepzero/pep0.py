@@ -59,8 +59,6 @@ class Author(object):
 
     def __init__(self, author_and_email_tuple, authors_lookup):
         """Parse the name and email address of an author."""
-        self.first = self.last = ''
-
         name, email = author_and_email_tuple
         self.first_last = name.strip()
         self.email = email.lower()
@@ -78,14 +76,15 @@ class Author(object):
 
     @property
     def sort_by(self):
-        name_parts = self.last.split()
+        last = self.last_first.split(",")[0]
+        name_parts = last.split()
         for index, part in enumerate(name_parts):
             if part[0].isupper():
                 base = " ".join(name_parts[index:]).lower()
                 break
         else:
             # If no capitals, use the whole string
-            base = self.last.lower()
+            base = last.lower()
         return unicodedata.normalize("NFKD", base)
 
 
