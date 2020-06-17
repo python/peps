@@ -93,16 +93,6 @@ class Author(object):
         if suffix:
             self.last_first += f", {suffix}"
 
-        if self.last == "van Rossum":
-            # Special case for our beloved BDFL. :)
-            if self.first == "Guido":
-                self.nick = "GvR"
-            elif self.first == "Just":
-                self.nick = "JvR"
-            else:
-                raise ValueError(f"unknown van Rossum ({self.first_last})!")
-            self.last_first += f" ({self.nick})"
-
     def __hash__(self):
         return hash(self.first_last)
 
@@ -134,10 +124,6 @@ class Author(object):
 
         """
         possible_suffixes = ["Jr", "Jr.", "II", "III"]
-        special_cases = ["The Python core team and community"]
-
-        if full_name in special_cases:
-            return {"name": full_name}
 
         suffix_partition = full_name.partition(",")
         pre_suffix = suffix_partition[0].strip()
