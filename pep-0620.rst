@@ -1,0 +1,313 @@
+PEP: 620
+Title: Hide implementation details from the C API
+Author: Victor Stinner <vstinner@python.org>,
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 19-June-2020
+Python-Version: 3.10
+
+Abstract
+========
+
+Structures members of the C API must only be access with getter and
+settr functions: structures become opaque.
+
+A new ``pythoncapi_compat.h`` header file is distributed with Python to
+provide new Python functions for old Python versions.
+
+A process is defined to reduce the number of broken C extensions when
+for incompatible changes are introduced in the C API.
+
+
+Motivation
+==========
+
+Same CPython design since 1990: structures and reference counting
+-----------------------------------------------------------------
+
+When the CPython project was created, it was written with one principle:
+keep the implementation simple enough so it can be maintained by a
+single developer. CPython complexity grew a lot and many
+micro-optimizations have been implemented, but CPython core design has
+not changed.
+
+Members of ``PyObject`` and ``PyTupleObject`` structures have not
+changed since the "Initial revision" commit (1990)::
+
+    #define OB_HEAD \
+        unsigned int ob_refcnt; \
+        struct _typeobject *ob_type;
+
+    typedef struct _object {
+        OB_HEAD
+    } object;
+
+    typedef struct {
+           OB_VARHEAD
+           object *ob_item[1];
+    } tupleobject;
+
+Only names changed: ``object`` was renamed to ``PyObject`` and
+``tupleobject`` was renamed to ``PyTupleObject``.
+
+CPython still tracks objects lifetime using reference counting
+internally and for third party C extensions (through the Python C API).
+
+Why is PyPy more efficient than CPython?
+----------------------------------------
+
+The PyPy project is a Python implementation which is 4.2x faster than
+CPython in average. PyPy developers chose to not fork CPython, but start
+from scratch to have more freedom in term of optimization choices.
+
+PyPy does not use reference counting but a tracing garbage collector.
+Objects can be allocated on the stack, rather than always having to be
+allocated on the heap.
+
+Objects layout are designed with performance in mind. For example, a
+list which only contains small integers stores directly integers, rather
+than objects.
+
+Moreover, PyPy also has a JIT compiler which emits fast code thanks to
+the efficient PyPy design.
+
+PyPy bottleneck: the Python C API
+---------------------------------
+
+While PyPy is way more efficient than CPython to run pure Python code,
+it is as efficient or slower than CPython to run C extensions.
+
+Since PyPy has a very different design than CPython, supporting the
+Python C API requires to convert PyPy objects to CPython objects.
+Reference counting also has to be implemented on top on PyPy tracing
+garbage collector.
+
+These conversions are required because the Python C API is too close to
+the CPython implementation: there is no high-level abstraction.
+example, structures members are part of the public C API and nothing
+prevents a C extension to get or set directly
+``PyTupleObject.ob_item[0]`` (the first item of a tuple).
+
+Implementation issues to evolve CPython
+---------------------------------------
+
+Adding or removing members of C structures is causing multiple
+implementation issues.
+
+Adding a new member breaks the stable ABI (PEP 384), especially for
+types declared statically with::
+
+    static PyTypeObject MyType = {...};
+
+The ``PyTypeObject.tp_print`` member has been removed in the Python 3.8
+development cycle.  But the change broke many C extensions and the
+change had to be reverted. The member was finally removed in Python 3.9.
+It took several months to update all C extensions impacted by this
+incompatible change, even if the member was deprecated since Python 3.0
+released in 2009.
+
+
+Rationale
+=========
+
+Hide implementation details
+---------------------------
+
+Hiding implementation details from the C API has multiple advantages:
+
+* It becomes possible to experiment in CPython more advanced
+  optimizations than just micro-optimizations.
+* It should help to run C extensions faster on PyPy.
+* It becomes easier to implement the C API for a new Python
+  implementation.
+* More C extensions will be compatible with Python implementations other
+  than CPython.
+
+Relationship with the limited C API
+-----------------------------------
+
+The PEP 384 "Defining a Stable ABI" is in Python 3.4. It introduces the
+"limited C API": a subset of the C API. When the limited C API is used,
+it becomes possible to build a C extensions only once and uses it on
+multiple Python versions: that's the stable ABI.
+
+The main limitation of the PEP 384 is that C extensions have to opt-in
+for the limited C API. Only very few projects made this choice,
+usually to ease distribution of binaries, especially on Windows.
+
+This PEP moves the C API towards the limited C API. Ideally, the C API
+will become the limited C API and all C extensions will use the stable
+ABI. This goal is not in the scope of this PEP.
+
+
+Specification
+=============
+
+Changes summary
+---------------
+
+* Make structures like ``PyObject`` or ``PyTypeObject`` opaque.
+* Deprecated ``PySequence_Fast_ITEMS()``.
+* Convert ``PyTuple_GET_ITEM()`` macro to a static inline function.
+* Provide ``pythoncapi_compat.h`` header file.
+
+Make structures opaque
+----------------------
+
+All structures of the C API should become opaque: C extensions must
+use getter or setter functions to get or set structure members. For
+example, ``tuple->ob_item[0]`` must be replaced with
+``PyTuple_GET_ITEM(tuple, 0)``.
+
+To be able to move away from reference counting, ``PyObject`` must
+become opaque. Currently, the reference counter ``PyObject.ob_refcnt``
+is exposed in the C API. All structures must become opaque, since they
+"inherit" from PyObject. Example::
+
+    typedef struct {
+        PyObject ob_base;
+        double ob_fval;
+    } PyFloatObject;
+
+Issues to prepare the C API to make structures opaque:
+
+* ``PyGC_Head``: https://bugs.python.org/issue40241
+  (done in Python 3.9)
+* ``PyObject``: https://bugs.python.org/issue39573
+* ``PyTypeObject``: https://bugs.python.org/issue40170
+* ``PyThreadState``: https://bugs.python.org/issue39947
+  (some getters and setters added to Python 3.9)
+* ``PyInterpreterState``: https://bugs.python.org/issue35886
+  (done in Python 3.8)
+
+Avoid borrowed references for new functions
+-------------------------------------------
+
+When a function returns a borrowed reference, Python cannot track when
+the caller stops using this reference.
+
+For example, if the Python ``list`` type is specialized for small
+integers, store directly "raw" numbers rather than Python objects,
+``PyList_GetItem()`` has to create a temporary Python object. The
+problem is to decide when it is safe to delete the temporary object.
+
+The general guidelines is to avoid returning borrowed references for new
+C API functions.
+
+No function returning borrowed functions is scheduled for removal by
+this PEP.
+
+Avoid functions returning PyObject**
+------------------------------------
+
+The ``PySequence_Fast_ITEMS()`` function gives a direct access to an
+array of ``PyObject*`` objects. The function is deprecated in favor of
+``PyTuple_GetItem()`` and ``PyList_GetItem()``.
+
+``PyTuple_GET_ITEM()`` can be abused to access directly the
+``PyTupleObject.ob_item`` member::
+
+    PyObject **items = &PyTuple_GET_ITEM(0);
+
+The ``PyTuple_GET_ITEM()`` macro is converted to a static inline
+function to disallow that.
+
+New pythoncapi_compat.h header file
+-----------------------------------
+
+Making structures opaque require to add getter and setter functions. C
+extensions must be modified to use these new functions. The practical
+issue is how to handle backward compatibility.
+
+In Python 3.10, it is no longer possible to use ``Py_TYPE()`` as an
+l-value. The new ``Py_SET_TYPE()`` function must be used instead.
+Example::
+
+    #if PY_VERSION_HEX >= 0x030900A4
+        Py_SET_TYPE(&MyType, &PyType_Type);
+    #else
+        Py_TYPE(&MyType) = &PyType_Type;
+    #endif
+
+This code may ring a bell to developers who ported their Python code
+base from Python 2 to Python 3.
+
+Python will ship a new ``pythoncapi_compat.h`` header file which
+provides new functions for old Python versions. Example::
+
+    #if PY_VERSION_HEX < 0x030900A4
+    static inline void
+    _Py_SET_TYPE(PyObject *ob, PyTypeObject *type)
+    {
+        ob->ob_type = type;
+    }
+    #define Py_SET_TYPE(ob, type) _Py_SET_TYPE((PyObject*)(ob), type)
+    #endif  // PY_VERSION_HEX < 0x030900A4
+
+Using this header file, ``Py_SET_TYPE()`` can be used on old Python
+versions as well.
+
+Developers can decide to copy this file in their project, or even to
+only copy/paste the few functions needed by the C extension.
+
+Process to introduce incompatible changes in the C API
+------------------------------------------------------
+
+* Try to estimate how many popular C extensions are affected by this
+  change.
+* Coordinate with maintainers of broken C extensions to prepare their
+  code for the future incompatible change.
+* Document the change and explain how to port existing code.
+* Introduce the incompatible changes in Python. It is recommended
+  to merge such changes at the beginning of a development cycle to have
+  more time to test.
+* Changes which are the most likely to break a large number of C
+  extensions should be announced on the capi-sig list to notify
+  maintainers to prepare their project for the next Python.
+* If the change breaks too many projects, reverting the change should be
+  discussed, taking in account the number of broken packages, their
+  importance in the Python commmunity, and the importance of the change.
+
+If a change is reverted, we move back to the coordination step to better
+prepare the change. Once more C extensions are ready, the incompatible
+change can be reconsidered.
+
+Test popular C extensions on the next Python version
+----------------------------------------------------
+
+Projects are adviced to be tested by a continuous integration on the
+next version of Python: the "master" branch of Python, sometimes known
+as the "nightly" version.
+
+The more feedback we get, smoother will be the the migration to the new
+C API with incompatible changes.
+
+
+Reference Implementation
+========================
+
+The implementation of this PEP started in Python 3.7.
+
+Many macros have been converted to static inline functions in Python
+3.8.
+
+The ``PyInterpreterState`` was made opaque in Python 3.8 and the
+``PyGC_Head`` was made opaque in Python 3.9.
+
+``Py_TYPE()``, ``Py_REFCNT()`` and ``Py_SIZE()`` can no longer be used
+as l-value in Python 3.10: new ``Py_SET_SIZE()``, ``Py_SET_REFCNT()``
+and ``Py_SET_SIZE()`` functions must be used instead.
+
+The implementation of this PEP is expected to be done slowly on multiple
+Python versions. Its completion depends on popular C extensions and the
+`Process to introduce incompatible changes in the C API`_.
+
+The ``pythoncapi_compat.h`` header file is currently developer at:
+https://github.com/pythoncapi/pythoncapi_compat
+
+
+Copyright
+=========
+
+This document has been placed in the public domain.
