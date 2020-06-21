@@ -7,12 +7,22 @@ from docutils.transforms import references
 
 import pep_extensions.config as pep_config
 
-class PEPTargetNotes(transforms.Transform):
+
+class PEPFooter(transforms.Transform):
 
     """
-    Locate the "References" section, insert a placeholder for an external
-    target footnote insertion transform at the end, and schedule the
-    transform to run immediately.
+    Relevant footer transforms for PEPs, including appending external
+    links to footnotes and creating a link to the (GitHub) source.
+
+    TargetNotes:
+    Locate the "References" section, insert a placeholder at the end
+    for an external target footnote insertion transform, and schedule
+    the transform to run immediately.
+
+    Source Link:
+    Create the link to the source file from the document source path,
+    and append the text to the end of the document.
+
     """
 
     default_priority = 520
