@@ -5,6 +5,7 @@ from docutils import transforms
 from docutils.transforms import misc
 from docutils.transforms import references
 
+import pep_extensions.config as pep_config
 
 class PEPTargetNotes(transforms.Transform):
 
@@ -17,7 +18,8 @@ class PEPTargetNotes(transforms.Transform):
     default_priority = 520
 
     def apply(self):
-        if not Path(self.document["source"]).match("pep-*"):
+        pep_source_path = Path(self.document["source"])
+        if not pep_source_path.match("pep-*"):
             # not a PEP file
             return
 
@@ -49,6 +51,8 @@ class PEPTargetNotes(transforms.Transform):
         reference_section.append(pending)
         self.document.note_pending(pending, 1)
 
+        self.add_source_link(pep_source_path)
+
     @staticmethod
     def cleanup_callback(pending):
         """
@@ -58,3 +62,9 @@ class PEPTargetNotes(transforms.Transform):
         """
         if len(pending.parent) == 2:    # <title> and <pending>
             pending.parent.parent.remove(pending.parent)
+
+    def add_source_link(self, pep_source_path: Path) -> None:
+        source_link = pep_config.pep_vcs_url.format(pep_source_path.name)
+        link_node = nodes.reference("", source_link, refuri=source_link)
+        span_node = nodes.inline("", "Source: ", link_node)
+        self.document.append(span_node)
