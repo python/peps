@@ -71,7 +71,7 @@ class Author(object):
         name_dict = authors_exceptions.get(self.first_last)
         if name_dict:
             self.last_first = name_dict["Surname First"]
-            self.nick = name_dict["Name Reference"]
+            self.nick = self.last = name_dict["Name Reference"]
         else:
             self.set_name_parts()
 

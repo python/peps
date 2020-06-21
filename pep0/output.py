@@ -5,6 +5,7 @@ import datetime
 import sys
 import unicodedata
 
+from itertools import groupby
 from operator import attrgetter
 
 from . import constants
@@ -124,9 +125,9 @@ def verify_email_addresses(peps):
 
 
 def sort_authors(authors_dict):
-    authors_list = list(authors_dict.keys())
-    authors_list.sort(key=attrgetter('sort_by'))
-    return authors_list
+    authors_list = sorted(authors_dict.keys(), key=attrgetter("sort_by"))
+    unique_authors = [next(a) for k, a in groupby(authors_list, key=attrgetter("last_first"))]
+    return unique_authors
 
 def normalized_last_first(name):
     return len(unicodedata.normalize('NFC', name.last_first))
