@@ -2,7 +2,6 @@ import re
 from pathlib import Path
 
 from docutils import nodes
-from docutils import utils
 from docutils import transforms
 from docutils.transforms import peps
 
@@ -10,8 +9,6 @@ from pep_extensions.pep_processor import pep_zero
 import pep_extensions.config
 
 pep_url = pep_extensions.config.pep_url
-pep_vcs_url = pep_extensions.config.pep_vcs_url
-rcs_keyword_substitutions = pep_extensions.config.rcs_keyword_substitutions
 
 
 class DataError(Exception):
@@ -40,14 +37,12 @@ class PEPHeaders(transforms.Transform):
         if not isinstance(header, nodes.field_list) or "rfc2822" not in header["classes"]:
             raise DataError("Document does not begin with an RFC-2822 header; it is not a PEP.")
 
-        cvs_url = None
         pep = None
         pep_field = header[0]
         if pep_field[0].astext().lower() == "pep":  # should be the first field
             value = pep_field[1].astext()
             try:
                 pep = int(value)
-                cvs_url = pep_vcs_url.format(pep)
             except ValueError:
                 pep = value
                 msg = self.document.reporter.warning(
@@ -76,6 +71,7 @@ class PEPHeaders(transforms.Transform):
         if len(header) < 2 or header[1][0].astext().lower() != "title":
             raise DataError("No title!")
 
+        fields_to_remove = []
         for field in header:
             name = field[0].astext().lower()
             body = field[1]
@@ -104,18 +100,11 @@ class PEPHeaders(transforms.Transform):
                     pepno = int(refpep)
                     newbody.append(nodes.reference(
                         refpep, refpep,
-                        refuri=(self.document.settings.pep_base_url
-                                + pep_url.format(pepno))))
+                        refuri=(self.document.settings.pep_base_url + pep_url.format(pepno))))
                     newbody.append(space)
                 para[:] = newbody[:-1]  # drop trailing space
-            elif name == "last-modified":
-                utils.clean_rcs_keywords(para, rcs_keyword_substitutions)
-                if cvs_url:
-                    date = para.astext()
-                    para[:] = [nodes.reference("", date, refuri=cvs_url)]
-            elif name == "content-type":
-                pep_type = para.astext()
-                uri = self.document.settings.pep_base_url + pep_url.format(12)
-                para[:] = [nodes.reference("", pep_type, refuri=uri)]
-            elif name == "version" and len(body):
-                utils.clean_rcs_keywords(para, rcs_keyword_substitutions)
+            elif name in ("last-modified", "content-type", "version"):
+                fields_to_remove.append(field)
+
+        for field in fields_to_remove:
+            field.parent.remove(field)
