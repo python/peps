@@ -64,6 +64,7 @@ pygments_style = 'sphinx'
 
 html_theme_path = ["pep_extensions"]
 html_theme = "theme"
+html_favicon = Path(html_theme_path[0], html_theme, "static/py.png").as_posix()
 html_math_renderer = "math2html"
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
