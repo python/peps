@@ -3,11 +3,7 @@ Python Enhancement Proposals (PEPs)
 ***********************************
 
 
-
-Welcome!
-
-To get started, have a look at the :doc:`PEP Index<pep-0000>`
-
+This is an internal Sphinx page, please go to the :doc:`PEP Index<pep-0000>`.
 
 
 .. toctree::
@@ -15,6 +11,6 @@ To get started, have a look at the :doc:`PEP Index<pep-0000>`
    :titlesonly:
    :hidden:
    :glob:
-   :caption: Sphinx Table of Contents:
+   :caption: PEP Table of Contents (needed for Sphinx):
 
    pep-*
