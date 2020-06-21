@@ -28,6 +28,10 @@ class PEPContents(transforms.Transform):
         self.document.children[0].insert(2, topic)
         self.document.note_pending(pending)
 
+        # Add horizontal rule before contents
+        transition = nodes.transition()
+        self.document[0].insert(2, transition)
+
 
 class Contents(parts.Contents):
     def __init__(self, document, startnode=None):

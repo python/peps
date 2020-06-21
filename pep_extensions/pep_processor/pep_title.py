@@ -19,7 +19,7 @@ class PEPTitle(transforms.Transform):
             # not a PEP file
             return
 
-        # Directory to hold the PEP's RFC2822 header details, to extract a titke string
+        # Directory to hold the PEP's RFC2822 header details, to extract a title string
         pep_header_details = {}
 
         # Iterate through the header fields, which are the first section of the document
@@ -40,6 +40,7 @@ class PEPTitle(transforms.Transform):
         pep_title_node = nodes.section()
         textnode = nodes.Text(pep_title_string, pep_title_string)
         titlenode = nodes.title(pep_title_string, '', textnode)
+        titlenode['classes'].append("page-title")
         name = states.normalize_name(titlenode.astext())
         pep_title_node['names'].append(name)
         pep_title_node += titlenode
