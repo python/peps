@@ -1,9 +1,9 @@
 from pathlib import Path
 
-import docutils.transforms as transforms
-from docutils.transforms import references
-from docutils.transforms import misc
 from docutils import nodes
+from docutils import transforms
+from docutils.transforms import misc
+from docutils.transforms import references
 
 
 class PEPTargetNotes(transforms.Transform):
@@ -23,30 +23,30 @@ class PEPTargetNotes(transforms.Transform):
 
         doc = self.document[0]
         i = len(doc) - 1
-        refsect = copyright = None
+        reference_section = copyright = None
         while i >= 0 and isinstance(doc[i], nodes.section):
             title_words = doc[i][0].astext().lower().split()
             if 'references' in title_words:
-                refsect = doc[i]
+                reference_section = doc[i]
                 break
             elif 'copyright' in title_words:
                 copyright = i
             i -= 1
-        if not refsect:
-            refsect = nodes.section()
-            refsect += nodes.title('', 'References')
-            self.document.set_id(refsect)
+        if not reference_section:
+            reference_section = nodes.section()
+            reference_section += nodes.title('', 'References')
+            self.document.set_id(reference_section)
             if copyright:
                 # Put the new "References" section before "Copyright":
-                doc.insert(copyright, refsect)
+                doc.insert(copyright, reference_section)
             else:
                 # Put the new "References" section at end of doc:
-                doc.append(refsect)
+                doc.append(reference_section)
         pending = nodes.pending(references.TargetNotes)
-        refsect.append(pending)
+        reference_section.append(pending)
         self.document.note_pending(pending, 0)
         pending = nodes.pending(misc.CallBack, details={'callback': self.cleanup_callback})
-        refsect.append(pending)
+        reference_section.append(pending)
         self.document.note_pending(pending, 1)
 
     @staticmethod
