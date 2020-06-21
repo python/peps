@@ -17,8 +17,7 @@ author = 'PEP Authors'
 # The full version, including alpha/beta/rc tags
 # release = '1.0.0'
 
-html_title = "Python Enhancement Proposals (PEPs)"
-html_short_title = "PEPs Home"
+html_title = "PEPs.Python.org"
 html_show_copyright = False
 html_show_sphinx = False
 template_bridge = "pep_extensions.pep_processor.pep_jinja2.PEPTemplateLoader"
@@ -49,9 +48,13 @@ exclude_patterns = [
     '.DS_Store',
     'venv',
     'build',
+    "_build",
+    "_build-old",
+    "package",
     'README.rst',
     'CONTRIBUTING.rst',
     'requirements.txt',
+    "output.txt",
 ]
 
 # -- Options for HTML output -------------------------------------------------
