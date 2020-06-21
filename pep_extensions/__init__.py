@@ -1,4 +1,5 @@
 """Sphinx extensions for performant PEP processing"""
+import sphinx.builders.html
 from sphinx.application import Sphinx
 from docutils.writers.html5_polyglot import HTMLTranslator
 
@@ -9,7 +10,19 @@ from pep_extensions.pep_processor import pep_role
 from pep_extensions.pepzero.generate_pep_index import create_pep_zero
 
 
-def setup(app: Sphinx):
+# Monkeypatch StandaloneHTMLBuilder to not include JS libraries (underscore.js & jQuery)
+def init_less_js(self) -> None:
+    js_files = [('doctools.js', {}), ('language_data.js', {}), ]
+    js_files.extend([*self.app.registry.js_files, *self.get_builder_config('js_files', 'html')])
+    js_files.append(('translations.js',) if self.config.language and self._get_translations_js() else (None, {}))
+    for filename, attrs in js_files:
+        self.add_js_file(filename, **attrs)
+
+
+sphinx.builders.html.StandaloneHTMLBuilder.init_js_files = init_less_js
+
+
+def setup(app: Sphinx) -> dict:
     """Initialize Sphinx extension."""
 
     app.add_source_parser(pep_parser.PEPParser)
