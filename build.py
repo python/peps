@@ -45,4 +45,5 @@ if __name__ == '__main__':
         source_directory, configuration_directory, build_directory, doctree_directory, builder,
         confoverrides=config_overrides, warningiserror=args.fail_on_warning,
     )
+    app.builder.copysource = False  # Prevent unneeded source copying - we link direct to VCS
     app.build()
