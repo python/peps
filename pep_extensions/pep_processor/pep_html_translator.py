@@ -1,7 +1,8 @@
 from docutils import nodes
 import sphinx.writers.html5 as html5
 import re
-
+import logging
+logger = logging.getLogger("sphinx")
 
 class PEPTranslator(html5.HTML5Translator):
     compact_field_list = True
@@ -9,6 +10,7 @@ class PEPTranslator(html5.HTML5Translator):
 
     def __init__(self, *args):
         super(PEPTranslator, self).__init__(*args)
+        logger.warning("PEP Translator")
         self.compact_simple: bool = False
 
     # Omit <p> tags to produce visually compact lists
