@@ -39,6 +39,7 @@ def create_pep_zero(_: Sphinx, env: BuildEnvironment, docnames: list):
     pep_zero_filename = 'pep-0000'
     peps: List[pep_0_parser.PEP] = []
     pep_pat = re.compile(r"pep-\d{4}")  # Path.match() doesn't support regular expressions
+    title_length = pep_0_writer.title_length
 
     with open("AUTHORS.csv", "r", encoding="UTF8") as f:
         read = csv.DictReader(f, quotechar='"', skipinitialspace=True)
@@ -55,10 +56,7 @@ def create_pep_zero(_: Sphinx, env: BuildEnvironment, docnames: list):
             continue  # Skip pre-existing PEP 0 files
         if pep_pat.match(str(file_path)) and file_path.suffix in (".txt", ".rst"):
             file_path_absolute = path.joinpath(file_path).absolute()
-            pep_text = file_path_absolute.read_text("UTF8")
-            pep = pep_0_parser.PEP(pep_text, file_path_absolute, author_data)
-            if pep.number != int(file_path.stem[4:]):
-                raise pep_0_parser.PEPError(f'PEP number does not match file name ({file_path})', file_path, pep.number)
+            pep = pep_0_parser.PEP(file_path_absolute, author_data, title_length)
             peps.append(pep)
     peps.sort(key=attrgetter('number'))
 

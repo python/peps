@@ -5,6 +5,41 @@ from functools import partial
 from operator import attrgetter
 from typing import List
 
+from pep_extensions.pep_zero_generator import pep_0_parser
+
+title_length = 55
+author_length = 40
+table_separator = "== ====  " + "="*title_length + " " + "="*author_length
+
+# column format is called as a function with a mapping containing field values
+column_format = partial(
+    "{type}{status}{number: >5}  {title: <{title_length}} {authors}".format,
+    title_length=title_length
+)
+
+header = f"""\
+PEP: 0
+Title: Index of Python Enhancement Proposals (PEPs)
+Last-Modified: {datetime.date.today().strftime("%Y-%m-%d")}
+Author: python-dev <python-dev@python.org>
+Status: Active
+Type: Informational
+Content-Type: text/x-rst
+Created: 13-Jul-2000
+"""
+
+intro = """\
+This PEP contains the index of all Python Enhancement Proposals,
+known as PEPs.  PEP numbers are assigned by the PEP editors, and
+once assigned are never changed [1_].  The version control history [2_] of
+the PEP texts represent their historical record.
+"""
+
+references = """\
+.. [1] PEP 1: PEP Purpose and Guidelines
+.. [2] View PEP history online: https://github.com/python/peps
+"""
+
 
 class PEPZeroWriter:
     # This is a list of reserved PEP numbers.  Reservations are not to be used for
@@ -31,7 +66,7 @@ class PEPZeroWriter:
         self.output('')
 
     def emit_table_separator(self):
-        self.output(pep_0_constants.table_separator)
+        self.output(table_separator)
 
     def emit_author_table_separator(self, max_name_len):
         author_table_separator = "=" * max_name_len + "  " + "=" * len("email address")
@@ -47,7 +82,7 @@ class PEPZeroWriter:
             "authors": "PEP Author(s)",
         }
         self.emit_table_separator()
-        self.output(pep_0_constants.column_format(**column_headers))
+        self.output(column_format(**column_headers))
         self.emit_table_separator()
 
     @staticmethod
@@ -165,19 +200,17 @@ class PEPZeroWriter:
     def write_pep0(self, peps: List[pep_0_parser.PEP]):
 
         # PEP metadata
-        today = datetime.date.today().strftime("%Y-%m-%d")
-        self.output(pep_0_constants.header.format(last_modified=today))
+        self.output(header)
         self.emit_newline()
 
         # Introduction
         self.emit_title("Introduction", "intro")
-        self.output(pep_0_constants.intro)
+        self.output(intro)
         self.emit_newline()
 
         # PEPs by category
         self.emit_title("Index by Category", "by-category")
-        (meta, info, provisional, accepted, open_,
-         finished, historical, deferred, dead) = self.sort_peps(peps)
+        (meta, info, provisional, accepted, open_, finished, historical, deferred, dead) = self.sort_peps(peps)
         pep_categories = [
             ("Meta-PEPs (PEPs about PEPs or Processes)", "by-category-meta", meta),
             ("Other Informational PEPs", "by-category-other-info", info),
@@ -204,7 +237,7 @@ class PEPZeroWriter:
         for pep in peps:
             if pep.number - prev_pep > 1:
                 self.emit_newline()
-            self.output(str(pep))
+            self.output(column_format(**pep.pep))
             prev_pep = pep.number
 
         self.emit_table_separator()
@@ -214,7 +247,7 @@ class PEPZeroWriter:
         self.emit_title("Reserved PEP Numbers", "reserved")
         self.emit_column_headers()
         for number, claimants in sorted(self.RESERVED):
-            self.output(pep_0_constants.column_format(**{
+            self.output(column_format(**{
                 "type": ".",
                 "status": ".",
                 "number": number,
@@ -274,8 +307,7 @@ class PEPZeroWriter:
 
         # References for introduction footnotes
         self.emit_title("References", "references")
-        self.output(pep_0_constants.references)
-        self.output(pep_0_constants.footer)
+        self.output(references)
 
         pep0_string = '\n'.join([str(s) for s in self._output])
         return pep0_string
