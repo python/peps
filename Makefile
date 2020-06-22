@@ -5,6 +5,9 @@ all: sphinx
 
 PYTHON=python3
 
+pages: sphinx
+	$(PYTHON) build.py --index-file
+
 sphinx:
 	$(PYTHON) build.py
 

@@ -1,5 +1,6 @@
 # Build script for Sphinx documentation
 
+import shutil
 import argparse
 from pathlib import Path
 from sphinx.application import Sphinx
@@ -14,11 +15,25 @@ def create_parser():
         ('-c', '--check-links', 'store_true'),
         ('-f', '--fail-on-warning', 'store_true'),
         ('-n', '--nitpicky', 'store_true'),
+        ("-i", "--index-file", "store_true")
     ]
     for arg in arguments:
         parser.add_argument(arg[0], arg[1], action=arg[2])
 
     return parser.parse_args()
+
+
+def create_index_file(html_content: Path):
+    index_file = "index.html"
+    index = html_content / index_file
+
+    pep_zero = html_content / "pep-0000.html"
+    # `dirhtml` builder pep 0 path:
+    pep_zero_dir_builder = pep_zero.with_suffix("").joinpath(index_file)
+    if pep_zero.is_file():
+        shutil.copy(pep_zero, index)
+    elif pep_zero_dir_builder.is_file():
+        shutil.copy(pep_zero_dir_builder, index)
 
 
 if __name__ == '__main__':
@@ -47,3 +62,6 @@ if __name__ == '__main__':
     )
     app.builder.copysource = False  # Prevent unneeded source copying - we link direct to VCS
     app.build()
+    
+    if args.index_file:
+        create_index_file(build_directory)
