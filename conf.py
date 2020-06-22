@@ -30,7 +30,7 @@ template_bridge = "pep_extensions.pep_processor.html.pep_jinja2.PEPTemplateLoade
 extensions = ["pep_extensions", "sphinx.ext.githubpages"]
 
 # Add any paths that contain templates here, relative to this directory.
-templates_path = ['pep_extensions/theme']
+templates_path = ['pep_extensions/theme/templates']
 
 # The file extensions of source files. Sphinx considers the files with
 # these suffixes as sources.
