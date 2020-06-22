@@ -27,7 +27,7 @@ template_bridge = "pep_extensions.pep_processor.pep_jinja2.PEPTemplateLoader"
 # Add any Sphinx extension module names here, as strings. They can be
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
-extensions = ["pep_extensions"]
+extensions = ["pep_extensions", "sphinx.ext.githubpages"]
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['pep_extensions/theme']
