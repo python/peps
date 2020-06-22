@@ -162,7 +162,7 @@ class PEPZeroWriter:
         self.emit_table_separator()
         self.emit_newline()
 
-    def write_pep0(self, peps: list):
+    def write_pep0(self, peps: List[pep_0_parser.PEP]):
 
         # PEP metadata
         today = datetime.date.today().strftime("%Y-%m-%d")

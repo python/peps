@@ -29,14 +29,15 @@ if TYPE_CHECKING:
     from sphinx.application import Sphinx
     from sphinx.environment import BuildEnvironment
 
-def create_pep_zero(_, env, docnames):
-    # app is unneeded by this function
+
+def create_pep_zero(_: Sphinx, env: BuildEnvironment, docnames: list):
+    # Sphinx app object is unneeded by this function
 
     # Read from root directory
     path = Path('.')
 
     pep_zero_filename = 'pep-0000'
-    peps = []
+    peps: List[pep_0_parser.PEP] = []
     pep_pat = re.compile(r"pep-\d{4}")  # Path.match() doesn't support regular expressions
 
     with open("AUTHORS.csv", "r", encoding="UTF8") as f:
