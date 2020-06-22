@@ -9,9 +9,6 @@ sys.path.extend(str(Path('./pep_extensions').absolute()))
 # -- Project information -----------------------------------------------------
 
 project = 'PEPs'
-copyright = '2020, PEP Authors'
-author = 'PEP Authors'
-
 master_doc = 'contents'
 
 # -- General configuration ---------------------------------------------------
@@ -22,15 +19,13 @@ extensions = ["pep_extensions", "sphinx.ext.githubpages"]
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['pep_extensions/theme/templates']
 
-# The file extensions of source files. Sphinx considers the files with
-# these suffixes as sources.
+# The file extensions of source files. Sphinx uses these suffixes as sources.
 source_suffix = {
     '.rst': 'pep',
     '.txt': 'pep',
 }
 
-# List of patterns, relative to source directory, to ignore when
-# looking for source files.
+# List of patterns (relative to source dir) to ignore when looking for source files.
 exclude_patterns = [
     # Windows:
     'Thumbs.db',
