@@ -3,10 +3,10 @@
 import re
 import textwrap
 import unicodedata
-
+from email.message import Message
 from email.parser import HeaderParser
-
-from pep_extensions.pep_zero_generator import pep_0_constants
+from pathlib import Path
+from typing import List, Tuple
 
 
 class PEPError(Exception):

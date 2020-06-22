@@ -1,13 +1,8 @@
 """Code to handle the output of PEP 0."""
 import datetime
 import unicodedata
-
+from functools import partial
 from operator import attrgetter
-
-from pep_extensions.pep_zero_generator import pep_0_constants
-from pep_extensions.pep_zero_generator import pep_0_parser
-
-# Type annotations
 from typing import List
 
 
