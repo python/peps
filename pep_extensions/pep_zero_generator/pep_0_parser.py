@@ -6,7 +6,7 @@ import unicodedata
 
 from email.parser import HeaderParser
 
-from . import pep0_constants
+from pep_extensions.pep_zero_generator import pep_0_constants
 
 
 class PEPError(Exception):
@@ -255,9 +255,9 @@ class PEP(object):
     @property
     def title_abbr(self):
         """Shorten the title to be no longer than the max title length."""
-        if len(self.title) <= pep0_constants.title_length:
+        if len(self.title) <= pep_0_constants.title_length:
             return self.title
-        wrapped_title = textwrap.wrap(self.title, pep0_constants.title_length - 4)
+        wrapped_title = textwrap.wrap(self.title, pep_0_constants.title_length - 4)
         return wrapped_title[0] + " ..."
 
     def __str__(self):
@@ -269,4 +269,4 @@ class PEP(object):
             "status": self.status_abbr,
             "authors": self.author_abbr,
         }
-        return pep0_constants.column_format(**pep_info)
+        return pep_0_constants.column_format(**pep_info)
