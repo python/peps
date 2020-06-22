@@ -32,18 +32,18 @@ source_suffix = {
 # List of patterns, relative to source directory, to ignore when
 # looking for source files.
 exclude_patterns = [
-    '_build',
+    # Windows:
     'Thumbs.db',
     '.DS_Store',
+    # Python:
     'venv',
+    'requirements.txt',
+    # Sphinx:
     'build',
-    "_build",
-    "_build-old",
-    "package",
+    "output.txt",  # Linkcheck output
+    # Project:
     'README.rst',
     'CONTRIBUTING.rst',
-    'requirements.txt',
-    "output.txt",
 ]
 
 # -- Options for HTML output -------------------------------------------------
