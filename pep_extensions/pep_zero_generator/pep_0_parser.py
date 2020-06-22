@@ -28,8 +28,7 @@ class PEPParseError(PEPError):
     pass
 
 
-class Author(object):
-
+class Author:
     """Represent PEP authors.
 
     Attributes:
@@ -88,8 +87,7 @@ class Author(object):
         return unicodedata.normalize("NFKD", base)
 
 
-class PEP(object):
-
+class PEP:
     """Representation of PEPs.
 
     Attributes:
