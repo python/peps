@@ -17,12 +17,17 @@ check_links:
 rss:
 	$(PYTHON) pep2rss.py .
 
+clean:
+	rm pep-0000.rst
+	rm *.html
+	rm -rf build
+
 update:
 	git pull https://github.com/python/peps.git
 
 venv:
 	$(PYTHON) -m venv venv
-	./venv/bin/python -m pip install -U docutils sphinx
+	./venv/bin/python -m pip install -r requirements.txt
 
 package: all rss
 	mkdir -p package/peps
