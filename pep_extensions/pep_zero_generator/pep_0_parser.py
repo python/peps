@@ -127,35 +127,36 @@ class PEP:
         pep_number = self.number if pep_num else None
         raise PEPError(msg, self.filename, pep_number=pep_number)
 
-    def __init__(self, pep_file: str, filename: str, author_lookup: dict):
-        """Init object from an open PEP file object."""
+    def __init__(self, filename: Path, author_lookup: dict, title_length: int):
+        """Init object from an open PEP file object.
+
+        pep_file is full text of the PEP file, filename is path of the PEP file, author_lookup is author exceptions file
+
+        """
+        self.filename: Path = filename
+        self.number: int = 0
+        self.title: str = ""
+        self.type_: str = ""
+        self.status: str = ""
+        self.authors: List[Author] = []
+        self.title_length: int = title_length
+
         # Parse the headers.
-        self.filename = filename
         pep_parser = HeaderParser()
-        metadata = pep_parser.parsestr(pep_file)
-        header_order = iter(self.headers)
-        current_header = ""
-        try:
-            for header_name in metadata.keys():
-                current_header, required = next(header_order)
-                while header_name != current_header and not required:
-                    current_header, required = next(header_order)
-                if header_name != current_header:
-                    raise PEPError(
-                        "did not deal with "
-                        f"{header_name} before having to handle {current_header}",
-                        filename,
-                    )
-        except StopIteration:
-            raise PEPError("headers missing or out of order", filename)
-        required = False
-        try:
-            while not required:
-                current_header, required = next(header_order)
-            else:
-                raise PEPError(f"PEP is missing its '{current_header}' header", filename)
-        except StopIteration:
-            pass
+        pep_text = filename.read_text("UTF8")
+        metadata = pep_parser.parsestr(pep_text)
+        self.parse_pep(metadata)
+        self.parse_authors(metadata["Author"], author_lookup)
+
+        if self.number != int(filename.stem[4:]):
+            self.raise_pep_error(f'PEP number does not match file name ({filename})', pep_num=True)
+
+    def parse_pep(self, metadata: Message) -> None:
+        required_header_misses = set(t[0] for t in self.headers if t[1]) - set(metadata.keys())
+        if required_header_misses:
+            msg = f"PEP is missing required headers ({', '.join(sorted(required_header_misses))})"
+            self.raise_pep_error(msg)
+
         # 'PEP'.
         try:
             self.number = int(metadata["PEP"])
@@ -186,14 +187,13 @@ class PEP:
 
         # Special case for Provisional PEPs.
         if status == "Provisional" and self.type_ != "Standards Track":
-            raise PEPError(
-                "Only Standards Track PEPs may " "have a Provisional status",
-                filename,
-                self.number,
-            )
+            msg = "Only Standards Track PEPs may have a Provisional status"
+            self.raise_pep_error(msg, pep_num=True)
         self.status = status
-        # 'Author'.
-        authors_and_emails = self._parse_author(metadata["Author"])
+
+    def parse_authors(self, author_header: str, author_lookup: dict) -> None:
+        """Parse Author header line"""
+        authors_and_emails = self._parse_author(author_header)
         if len(authors_and_emails) < 1:
             raise self.raise_pep_error("no authors found", pep_num=True)
         self.authors = [Author(email, author_lookup) for email in authors_and_emails]
