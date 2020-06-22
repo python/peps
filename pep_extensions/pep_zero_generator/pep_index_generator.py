@@ -15,14 +15,19 @@ We then add the newly created PEP 0 file to two Sphinx environment variables
 to allow it to be processed as normal.
 
 """
-import re
+from __future__ import annotations
+
 import csv
-from operator import attrgetter
+import re
 from pathlib import Path
+from typing import TYPE_CHECKING, List
 
 from pep_extensions.pep_zero_generator import pep_0_parser
 from pep_extensions.pep_zero_generator import pep_0_writer
 
+if TYPE_CHECKING:
+    from sphinx.application import Sphinx
+    from sphinx.environment import BuildEnvironment
 
 def create_pep_zero(_, env, docnames):
     # app is unneeded by this function
