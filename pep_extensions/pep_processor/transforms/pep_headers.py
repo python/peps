@@ -5,7 +5,7 @@ from docutils import nodes
 from docutils import transforms
 from docutils.transforms import peps
 
-from pep_extensions.pep_processor import pep_zero
+from pep_extensions.pep_processor.transforms import pep_zero
 import pep_extensions.config
 
 pep_url = pep_extensions.config.pep_url

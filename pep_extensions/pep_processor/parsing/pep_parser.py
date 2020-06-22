@@ -1,9 +1,9 @@
 from sphinx import parsers
 
-from pep_extensions.pep_processor import pep_headers
-from pep_extensions.pep_processor import pep_title
-from pep_extensions.pep_processor import pep_contents
-from pep_extensions.pep_processor import pep_footer
+from pep_extensions.pep_processor.transforms import pep_headers
+from pep_extensions.pep_processor.transforms import pep_title
+from pep_extensions.pep_processor.transforms import pep_contents
+from pep_extensions.pep_processor.transforms import pep_footer
 
 
 class PEPParser(parsers.RSTParser):
