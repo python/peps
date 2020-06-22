@@ -20,7 +20,7 @@ author = 'PEP Authors'
 html_title = "PEPs.Python.org"
 html_show_copyright = False
 html_show_sphinx = False
-template_bridge = "pep_extensions.pep_processor.pep_jinja2.PEPTemplateLoader"
+template_bridge = "pep_extensions.pep_processor.html.pep_jinja2.PEPTemplateLoader"
 
 # -- General configuration ---------------------------------------------------
 
