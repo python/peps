@@ -252,18 +252,18 @@ class PEP:
     @property
     def title_abbr(self) -> str:
         """Shorten the title to be no longer than the max title length."""
-        if len(self.title) <= pep_0_constants.title_length:
+        if len(self.title) <= self.title_length:
             return self.title
-        wrapped_title = textwrap.wrap(self.title, pep_0_constants.title_length - 4)
+        wrapped_title = textwrap.wrap(self.title, self.title_length - 4)
         return wrapped_title[0] + " ..."
 
-    def __str__(self):
+    @property
+    def pep(self) -> dict:
         """Return the line entry for the PEP."""
-        pep_info = {
+        return {
             "type": self.type_abbr,
-            "number": str(self.number),
+            "number": self.number,
             "title": self.title_abbr,
             "status": self.status_abbr,
             "authors": self.author_abbr,
         }
-        return pep_0_constants.column_format(**pep_info)
