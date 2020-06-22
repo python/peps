@@ -17,15 +17,9 @@ class PEPError(Exception):
 
     def __str__(self):
         error_msg = super(PEPError, self).__str__()
-        if self.number is not None:
-            return f"PEP {self.number}: {error_msg}"
-        else:
-            return f"({self.filename}): {error_msg}"
-
-
-class PEPParseError(PEPError):
-
-    pass
+        error_msg = f"({self.filename}): {error_msg}"
+        pep_str = f"PEP {self.number}"
+        return f"{pep_str} {error_msg}" if self.number is not None else error_msg
 
 
 class Author:
@@ -56,16 +50,16 @@ class Author:
             The author's email address.
     """
 
-    def __init__(self, author_and_email_tuple, authors_lookup):
+    def __init__(self, author_and_email_tuple: Tuple[str, str], authors_lookup: dict):
         """Parse the name and email address of an author."""
         name, email = author_and_email_tuple
-        self.first_last = name.strip()
-        self.email = email.lower()
+        self.first_last: str = name.strip()
+        self.email: str = email.lower()
 
         name_dict = authors_lookup[self.first_last]
 
-        self.last_first = name_dict["Surname First"]
-        self.nick = name_dict["Name Reference"]
+        self.last_first: str = name_dict["Surname First"]
+        self.nick: str = name_dict["Name Reference"]
 
     def __hash__(self):
         return hash(self.first_last)
@@ -74,7 +68,7 @@ class Author:
         return self.first_last == other.first_last
 
     @property
-    def sort_by(self):
+    def sort_by(self) -> str:
         last = self.last_first.split(",")[0]
         name_parts = last.split()
         for index, part in enumerate(name_parts):
@@ -200,7 +194,7 @@ class PEP:
         self.authors = [Author(author_email, author_lookup) for author_email in authors_and_emails]
 
     @staticmethod
-    def _parse_author(data):
+    def _parse_author(data: str) -> list:
         """Return a list of author names and emails."""
         # XXX Consider using email.utils.parseaddr (doesn't work with names
         # lacking an email address.
@@ -233,12 +227,12 @@ class PEP:
         return author_list
 
     @property
-    def type_abbr(self):
+    def type_abbr(self) -> str:
         """Return how the type is to be represented in the index."""
         return self.type_[0].upper()
 
     @property
-    def status_abbr(self):
+    def status_abbr(self) -> str:
         """Return how the status should be represented in the index."""
         if self.status in ("Draft", "Active"):
             return " "
@@ -246,12 +240,12 @@ class PEP:
             return self.status[0].upper()
 
     @property
-    def author_abbr(self):
+    def author_abbr(self) -> str:
         """Return the author list as a comma-separated with only last names."""
         return ", ".join(x.nick for x in self.authors)
 
     @property
-    def title_abbr(self):
+    def title_abbr(self) -> str:
         """Shorten the title to be no longer than the max title length."""
         if len(self.title) <= pep_0_constants.title_length:
             return self.title
