@@ -12,7 +12,7 @@ from pep_extensions.pep_zero_generator.pep_index_generator import create_pep_zer
 
 # Monkeypatch StandaloneHTMLBuilder to not include JS libraries (underscore.js & jQuery)
 def init_less_js(self) -> None:
-    js_files = [('doctools.js', {}), ('language_data.js', {}), ]
+    js_files = [('js/doctools.js', {}), ('js/language_data.js', {}), ]
     js_files.extend([*self.app.registry.js_files, *self.get_builder_config('js_files', 'html')])
     js_files.append(('translations.js',) if self.config.language and self._get_translations_js() else (None, {}))
     for filename, attrs in js_files:
