@@ -193,19 +193,19 @@ class PEP:
             raise PEPError("no authors found", filename, self.number)
         self.authors = [Author(author_email, author_lookup) for author_email in authors_and_emails]
 
+    angled = re.compile(r"(?P<author>.+?) <(?P<email>.+?)>(,\s*)?")
+    paren = re.compile(r"(?P<email>.+?) \((?P<author>.+?)\)(,\s*)?")
+    simple = re.compile(r"(?P<author>[^,]+)(,\s*)?")
+
     @staticmethod
     def _parse_author(data: str) -> list:
         """Return a list of author names and emails."""
         # XXX Consider using email.utils.parseaddr (doesn't work with names
         # lacking an email address.
-        angled = "(?P<author>.+?) <(?P<email>.+?)>"
-        paren = "(?P<email>.+?) \((?P<author>.+?)\)"
-        simple = "(?P<author>[^,]+)"
+
         author_list = []
-        for regex in (angled, paren, simple):
-            # Watch out for commas separating multiple names.
-            regex += r"(,\s*)?"
-            for match in re.finditer(regex, data):
+        for regex in (PEP.angled, PEP.paren, PEP.simple):
+            for match in regex.finditer(data):
                 # Watch out for suffixes like 'Jr.' when they are comma-separated
                 # from the name and thus cause issues when *all* names are only
                 # separated by commas.
