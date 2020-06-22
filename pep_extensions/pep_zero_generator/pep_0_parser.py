@@ -123,6 +123,10 @@ class PEP:
         "Deferred", "Final", "Active", "Draft", "Superseded",
     )
 
+    def raise_pep_error(self, msg: str, pep_num: bool = False) -> None:
+        pep_number = self.number if pep_num else None
+        raise PEPError(msg, self.filename, pep_number=pep_number)
+
     def __init__(self, pep_file: str, filename: str, author_lookup: dict):
         """Init object from an open PEP file object."""
         # Parse the headers.
@@ -156,29 +160,30 @@ class PEP:
         try:
             self.number = int(metadata["PEP"])
         except ValueError:
-            raise PEPParseError("PEP number isn't an integer", filename)
+            self.raise_pep_error("PEP number isn't an integer")
+
         # 'Title'.
         self.title = metadata["Title"]
+
         # 'Type'.
         type_ = metadata["Type"]
         if type_ not in self.type_values:
-            raise PEPError(f"{type_} is not a valid Type value", filename, self.number)
+            self.raise_pep_error(f"{type_} is not a valid Type value", pep_num=True)
         self.type_ = type_
+
         # 'Status'.
         status = metadata["Status"]
         if status not in self.status_values:
-            if status == "April Fool!":
-                # See PEP 401 :)
+            if status == "April Fool!":  # See PEP 401 :)
                 status = "Rejected"
             else:
-                raise PEPError(f"{status} is not a valid Status value", filename, self.number)
+                self.raise_pep_error(f"{status} is not a valid Status value", pep_num=True)
+
         # Special case for Active PEPs.
         if status == "Active" and self.type_ not in ("Process", "Informational"):
-            raise PEPError(
-                "Only Process and Informational PEPs may " "have an Active status",
-                filename,
-                self.number,
-            )
+            msg = "Only Process and Informational PEPs may have an Active status"
+            self.raise_pep_error(msg, pep_num=True)
+
         # Special case for Provisional PEPs.
         if status == "Provisional" and self.type_ != "Standards Track":
             raise PEPError(
@@ -190,8 +195,8 @@ class PEP:
         # 'Author'.
         authors_and_emails = self._parse_author(metadata["Author"])
         if len(authors_and_emails) < 1:
-            raise PEPError("no authors found", filename, self.number)
-        self.authors = [Author(author_email, author_lookup) for author_email in authors_and_emails]
+            raise self.raise_pep_error("no authors found", pep_num=True)
+        self.authors = [Author(email, author_lookup) for email in authors_and_emails]
 
     angled = re.compile(r"(?P<author>.+?) <(?P<email>.+?)>(,\s*)?")
     paren = re.compile(r"(?P<email>.+?) \((?P<author>.+?)\)(,\s*)?")
