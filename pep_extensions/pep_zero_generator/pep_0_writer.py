@@ -4,8 +4,8 @@ import unicodedata
 
 from operator import attrgetter
 
-from . import pep0_constants
-from . import pep0
+from pep_extensions.pep_zero_generator import pep_0_constants
+from pep_extensions.pep_zero_generator import pep_0_parser
 
 # Type annotations
 from typing import List
@@ -36,7 +36,7 @@ class PEPZeroWriter:
         self.output('')
 
     def emit_table_separator(self):
-        self.output(pep0_constants.table_separator)
+        self.output(pep_0_constants.table_separator)
 
     def emit_author_table_separator(self, max_name_len):
         author_table_separator = "=" * max_name_len + "  " + "=" * len("email address")
@@ -52,7 +52,7 @@ class PEPZeroWriter:
             "authors": "PEP Author(s)",
         }
         self.emit_table_separator()
-        self.output(pep0_constants.column_format(**column_headers))
+        self.output(pep_0_constants.column_format(**column_headers))
         self.emit_table_separator()
 
     @staticmethod
@@ -99,7 +99,7 @@ class PEPZeroWriter:
             elif pep.status == "Final":
                 finished.append(pep)
             else:
-                raise pep0.PEPError(f"unsorted ({pep.type_}/{pep.status})", pep.filename, pep.number)
+                raise pep_0_parser.PEPError(f"unsorted ({pep.type_}/{pep.status})", pep.filename, pep.number)
         return meta, info, provisional, accepted, open_, finished, historical, deferred, dead
 
     @staticmethod
@@ -132,7 +132,7 @@ class PEPZeroWriter:
         if too_many_emails:
             err_output = []
             for author, emails in too_many_emails:
-                err_output.append(f"    {author}: {emails}")
+                err_output.append(" " * 4 + f"{author}: {emails}")
             raise ValueError(
                 "some authors have more than one email address listed:\n"
                 + "\n".join(err_output)
@@ -171,12 +171,12 @@ class PEPZeroWriter:
 
         # PEP metadata
         today = datetime.date.today().strftime("%Y-%m-%d")
-        self.output(pep0_constants.header.format(last_modified=today))
+        self.output(pep_0_constants.header.format(last_modified=today))
         self.emit_newline()
 
         # Introduction
         self.emit_title("Introduction", "intro")
-        self.output(pep0_constants.intro)
+        self.output(pep_0_constants.intro)
         self.emit_newline()
 
         # PEPs by category
@@ -219,7 +219,7 @@ class PEPZeroWriter:
         self.emit_title("Reserved PEP Numbers", "reserved")
         self.emit_column_headers()
         for number, claimants in sorted(self.RESERVED):
-            self.output(pep0_constants.column_format(**{
+            self.output(pep_0_constants.column_format(**{
                 "type": ".",
                 "status": ".",
                 "number": number,
@@ -232,7 +232,7 @@ class PEPZeroWriter:
 
         # PEP types key
         self.emit_title("PEP Types Key", "type-key")
-        for type_ in sorted(pep0.PEP.type_values):
+        for type_ in sorted(pep_0_parser.PEP.type_values):
             self.output(f"    {type_[0]} - {type_} PEP")
             self.emit_newline()
 
@@ -240,7 +240,7 @@ class PEPZeroWriter:
 
         # PEP status key
         self.emit_title("PEP Status Key", "status-key")
-        for status in sorted(pep0.PEP.status_values):
+        for status in sorted(pep_0_parser.PEP.status_values):
             # Draft PEPs have no status displayed, Active shares a key with Accepted
             if status in ("Active", "Draft"):
                 continue
@@ -279,8 +279,8 @@ class PEPZeroWriter:
 
         # References for introduction footnotes
         self.emit_title("References", "references")
-        self.output(pep0_constants.references)
-        self.output(pep0_constants.footer)
+        self.output(pep_0_constants.references)
+        self.output(pep_0_constants.footer)
 
         pep0_string = '\n'.join([str(s) for s in self._output])
         return pep0_string

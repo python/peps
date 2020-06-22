@@ -20,8 +20,8 @@ import csv
 from operator import attrgetter
 from pathlib import Path
 
-from . import pep0
-from . import pep0_writer
+from pep_extensions.pep_zero_generator import pep_0_parser
+from pep_extensions.pep_zero_generator import pep_0_writer
 
 
 def create_pep_zero(_, env, docnames):
@@ -50,13 +50,13 @@ def create_pep_zero(_, env, docnames):
         if pep_pat.match(str(file_path)) and file_path.suffix in (".txt", ".rst"):
             file_path_absolute = path.joinpath(file_path).absolute()
             pep_text = file_path_absolute.read_text("UTF8")
-            pep = pep0.PEP(pep_text, file_path_absolute, author_data)
+            pep = pep_0_parser.PEP(pep_text, file_path_absolute, author_data)
             if pep.number != int(file_path.stem[4:]):
-                raise pep0.PEPError(f'PEP number does not match file name ({file_path})', file_path, pep.number)
+                raise pep_0_parser.PEPError(f'PEP number does not match file name ({file_path})', file_path, pep.number)
             peps.append(pep)
     peps.sort(key=attrgetter('number'))
 
-    pep_writer = pep0_writer.PEPZeroWriter()
+    pep_writer = pep_0_writer.PEPZeroWriter()
     pep0_text = pep_writer.write_pep0(peps)
     with open(pep_zero_filename + ".rst", 'w', encoding='UTF-8') as pep0_file:
         pep0_file.write(pep0_text)
