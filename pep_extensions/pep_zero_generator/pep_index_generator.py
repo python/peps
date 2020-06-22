@@ -58,12 +58,11 @@ def create_pep_zero(_: Sphinx, env: BuildEnvironment, docnames: list):
             file_path_absolute = path.joinpath(file_path).absolute()
             pep = pep_0_parser.PEP(file_path_absolute, author_data, title_length)
             peps.append(pep)
-    peps.sort(key=attrgetter('number'))
+    peps.sort(key=lambda pep: pep.number)
 
     pep_writer = pep_0_writer.PEPZeroWriter()
     pep0_text = pep_writer.write_pep0(peps)
-    with open(pep_zero_filename + ".rst", 'w', encoding='UTF-8') as pep0_file:
-        pep0_file.write(pep0_text)
+    Path(f"{pep_zero_filename}.rst").write_text(pep0_text, encoding='UTF-8')
 
     # Add to files for builder
     docnames.insert(1, pep_zero_filename)

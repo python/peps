@@ -65,6 +65,8 @@ class Author:
         return hash(self.first_last)
 
     def __eq__(self, other):
+        if not isinstance(other, Author):
+            return NotImplemented
         return self.first_last == other.first_last
 
     @property
