@@ -1,0 +1,1713 @@
+PEP: 622
+Title: Structural Pattern Matching
+Version: $Revision$
+Last-Modified: $Date$
+Author: Brandt Bucher <brandtbucher@gmail.com>,
+        Tobias Kohn <kohnt@tobiaskohn.ch>,
+        Ivan Levkivskyi <levkivskyi@gmail.com>,
+        Guido van Rossum <guido@python.org>,
+        Talin <viridia@gmail.com>
+BDFL-Delegate:
+Discussions-To: Python-Dev <python-dev@python.org>
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 23-Jun-2020
+Python-Version: 3.10
+Post-History: 23-Jun-2020
+Resolution:
+
+
+Abstract
+========
+
+This PEP proposes adding pattern matching statements [1]_ to Python in
+order to create more expressive ways of handling structured
+heterogeneous data.  The authors take a holistic approach, providing
+both static and runtime specifications.
+
+:pep:`275` and :pep:`3103` previously proposed similar constructs, and
+were rejected.  Instead of targeting the optimization of
+``if ... elif ... else`` statements (as those PEPs did), this design
+focuses on generalizing sequence, mapping, and object destructuring.
+It uses sytactic features made possible by :pep:`617`, which
+introduced a more powerful method of parsing Python source code.
+
+
+Rationale and Goals
+===================
+
+Let us start from some anecdotal evidence: ``isinstance()`` is one of the most
+called functions in large scale Python code-bases (by static call count).
+In particular, when analyzing some multi-million line production code base,
+it was discovered that ``isinstance()`` is the second most called builtin
+function (after ``len()``). Even taking into account builtin classes, it is
+still in the top ten. Most of such calls are followed by specific attribute
+access.
+
+There are two possible conclusions that can be drawn from this information:
+
+* Handling of heterogeneous data (i.e. situations where a variable can take
+  values of multiple types) is common in real world code.
+
+* Python doesn't have expressive ways of destructuring object data (i.e.
+  separating the content of an object into multiple variables).
+
+This is in contrast with the opposite sides of both aspects:
+
+* Its success in the numeric world indicates that Python is good when
+  working with homogeneous data. It also has builtin support for homogeneous
+  data structures such as e.g. lists and arrays, and semantic constructs such
+  as iterators and generators.
+
+* Python is expressive and flexible at constructing objects. It has syntactic
+  support for collection literals and comprehensions. Custom objects can be
+  created using positional and keyword calls that are customized by special
+  ``__init__()`` method.
+
+This PEP aims at improving the support for destructuring heterogeneous data
+by adding a dedicated syntactic support for it in the form of pattern matching.
+On very high level it is similar to regular expressions, but instead of
+matching strings, it will be possible to match arbitrary Python objects.
+
+We believe this will improve both readability and reliability of relevant code.
+To illustrate the readability improvement, let us consider an actual example
+from the Python standard library::
+
+  def is_tuple(node):
+      if isinstance(node, Node) and node.children == [LParen(), RParen()]:
+          return True
+      return (isinstance(node, Node)
+              and len(node.children) == 3
+              and isinstance(node.children[0], Leaf)
+              and isinstance(node.children[1], Node)
+              and isinstance(node.children[2], Leaf)
+              and node.children[0].value == "("
+              and node.children[2].value == ")")
+
+With the syntax proposed in this PEP it can be rewritten as below. Note that
+the proposed code will work without any modifications to the definition of
+``Node`` and other classes here::
+
+  def is_tuple(node: Node) -> bool:
+      match node:
+          case Node(children=[LParen(), RParen()]):
+              return True
+          case Node(children=[Leaf(value="("), Node(), Leaf(value=")")]):
+              return True
+          case _:
+              return False
+
+See the `syntax`_ sections below for a more detailed specification.
+
+Similarly to how constructing objects can be customized by a user-defined
+``__init__()`` method, we propose that destructuring objects can be customized
+by a new special ``__match__()`` method. As part of this PEP we specify the
+general ``__match__()`` API, its implementation for ``object.__match__()``,
+and for some standard library classes (including PEP 557 dataclasses). See
+`runtime`_ section below.
+
+Finally, we aim to provide a comprehensive support for static type checkers
+and similar tools. For this purpose we propose to introduce a
+``@typing.sealed`` class decorator that will be a no-op at runtime, but
+will indicate to static tools that all subclasses of this class must be defined
+in the same module. This will allow effective static exhaustiveness checks,
+and together with dataclasses, will provide a nice support for algebraic data
+types [2]_. See the `static checkers`_ section for more details.
+
+In general, we believe that pattern matching has been proved to be a useful and
+expressive tool in various modern languages. In particular, many aspects of
+this PEP were inspired by how pattern matching works in Rust [3]_ and
+Scala [4]_.
+
+
+.. _syntax:
+
+Syntax and Semantics
+====================
+
+Case clauses
+------------
+
+A simplified, approximate grammar for the proposed syntax is::
+
+  ...
+  compound_statement:
+      | if_stmt
+      ...
+      | match_stmt
+  match_stmt: "match" expression ':' NEWLINE INDENT case_block+ DEDENT
+  case_block: "case" pattern [guard] ':' block
+  guard: 'if' expression
+  pattern: NAME ':=' or_pattern | or_pattern
+  or_pattern: closed_pattern ('|' closed_pattern)*
+  closed_pattern:
+      | name_pattern
+      | literal_pattern
+      | constant_pattern
+      | group_pattern
+      | sequence_pattern
+      | mapping_pattern
+      | class_pattern
+
+(See `Appendix A`_ for the full, unabridged grammar.)
+
+We propose the match syntax to be a statement, not an expression. Although in
+many languages it is an expression, being a statement better suits the general
+logic of Python syntax. See `rejected ideas`_ for more discussion. The list of
+allowed patterns is specified below in the `patterns`_ subsection.
+
+The ``match`` word is proposed to be a soft keyword, so that it is recognized
+as a keyword at the beginning of a match statement, but is allowed to be used in
+other places as a variable or argument name.
+
+The proposed indentation structure is as following::
+
+    match some_expression:
+        case pattern_1:
+            ...
+        case pattern_2:
+            ...
+
+
+Match semantics
+---------------
+
+The proposed large scale semantics for choosing the match is to choose the first
+matching pattern and execute the corresponding suite. The remaining patterns
+are not tried. If there are no matching pattens, the statement 'falls
+through', and execution continues at the following statement.
+
+Essentially this is equivalent to a chain of ``if ... elif ... else``
+statements. Note that unlike for the previously proposed ``switch`` statement,
+the pre-computed dispatch dictionary semantics does not apply here.
+
+There is no ``default`` or ``else`` case - instead the special wildcard
+``_`` can be used (see the section on `name_pattern`_) as a final
+'catch-all' pattern.
+
+Name bindings made during a successful pattern match outlive the executed suite
+and can be used after the match statement. This follows the logic of other
+Python statements that can bind names, such as ``for`` loop and ``with``
+statement. For example::
+
+  match shape:
+      case Point(x, y):
+          ...
+      case Rectangle(x, y, _, _):
+          ...
+  print(x, y)  # This works
+
+
+.. _patterns:
+
+Allowed patterns
+----------------
+
+We introduce the proposed syntax gradually. Here we start from the main
+building blocks. The following patterns are supported:
+
+
+.. _literal_pattern:
+
+Literal Pattern
+~~~~~~~~~~~~~~~
+
+A literal pattern consists of a simple literal like a string, a number,
+a boolean, or ``None``::
+
+  match number:
+      case 0:
+          print("Nothing")
+      case 1:
+          print("Just one")
+      case 2:
+          print("A couple")
+      case -1:
+          print("One less than nothing")
+      case 1-1j:
+          print("Good luck with that...")
+
+Literal pattern uses equality with literal on the right hand side, so that
+in the above example ``number == 1`` and then possibly ``number == 2`` will
+be evaluated. Note that although technically negative numbers
+are represented using unary minus, they are considered
+literals for the purpose of pattern matching. Unary plus is not allowed.
+Binary plus and minus are allowed only to join a real number and an imaginary
+number to form a complex number, such as ``1+1j``.
+
+Raw strings and byte strings
+are supported. F-strings are not allowed (since in general they are not
+really literals).
+
+
+.. _name_pattern:
+
+Name Pattern
+~~~~~~~~~~~~
+
+A name pattern serves as an assignment target for the matched expression::
+
+  match greeting:
+      case "":
+          print("Hello!")
+      case name:
+          print(f"Hi {name}!")
+
+A name pattern always succeeds. A name pattern appearing in a scope makes
+the name local to that scope. For example, using ``name`` after the above
+snippet may raise ``UnboundLocalError`` rather than ``NameError``, if
+the ``""`` case clause was taken::
+
+  match greeting:
+      case "":
+          print("Hello!")
+      case name:
+          print(f"Hi {name}!")
+  if name == "Santa":      # <-- might raise UnboundLocalError
+      ...                  # but works fine if greeting was not empty
+
+While matching against each case clause, a name may be bound at most
+once, having two name patterns with coinciding names is an error. An
+exception is made for the special single underscore (``_``) name; in
+patterns, it's a wildcard that *never* binds::
+
+  match data:
+      case [x, x]:  # Error!
+          ...
+      case [_, _]:
+          print("Some pair")
+          print(_)  # Error!
+
+Note: one can still match on a collection with equal items using `guards`_.
+Also, ``[x, y] | Point(x, y)`` is a legal pattern because the two
+alternatives are never matched at the same time.
+
+
+.. _constant_value_pattern:
+
+Constant Value Pattern
+~~~~~~~~~~~~~~~~~~~~~~
+
+This is used to match against constants and enum values.
+Every dotted name in a pattern is looked up using normal Python name
+resolution rules, and the value is used for comparison by equality with
+the matching expression (same as for literals). As a special case to avoid
+ambiguity with name patterns, simple names must be prefixed with a dot to be
+considered a reference::
+
+  from enum import Enum
+
+  class Color(Enum):
+      BLACK = 1
+      RED = 2
+
+  BLACK = 1
+  RED = 2
+
+  match color:
+      case .BLACK | Color.BLACK:
+          print("Black suits every color")
+      case BLACK:  # This will just assign a new value to BLACK.
+          ...
+
+The leading dot can be omitted if the name is already dotted, but
+adding it is not prohibited, so ``.Color.BLACK`` is the same as ``Color.BLACK``.
+See `rejected ideas`_ for other syntactic alternatives that were considered
+for constant value pattern.
+
+The initial name must not be ``_`` because ``_`` has a special meaning in
+pattern matching, so these are invalid::
+
+    case ._: ...
+    case _.a: ...
+
+However, ``a._`` is legal and loads the attribute with name ``_`` of the
+object ``a`` as usual.
+
+
+.. _sequence_pattern:
+
+Sequence Pattern
+~~~~~~~~~~~~~~~~
+
+A sequence pattern follows the same semantics as unpacking assignment.
+Like unpacking assignment, both tuple-like and list-like syntax can be
+used, with identical semantics.  Each element can be an arbitrary
+pattern; there may also be at most one ``*name`` pattern to catch all
+remaining items::
+
+  match collection:
+      case 1, [x, *others]:
+          print("Got 1 and a nested sequence")
+      case (1, x):
+          print(f"Got 1 and {x}")
+
+To match a sequence pattern the target must be an instance of
+``collections.abc.Sequence``, and it cannot be any kind of string
+(``str``, ``bytes``, ``bytearray``). It cannot be an iterator. For matching
+on a specific collection class, see class pattern below.
+
+The ``_`` wildcard can be starred to match sequences of varying lengths. For
+example:
+
+* ``[*_]`` matches a sequence of any length.
+* ``(_, _, *_)``, matches any sequence of length two or more.
+* ``["a", *_, "z"]`` matches any sequence of length two or more that starts with
+  ``"a"`` and ends with ``"z"``.
+
+
+.. _mapping_pattern:
+
+Mapping Pattern
+~~~~~~~~~~~~~~~
+
+Mapping pattern is a generalization of iterable unpacking to mappings.
+Its syntax is similar to dictionary display but each key and value are
+patterns ``"{" (pattern ":" pattern)+ "}"``. A ``**name`` pattern is also
+allowed, to extract the remaining items.  Only literal and constant value
+patterns are allowed in key positions::
+
+  import constants
+
+  match config:
+      case {"route": route}:
+          process_route(route)
+      case {constants.DEFAULT_PORT: sub_config, **rest}:
+          process_config(sub_config, rest)
+
+The target must be an instance of ``collections.abc.Mapping``.
+Extra keys in the target are ignored even if ``**rest`` is not present.
+This is different from sequence pattern, where extra items will cause a
+match to fail. But mappings are actually different from sequences: they
+have natural structural sub-typing behavior, i.e., passing a dictionary
+with extra keys somewhere will likely just work.
+
+For this reason, ``**_`` is invalid in mapping patterns; it would always be a
+no-op that could be removed without consequence.
+
+Matched key-value pairs must already be present in the mapping, and not created
+on-the-fly by ``__missing__`` or ``__getitem__``.  For example,
+``collections.defaultdict`` instances will only match patterns with keys that
+were already present when the ``match`` block was entered.
+
+
+.. _class_pattern:
+
+Class Pattern
+~~~~~~~~~~~~~
+
+A class pattern provides support for destructuring arbitrary objects.
+There are two possible ways of matching on object attributes: by position
+like ``Point(1, 2)``, and by name like ``User(id=id, name="Guest")``. These
+two can be combined, but positional match cannot follow a match by name.
+Each item in a class pattern can be an arbitrary pattern. A simple
+example::
+
+  match shape:
+      case Point(x, y):
+          ...
+      case Rectangle(x0, y0, x1, y1, painted=True):
+          ...
+
+Whether a match succeeds or not is determined by calling a special
+``__match__()`` method on the class named in the pattern
+(``Point`` and ``Rectangle`` in the example),
+with the value being matched (``shape``) as the only argument.
+If the method returns ``None``, the match fails, otherwise the
+match continues w.r.t. attributes of the returned proxy object, see details
+in `runtime`_ section.
+
+The named class must inherit from ``type``.  It may be a single name
+or a dotted name (e.g. ``some_mod.SomeClass`` or ``mod.pkg.Class``).
+The leading name must not be ``_``, so e.g. ``_(...)`` and
+``_.C(...)`` are invalid. Use ``object(foo=_)`` to check whether the
+matched object has an attribute ``foo``.
+
+This PEP only fully specifies the behavior of ``__match__()`` for ``object``
+and some builtin and standard library classes, custom classes are only
+required to follow the protocol specified in `runtime`_ section. After all,
+the authors of a class know best how to "revert" the logic of the
+``__init__()`` they wrote. The runtime will then chain these calls to allow
+matching against arbitrarily nested patterns.
+
+
+Combining multiple patterns
+---------------------------
+
+Multiple alternative patterns can be combined into one using ``|``. This means
+the the whole pattern matches if at least one alternative matches.
+Alternatives are tried from left to right and have short-circuit property,
+subsequent patterns are not tried if one matched. Examples::
+
+  match something:
+      case 0 | 1 | 2:
+          print("Small number")
+      case [] | [_]:
+          print("A short sequence")
+      case str() | bytes():
+          print("Something string-like")
+      case _:
+          print("Something else")
+
+The alternatives may bind variables, as long as each alternative binds
+the same set of variables (excluding ``_``).  For example::
+
+  match something:
+      case 1 | x:  # Error!
+          ...
+      case x | 1:  # Error!
+          ...
+      case one := [1] | two := [2]:  # Error!
+          ...
+      case Foo(arg=x) | Bar(arg=x):  # Valid, both arms bind 'x'
+          ...
+      case [x] | x:  # Valid, both arms bind 'x'
+          ...
+
+
+.. _guards:
+
+Guards
+------
+
+Each *top-level* pattern can be followed by a guard of the form
+``if expression``. A case clause succeeds if the pattern matches and the guard
+evaluates to true value. For example::
+
+  match input:
+      case [x, y] if x > MAX_INT and y > MAX_INT:
+          print("Got a pair of large numbers")
+      case x if x > MAX_INT:
+          print("Got a large number")
+      case [x, y] if x == y:
+          print("Got equal items")
+      case _:
+          print("Not an outstanding input")
+
+If evaluating a guard raises an exception, it is propagated onwards rather
+than fail the case clause. Names that appear in a pattern are bound before the
+guard succeeds. So this will work::
+
+  values = [0]
+
+  match value:
+      case [x] if x:
+          ...  # This is not executed
+      case _:
+          ...
+  print(x)  # This will print "0"
+
+Note that guards are not allowed for nested patterns, so that ``[x if x > 0]``
+is a ``SyntaxError`` and ``1 | 2 if 3 | 4`` will be parsed as
+``(1 | 2) if (3 | 4)``.
+
+
+.. _named:
+
+Named sub-patterns
+------------------
+
+It is often useful to match a sub-pattern *and* to bind the corresponding
+value to a name. For example, it can be useful to write more efficient
+matches, or simply to avoid repetition. To simplify such cases, a name pattern
+can be combined with another arbitrary pattern using named sub-patterns of
+the form ``name := pattern``. For example::
+
+  match get_shape():
+      case Line(start := Point(x, y), end) if start == end:
+          print(f"Zero length line at {x}, {y}")
+
+Note that the name pattern used in the named sub-pattern can be used in
+the match suite, or after the match statement.  However, the name will
+*only* be bound if the sub-pattern succeeds.  Another example::
+
+  match group_shapes():
+      case [], [point := Point(x, y), *other]:
+          print(f"Got {point} in the second group")
+          process_coordinates(x, y)
+          ...
+
+Technically, most such examples can be rewritten using guards and/or nested
+match statements, but this will be less readable and/or will produce less
+efficient code. Essentially, most of the arguments in PEP 572 apply here
+equally.
+
+``_`` is not a valid name here.
+
+
+.. _runtime:
+
+Runtime specification
+=====================
+
+The ``__match__()`` protocol
+----------------------------
+
+The ``__match__()`` method is used to decide whether an object matches a given
+class pattern and to extract the corresponding attributes. The procedure is as
+following:
+
+* The class object for ``Class`` in ``Class(<sub-patterns>)`` is looked up and
+  ``Class.__match__(obj)`` is called where ``obj`` is the value being matched.
+
+* If the result of the call (which we are referring to as "match proxy") is
+  ``None``, the match fails.
+
+* Otherwise, if any sub-patterns are given in the form of positional
+  or keyword arguments, these are matched from left to right, as
+  follows.  The match fails as soon as a sub-pattern fails; if all
+  sub-patterns succeed, the overall class pattern match succeeds.
+
+* If there are match-by-position items and the class has a
+  ``__match_args__`` which is not ``None``, the item at position ``i``
+  is matched against the value looked up by attribute
+  ``__match_args__[i]``. For example, a pattern ``Point2D(5, 8)``,
+  where ``Point2D.__match_args__ == ["x", "y"]``, is translated
+  (approximately) into ``obj.x == 5 and obj.y == 8``.
+
+* When ``__match_args__`` is missing (as is the default) or ``None``, a single
+  positional sub-pattern is allowed to be passed to the call. Rather than being
+  matched against any particular attribute on the proxy, it is instead matched
+  against the proxy itself.  This creates default behavior that is useful and
+  intuitive for most objects:
+
+  * ``bool(False)`` matches ``False`` (but not ``0``).
+  * ``tuple((0, 1, 2))`` matches ``(0, 1, 2)`` (but not ``[0, 1, 2]``).
+  * ``int(i)`` matches any ``int`` and binds it to the name ``i``.
+
+* If there are more positional items than the length of ``__match_args__``, an
+  ``ImpossibleMatchError`` is raised.
+
+* If the ``__match_args__`` attribute is absent on the matched class or ``None``,
+  but more than one positional item appears in a match,
+  ``ImpossibleMatchError`` is also raised. We don't fall back on
+  using ``__slots__`` or ``__annotations__`` -- "In the face of ambiguity,
+  refuse the temptation to guess."
+
+* If there are any match-by-keyword items the keywords are looked up
+  as attributes on the proxy.  If the lookup succeeds the value is
+  matched against the corresponding sub-pattern.  If the lookup fails,
+  two cases are distinguished:
+
+* If an attribute is missing on the proxy and the class being matched
+  has no ``__match_args__`` attribute (or it is ``None``), the match
+  fails.  This allows one to write ``case object(name=_)`` to
+  implement a check for the presence of a given attribute, or ``case
+  object(name=var)`` to check for its presence and extract its value.
+
+* If an attribute is missing and the class has a ``__match_args__``
+  which is not ``None``, the match fails if the attribute name is in
+  ``__match_args__``, else the match raises ``ImpossibleMatchError``.
+
+Such a protocol favors simplicity of implementation over flexibility and
+performance. For other considered alternatives, see `rejected ideas`_.
+
+
+Result value of ``__match__()``
+-------------------------------
+
+If a match is successful, the ``__match__()`` method should return an object
+whose attribute values will then be bound to the corresponding keyword argument
+names in the pattern after the match is complete. For each possible name that is
+legal in the match pattern, the returned object should have a corresponding attribute
+with that name, that can be used to access that value.
+(Positional sub-patterns are matched to keyword sub-patterns using
+``__match_args__`` as shown in the previous section.)
+
+For most ordinary objects, this returned object can simply be the original object,
+unchanged.
+
+However, there may be cases where the internal implementation of a class is
+very different than its public representation, for example a ``Point`` class with
+`x`, `y` and `z` attributes may be represented internally as a vector; in such cases
+a 'proxy object' may be returned whose attributes correspond to the matchable names.
+There is no requirement that the attributes on the proxy object be the same type or
+value as the attributes of the original object; one envisioned use case is for
+expensive-to-compute properties to be computed lazily on the proxy object via
+property getters.
+
+In deciding what names should be available for matching, the recommended practice
+is that class patterns should be the mirror of construction; that is, the set of
+available names and their types should resemble the arguments to ``__init__()``.
+
+
+Ambiguous matches
+-----------------
+
+Impossible and ambiguous matches are detected at runtime and a special
+exception ``ImpossibleMatchError`` (proposed to be a subclass of ``TypeError``)
+will be raised. In addition to basic checks described in the previous
+subsection:
+
+* The interpreter will check that two match items are not targeting the same
+  attribute, for example ``Point2D(1, 2, y=3)`` is an error.
+
+
+Special attribute ``__match_args__``
+------------------------------------
+
+The ``__match_args__`` attribute complements the ``__match__`` method and is
+always looked up on the same class as the ``__match__`` method.
+``__match_args__``, if it is present and not ``None``, must be a list or
+tuple of strings naming the allowed positional arguments.
+
+
+Default ``object.__match__()``
+------------------------------
+
+The default implementation aims at providing a basic, useful (but still safe)
+experience with pattern matching out of the box. For this purpose the default
+``__match__()`` method follows this logic (pseudo-code)::
+
+  class object:
+      @classmethod
+      def __match__(cls, instance):
+          if isinstance(instance, cls):
+              return instance
+
+This means that pattern matching is allowed by default for every class. If
+a class wants to disallow pattern matching against itself, it should define
+``__match__ = None``. This will cause an exception when trying to match
+against such a class.
+
+The above implementation means that by default only match-by-name and a single
+positional match by value against the proxy will work,
+and classes should define ``__match_args__`` (e.g. as a class
+attribute) if they would like to support match-by-position. Additionally,
+dataclasses will support match-by-position out of the box. See below for more
+details.
+
+Finally, all attributes are exposed for matching, if a class wants to hide
+some attributes from matching against them, a custom ``__match__()`` method is
+required.
+
+
+The standard library
+------------------------------------
+
+To facilitate the use of pattern matching, several changes will be made to
+the standard library:
+
+* Namedtuples and dataclasses will have auto-generated ``__match_args__``.
+
+* For dataclasses the order of attributes in the generated ``__match_args__``
+  will be the same as the order of corresponding arguments in the generated
+  ``__init__()`` method. This includes the situations where attributes are
+  inherited from a superclass.
+
+In addition, a systematic effort will be put into going through existing
+standard library classes and adding custom ``__match__()`` and/or
+``__match_args__`` where it looks beneficial.
+
+
+.. _static checkers:
+
+Static checkers specification
+=============================
+
+Exhaustiveness checks
+---------------------
+
+From a reliability perspective, experience shows that missing a case when
+dealing with a set of possible data values leads to hard to debug issues,
+thus forcing people to add safety asserts like this::
+
+  def get_first(data: Union[int, list[int]]) -> int:
+      if isinstance(data, list) and data:
+          return data[0]
+      elif isinstance(data, int):
+          return data
+      else:
+          assert False, "should never get here"
+
+PEP 484 specifies that static type checkers should support exhaustiveness in
+conditional checks with respect to enum values. PEP 586 later generalized this
+requirement to literal types.
+
+This PEP further generalizes this requirement to
+arbitrary patterns. A typical situation where this applies is matching an
+expression with a union type::
+
+  def classify(val: Union[int, Tuple[int, int], List[int]]) -> str:
+      match val:
+          case [x, *other]:
+              return f"A sequence starting with {x}"
+          case [x, y] if x > 0 and y > 0:
+              return f"A pair of {x} and {y}"
+          case int():
+              return f"Some integer"
+          # Type-checking error: some cases unhandled.
+
+The exhaustiveness checks should also apply where both pattern matching
+and enum values are combined::
+
+  from enum import Enum
+  from typing import Union
+
+  class Level(Enum):
+      BASIC = 1
+      ADVANCED = 2
+      PRO = 3
+
+  class User:
+      name: str
+      level: Level
+
+  class Admin:
+      name: str
+
+  account: Union[User, Admin]
+
+  match account:
+      case Admin(name=name) | User(name=name, level=Level.PRO):
+          ...
+      case User(level=Level.ADVANCED):
+          ...
+      # Type-checking error: basic user unhandled
+
+Obviously, no ``Matchable`` protocol (in terms of PEP 544) is needed, since
+every class is matchable and therefore is subject to the checks specified
+above.
+
+
+Sealed classes as ADTs
+----------------------
+
+Quite often it is desirable to apply exhaustiveness to a set of classes without
+defining ad-hoc union types, which is itself fragile if a class is missing in
+the union definition. A design pattern where a group of record-like classes is
+combined into a union is popular in other languages that support pattern
+matching and is known under a name of algebraic data types [2]_ or ADTs.
+
+We propose to add a special decorator class ``@sealed`` to the ``typing``
+module [6]_, that will have no effect at runtime, but will indicate to static
+type checkers that all subclasses (direct and indirect) of this class should
+be defined in the same module as the base class.
+
+The idea is that since all subclasses are known, the type checker can treat
+the sealed base class as a union of all its subclasses. Together with
+dataclasses this allows a clean and safe support of ADTs in Python. Consider
+this example::
+
+  from dataclasses import dataclass
+  from typing import sealed
+
+  @sealed
+  class Node:
+      ...
+
+  class Expression(Node):
+      ...
+
+  class Statement(Node):
+      ...
+
+  @dataclass
+  class Name(Expression):
+      name: str
+
+  @dataclass
+  class Operation(Expression):
+      left: Expression
+      op: str
+      right: Expression
+
+  @dataclass
+  class Assignment(Statement):
+      target: str
+      value: Expression
+
+  @dataclasses
+  class Print(Statement):
+      value: Expression
+
+With such definition, a type checker can safely treat ``Node`` as
+``Union[Name, Operation, Assignment, Print]``, and also safely treat e.g.
+``Expression`` as ``Union[Name, Operation]``. So this will result in a type
+checking error in the below snippet, because ``Name`` is not handled (and type
+checker can give a useful error message)::
+
+  def dump(node: Node) -> str:
+      match node:
+          case Assignment(target, value):
+              return f"{target} = {dump(value)}"
+          case Print(value):
+              return f"print({dump(value)})"
+          case Operation(left, op, right):
+              return f"({dump(left)} {op} {dump(right)})"
+
+
+Type erasure
+------------
+
+Class patterns are subject to runtime type erasure. Namely, although one
+can define a type alias ``IntQueue = Queue[int]`` so that a pattern like
+``IntQueue()`` is syntactically valid, type checkers should rejected such
+match::
+
+  queue: Union[Queue[int], Queue[str]]
+  match queue:
+      case IntQueue():  # Type-checking error here
+          ...
+
+Note that the above snippet actually fails at runtime with the current
+implementation of generic classes in the ``typing`` module, as well as
+with builtin generic classes in the recently accepted PEP 585, because
+they prohibit ``isinstance`` checks.
+
+To clarify, generic classes are not prohibited in general from participating
+in pattern matching, just that their type parameters can't be explicitly
+specified. It is still fine if sub-patterns or literals bind the type
+variables. For example::
+
+  from typing import Generic, TypeVar, Union
+
+  T = TypeVar('T')
+
+  class Result(Generic[T]):
+      first: T
+      other: list[T]
+
+  result: Union[Result[int], Result[str]]
+
+  match result:
+      case Result(first=int()):
+          ...  # Type of result is Result[int] here
+      case Result(other=["foo", "bar", *rest]):
+          ...  # Type of result is Result[str] here
+
+
+Note about constants
+--------------------
+
+The fact that name pattern is always an assignment target may create unwanted
+consequences when a user by mistake tries to "match" a value against
+a constant instead of using the constant value pattern. As a result, at
+runtime such match will always succeed and moreover override the value of
+the constant. It is important therefore that static type checkers warn about
+such situations. For example::
+
+  from typing import Final
+
+  MAX_INT: Final = 2 ** 64
+
+  value = 0
+
+  match value:
+      case MAX_INT:  # Type-checking error here: cannot assign to final name
+          print("Got big number")
+      case .MAX_INT:  # This is OK
+          print("Got big number")
+      case _:
+          print("Something else")
+
+
+Precise type checking of star matches
+-------------------------------------
+
+Type checkers should perform precise type checking of star items in pattern
+matching giving them either a heterogeneous ``list[T]`` type, or
+a ``TypedDict`` type as specified by PEP 589. For example::
+
+  stuff: Tuple[int, str, str, float]
+
+  match stuff:
+      case a, *b, 0.5:
+          # Here a is int and b is list[str]
+          ...
+
+
+Performance Considerations
+==========================
+
+Ideally, a ``match`` statement should have good runtime performance compared
+to an equivalent chain of if-statements. Although the history of programming
+languages is rife with examples of new features which increased engineer
+productivity at the expense of additional CPU cycles, it would be
+unfortunate if the benefits of ``match`` were counter-balanced by a significant
+overall decrease in runtime performance.
+
+That being said, because of the flexibility of ``match``, and the fact that
+it can be customized via the ``__match__`` callback, there is some overhead
+involved with calling these methods. Exactly how much cost this will entail
+will be implementation-dependent.
+
+In this design, an attempt has been made to avoid putting too much of a
+computational burden on the ``__match__`` method. In particular, earlier
+versions of the design required a custom matcher to completely re-implement
+most of the pattern-matching logic that would have been performed by the VM.
+The current design eschews this flexibility in favor of a simpler, faster
+custom match protocol.
+
+Although this PEP does not specify any particular implementation strategy,
+a few words about the prototype implementation and how it attempts to
+maximize performance are in order.
+
+Basically, the prototype implementation transforms all of the ``match``
+statement syntax into equivalent if/else blocks - or more accurately, into
+Python byte codes that have the same effect. In other words, all of the
+logic for testing instance types, sequence lengths, mapping keys and
+so on are inlined in place of the ``match``.
+
+This is not the only possible strategy, nor is it necessarily the best.
+For example, the call to ``__match__`` could be memoized, especially
+if there are multiple instances of the same class type but with different
+arguments in a single match statement. It is also theoretically
+possible for a future implementation to process the case clauses in
+parallel using a decision tree rather than testing them one by one.
+
+For this reason, implementers of ``__match__`` should not make any
+assumptions about the number of times or the order in which ``__match__``
+is called.
+
+
+Backwards Compatibility
+=======================
+
+This PEP is fully backwards compatible: the ``match`` and ``case``
+keywords are proposed to be (and stay!) soft keywords, so their use as
+variable, function, class, module or attribute names is not impeded at
+all.
+
+This is important because ``match`` is the name of a popular and
+well-known function and method in the ``re`` module, which we have no
+desire to break or deprecate.
+
+The difference between hard and soft keywords is that hard keywords
+are *always* reserved words, even in positions where they make no
+sense (e.g. ``x = class + 1``), while soft keywords only get a special
+meaning in context.  Since our parser backtracks, that means that on
+different attempts to parse a code fragment it could interpret a soft
+keyword differently.
+
+For example, suppose the parser encounters the following input::
+
+  match [x, y]:
+
+The parser first attempts to parse this as an expression statement.
+It interprets ``match`` as a NAME token, and then considers ``[x,
+y]`` to be a double subscript.  It then encounters the colon and has
+to backtrack, since an expression statement cannot be followed by a
+colon.  The parser then backtracks to the start of the line and finds
+that ``match`` is a soft keyword allowed in this position.  It then
+considers ``[x, y]`` to be a list expression.  The colon then is just
+what the parser expected, and the parse succeeds.
+
+
+Impacts on third-party tools
+============================
+
+There are a lot of tools in the Python ecosystem that operate on Python
+source code: linters, syntax highlighters, auto-formatters, and IDEs. These
+will all need to be updated to include awareness of the ``match`` statement.
+
+In general, these tools fall into one of two categories:
+
+**Shallow** parsers don't try to understand the full syntax of Python, but
+instead scan the source code for specific known patterns. IDEs, such as Visual
+Studio Code, Emacs and TextMate, tend to fall in this category, since frequently
+the source code is invalid while being edited, and a strict approach to parsing
+would fail.
+
+For these kinds of tools, adding knowledge of a new keyword is relatively
+easy, just an addition to a table, or perhaps modification of a regular
+expression.
+
+**Deep** parsers understand the complete syntax of Python. An example of this
+is the auto-formatter Black [9]_. A particular requirement with these kinds of
+tools is that they not only need to understand the syntax of the current version
+of Python, but older versions of Python as well.
+
+The ``match`` statement uses a soft keyword, and it is one of the first major
+Python features to take advantage of the capabilities of the new PEG parser. This
+means that third-party parsers which are not 'PEG-compatible' will have a hard
+time with the new syntax.
+
+It has been noted that a number of these third-party tools leverage common parsing
+libraries (Black for example uses a fork of the lib2to3 parser). It may be helpful
+to identify widely-used parsing libraries (such as parso [10]_ and libCST [11]_)
+and upgrade them to be PEG compatible.
+
+However, since this work would need to be done not only for the match statement,
+but for *any* new Python syntax that leverages the capbilities of the PEG parser,
+it is considered out of scope for this PEP. (Although it is suggested that this
+would make a fine Summer of Code project.)
+
+
+Reference Implementation
+========================
+
+A CPython implementation is
+`currently under development <https://github.com/brandtbucher/cpython/tree/patma>`_,
+and is almost entirely feature-complete.
+
+
+Example Code
+============
+
+A small collection of example code is
+`available on GitHub <https://github.com/gvanrossum/patma/tree/master/examples>`_.
+
+
+
+.. _rejected ideas:
+
+Rejected Ideas
+==============
+
+This general idea was floating around for pretty long time, and many
+back and forth decisions were made. Here we summarize many alternative
+paths that were taken, but abandoned after all.
+
+Don't do this, pattern matching is hard to learn
+------------------------------------------------
+
+In our opinion, the proposed pattern matching is not more difficult than
+adding ``isinstance()`` and ``getattr()`` to iterable unpacking. Also, we
+believe the proposed syntax significantly improves readability for a wide
+range of code patterns, by allowing to express *what* one wants to do, rather
+than *how* to do it. We hope the few real code snippets we included in the PEP
+above illustrate this comparison well enough. For more real code examples
+and their translations see Ref. [7]_.
+
+
+Allow more flexible assignment targets instead
+----------------------------------------------
+
+There was an idea to instead just generalize the iterable unpacking to much
+more general assignment targets, instead of adding a new kind of statement.
+This concept is known in some other languages as "irrefutable matches". We
+decided not to do this because inspection of real-life potential use cases
+showed that in vast majority of cases destructuring is related to an ``if``
+condition. Also many of those are grouped in a series of exclusive choices.
+
+
+Make it an expression
+---------------------
+
+In most other languages pattern matching is represented by an expression, not
+statement. But making it an expression would be inconsistent with other
+syntactic choices in Python. All decision making logic is expressed almost
+exclusively in statements, so we decided to not deviate from this.
+
+
+Use a hard keyword
+------------------
+
+There were options to make ``match`` a hard keyword, or choose a different
+keyword. Although using a hard keyword would simplify life for simple-minded
+syntax highlighters, we decided not to use hard keyword for several reasons:
+
+* Most importantly, the new parser doesn't require us to do this. Unlike with
+  ``async`` that caused hardships with being a soft keyword for few releases,
+  here we can make ``match`` a permanent soft keyword.
+
+* ``match`` is so commonly used in existing code, that it would break almost
+  every existing program and will put a burden to fix code on many people who
+  may not even benefit from the new syntax.
+
+* It is hard to find an alternative keyword that would not be commonly used
+  in existing programs as an identifier, and would still clearly reflect the
+  meaning of the statement.
+
+
+Use ``as`` or ``|`` instead of ``case`` for case clauses
+--------------------------------------------------------
+
+The pattern matching proposed here is a combination of multi-branch control
+flow (in line with ``switch`` in Algol-derived languages or ``cond`` in Lisp)
+and object-deconstruction as found in functional languages.  While the proposed
+keyword ``case`` highlights the multi-branch aspect, alternative keywords such
+as ``as`` would equally be possible, highlighting the deconstruction aspect.
+``as`` or ``with``, for instance, also have the advantage of already being
+keywords in Python.  However, since ``case`` as a keyword can only occur as a
+leading keyword inside  a ``match`` statement, it is easy for a parser to
+distinguish between its use as a keyword or as a variable.
+
+Other variants would use a symbol like ``|`` or ``=>``, or go entirely without
+special marker.
+
+Since Python is a statement-oriented language in the tradition of Algol, and as
+each composite statement starts with an identifying keyword, ``case`` seemed to
+be most in line with Python's style and traditions.
+
+
+Use a flat indentation scheme
+-----------------------------
+
+There was an idea to use an alternative indentation scheme, for example where
+every case clause would not be indented with respect to the initial ``match``
+part::
+
+  match expression:
+  case pattern_1:
+      ...
+  case pattern_2:
+      ...
+
+The motivation is that although flat indentation saves some horizontal space,
+it may look awkward to an eye of a Python programmer, because everywhere else
+colon is followed by an indent. This will also complicate life for
+simple-minded code editors. Finally, the horizontal space issue can be
+alleviated by allowing "half-indent" (i.e. two spaces instead of four) for
+match statements.
+
+In sample programs using `match`, written as part of the development of this
+PEP, a noticable improvement in code brevity is observed, more than making up
+for the additional indentation level.
+
+
+Alternatives for constant value pattern
+---------------------------------------
+
+This is probably the trickiest item. Matching against some pre-defined
+constants is very common, but the dynamic nature of Python also makes it
+ambiguous with name patterns. Four other alternatives were considered:
+
+* Use some implicit rules. For example if a name was defined in the global
+  scope, then it refers to a constant, rather than represents a name pattern::
+
+    FOO = 1
+    value = 0
+
+    match value:
+        case FOO:  # This would not be matched
+            ...
+        case BAR:  # This would be matched
+            ...
+
+  This however can cause surprises and action at a distance if someone
+  defines an unrelated coinciding name before the match statement.
+
+* Use a rule based on the case of a name. In particular, if the name
+  starts with a lowercase letter it would be a name pattern, while if
+  it starts with uppercase it would refer to a constant::
+
+    FOO = 1
+    value = 0
+
+    match value:
+        case FOO:  # This would not be matched
+            ...
+        case bar:  # This would be matched
+            ...
+
+  This works well with the recommendations for naming constants from
+  PEP 8. The main objection is that there's no other part of core
+  Python where the case of a name is semantically significant. (Then
+  again a leading dot in an expression has no precedent either -- its
+  use in ``import`` statements is quite different, since it resembles
+  the ``.`` used to denote the current directory in filesystems.)
+
+* Use extra parentheses to indicate lookup semantics for a given name. For
+  example::
+
+    FOO = 1
+    value = 0
+
+    match value:
+        case (FOO):  # This would not be matched
+            ...
+        case BAR:    # This would be matched
+            ...
+
+  This may be a viable option, but it can create some visual noise if used
+  often. Also honestly it looks pretty unusual, especially in nested contexts.
+
+  This also has the problem that we may want or need parentheses to
+  disambiguate grouping in patterns, e.g. in ``Point(x, y=(y :=
+  complex()))``.
+
+* Introduce a special symbol, for example ``$`` or ``^`` to indicate that
+  a given name is a constant to be matched against, not to be assigned to::
+
+    FOO = 1
+    value = 0
+
+    match value:
+        case $FOO:  # This would not be matched
+            ...
+        case BAR:  # This would be matched
+            ...
+
+  The problem with this approach is that introducing a new syntax for such
+  narrow use-case is probably an overkill.
+
+* There was also on idea to make lookup semantics the default, and require
+  ``$`` to be used in name patterns::
+
+    FOO = 1
+    value = 0
+
+    match value:
+        case FOO:  # This would not be matched
+            ...
+        case $BAR:  # This would be matched
+            ...
+
+  But the name patterns are more common in typical code, so having special
+  syntax for common case would be weird.
+
+In the end, these alternatives were rejected because of the mentioned drawbacks.
+
+
+Disallow float literals in patterns
+-----------------------------------
+
+Because of the inexactness of floats, an early version of this proposal
+did not allow floating-point constants to be used as match patterns. Part
+of the justification for this prohibition is that Rust does this.
+
+However, during implementation, it was discovered that distinguishing between
+float values and other types required extra code in the VM that would slow
+matches generally. Given that Python and Rust are very different languages
+with different user bases and underlying philosophies, it was felt that
+allowing float literals would not cause too much harm, and would be less
+surprising to users.
+
+
+Range matching patterns
+-----------------------
+
+This would allow patterns such as `1...6`. However, there are a host of
+ambiguities:
+
+* Is the range open, half-open, or closed? (I.e. is `6` included in the
+  above example or not?)
+* Does the range match a single number, or a range object?
+* Range matching is often used for character ranges ('a'...'z') but that
+  won't work in Python since there's no character data type, just strings.
+* Range matching can be a significant performance optimization if you can
+  pre-build a jump table, but that's not generally possible in Python due
+  to the fact that names can be dynamically rebound.
+
+Rather than creating a special-case syntax for ranges, it was decided
+that allowing custom pattern objects (`InRange(0, 6)`) would be more flexible
+and less ambiguous; however those ideas have been postponed for the time
+being (See `deferred ideas`_).
+
+
+Use dispatch dict semantics for matches
+---------------------------------------
+
+Implementations for classic ``switch`` statement sometimes use a pre-computed
+hash table instead of a chained equality comparisons to gain some performance.
+In the context of ``match`` statement this is technically also possible for
+matches against literal patterns. However, having subtly different semantics
+for different kinds of patterns would be too surprising for potentially
+modest performance win.
+
+We can still experiment with possible performance optimizations in this
+direction if they will not cause semantic differences.
+
+
+Use ``continue`` and ``break`` in case clauses.
+-----------------------------------------------
+
+Another rejected proposal was to define new meanings for ``continue``
+and ``break`` inside of ``match``, which would have the following behavior:
+
+* ``continue`` would exit the current case clause and continue matching
+  at the next case clause.
+* ``break`` would exit the match statement.
+
+However, there is a serious drawback to this proposal: if the ``match`` statement
+is nested inside of a loop, the meanings of ``continue`` and ``break`` are now
+changed. This may cause unexpected behavior during refactorings; also, an
+argument can be made that there are other means to get the same behavior (such
+as using guard conditions), and that in practice it's likely that the existing
+behavior of ``continue`` and ``break`` are far more useful.
+
+
+AND (``&``) patterns
+--------------------
+
+This proposal defines an OR-pattern (``|``) to match one of several alternates;
+why not also an AND-pattern (``&``)? Especially given that some other languages
+(F# for example) support this.
+
+However, it's not clear how useful this would be. The semantics for matching
+dictionaries, objects and sequences already incorporates an implicit 'and': all
+attributes and elements mentioned must be present for the match to succeed. Guard
+conditions can also support many of the use cases that a hypothetical 'and'
+operator would be used for.
+
+In the end, it was decided that this would make the syntax more complex without
+adding a significant benefit.
+
+
+Negative match patterns
+-----------------------
+
+A negation of a match pattern using the operator ``!`` as a prefix would match
+exactly if the pattern itself does not match.  For instance, ``!(3 | 4)``
+would match anything except ``3`` or ``4``.
+
+This was rejected because there is documented evidence [8]_ that this feature
+is rarely useful (in languages which support it) or used as double negation
+``!!`` to control variable scopes and prevent variable bindings (which does
+not apply to Python). It can also be simulated using guard conditions.
+
+
+Check exhaustiveness at runtime
+-------------------------------
+
+The question is what to do if no case clause has a matching pattern, and
+there is no default case. An earlier version of the proposal specified that
+the behavior in this case would be to throw an exception rather than
+silently falling through.
+
+The arguments back and forth were many, but in the end the EIBTI (Explicit
+Is Better Than Implicit) argument won out: it's better to have the programmer
+explicitly throw an exception if that is the behavior they want.
+
+For cases such as sealed classes and enums, where the patterns are all known
+to be members of a discrete set, `static checkers`_ can warn about missing
+patterns.
+
+
+Type annotations for pattern variables
+--------------------------------------
+
+The proposal was to combine patterns with type annotations::
+
+  match x:
+      case [a: int, b: str]: print(f"An int {a} and a string {b}:)
+      case [a: int, b: int, c: int]: print(f"Three ints", a, b, c)
+      ...
+
+This idea has a lot of problems. For one, the colon can only
+be used inside of brackets or parens, otherwise the syntax becomes
+ambiguous. And because Python disallows ``isinstance()`` checks
+on generic types, type annotations containing generics will not
+work as expected.
+
+
+Allow ``*rest`` in class patterns
+---------------------------------
+
+It was proposed to allow ``*rest`` in a class pattern, giving a
+variable to be bound to all positional arguments at once (similar to
+its use in unpacking assignments).  It would provide some symmetry
+with sequence patterns.  But it might be confused with a feature to
+provide the *values* for all positional arguments at once.  And there
+seems to be no practical need for it, so it was scrapped.  (It could
+easily be added at a later stage if a need arises.)
+
+
+.. _deferred ideas:
+
+Deferred Ideas
+==============
+
+There were a number of proposals to extend the matching syntax that we
+decided to postpone for possible future PEP. These fall into the realm of
+"cool idea but not essential", and it was felt that it might be better to
+acquire some real-world data on how the match statement will be used in
+practice before moving forward with some of these proposals.
+
+Note that in each case, the idea was judged to be a "two-way door",
+meaning that there should be no backwards-compatibility issues with adding
+these features later.
+
+One-off syntax variant
+----------------------
+
+While inspecting some code-bases that may benefit the most from the proposed
+syntax, it was found that single clause matches would be used relatively often,
+mostly for various special-casing. In other languages this is supported in
+the form of one-off matches. We proposed to support such one-off matches too::
+
+  if match value as pattern [and guard]:
+      ...
+
+or, alternatively, without the ``if``::
+
+  match value as pattern [if guard]:
+      ...
+
+as equivalent to the following expansion::
+
+  match value:
+      case pattern [if guard]:
+          ...
+
+To illustrate how this will benefit readability, consider this (slightly
+simplified) snippet from real code::
+
+  if isinstance(node, CallExpr):
+      if (isinstance(node.callee, NameExpr) and len(node.args) == 1 and
+              isinstance(node.args[0], NameExpr)):
+          call = node.callee.name
+          arg = node.args[0].name
+          ...  # Continue special-casing 'call' and 'arg'
+  ...  # Follow with common code
+
+This can be rewritten in a more straightforward way as::
+
+  if match node as CallExpr(callee=NameExpr(name=call), args=[NameExpr(name=arg)]):
+      ...  # Continue special-casing 'call' and 'arg'
+  ...  # Follow with common code
+
+This one-off form would not allow ``elif match`` statements, as it was only
+meant to handle a single pattern case. It was intended to be special case
+of a ``match`` statement, not a special case of an ``if`` statement::
+
+  if match value_1 as patter_1 [and guard_1]:
+      ...
+  elif match value_2 as pattern_2 [and guard_2]:  # Not allowed
+      ...
+  elif match value_3 as pattern_3 [and guard_3]:  # Not allowed
+      ...
+  else:  # Also not allowed
+      ...
+
+This would defeat the purpose of one-off matches as a complement to exhaustive
+full matches - it's better and clearer to use a full match in this case.
+
+Similarly, ``if not match`` would not be allowed, since ``match ... as ...`` is not
+an expression. Nor do we propose a ``while match`` construct present in some languages
+with pattern matching, since although it may be handy, it will likely be used
+rarely.
+
+
+Algebraic matching of repeated names
+------------------------------------
+
+A technique occasionally seen in functional languages like Haskell is
+to use a match variable multiple times in the same pattern::
+
+  match value:
+      case Point(x, x):
+          print("Point is on a diagonal!")
+
+The idea here is that the first appearance of ``x`` would bind the value
+to the name, and subsequent occurrences would verify that the incoming
+value was equal to the value previously bound. If the value was not equal,
+the match would fail.
+
+However, there are a number of subtleties involved with mixing load-store
+semantics for name patterns. For the moment, we decided to make repeated
+use of names within the same pattern an error; we can always relax this
+restriction later without affecting backwards compatibility.
+
+Note that you **can** use the same name more than once in alternate choices::
+
+  match value:
+      case x | [x]:
+          # etc.
+
+
+Extended matching protocol
+--------------------------
+
+During the initial design discussions for this PEP, there were a lot of ideas
+thrown around about exotic custom matchers: ``IsInstance()``, ``InRange()``,
+``RegexMatchingGroup()`` and so on. In fact, part of the proposal included
+a new Python standard library module containing a menagerie of such diverse
+matchers.
+
+However, these matchers require a much more flexible and expensive custom
+matching protocol. In particular, it meant that the ``__match__`` method
+would need to have an additional "match signature" argument which would
+let it know exactly what values the pattern was seeking.
+
+Part of the argument against this more flexible protocol was that this
+match signature argument would be expensive to construct. Due to the dynamic
+nature of Python name binding, it could not be a constant, but would have
+to be created anew each time; and there is no guarantee that the ``__match__``
+function would even use this argument in its internal logic.
+
+The decision to postpone this feature came with a realization that this is
+not a one-way door; that an extended matching protocol could be added later,
+using a variety of techniques (such as defining a new custom match magic
+method with a different name) to signal that a class wished to opt-in
+in the extended protocol and that the VM should compute the extended signature
+object.
+
+The authors of this PEP expect that the ``match`` statement will evolve
+over time as usage patterns and idioms evolve, in a way similar to what
+other "multi-stage" PEPs have done in the past. When this happens, the
+extended matching issue can be revisited.
+
+There was an idea to send partial context like literals only, or
+custom pattern objects that will provide the full context. For example
+the below match would generate the following call::
+
+  match expr:
+      case BinaryOp(left=Number(value=x), op=op, right=Number(value=y)):
+          ...
+
+  from types import PatternObject
+  BinaryOp.__match__(
+      (),
+      {
+          "left": PatternObject(Number, (), {"value": ...}, -1, False),
+          "op": ...,
+          "right": PatternObject(Number, (), {"value": ...}, -1, False),
+      },
+      -1,
+      False,
+  )
+
+This would allow faster ``__match__()`` implementations and give better
+support for customization in user-defined classes. There is however a big
+downside to this: it would make the basic implementation of this method quite
+complicated. Also, there would be a performance penalty if the user did not
+treat the pattern object properly.
+
+
+Parameterized Matching Syntax
+-----------------------------
+
+(Also known as "Class Instance Matchers".)
+
+This is another variant of the "custom match classes" idea that would allow
+diverse kinds of custom matchers mentioned in the previous section -- however,
+instead of using an extended matching protocol, it would be achieved by
+introducing an additional pattern type with its own syntax. This pattern type
+would accept two distinct sets of parameters: one set which consists of the
+actual parameters passed into the pattern object's constructor, and another
+set representing the binding variables for the pattern.
+
+The ``__match__`` method of these objects could use the constructor parameter
+values in deciding what was a valid match.
+
+This would allow patterns such as ``InRange<0, 6>(value)``, which would match
+a number in the range 0..6 and assign the matched value to 'value'. Similarly,
+one could have a pattern which tests for the existince of a named group in
+a regular expression match result (different meaning of the word 'match').
+
+Although there is some support for this idea, there was a lot of bikeshedding
+on the syntax (there are not a lot of attractive options available)
+and no clear consensus was reached, so it was decided that for now, this
+feature is not essential to the PEP.
+
+
+Pattern Utility Library
+-----------------------
+
+Both of the previous ideas would be accompanied by a new Python standard
+library module which would contain a rich set of exotic and useful matchers.
+However, it it not really possible to implement such a library without
+adopting one of the extended pattern proposals given in the previous sections,
+so this idea is also deferred.
+
+
+References
+==========
+
+.. [1]
+   https://en.wikipedia.org/wiki/Pattern_matching
+
+.. [2]
+   https://en.wikipedia.org/wiki/Algebraic_data_type
+
+.. [3]
+   https://doc.rust-lang.org/reference/patterns.html
+
+.. [4]
+   https://docs.scala-lang.org/tour/pattern-matching.html
+
+.. [5]
+   https://docs.python.org/3/library/dataclasses.html
+
+.. [6]
+   https://docs.python.org/3/library/typing.html
+
+.. [7]
+   https://github.com/gvanrossum/patma/blob/master/EXAMPLES.md
+
+.. [8]
+   https://dl.acm.org/doi/abs/10.1145/2480360.2384582
+
+.. [9]
+   https://black.readthedocs.io/en/stable/
+
+.. [10]
+   https://github.com/davidhalter/parso
+
+.. [11]
+   https://github.com/Instagram/LibCST
+
+
+.. _Appendix A:
+
+Appendix A -- Full Grammar
+==========================
+
+Here is the full grammar for ``match_stmt``.  This is an additional
+alternative for ``compound_stmt``.  It should be understood that
+``match`` and ``case`` are soft keywords, i.e. they are not reserved
+words in other grammatical contexts (including at the start of a line
+if there is no colon where expected).  By convention, hard keywords
+use single quotes while soft keywords use double quotes.
+
+Other notation used beyond standard EBNF:
+
+- ``SEP.RULE+`` is shorthand for ``RULE (SEP RULE)*``
+- ``!RULE`` is a negative lookahead assertion
+
+::
+
+  match_stmt: "match" expression ':' NEWLINE INDENT case_block+ DEDENT
+  case_block: "case" patterns [guard] ':' block
+  guard: 'if' named_expression
+  patterns: value_pattern ',' [values_pattern] | pattern
+  pattern: NAME ':=' or_pattern | or_pattern
+  or_pattern: '|'.closed_pattern+
+  closed_pattern:
+      | name_pattern
+      | literal_pattern
+      | constant_pattern
+      | group_pattern
+      | sequence_pattern
+      | mapping_pattern
+      | class_pattern
+  name_pattern: NAME !('.' | '(' | '=')
+  literal_pattern:
+      | signed_number !('+' | '-')
+      | signed_number '+' NUMBER
+      | signed_number '-' NUMBER
+      | strings
+      | 'None'
+      | 'True'
+      | 'False'
+  constant_pattern: '.' NAME !('.' | '(' | '=') | '.'? attr !('.' | '(' | '=')
+  group_pattern: '(' patterns ')'
+  sequence_pattern: '[' [values_pattern] ']' | '(' ')'
+  mapping_pattern: '{' items_pattern? '}'
+  class_pattern:
+      | name_or_attr '(' ')'
+      | name_or_attr '(' ','.pattern+ ','? ')'
+      | name_or_attr '(' ','.keyword_pattern+ ','? ')'
+      | name_or_attr '(' ','.pattern+ ',' ','.keyword_pattern+ ','? ')'
+  signed_number: NUMBER | '-' NUMBER
+  attr: name_or_attr '.' NAME
+  name_or_attr: attr | NAME
+  values_pattern: ','.value_pattern+ ','?
+  items_pattern: ','.key_value_pattern+ ','?
+  keyword_pattern: NAME '=' or_pattern
+  value_pattern: '*' name_pattern | pattern
+  key_value_pattern:
+      | (literal_pattern | constant_pattern) ':' or_pattern
+      | '**' name_pattern
+
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
+
+
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   coding: utf-8
+   End:
