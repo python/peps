@@ -21,103 +21,254 @@ Resolution:
 Abstract
 ========
 
-This PEP proposes adding pattern matching statements [1]_ to Python in
-order to create more expressive ways of handling structured
-heterogeneous data.  The authors take a holistic approach, providing
-both static and runtime specifications.
+This PEP proposes to add a pattern matching statement to Python,
+inspired by similar syntax found in Scala and many other languages.
 
-:pep:`275` and :pep:`3103` previously proposed similar constructs, and
-were rejected.  Instead of targeting the optimization of
-``if ... elif ... else`` statements (as those PEPs did), this design
-focuses on generalizing sequence, mapping, and object destructuring.
-It uses syntactic features made possible by :pep:`617`, which
-introduced a more powerful method of parsing Python source code.
+The pattern syntax builds on Python’s existing syntax for sequence
+unpacking (e.g., ``a, b = value``), but is wrapped in a ``match``
+statement which compares its subject to several different “shapes”
+until one is found that fits. In addition to specifying the shape of a
+sequence to be unpacked, patterns can also specify the shape to be a
+mapping with specific keys, an instance of a given class with specific
+attributes, a specific value, or a wildcard. Patterns can be composed
+in several ways.
+
+Syntactically, a ``match`` statement contains a *subject* expression
+and one or more ``case`` clauses, where each case clause specifies a
+pattern (the overall shape to be matched), an optional “guard” (a
+condition to be checked if the pattern matches), and a code block to
+be executed if the case clause is selected.
+
+The rest of the PEP motivates why we believe pattern matching makes a
+good addition to Python, explains our design choices, and contains a
+precise syntactic and runtime specification. We also give guidance for
+static type checkers (and one small addition to the ``typing`` module)
+and discuss the main objections and alternatives that have been
+brought up during extensive discussion of the proposal, both within
+the group of authors and in the python-dev community. Finally, we
+discuss some possible extensions that might be considered in the
+future, once the community has ample experience with the currently
+proposed syntax and semantics.
+
+
+Overview
+========
+
+Since patterns are a new syntactical category, with their own rules
+and exceptions, and since they mix input (given values) and output
+(captured variables) in novel ways, they require a bit of getting used
+to. It is the experience of the authors that this happens quickly when
+a brief introduction to the basic concepts such as the following is
+presented. Note that this section is not intended to be complete or
+perfectly accurate.
+
+A new syntactic construct called *pattern* is
+introduced. Syntactically patterns look like a subset of expressions;
+the following are patterns:
+
+- ``[first, second, *rest]``
+- ``Point2d(x, 0)``
+- ``{"name": "Bruce", "age": age}``
+- ``42``
+
+The above look like examples of object construction. A constructor
+takes some values as parameters and builds an object from those
+components. But as a pattern the above mean the inverse operation of
+construction which we call *destructuring*: it takes a subject object
+and extracts its components. The syntactic similarity between
+construction and destructuring is intentional and follows the existing
+Pythonic style which makes assignment targets (write contexts) look
+like expressions (read contexts). Pattern matching never creates
+objects, in the same way that ``[a, b] = my_list`` doesn't create a
+new ``[a, b]`` list, nor reads the values of ``a`` and ``b``.
+
+The intuition we are trying to build in users as they learn this is
+that matching a pattern to a subject binds the free variables (if any)
+to subject components in a way that would result in the original
+subject if the pattern was read as an expression. During this process,
+the structure of the pattern may not fit the subject, in which case
+the matching *fails*. For example matching the pattern ``Point2d(x,
+0)`` to the subject ``Point2d(3, 0)`` successfully matches and binds
+``x`` to ``3``. However, if the subject is ``[3, 0]`` the match fails
+because a ``list`` is not a ``Point2d``. And if the subject is
+``Point2D(3, 3)`` the match fails because its second coordinate is not
+``0``.
+
+The ``match`` statement tries to match each of the
+patterns in its ``case`` clauses with a single subject. At the first
+successful match, the variables in the pattern are assigned and a
+corresponding block is executed. Each of the multiple branches of this
+conditional statement can also have a boolean condition as a *guard*.
+
+Here's an example of a match statement, used to define a function
+building 3D points that can accept as input either tuples of size 2 or
+3, or existing (2D or 3D) points::
+
+    def make_point_3d(pt):
+        match pt:
+            case (x, y): return Point3d(x, y, 0)
+            case (x, y, z): return Point3d(x, y, z)
+            case Point2d(x, y): return Point3d(x, y, 0)
+            case Point3d(_, _, _): return pt
+            case _: raise TypeError("not a point we support")
+
+Writing this function in the traditional fashion would require several
+``isinstance()`` checks, one or two ``len()`` calls, and a more
+convoluted control flow. While the ``match`` version translates into
+similar code under the hood, to a reader familiar with patterns it is
+much clearer.
 
 
 Rationale and Goals
 ===================
 
-Let us start from some anecdotal evidence: ``isinstance()`` is one of the most
-called functions in large scale Python code-bases (by static call count).
-In particular, when analyzing some multi-million line production code base,
-it was discovered that ``isinstance()`` is the second most called builtin
-function (after ``len()``). Even taking into account builtin classes, it is
-still in the top ten. Most of such calls are followed by specific attribute
-access.
+Python programs frequently need to handle data which varies in type,
+presence of attributes/keys, or number of elements. Typical examples
+are operating on nodes of a mixed structure like an AST, handling UI
+events of different types, processing structured input (like
+structured files or network messages), or “parsing” arguments for a
+function that can accept different combinations of types and numbers
+of parameters.
 
-There are two possible conclusions that can be drawn from this information:
+Much of the code to do so tends to consist of complex chains of nested
+if/elif statements, including multiple calls to ``len()``,
+``isinstance()`` and index/key/attribute access. Inside those branches
+sometimes we need to destructure the data further to extract the
+required component values, which may be nested behind several layers
+of objects.
 
-* Handling of heterogeneous data (i.e. situations where a variable can take
-  values of multiple types) is common in real world code.
+Pattern matching as present in many other languages provides an
+elegant solution to this problem. These range from statically compiled
+functional languages like F# and Haskell, via mixed-paradigm languages
+like Scala [4]_ and Rust [3]_, to dynamic languages like Elixir and
+Ruby, and is under consideration for JavaScript. We are indebted to
+these languages for guiding the way to Pythonic pattern matching, as
+Python is indebted to so many other languages for many of its
+features: many basic syntactic features were inherited from C,
+exceptions from Modula-3, classes were inspired by C++, slicing came
+from Icon, regular expressions from Perl, decorators resemble Java
+annotations, and so on.
 
-* Python doesn't have expressive ways of destructuring object data (i.e.
-  separating the content of an object into multiple variables).
+The usual logic for operating on heterogeneous data can be summarized
+in the following way:
 
-This is in contrast with the opposite sides of both aspects:
+- Some analysis is done on the *shape* (type and components) of the
+  data: This could involve ``isinstance()`` calls and/or extracting
+  components (via indexing or attribute access) which are checked for
+  specific values or conditions.
+- If the shape is as expected, possibly some more components are
+  extracted and some operation is done using the extracted values.
 
-* Its success in the numeric world indicates that Python is good when
-  working with homogeneous data. It also has builtin support for homogeneous
-  data structures such as e.g. lists and arrays, and semantic constructs such
-  as iterators and generators.
+Take for example `this piece of the Django web framework
+<https://github.com/django/django/blob/5166097d7c80cab757e44f2d02f3d148fbbc2ff6/django/db/models/enums.py#L13>`_::
 
-* Python is expressive and flexible at constructing objects. It has syntactic
-  support for collection literals and comprehensions. Custom objects can be
-  created using positional and keyword calls that are customized by special
-  ``__init__()`` method.
+    if (
+        isinstance(value, (list, tuple)) and
+        len(value) > 1 and
+        isinstance(value[-1], (Promise, str))
+    ):
+        *value, label = value
+        value = tuple(value)
+    else:
+        label = key.replace('_', ' ').title()
 
-This PEP aims at improving the support for destructuring heterogeneous data
-by adding a dedicated syntactic support for it in the form of pattern matching.
-On a very high level it is similar to regular expressions, but instead of
-matching strings, it will be possible to match arbitrary Python objects.
+We can see the shape analysis of the ``value`` at the top, following
+by the destructuring inside.
 
-We believe this will improve both readability and reliability of relevant code.
-To illustrate the readability improvement, let us consider an actual example
-from the Python standard library::
+Note that shape analysis here involves checking the types both of the
+container and of one of its components, and some checks on its number
+of elements. Once we match the shape, we need to decompose the
+sequence. With the proposal in this PEP, we could rewrite that code
+into this::
 
-  def is_tuple(node):
-      if isinstance(node, Node) and node.children == [LParen(), RParen()]:
-          return True
-      return (isinstance(node, Node)
-              and len(node.children) == 3
-              and isinstance(node.children[0], Leaf)
-              and isinstance(node.children[1], Node)
-              and isinstance(node.children[2], Leaf)
-              and node.children[0].value == "("
-              and node.children[2].value == ")")
+    match value:
+        case [*v, label := (Promise() | str())]:
+            value = tuple(v)
+        case _:
+            label = key.replace('_', ' ').title()
 
-With the syntax proposed in this PEP it can be rewritten as below. Note that
-the proposed code will work without any modifications to the definition of
-``Node`` and other classes here::
+This syntax makes much more explicit which formats are possible for
+the input data, and which components are extracted from where. You can
+see a pattern similar to list unpacking, but also type checking: the
+``Promise()`` pattern is not an object construction, but represents
+anything that's an instance of ``Promise``. The pattern operator ``|``
+separates alternative patterns (not unlike regular expressions or EBNF
+grammars), and ``_`` is a wildcard.
 
-  def is_tuple(node: Node) -> bool:
-      match node:
-          case Node(children=[LParen(), RParen()]):
-              return True
-          case Node(children=[Leaf(value="("), Node(), Leaf(value=")")]):
-              return True
-          case _:
-              return False
+In some occasions, extraction of information is not as relevant as
+identifying structure. Take the following `example
+<https://github.com/python/cpython/blob/c4cacc8/Lib/lib2to3/fixer_util.py#L158>`_
+`from the Python standard library
+<https://github.com/python/cpython/blob/c4cacc8/Lib/lib2to3/fixer_util.py#L158>`_::
+
+    def is_tuple(node):
+        if isinstance(node, Node) and node.children == [LParen(), RParen()]:
+            return True
+        return (isinstance(node, Node)
+                and len(node.children) == 3
+                and isinstance(node.children[0], Leaf)
+                and isinstance(node.children[1], Node)
+                and isinstance(node.children[2], Leaf)
+                and node.children[0].value == "("
+                and node.children[2].value == ")")
+
+This example shows an example of finding out the "shape" of the data
+without doing significant extraction. This code is not very easy to
+read, and the intended shape that this is trying to match is not
+evident. Compare with the updated code using this document's syntax::
+
+    def is_tuple(node: Node) -> bool:
+        match node:
+            case Node(children=[LParen(), RParen()]):
+                return True
+            case Node(children=[Leaf(value="("), Node(), Leaf(value=")")]):
+                return True
+            case _:
+                return False
+
+Note that the proposed code will work without any modifications to the
+definition of ``Node`` and other classes here. As shown in the
+examples above the proposal supports not just unpacking sequences, but
+also doing ``isinstance`` checks (like ``LParen()`` or ``str()``),
+looking into object attributes (``Leaf(value="(")`` for example) and
+comparisons with literals.
+
+That last feature helps with some kinds of code which look more like
+the "switch" statement as present in other languages::
+
+    match response.status:
+        case 200:
+            do_something(response.data)  # OK
+        case 301 | 302:
+            retry(response.location)  # Redirect
+        case 401:
+            retry(auth=get_credentials())  # Login first
+        case 426:
+            sleep(DELAY)  # Server is swamped, try after a bit
+            retry()
+        case _:
+            raise RequestError(we couldn't get the data)
+
+Although this will work, it's not necessarily what the proposal is
+focused on, and the new syntax has been designed to best support the
+destructuring scenarios.
 
 See the `syntax`_ sections below for a more detailed specification.
 
-We propose that destructuring
-objects can be customized by a new special ``__match_args__``
-attribute.  As part of this PEP we specify the general API and its
-implementation for some standard library classes (including named
-tuples and dataclasses). See the `runtime`_ section below.
+We propose that destructuring objects can be customized by a new
+special ``__match_args__`` attribute. As part of this PEP we specify
+the general API and its implementation for some standard library
+classes (including named tuples and dataclasses). See the `runtime`_
+section below.
 
-Finally, we aim to provide a comprehensive support for static type checkers
-and similar tools. For this purpose we propose to introduce a
-``@typing.sealed`` class decorator that will be a no-op at runtime, but
-will indicate to static tools that all subclasses of this class must be defined
-in the same module. This will allow effective static exhaustiveness checks,
-and together with dataclasses, will provide a nice support for algebraic data
-types [2]_. See the `static checkers`_ section for more details.
-
-In general, we believe that pattern matching has been proved to be a useful and
-expressive tool in various modern languages. In particular, many aspects of
-this PEP were inspired by how pattern matching works in Rust [3]_ and
-Scala [4]_.
+Finally, we aim to provide comprehensive support for static type
+checkers and similar tools. For this purpose, we propose to introduce
+a ``@typing.sealed`` class decorator that will be a no-op at runtime
+but will indicate to static tools that all sub-classes of this class
+must be defined in the same module. This will allow effective static
+exhaustiveness checks, and together with dataclasses, will provide a
+nice support for algebraic data types [2]_. See the `static checkers`_
+section for more details.
 
 
 .. _syntax:
