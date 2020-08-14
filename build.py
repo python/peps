@@ -24,12 +24,11 @@ def create_parser():
 
 
 def create_index_file(html_content: Path):
-    index_file = "index.html"
-    index = html_content / index_file
+    index = html_content / "index.html"
 
     pep_zero = html_content / "pep-0000.html"
     # `dirhtml` builder pep 0 path:
-    pep_zero_dir_builder = pep_zero.with_suffix("").joinpath(index_file)
+    pep_zero_dir_builder = html_content / "pep-0000" / "index.html"
     if pep_zero.is_file():
         shutil.copy(pep_zero, index)
     elif pep_zero_dir_builder.is_file():
