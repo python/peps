@@ -12,9 +12,10 @@ from pep_extensions.pep_zero_generator.pep_index_generator import create_pep_zer
 
 # Monkeypatch StandaloneHTMLBuilder to not include JS libraries (underscore.js & jQuery)
 def init_less_js(self) -> None:
-    js_files = [('js/doctools.js', {}), ('js/language_data.js', {}), ]
+    js_files = [('js/doctools.js', {}), ('js/language_data.js', {})]
     js_files.extend([*self.app.registry.js_files, *self.get_builder_config('js_files', 'html')])
-    js_files.append(('translations.js',) if self.config.language and self._get_translations_js() else (None, {}))
+    if self.config.language and self._get_translations_js():
+        js_files.append(('translations.js',))
     for filename, attrs in js_files:
         self.add_js_file(filename, **attrs)
 
@@ -31,7 +32,7 @@ def setup(app: Sphinx) -> dict:
     app.connect("env-before-read-docs", create_pep_zero)  # PEP 0 hook
 
     # Mathematics rendering
-    def depart_maths(): pass  # Satisfy type checker
+    def depart_maths(): pass  # Type checker wants a callable
     inline_maths = (HTMLTranslator.visit_math, depart_maths)
     block_maths = (HTMLTranslator.visit_math_block, depart_maths)
     app.add_html_math_renderer('math2html', inline_maths, block_maths)  # Render maths to HTML
