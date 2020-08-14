@@ -5,7 +5,6 @@ pep_url = pep_extensions.config.pep_url
 
 
 class PEPRole(roles.PEP):
-
     def build_uri(self) -> str:
         base_url = self.inliner.document.settings.pep_base_url
         ret = self.target.split('#', 1)

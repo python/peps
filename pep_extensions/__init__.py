@@ -25,10 +25,15 @@ sphinx.builders.html.StandaloneHTMLBuilder.init_js_files = init_less_js
 def setup(app: Sphinx) -> dict:
     """Initialize Sphinx extension."""
 
-    app.add_source_parser(pep_parser.PEPParser)
-    app.add_role('pep', pep_role.PEPRole(), override=True)
-    app.set_translator("html", pep_html_translator.PEPTranslator)
-    app.connect("env-before-read-docs", create_pep_zero)
-    app.add_html_math_renderer('math2html', (HTMLTranslator.visit_math, None), (HTMLTranslator.visit_math_block, None))  # NoQA
+    app.add_source_parser(pep_parser.PEPParser)  # Add PEP transforms
+    app.add_role('pep', pep_role.PEPRole(), override=True)  # Transform PEP references to links
+    app.set_translator("html", pep_html_translator.PEPTranslator)  # Docutils Node Visitor overrides
+    app.connect("env-before-read-docs", create_pep_zero)  # PEP 0 hook
+
+    # Mathematics rendering
+    def depart_maths(): pass  # Satisfy type checker
+    inline_maths = (HTMLTranslator.visit_math, depart_maths)
+    block_maths = (HTMLTranslator.visit_math_block, depart_maths)
+    app.add_html_math_renderer('math2html', inline_maths, block_maths)  # Render maths to HTML
 
     return {'version': __version__, 'parallel_read_safe': True, 'parallel_write_safe': True}
