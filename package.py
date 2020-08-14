@@ -126,7 +126,7 @@ if __name__ == '__main__':
             ref.name = 'table'
             ref["class"] = "docutils footnote"
             ref.contents = footnote_rows
-            # TODO combine all tables into one (relianbt on fixingf PEP8 table mismatch)
+            # TODO combine all tables into one (reliant on fixing PEP8 table mismatch)
 
         # Writes transformed HTML
         write_path = Path('./package/peps') / file_path.name
