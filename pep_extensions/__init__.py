@@ -5,10 +5,6 @@ from sphinx.environment import default_settings
 from docutils.writers.html5_polyglot import HTMLTranslator
 
 from pep_extensions.config import __version__
-from pep_extensions.pep_processor.html import pep_html_translator
-from pep_extensions.pep_processor.parsing import pep_parser
-from pep_extensions.pep_processor.parsing import pep_role
-from pep_extensions.pep_zero_generator.pep_index_generator import create_pep_zero
 
 # Monkeypatch sphinx.environment.default_settings as Sphinx doesn't allow custom settings or Readers
 default_settings.update({
@@ -34,11 +30,6 @@ sphinx.builders.html.StandaloneHTMLBuilder.init_js_files = init_less_js
 
 def setup(app: Sphinx) -> dict:
     """Initialize Sphinx extension."""
-
-    app.add_source_parser(pep_parser.PEPParser)  # Add PEP transforms
-    app.add_role('pep', pep_role.PEPRole(), override=True)  # Transform PEP references to links
-    app.set_translator("html", pep_html_translator.PEPTranslator)  # Docutils Node Visitor overrides
-    app.connect("env-before-read-docs", create_pep_zero)  # PEP 0 hook
 
     # Mathematics rendering
     def depart_maths(): pass  # Type checker wants a callable
