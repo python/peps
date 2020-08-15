@@ -53,3 +53,7 @@ package: all rss
 	cp *.png build/peps/
 	cp *.rss build/peps/
 	tar -C build -czf build/peps.tar.gz peps
+
+lint:
+	pre-commit --version > /dev/null || python3 -m pip install pre-commit
+	pre-commit run --all-files
