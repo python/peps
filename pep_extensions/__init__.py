@@ -1,6 +1,7 @@
 """Sphinx extensions for performant PEP processing"""
 import sphinx.builders.html
 from sphinx.application import Sphinx
+from sphinx.environment import default_settings
 from docutils.writers.html5_polyglot import HTMLTranslator
 
 from pep_extensions.config import __version__
@@ -8,6 +9,14 @@ from pep_extensions.pep_processor.html import pep_html_translator
 from pep_extensions.pep_processor.parsing import pep_parser
 from pep_extensions.pep_processor.parsing import pep_role
 from pep_extensions.pep_zero_generator.pep_index_generator import create_pep_zero
+
+# Monkeypatch sphinx.environment.default_settings as Sphinx doesn't allow custom settings or Readers
+default_settings.update({
+    'pep_references': True,
+    'rfc_references': True,
+    "pep_base_url": "",
+    "pep_file_url_template": "pep-%04d.html"
+})
 
 
 # Monkeypatch StandaloneHTMLBuilder to not include JS libraries (underscore.js & jQuery)
