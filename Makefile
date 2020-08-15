@@ -5,7 +5,7 @@ all: sphinx
 
 PYTHON=python3
 
-pages: sphinx
+pages: rss
 	$(PYTHON) build.py --index-file
 
 sphinx:
