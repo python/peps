@@ -1,3 +1,5 @@
+import datetime
+import subprocess
 from pathlib import Path
 
 from docutils import nodes
@@ -62,9 +64,10 @@ class PEPFooter(transforms.Transform):
         self.document.note_pending(pending, 1)
 
         self.add_source_link(pep_source_path)
+        self.add_commit_history_info(pep_source_path)
 
     @staticmethod
-    def cleanup_callback(pending):
+    def cleanup_callback(pending: nodes.pending):
         """
         Remove an empty "References" section.
 
@@ -77,4 +80,20 @@ class PEPFooter(transforms.Transform):
         source_link = pep_config.pep_vcs_url.format(pep_source_path.name)
         link_node = nodes.reference("", source_link, refuri=source_link)
         span_node = nodes.inline("", "Source: ", link_node)
+        self.document.append(span_node)
+
+    def add_commit_history_info(self, pep_source_path: Path) -> None:
+        args = ['git', '--no-pager', 'log', '-1', '--format=%at', pep_source_path.name]
+        try:
+            b = subprocess.check_output(args)
+            since_epoch = b.decode("UTF-8").strip()
+            dt = datetime.datetime.utcfromtimestamp(float(since_epoch))
+        except (subprocess.CalledProcessError, ValueError):
+            return None
+
+        dt.replace(tzinfo=datetime.timezone.utc)
+        commit_link = pep_config.pep_commits_url.format(pep_source_path.name)
+        link_node = nodes.reference("", dt.isoformat(), refuri=commit_link)
+        span_node = nodes.inline("", f"Last modified: ", link_node)
+        self.document.append(nodes.line("", "", classes=['zero-height']))
         self.document.append(span_node)
