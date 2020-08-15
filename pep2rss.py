@@ -88,7 +88,7 @@ def main():
     for item in items:
         fg.add_entry(item)
 
-    Path("peps.rss").write_bytes(fg.rss_str(pretty=True))
+    pep_dir.joinpath("peps.rss").write_bytes(fg.rss_str(pretty=True))
 
 
 if __name__ == "__main__":
