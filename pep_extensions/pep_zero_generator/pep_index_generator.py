@@ -41,13 +41,14 @@ def create_pep_zero(_: Sphinx, env: BuildEnvironment, docnames: list):
     pep_pat = re.compile(r"pep-\d{4}")  # Path.match() doesn't support regular expressions
     title_length = pep_0_writer.title_length
 
+    # AUTHORS.csv is an exception file for PEP0 name parsing
     with open("AUTHORS.csv", "r", encoding="UTF8") as f:
         read = csv.DictReader(f, quotechar='"', skipinitialspace=True)
-        author_data = {}
+        author_exception_data = {}
         for line in read:
-            full_name = line.pop("Full Name").strip().strip("\"")
-            details = {k.strip().strip("\""): v.strip().strip("\"") for k, v in line.items()}
-            author_data[full_name] = details
+            full_name = line.pop("Full Name").strip()
+            details = {k.strip(): v.strip() for k, v in line.items()}
+            author_exception_data[full_name] = details
 
     for file_path in path.iterdir():
         if not file_path.is_file():
@@ -56,7 +57,7 @@ def create_pep_zero(_: Sphinx, env: BuildEnvironment, docnames: list):
             continue  # Skip pre-existing PEP 0 files
         if pep_pat.match(str(file_path)) and file_path.suffix in (".txt", ".rst"):
             file_path_absolute = path.joinpath(file_path).absolute()
-            pep = pep_0_parser.PEP(file_path_absolute, author_data, title_length)
+            pep = pep_0_parser.PEP(file_path_absolute, author_exception_data, title_length)
             peps.append(pep)
     peps.sort(key=lambda pep: pep.number)
 

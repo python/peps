@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Code for handling object representation of a PEP."""
 import re
 import textwrap
@@ -50,16 +49,38 @@ class Author:
             The author's email address.
     """
 
-    def __init__(self, author_and_email_tuple: Tuple[str, str], authors_lookup: dict):
+    def __init__(self, author_and_email_tuple: Tuple[str, str], authors_exceptions: dict):
         """Parse the name and email address of an author."""
+        self.first = self.last = ''
+
         name, email = author_and_email_tuple
         self.first_last: str = name.strip()
         self.email: str = email.lower()
 
-        name_dict = authors_lookup[self.first_last]
+        name_dict = authors_exceptions.get(self.first_last)
+        if name_dict:
+            self.last_first = name_dict["Surname First"]
+            self.nick = self.last = name_dict["Name Reference"]
+        else:
+            self.set_name_parts()
 
-        self.last_first: str = name_dict["Surname First"]
-        self.nick: str = name_dict["Name Reference"]
+    def set_name_parts(self):
+        name_dict = self._parse_name(self.first_last)
+        suffix = name_dict.get("suffix")
+        if "name" in name_dict:
+            self.last_first = name_dict["name"]
+            self.nick = name_dict["name"]
+        else:
+            self.first = name_dict["forename"].rstrip()
+            self.last = name_dict["surname"]
+            if self.last[1] == ".":
+                # Add an escape to avoid docutils turning `v.` into `22.`.
+                self.last = "\\" + self.last
+            self.last_first = ", ".join([self.last, self.first])
+            self.nick = self.last
+
+        if suffix:
+            self.last_first += f", {suffix}"
 
     def __hash__(self):
         return hash(self.first_last)
@@ -81,6 +102,61 @@ class Author:
             # If no capitals, use the whole string
             base = last.lower()
         return unicodedata.normalize("NFKD", base)
+
+    @staticmethod
+    def _parse_name(full_name):
+        """Decompose a full name into parts.
+
+        If a mononym (e.g, 'Aahz') then return the full name. If there are
+        suffixes in the name (e.g. ', Jr.' or 'III'), then find and extract
+        them. If there is a middle initial followed by a full stop, then
+        combine the following words into a surname (e.g. N. Vander Weele). If
+        there is a leading, lowercase portion to the last name (e.g. 'van' or
+        'von') then include it in the surname.
+
+        """
+        possible_suffixes = ["Jr", "Jr.", "II", "III"]
+
+        suffix_partition = full_name.partition(",")
+        pre_suffix = suffix_partition[0].strip()
+        suffix = suffix_partition[2].strip()
+
+        name_parts = pre_suffix.split(" ")
+        num_parts = len(name_parts)
+        name = {"suffix": suffix}
+
+        if num_parts == 0:
+            raise ValueError("Name is empty!")
+        elif num_parts == 1:
+            name.update(name=name_parts[0])
+        elif num_parts == 2:
+            name.update(forename=name_parts[0], surname=name_parts[1])
+        elif num_parts > 2:
+            # handles III etc.
+            if name_parts[-1] in possible_suffixes:
+                new_suffix = " ".join([*name_parts[-1:], suffix]).strip()
+                name_parts.pop(-1)
+                name.update(suffix=new_suffix)
+
+            # handles von, van, v. etc.
+            if name_parts[-2].islower():
+                forename = " ".join(name_parts[:-2])
+                surname = " ".join(name_parts[-2:])
+                name.update(forename=forename, surname=surname)
+
+            # handles double surnames after a middle initial (e.g. N. Vander Weele)
+            elif any(s.endswith(".") for s in name_parts):
+                split_position = [i for i, x in enumerate(name_parts) if x.endswith(".")][-1] + 1
+                forename = " ".join(name_parts[:split_position])
+                surname = " ".join(name_parts[split_position:])
+                name.update(forename=forename, surname=surname)
+
+            else:
+                forename = " ".join(name_parts[:-1])
+                surname = " ".join(name_parts[-1:])
+                name.update(forename=forename, surname=surname)
+
+        return name
 
 
 class PEP:
