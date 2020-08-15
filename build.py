@@ -23,18 +23,6 @@ def create_parser():
     return parser.parse_args()
 
 
-def create_index_file(html_content: Path):
-    index = html_content / "index.html"
-
-    pep_zero = html_content / "pep-0000.html"
-    # `dirhtml` builder pep 0 path:
-    pep_zero_dir_builder = html_content / "pep-0000" / "index.html"
-    if pep_zero.is_file():
-        shutil.copy(pep_zero, index)
-    elif pep_zero_dir_builder.is_file():
-        shutil.copy(pep_zero_dir_builder, index)
-
-
 if __name__ == '__main__':
     args = create_parser()
 
@@ -61,6 +49,3 @@ if __name__ == '__main__':
     )
     app.builder.copysource = False  # Prevent unneeded source copying - we link direct to VCS
     app.build()
-    
-    if args.index_file:
-        create_index_file(build_directory)
