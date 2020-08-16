@@ -47,4 +47,4 @@ exclude_patterns = [
 html_math_renderer = "math2html"
 html_show_copyright = False
 html_show_sphinx = False
-html_title = "PEPs.Python.org"
+html_title = "peps.python.org"
