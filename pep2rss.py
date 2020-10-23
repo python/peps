@@ -48,7 +48,7 @@ for dt, full_path in peps_with_dt[:10]:
         pass
     title = firstline_startingwith(full_path, 'Title:')
     author = firstline_startingwith(full_path, 'Author:')
-    url = 'http://www.python.org/dev/peps/pep-%0.4d' % n
+    url = 'https://www.python.org/dev/peps/pep-%0.4d/' % n
     item = rssgen.RSSItem(
         title = 'PEP %d: %s' % (n, title),
         link = url,
@@ -65,7 +65,7 @@ procedure and schedules
 """.strip()
 rss = rssgen.RSS2(
     title = 'Newest Python PEPs',
-    link = 'http://www.python.org/dev/peps',
+    link = 'https://www.python.org/dev/peps/',
     description = desc,
     lastBuildDate = datetime.datetime.now(),
     items = items)
