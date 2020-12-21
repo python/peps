@@ -162,6 +162,7 @@ class PEP(object):
     headers = (('PEP', True), ('Title', True), ('Version', False),
                ('Last-Modified', False), ('Author', True),
                ('Sponsor', False), ('BDFL-Delegate', False),
+               ('PEP-Delegate', False),
                ('Discussions-To', False), ('Status', True), ('Type', True),
                ('Content-Type', False), ('Requires', False),
                ('Created', True), ('Python-Version', False),

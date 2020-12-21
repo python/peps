@@ -219,7 +219,8 @@ def fixfile(inpath, input_lines, outfile):
     print('</td></tr></table>', file=outfile)
     print('<div class="header">\n<table border="0">', file=outfile)
     for k, v in header:
-        if k.lower() in ('author', 'bdfl-delegate', 'discussions-to', 'sponsor'):
+        if k.lower() in ('author', 'pep-delegate', 'bdfl-delegate', 'discussions-to',
+                         'sponsor'):
             mailtos = []
             for part in re.split(r',\s*', v):
                 if '@' in part:
@@ -401,7 +402,7 @@ class PEPHeaders(Transform):
                 # empty
                 continue
             para = body[0]
-            if name in ('author', 'bdfl-delegate', 'sponsor'):
+            if name in ('author', 'bdfl-delegate', 'pep-delegate', 'sponsor'):
                 for node in para:
                     if isinstance(node, nodes.reference):
                         node.replace_self(peps.mask_email(node))
