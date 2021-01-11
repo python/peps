@@ -1,0 +1,674 @@
+PEP: 649
+Title: Deferred Evaluation Of Annotations Using Descriptors
+Author: Larry Hastings <larry@hastings.org>
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 11-Jan-2021
+Post-History: 11-Jan-2021
+
+
+Abstract
+========
+
+As of Python 3.9, Python supports two different behaviors
+for annotations:
+
+* original Python semantics, in which annotations are evaluated
+  at the time they are bound, and
+* PEP 563 semantics, currently enabled per-module by
+  ``from __future__ import annotations``, in which annotations
+  are converted back into strings and must be parsed by ``eval()``
+  to be used.
+
+Original Python semantics created a circular references problem
+for static typing analysis.  PEP 563 solved that problem, but
+its novel semantics introduced new problems.
+
+This PEP proposes a third way that embodies the best of both
+previous approaches.  It solves the same circular reference
+problems solved by PEP 563, while preserving Python's original
+straightforward runtime semantics for annotations.
+
+In this new approach, the code to generate the annotations
+dict is written to its own callable, and ``__annotations__``
+is a "data descriptor" which calls the callable once and
+preserves the result.
+
+If accepted, these new semantics for annotations would initially
+be gated behind ``from __future__ import co_annotations``.  However,
+these semantics would eventually be promoted to be the default behavior.
+Thus this PEP would *supercede* PEP 563, and PEP 563's behavior would
+be deprecated and eventually removed.
+
+Overview
+========
+
+.. note:: The code presented in this section is highly simplified
+   for clarity.  The intention is to communicate the high-level
+   concepts involved without getting lost in with the details.
+   The actual details are often quite different.  See the
+   Implementation_ section later in this PEP for a much more
+   accurate description of how this PEP works.
+
+Consider this example code::
+
+    def foo(x: int = 3, y: MyType = None) -> float:
+        ...
+    class MyType:
+        ...
+    foo_y_type = foo.__annotations__['y']
+
+As we see here, annotations are available at runtime through an
+``__annotations__`` attribute on functions, classes, and modules.
+When annotations are specified on one of these objects,
+``__annotations__`` is a dictionary mapping the names of the
+fields to the value specified as that field's annotation.
+
+The default behavior in Python 3.9 is to evaluate the expressions
+for the annotations, and build the annotations dict, at the time
+the function, class, or module is bound.  At runtime the above
+code actually works something like this::
+
+    annotations = {'x': int, 'y': MyType, 'return': float}
+    def foo(x = 3, y = "abc"):
+        ...
+    foo.__annotations__ = annotations
+    class MyType:
+        ...
+    foo_y_type = foo.__annotations__['y']
+
+The crucial detail here is that the values ``int``, ``MyType``,
+and ``float`` are looked up at the time the function object is
+bound, and these values are stored in the annotations dict.
+But this code doesn't run—it throws a ``NameError`` on the first
+line, because ``MyType`` hasn't been defined yet.
+
+PEP 563's solution is to decompile the expressions back
+into strings, and store those *strings* in the annotations dict.
+The equivalent runtime code would look something like this::
+
+    annotations = {'x': 'int', 'y': 'MyType', 'return': 'float'}
+    def foo(x = 3, y = "abc"):
+        ...
+    foo.__annotations__ = annotations
+    class MyType:
+        ...
+    foo_y_type = foo.__annotations__['y']
+
+This code now runs successfully.  However, ``foo_y_type``
+is no longer a reference to ``MyType``, it is the *string*
+``'MyType'``.  The code would have to be further modified to
+call ``eval()`` or ``typing.get_type_hints()`` to convert
+the string into a useful reference to the actual ``MyType``
+object.
+
+This PEP proposes a third approach, delaying the evaluation of
+the annotations by computing them in their own function.  If
+this PEP was active, the generated code would work something
+like this::
+
+    class function:
+        @property
+        # __annotations__ on a function object is already a
+        # "data descriptor", we're just changing what it does
+        def __annotations__(self):
+            return self.__co_annotations__()
+
+    # ...
+
+    def foo_annotations_fn():
+        return {'x': int, 'y': MyType, 'return': float}
+    def foo(x = 3, y = "abc"):
+        ...
+    foo.__co_annotations__ = foo_annotations_fn
+    class MyType:
+       ...
+    foo_y_type = foo.__annotations__['y']
+
+The important change is that the code constructing the
+annotations dict now lives in a function—here, called
+`` foo_annotations__fn()``.  But this function isn't called
+until we ask for the value of ``foo.__annotations__``,
+and we don't do that until *after* the definition of ``MyType``.
+So this code also runs successfully, and ``foo_y_type`` now
+has the correct value, the class ``MyType``.
+
+
+Motivation
+==========
+
+Python's original semantics for annotations made its use for
+static type analysis painful due to forward reference problems.
+This was the main justification for PEP 563, and we need not
+revisit those arguments here.
+
+However, PEP 563's solution was to de-compile code for Python
+annotations back into strings at compile time, requiring
+users of annotations to ``eval()`` those strings to turn them
+back into Python values.  This has several drawbacks:
+
+* It requires Python implementations to stringize their
+  annotations.  This is surprising—unprecedented behavior
+  for a language-level feature.  Also, adding this feature
+  to CPython was complicated, and this complicated code would
+  need to be reimplemented independently by every other Python
+  implementation.
+* It requires a code change every time existing code uses an
+  annotation, to handle converting the stringized
+  annotation back into a useful value.
+* ``eval()`` is slow.
+* ``eval()`` isn't always available; it's sometimes removed
+  from Python for space reasons.
+* In order to evaluate the annotations stored with a class,
+  it requires obtaining a reference to that class's globals,
+  which PEP 563 suggests should be done by looking up that class
+  by name in ``sys.modules``—another surprising requirement for
+  a language-level feature.
+* It adds an ongoing maintenance burden to Python implementations.
+  Every time the language adds a new feature available in expressions,
+  the implementation's stringizing code must be updated in
+  tandem to support decompiling it.
+
+This PEP also solves the forward reference problem outlined in
+PEP 563 while avoiding the problems listed above:
+
+* Python implementations would generate annotations as code
+  objects.  This is simpler than stringizing, and is something
+  Python implementations are already quite good at.  This means:
+
+ * alternate implementations would need to write less code
+   to implement this feature, and
+ * the implementation would be simpler overall, which should
+   reduce its ongoing maintenance cost.
+
+* Code examining annotations at runtime would no longer need
+  to use ``eval()`` or anything else—it would automatically
+  get the correct values.  This is easier, almost certainly
+  faster, and removes the dependency on ``eval()``.
+
+
+Backwards Compatibility
+=======================
+
+PEP 563 changed the semantics of annotations.  When its semantics
+are  active, annotations must assume they will be evaluated in
+*module-level* scope.  They may no longer refer directly
+to local variables or class attributes.  This PEP retains that
+semantic change, also requiring that annotations be evaluated in
+*module-level* scope.  Thus, code changed so its annotations are
+compatible with PEP 563 should *already* compatible with this
+aspect of this PEP and would not need further change.  Modules
+still using stock semantics would have to be revised so its
+annotations evaluate properly in module-level scope, in the same
+way they would have to be to achieve compatibility with PEP 563.
+
+PEP 563 also requires using ``eval()`` or ``typing.get_type_hints()``
+to examine annotations.  Code updated to work with PEP 563 that calls
+``eval()`` directly would have to be updated simply to remove the
+``eval()`` call.  Code using ``typing.get_type_hints()`` would
+continue to work unchanged, though future use of that function
+would become optional in most cases.
+
+Because this PEP makes the same backwards-compatible change
+to annotation scoping as PEP 563, this PEP will be initially gated
+with a per-module ``from __future__ import co_annotations``
+before it eventually becomes the default behavior.
+
+Apart from these two changes already discussed:
+
+* the evaluation of values in annotation dicts will be
+  delayed until the ``__annotations__`` attribute is evaluated, and
+* annotations are now evaluated in module-level scope,
+
+this PEP preserves nearly all existing behavior of annotations
+dicts.  Specifically:
+
+* Annotations dicts are mutable, and any changes to them are
+  preserved.
+* The ``__annotations__`` attribute can be explicitly set,
+  and any value set this way will be preserved.
+* The ``__annotations__`` attribute can be deleted using
+  the ``del`` statement.
+
+However, there are two uncommon interactions possible with class
+and module annotations that work today—both with stock semantics,
+and with PEP 563 semantics—that would no longer work when this PEP
+was active.  These two interactions would have to be prohibited.
+The good news is, neither is common, and neither is considered good
+practice.  In fact, they're rarely seen outside of Python's own
+regression test suite.  They are:
+
+* *Code that sets annotations from inside any kind of
+  flow control statement.*   It's currently possible to set
+  module and class attributes with annotations inside an
+  ``if`` or ``try`` statement, and it works as one would expect.
+  It's untenable to support this behavior when this PEP is active.
+* *Code in module or class scope that references or modifies the
+  local* ``__annotations__`` *dict directly.*  Currently, when
+  setting annotations on module or class attributes, the generated
+  code simply creates a local ``__annotations__`` dict, then sets
+  mappings in it as needed.  It's also possible for user code
+  to directly modify this dict, though this doesn't seem like it's
+  an intentional feature.  Although it'd be possible to support
+  this after a fashion when this PEP was active, the semantics
+  would likely be surprising and wouldn't make anyone happy.
+
+Note that these are both also pain points for static type checkers,
+and are unsupported by those checkers.  It seems reasonable to
+declare that both are at the very least unsupported, and their
+use results in undefined behavior.  It might be worth making a
+small effort to explicitly prohibit them with compile-time checks.
+
+There's one more idiom that's actually somewhat common when
+dealing with class annotations, and which will become
+more problematic when this PEP is active: code often accesses
+class annotations via ``cls.__dict__.get("__annotations__", {})``
+rather than simply ``cls.__annotations__``.  It's due to a flaw
+in the original design of annotations themselves.  This topic
+will be examined in a separate discussion; the outcome of
+that discussion will likely guide the future evolution of this
+PEP.
+
+
+Mistaken Rejection Of This Approach In November 2017
+====================================================
+
+During the early days of discussion around PEP 563,
+using code to delay the evaluation of annotations was
+briefly discussed, in a November 2017 thread in
+``comp.lang.python-dev``.  At the time the
+technique was termed an "implicit lambda expression".
+
+Guido van Rossum—Python's BDFL at the time—replied,
+asserting that these "implicit lambda expression" wouldn't
+work, because they'd only be able to resolve symbols at
+module-level scope:
+
+    IMO the inability of referencing class-level definitions
+    from annotations on methods pretty much kills this idea.
+
+    https://mail.python.org/pipermail/python-dev/2017-November/150109.html
+
+This led to a short discussion about extending lambda-ized
+annotations for methods to be able to refer to class-level
+definitions, by maintaining a reference to the class-level scope.
+This idea, too, was quickly rejected.
+
+PEP 563 summarizes the above discussion here:
+
+    https://www.python.org/dev/peps/pep-0563/#keeping-the-ability-to-use-function-local-state-when-defining-annotations
+
+What's puzzling is PEP 563's own changes to the scoping rules
+of annotations—it *also* doesn't permit annotations to reference
+class-level definitions.  It's not immediately clear why an
+inability to reference class-level definitions was enough to
+reject using "implicit lambda expressions" for annotations,
+but was acceptable for stringized annotations.
+
+In retrospect there was probably a pivot during the development
+of PEP 563.  It seems that, early on, there was a prevailing
+assumption that PEP 563 would support references to class-level
+definitions.  But by the time PEP 563 was finalized, this
+assumption had apparently been abandoned.  And it looks like
+"implicit lambda expressions" were never reconsidered in this
+new light.
+
+PEP 563 semantics have shipped in three major Python releases.
+These semantics are now widely used in organizations depending
+on static type analysis.  Evaluating annotations at module-level
+scope is clearly acceptable to all interested parties.  Therefore
+delayed evaluation of annotations with code using the same scoping
+rules is obviously also completely viable.
+
+
+.. _Implementation:
+
+Implementation
+==============
+
+There's a prototype implementation of this PEP, here:
+
+    https://github.com/larryhastings/co_annotations/
+
+As of this writing, all features described in this PEP are
+implemented, and there are some rudimentary tests in the
+test suite.  There are still some broken tests, and the
+repo is many months behind.
+
+
+from __future__ import co_annotations
+-------------------------------------
+
+In the prototype, the semantics presented in this PEP are gated with:
+
+    from __future__ import co_annotations
+
+
+
+__co_annotations__
+------------------
+
+Python supports runtime metadata for annotations for three different
+types: function, classes, and modules.  The basic approach to
+implement this PEP is much the same for all three with only minor
+variations.
+
+With this PEP, each of these types adds a new attribute,
+``__co_annotations__``, with the following semantics:
+
+* ``__co_annotations__`` is always set, and may contain either
+  ``None`` or a callable.
+* ``__co_annotations__`` cannot be deleted.
+* ``__annotations__`` and ``__co_annotations__`` can't both
+  be set to a useful value simultaneously:
+
+ * If you set ``__annotations__`` to a dict, this also sets
+   ``__co_annotations__`` to None.
+ * If you set ``__co_annotations__`` to a callable, this also
+   deletes ``__annotations__``
+
+Internally, ``__co_annotations__`` is a "data descriptor",
+where functions are called whenever user code gets, sets,
+or deletes the attribute.  In all three cases, the object
+has a separate internal place to store the current value
+of the ``__co_annotations__`` attribute.
+
+``__annotations__`` is also reimplemented as a data descriptor,
+with its own separate internal storage for its internal value.
+The code implementing the "get" for ``__annotations__`` works
+something like this::
+
+    if (the internal value is set)
+        return the internal annotations dict
+    if (__co_annotations__ is not None)
+        call the __co_annotations__ function
+        if the result is a dict:
+            store the result as the internal value
+            set __co_annotations__ to None
+            return the internal value
+    do whatever this object does when there are no annotations
+
+
+Unbound code objects
+--------------------
+
+When Python code defines one of these three objects with
+annotations, the Python compiler generates a separate code
+object which builds and returns the appropriate annotations
+dict.  The "annotation code object" is then stored *unbound*
+as the internal value of ``__co_annotations__``; it is then
+bound on demand when the user asks for ``__annotations__``.
+
+This is an important optimization, for both speed and
+memory consumption.  Python processes rarely examine
+annotations at runtime. Therefore, pre-binding these
+code objects to function objects would be a waste of
+resources in nearly all cases.
+
+Note that user code isn't permitted to see these unbound code
+objects.  If the user gets the value of ``__co_annotations__``,
+and the internal value of ``__co_annotations__`` is an unbound
+code object, it is bound, and the resulting function object is
+stored as the new value of ``__co_annotations__``.
+
+
+The annotations function
+------------------------
+
+Annotations functions take no arguments and
+must return a dict (or subclass of dict).
+
+The bytecode generated for annotations code objects
+always uses the ``BUILD_CONST_KEY_MAP`` opcode to build the
+dict.  Stock and PEP 563 semantics only uses this bytecode
+for function annotations; for class and module annotations,
+they generate a longer and slightly-less-efficient stanza
+of bytecode.
+
+Also, when generating the bytecode for an annotations code
+object, all ``LOAD_*`` opcodes are forced to be ``LOAD_GLOBAL``.
+
+
+Function Annotations
+--------------------
+
+When compiling a function, the CPython bytecode compiler
+visits the annotations for the function all in one place,
+starting with ``compiler_visit_annotations()``.  If there
+are any annotations, they create the scope for the annotations
+function on demand, and ``compiler_visit_annotations()``
+assembles it.
+
+The code object is passed in in place of the
+annotations dict for the ``MAKE_FUNCTION`` bytecode.
+``MAKE_FUNCTION`` supports a new bit in its oparg
+bitfield, ``0x10``, which tells it to expect a
+``co_annotations`` code object on the stack.
+The bitfields for ``annotations`` (``0x04``) and
+``co_annotations`` (``0x10``) are mutually exclusive.
+
+When binding an unbound annotation code object, a function will
+use its own ``__globals__`` as the new function's globals.
+
+One quirk of Python: you can't actually remove the annotations
+from a function object.
+If you delete the ``__annotations__`` attribute of a function,
+then get its ``__annotations__`` member,
+it will create an empty dict and use that as its
+``__annotations__``.  Naturally the implementation of this
+PEP maintains this quirk.
+
+
+Class Annotations
+-----------------
+
+When compiling a class body, the compiler maintains two scopes:
+one for the normal class body code, and one for annotations.
+(This is facilitated by four new functions: ``compiler.c``
+adds ``compiler_push_scope()`` and ``compiler_pop_scope()``,
+and ``symtable.c`` adds ``symtable_push_scope()`` and
+``symtable_pop_scope()``.)
+Once the code generator reaches the end of the class body,
+but before it generates the bytecode for the class body,
+it assembles the bytecode for ``__co_annotations__``, then
+assigns that to ``__co_annotations__`` using ``STORE_NAME``.
+
+It also sets a new ``__globals__`` attribute.  Currently it
+does this by calling ``globals()`` and storing the result.
+(Surely there's a more elegant way to find the class's
+globals--but this was good enough for the prototype.)  When
+binding an unbound annotation code object, a class will use
+the value of this ``__globals__`` attribute.  When the class
+drops its reference to the unbound code object--either because
+it has bound it to a function, or because ``__annotations__``
+has been explicitly set--it also deletes its ``__globals__``
+attribute.
+
+As discussed above, examination / modification of
+``__annotations__`` from within the class body is no
+longer supported.  Also, any flow control (``if`` / ``try``)
+around declarations of members with annotations is unsupported.
+
+If you delete the ``__annotations__`` attribute of a class,
+then get its ``__annotations__`` member, it will return the
+annotations dict of the first base class with annotations set.
+If no base classes have annotations set, it will raise
+``AttributeError``.
+
+Although it's an implementation-specific detail, currently
+classes store the internal value of ``__co_annotations__``
+in their ``tp_dict`` under the same name.
+
+
+Module Annotations
+------------------
+
+Module annotations work much the same as class annotations.
+The main difference is, a module uses its own dict as the
+``__globals__`` when binding the function.
+
+If you delete the ``__annotations__`` attribute of a class,
+then get its ``__annotations__`` member,
+the module will raise ``AttributeError``.
+
+
+Interactive REPL Shell
+----------------------
+
+Everything works the same inside Python's interactive REPL shell,
+except for module annotations in the interactive module (``__main__``)
+itself.  Since that module is never "finished", there's no specific
+point where we can compile the ``__co_annotations__`` function.
+
+For the sake of simplicity, in this case we forego delayed evaluation.
+Module-level annotations in the REPL shell will continue to work
+exactly as they do today, evaluating immediately and setting the
+result directly inside the ``__annotations__`` dict.
+
+(It might be possible to support delayed evaluation here.
+But it gets complicated quickly, and for a nearly-non-existent
+use case.)
+
+
+Local Annotations Inside Functions
+----------------------------------
+
+Python supports syntax for local variable annotations inside
+functions. However, these annotations have no runtime effect.
+Thus this PEP doesn't need to do anything to support them.
+
+
+Performance
+-----------
+
+Performance with this PEP should be favorable.  In general,
+resources are only consumed on demand—"you only pay for what you use".
+
+There are three scenarios to consider:
+
+* the runtime cost when annotations aren't defined,
+* the runtime cost when annotations are defined but *not* referenced, and
+* the runtime cost when annotations are defined *and* referenced.
+
+We'll examine each of these scenarios in the context of all three
+semantics for annotations: stock, PEP 563, and this PEP.
+
+When there are no annotations, all three semantics have the same
+runtime cost: zero. No annotations dict is created and no code is
+generated for it.  This requires no runtime processor time and
+consumes no memory.
+
+When annotations are defined but not referenced, the runtime cost
+of Python with this PEP should be slightly faster than either
+original Python semantics or PEP 563 semantics.  With those, the
+annotations dicts are built but never examined; with this PEP,
+the annotations dicts won't even be built.  All that happens at
+runtime is the loading of a single constant (a simple code
+object) which is then set as an attribute on an object.  Since
+the annotations are never referenced, the code object is never
+bound to a function, the code to create the dict is never
+executed, and the dict is never constructed.
+
+When annotations are both defined and referenced, code using
+this PEP should be much faster than code using PEP 563 semantics,
+and roughly the same as original Python semantics.  PEP 563
+semantics requires invoking ``eval()`` for every value inside
+an annotations dict, which is much slower.  And, as already
+mentioned, this PEP generates more efficient bytecode for class
+and module annotations than either stock or PEP 563 semantics.
+
+Memory use should also be comparable in all three scenarios across
+all three semantic contexts.  In the first and third scenarios,
+memory usage should be roughly equivalent in all cases.
+In the second scenario, when annotations are defined but not
+referenced, using this PEP's semantics will mean the
+function/class/module will store one unused code object; with
+the other two semantics, they'll store one unused dictionary.
+
+
+For Future Discussion
+=====================
+
+__globals__
+-----------
+
+Is it permissable to add the ``__globals__`` reference to class
+objects as proposed here?  It's not clear why this hasn't already
+been done; PEP 563 could have made use of class globals, but instead
+makes do with looking up classes inside ``sys.modules``.  Yet Python
+seems strangely allergic to adding a ``__globals__`` reference to
+class objects.
+
+If adding ``__globals__`` to class objects is indeed a bad idea
+(for reasons I don't know), here are two alternatives as to
+how classes could get a reference to their globals for the
+implementation of this PEP:
+
+* The generate code for a class could bind its annotations code
+  object to a function at the time the class is bound, rather than
+  waiting for ``__annotations__`` to be referenced, making them an
+  exception to the rule (even though "special cases aren't special
+  enough to break the rules").  This would result in a small
+  additional runtime cost when annotations were defined but not
+  referenced on class objects.  Honestly I'm more worried about
+  the lack of symmetry in semantics.  (But I wouldn't want to
+  pre-bind all annotations code objects, as that would become
+  much more costly for function objects, even as annotations are
+  rarely used at runtime.)
+* Use the class's ``__module__`` attribute to look up its module
+  by name in ``sys.modules``.  This is what PEP 563 advises.
+  While this is passable for userspace or library code, it seems
+  like a little bit of a code smell for this to be defined semantics
+  baked into the language itself.
+
+Also, the prototype gets globals for class objects by calling
+``globals()`` then storing the result.  I'm sure there's a much
+faster way to do this, I just didn't know what it was when I was
+prototyping.  I'm sure we can revise this to something much faster
+and much more sanitary.  I'd prefer to make it completely internal
+anyway, and not make it visible to the user (via this new
+__globals__ attribute).  There's possibly already a good place to
+put it anyway--``ht_module``.
+
+
+Bikeshedding the name
+---------------------
+
+During most of the development of this PEP, user code actually
+could see the raw annotation code objects.  ``__co_annotations__``
+could only be set to a code object; functions and other callables
+weren't permitted.  In that context the name ``co_annotations``
+makes a lot of sense.  But with this last-minute pivot where
+``__co_annotations__`` now presents itself as a callable,
+perhaps the name of the attribute and the name of the
+``from __future__ import`` needs a re-think.
+
+
+Acknowledgements
+================
+
+Thanks to Barry Warsaw, Eric V. Smith, and Mark Shannon
+for feedback and encouragement.  Thanks in particular to
+Mark Shannon for two key suggestions—build the entire
+annotations dict inside a single code object, and only
+bind it to a function on demand—that quickly became
+among the best aspects of this proposal.
+
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
+
+
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   coding: utf-8
+   End:
