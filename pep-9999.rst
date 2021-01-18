@@ -11,7 +11,7 @@ Post-History:
 Abstract
 ========
 
-CPython using a simple recursion depth counter to prevent both runaway recursion and C stack overflow.
+CPython uses a simple recursion depth counter to prevent both runaway recursion and C stack overflow.
 However, runaway recursion and machine stack overflow are two different things.
 
 Allowing machine stack overflow is a potential security vulnerability, but limiting recursion depth can prevent 
@@ -22,6 +22,26 @@ This would allow programs to set the maximum recursion depth safely and provide 
 for Python programs using only the standard library and trustworthy third-party modules.
 Trustworthy, in this context, means written to use the provided C-API to guard against C stack overflow.
 
+The following program should run safely to completion::
+
+  sys.setrecursionlimit(1_000_000)
+
+  def f(n):
+      if n:
+          f(n-1)
+
+  f(500_000)
+
+The following program should raise a ``StackOverflow``, without causing a crash::
+
+  sys.setrecursionlimit(1_000_000)
+
+  class X:
+      def __add__(self, other):
+          return self + other
+
+  X() + 1
+
 Motivation
 ==========
 
@@ -30,16 +50,38 @@ hopefully managing to set it in the region between the minimum needed to run cor
 to avoid a memory protection error.
 
 By separating the checks for C stack overflow from checks for recursion depth,
-pure Python programs can safely run whatever level of recursion they require.
+pure Python programs can run safely, using whatever level of recursion they require.
 
+Separation of the two forms of overflow allows more robust handling of ``RecursionError``.
+
+For example::
+
+  def recurse():
+    try:
+        recurse()
+    except Exception as ex:
+        print(ex)
+
+Since ``print`` is a builtin method, it can safely call ``str(ex)``, which might be recursive,
+even though the Python stack has been exhausted.
 
 Rationale
 =========
 
+CPython currently relies on a single limit to guard against potentially dangerous stack overflow
+in the virtual machine and to guard against run away recursion in the Python program.
 
+This is a consequence of the implementation which couples the C and Python call stacks.
+By breaking this coupling, we can improve both the usability of CPython and its safety.
+
+The recursion limit exists to protect against runaway recursion, the integrity of the virtual machine should not depend on it.
+Similarly, recursion should not be limited by implementation details.
 
 Specification
 =============
+
+Two new exception classes will be added, ``StackOverflow`` and ``RecursionOverflow``, both of will be
+sub-classes of ``RecursionError``
 
 StackOverflow exception
 -----------------------
@@ -48,68 +90,149 @@ A new exception class, ``StackOverflow`` will be added.
 This exception will be raised whenever the interpreter or API determines that the C stack
 is at or nearing a limit of safety.
 
+RecursionOverflow
+-----------------
+
+A new exception class, ``RecursionOverflow`` will be added.
+This exception will be raised when a call to a Python function causes the recursion limit
+to be exceeded.
+
 Failure modes
 -------------
 
-RecursionError
-''''''''''''''
+RecursionOverflow
+'''''''''''''''''
 
-A ``RecursionError`` will be raised whenever the recursion depth reaches the recursion limit.
-This is same behavior as currently exists for Python programs.
+A ``RecursionOverflow`` will be raised whenever the recursion depth reaches the recursion limit.
+This is a slight change from current behavior which raises a ``RecursionError``.
+``RecursionOverflow`` is a sub-class of ``RecursionError``, so any code that handles ``RecursionError``
+will continue to work as before.
 
 StackOverflow
 '''''''''''''
 
 Should the size of the underlying C stack exceed some safe limit, then a ``StackOverflow`` will occur.
+``StackOverflow`` is a sub-class of ``RecursionError``, so any code that hanndles ``RecursionError``
+will handle ``StackOverflow``
 
 Decoupling the Python stack from the C stack
 ''''''''''''''''''''''''''''''''''''''''''''
 
 In order to provide the above guarantees and ensure that any program that previously worked continues to do so,
-the Python and C stack will need to be decoupled.
-That is, calls to Python functions, from Python functions, should not consume space on the C stack.
+the Python and C stack will need to be separated.
+That is, calls to Python functions from Python functions, should not consume space on the C stack.
 Calls to and from builtin functions will continue to consume space on the C stack.
 
 The size of the C stack will be implementation defined, and may vary from machine to machine.
 It may even differ between threads. However, there is an expectation that any code that could run
-with the recursion limit set to the previous default value of 1000, will continue to run.
+with the recursion limit set to the previous default value, will continue to run.
+
+Many operations in Python perform some sort of call at the C level.
+Most of these will continue to consume C stack, and will result in a ``StackOverflow`` exception if uncontrolled
+recursion occurs.
+
+The following operations will not consume any C stack.
+
+* A call to a Python functions or method from Python code
+* Iterating over a generator, in Python
+
+This list may be extended in the future.
+
+
+C-API
+-----
+
+There will be no C-API for increasing or decreasing recursion depth.
+It will be managed internally by the interpreter.
+
+Py_CheckStackDepth()
+''''''''''''''''''''
+
+``int Py_CheckStackDepth(const char *where)``
+will return 0 if there is no immediate danger of C stack overflow.
+It will return -1 and set an exception, if there may be a danger of overflow should additional call be made.
+
+Py_CheckStackDepthWithHeadRoom()
+''''''''''''''''''''''''''''''''
+
+``int Py_CheckStackDepthWithHeadroom(const char *where, int headroom)``
+Behaves like ``Py_CheckStackDepth(where)`` but reduces the effective stack size
+by ``headroom`` when determining the risk of C stack overflow.
+This function should be used when additional C stack will
+needed for cleanup. 
+``Py_CheckStackDepth(where)`` is equivalent to ``Py_CheckStackDepthWithHeadRoom(where, 0)``.
+
+Unless absolutely necessary to perform complex cleanup,
+authors of extension modules are advised to use ``Py_CheckStackDepth()``
+and return immediately on failure.
+
+Py_EnterRecursiveCall()
+'''''''''''''''''''''''
+
+This will become a synonym for Py_CheckStackDepth().
+
+PyLeaveRecursiveCall()
+''''''''''''''''''''''
+
+This will have no effect.
 
 
 Backwards Compatibility
 =======================
 
-[Describe potential impact and severity on pre-existing code.]
+This feature is fully backwards compatibile at the Python level.
+Some low-level tools, such as machine-code debuggers, will need to be modified.
+For example, the gdb scripts for Python will need to be aware that multiple Python frames
+may exists for a single C frame.
 
+C code that uses the ``Py_EnterRecursiveCall()``, ``PyLeaveRecursiveCall()`` pair of 
+functions will continue to work correctly.
+
+New code should use the ``Py_CheckStackDepth()`` function.
 
 Security Implications
 =====================
 
-[How could a malicious user take advantage of this new feature?]
+It should not be possible to crash the CPython virtual through recursion.
+
+Performance Impact
+==================
+
+It is unlikely that the performance impact will be at all signficant.
+
+The additional logic to determine whether a call from Python code requires a C-level call
+will have a very small negative impact, but the improved locality of reference from reduced C stack use
+should have a very small positive impact. 
+
+It is hard to predict whether the overall effect will be positive or negative,
+and it is quite likely that the net effect will be so small that it cannot be measured.
 
 
-Reference Implementation
-========================
+Implementation
+==============
 
+Notes
+-----
 
+Gauging whether a C stack overflow is imminent is difficult. So we need to be conservative.
+This means that in some cases the amount of recursion possible may be reduced.
+In general, however, the amount of recursion should be increased as many calls will use no C stack.
+
+Our general approach to determining a limit for the C stack is to record a memory location as early as possible
+in the call chain. The limit can then be guessed by adding some constant to that.
+For major platforms, the platform specific API will be used to provide a much more accurate limit.
 
 
 Rejected Ideas
 ==============
 
-[Why certain ideas that were brought while discussing this PEP were not ultimately pursued.]
+None, as yet.
 
 
 Open Issues
 ===========
 
-[Any points that are still being decided/discussed.]
-
-
-References
-==========
-
-[A collection of URLs used as references through the PEP.]
-
+None, as yet.
 
 Copyright
 =========
