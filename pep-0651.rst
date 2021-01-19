@@ -1,0 +1,235 @@
+PEP: 651
+Title: Robust Overflow Handling
+Author: Mark Shannon <mark@hotpy.org>
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 18-Jan-2021
+Post-History: 19-Jan-2021
+
+
+Abstract
+========
+
+This PEP proposes that machine stack overflow is treated differently from runaway recursion.
+This would allow programs to set the maximum recursion depth to fit their needs
+and provide additional safety guarantees.
+
+The following program will run safely to completion::
+
+  sys.setrecursionlimit(1_000_000)
+
+  def f(n):
+      if n:
+          f(n-1)
+
+  f(500_000)
+
+The following program will raise a ``StackOverflow``, without causing a VM crash::
+
+  sys.setrecursionlimit(1_000_000)
+
+  class X:
+      def __add__(self, other):
+          return self + other
+
+  X() + 1
+
+Motivation
+==========
+
+CPython uses a single recursion depth counter to prevent both runaway recursion and C stack overflow.
+However, runaway recursion and machine stack overflow are two different things.
+Allowing machine stack overflow is a potential security vulnerability, but limiting recursion depth can prevent the 
+use of some algorithms in Python.
+
+Currently, if a program needs to deeply recurse it must manage the maximum recursion depth allowed,
+hopefully managing to set it in the region between the minimum needed to run correctly and the maximum that is safe
+to avoid a memory protection error.
+
+By separating the checks for C stack overflow from checks for recursion depth,
+pure Python programs can run safely, using whatever level of recursion they require.
+
+Rationale
+=========
+
+CPython currently relies on a single limit to guard against potentially dangerous stack overflow
+in the virtual machine and to guard against run away recursion in the Python program.
+
+This is a consequence of the implementation which couples the C and Python call stacks.
+By breaking this coupling, we can improve both the usability of CPython and its safety.
+
+The recursion limit exists to protect against runaway recursion, the integrity of the virtual machine should not depend on it.
+Similarly, recursion should not be limited by implementation details.
+
+Specification
+=============
+
+Two new exception classes will be added, ``StackOverflow`` and ``RecursionOverflow``, both of which will be
+sub-classes of ``RecursionError``
+
+StackOverflow exception
+-----------------------
+
+A ``StackOverflow`` exception will be raised whenever the interpreter or builtin module code
+determines that the C stack is at or nearing a limit of safety.
+``StackOverflow`` is a sub-class of ``RecursionError``,
+so any code that handles ``RecursionError`` will handle ``StackOverflow``
+
+RecursionOverflow exception
+---------------------------
+
+A ``RecursionOverflow`` exception will be raised when a call to a Python function
+causes the recursion limit to be exceeded.
+This is a slight change from current behavior which raises a ``RecursionError``.
+``RecursionOverflow`` is a sub-class of ``RecursionError``,
+so any code that handles ``RecursionError`` will continue to work as before.
+
+Decoupling the Python stack from the C stack
+--------------------------------------------
+
+In order to provide the above guarantees and ensure that any program that worked previously 
+continues to do so, the Python and C stack will need to be separated.
+That is, calls to Python functions from Python functions, should not consume space on the C stack.
+Calls to and from builtin functions will continue to consume space on the C stack.
+
+The size of the C stack will be implementation defined, and may vary from machine to machine.
+It may even differ between threads. However, there is an expectation that any code that could run
+with the recursion limit set to the previous default value, will continue to run.
+
+Many operations in Python perform some sort of call at the C level.
+Most of these will continue to consume C stack, and will result in a
+``StackOverflow`` exception if uncontrolled recursion occurs.
+
+
+Other Implementations
+---------------------
+
+Other implementations are required to fail safely regardless of what value the recursion limit is set to.
+
+If the implementation couples the Python stack to the underlying VM or hardware stack,
+then it should raise a ``RecursionOverflow`` exception when the recursion limit is exceeded, 
+but the underlying stack does not overflow.
+If the underlying stack overflows, or is near to overflow,
+then a ``StackOverflow`` exception should be raised.
+
+C-API
+-----
+
+There will be no C-API for modifying Python recursion depth.
+It will be managed internally by the interpreter.
+
+Py_CheckStackDepth()
+''''''''''''''''''''
+
+``int Py_CheckStackDepth(const char *where)``
+will return 0 if there is no immediate danger of C stack overflow.
+It will return -1 and set an exception, if the C stack is near to overflowing.
+
+
+Py_CheckStackDepthWithHeadRoom()
+''''''''''''''''''''''''''''''''
+
+``int Py_CheckStackDepthWithHeadroom(const char *where, int headroom)``
+Behaves like ``Py_CheckStackDepth(where)`` but reduces the effective stack size
+by ``headroom`` when determining the risk of C stack overflow.
+This function should be used when additional C stack will
+needed for cleanup.
+
+``Py_CheckStackDepth(where)`` is equivalent to ``Py_CheckStackDepthWithHeadRoom(where, 0)``.
+
+Unless absolutely necessary to perform complex cleanup,
+authors of extension modules are advised to use ``Py_CheckStackDepth()``
+and return immediately on failure.
+
+Py_EnterRecursiveCall()
+'''''''''''''''''''''''
+
+This will become a synonym for Py_CheckStackDepth().
+
+PyLeaveRecursiveCall()
+''''''''''''''''''''''
+
+This will have no effect.
+
+
+Backwards Compatibility
+=======================
+
+This feature is fully backwards compatibile at the Python level.
+Some low-level tools, such as machine-code debuggers, will need to be modified.
+For example, the gdb scripts for Python will need to be aware that there may be more than one Python frame
+per C frame.
+
+C code that uses the ``Py_EnterRecursiveCall()``, ``PyLeaveRecursiveCall()`` pair of 
+functions will continue to work correctly.
+
+New code should use the ``Py_CheckStackDepth()`` function.
+
+Security Implications
+=====================
+
+It will no longer be possible to crash the CPython virtual machine through recursion.
+
+Performance Impact
+==================
+
+It is unlikely that the performance impact will be signficant.
+
+The additional logic required will probably have a very small negative impact on performance.
+The improved locality of reference from reduced C stack use should have some small positive impact.
+
+It is hard to predict whether the overall effect will be positive or negative,
+but it is quite likely that the net effect will be too small to be measured.
+
+
+Implementation
+==============
+
+Notes
+-----
+
+Gauging whether a C stack overflow is imminent is difficult. So we need to be conservative.
+We need to determine a safe bounds for the stack, which is not something possible in portable C code.
+
+For major platforms, the platform specific API will be used to provide an accurate stack bounds.
+However, for minor platforms some amount of guessing may be required.
+While this might sound bad, it is no worse than the current situation, where we guess that the 
+size of the C stack is at least 1000 times the stack space required for the chain of calls from
+``_PyEval_EvalFrameDefault`` to ``_PyEval_EvalFrameDefault``. 
+
+This means that in some cases the amount of recursion possible may be reduced.
+In general, however, the amount of recursion possible should be increased, as many calls will use no C stack.
+
+Our general approach to determining a limit for the C stack is to get an address within the current C frame,
+as early as possible in the call chain. The limit can then be guessed by adding some constant to that.
+
+
+Rejected Ideas
+==============
+
+None, as yet.
+
+
+Open Issues
+===========
+
+None, as yet.
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
+
+
+
+..
+    Local Variables:
+    mode: indented-text
+    indent-tabs-mode: nil
+    sentence-end-double-space: t
+    fill-column: 70
+    coding: utf-8
+    End:
+
