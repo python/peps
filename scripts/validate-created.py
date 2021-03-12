@@ -1,14 +1,14 @@
 """
 Validates the 'Created: ' field of PEPs match %d-%b-%Y as specified in PEP 1.
 
-Requires Python 3.9+
+Requires Python 3.6+
 
 Usage: python3 validate-created.py filename1 [filename2 [...]]
 """
 import sys
 from datetime import datetime as dt
 
-COL_NUMBER = len("Created:")
+COL_NUMBER = len("Created: ")
 
 
 def validate_file(filename: str) -> int:
@@ -19,7 +19,7 @@ def validate_file(filename: str) -> int:
     with open(filename, encoding="utf8") as f:
         for line in f:
             line_number += 1
-            if line.startswith("Created:"):
+            if line.startswith("Created: "):
                 found = True
                 break
 
@@ -28,7 +28,7 @@ def validate_file(filename: str) -> int:
         print(f"{filename}: 'Created:' not found")
         return errors
 
-    date = line.removeprefix("Created:").strip()
+    date = line.split()[1]
     try:
         # Validate
         dt.strptime(date, "%d-%b-%Y")
