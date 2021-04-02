@@ -7,6 +7,8 @@ PEP2HTML=pep2html.py
 
 PYTHON=python3
 
+VENV_DIR=venv
+
 .SUFFIXES: .txt .html .rst
 
 .txt.html:
@@ -40,8 +42,8 @@ update:
 	git pull https://github.com/python/peps.git
 
 venv:
-	$(PYTHON) -m venv venv
-	./venv/bin/python -m pip install -U docutils
+	$(PYTHON) -m venv $(VENV_DIR)
+	./$(VENV_DIR)/bin/python -m pip install -U docutils
 
 package: all rss
 	mkdir -p build/peps
@@ -51,3 +53,7 @@ package: all rss
 	cp *.png build/peps/
 	cp *.rss build/peps/
 	tar -C build -czf build/peps.tar.gz peps
+
+lint:
+	pre-commit --version > /dev/null || python3 -m pip install pre-commit
+	pre-commit run --all-files
