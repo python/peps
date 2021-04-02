@@ -1,6 +1,6 @@
 PEP: editables
 Title: Editable installs for PEP-517 style build backends
-Author: Daniel Holth <dholth@fastmail.fm>
+Author: Daniel Holth <dholth@fastmail.fm>, Stéphane Bidoul <stephane.bidoul@gmail.com>
 Status: Draft
 Content-Type: text/x-rst
 Created: 30-Mar-2021
