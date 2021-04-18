@@ -1,4 +1,4 @@
-# Builds PEP files to HTML using sphinx
+# Builds PEP files to HTML using docutils or sphinx
 # Also contains testing targets
 
 PEP2HTML=pep2html.py
@@ -55,17 +55,22 @@ lint:
 	pre-commit --version > /dev/null || python3 -m pip install pre-commit
 	pre-commit run --all-files
 
+# New Sphinx targets:
+
+SPHINX_JOBS=8
+SPHINX_BUILD=$(PYTHON) build.py -j $(SPHINX_JOBS)
+
 pages: rss
-	$(PYTHON) build.py --index-file
+	$(SPHINX_BUILD) --index-file
 
 sphinx:
-	$(PYTHON) build.py
+	$(SPHINX_BUILD)
 
 fail_on_warning:
-	$(PYTHON) build.py -f
+	$(SPHINX_BUILD) --fail-on-warning
 
 check_links:
-	$(PYTHON) build.py -c
+	$(SPHINX_BUILD) --builder linkcheck
 
 sphinx_package: all rss
 	mkdir -p package/peps

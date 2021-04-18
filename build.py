@@ -11,9 +11,10 @@ def create_parser():
     # builders:
     parser.add_argument("-b", "--builder", default="html", choices=("html", "dirhtml", "linkcheck"))
 
-    # checks
+    # flags / options
     parser.add_argument("-f", "--fail-on-warning", action="store_true")
     parser.add_argument("-n", "--nitpicky", action="store_true")
+    parser.add_argument("-j", "--jobs", type=int)
 
     # extra build steps
     parser.add_argument("-i", "--index-file", action="store_true")  # for PEP 0
@@ -41,6 +42,7 @@ if __name__ == "__main__":
         buildername=args.builder,
         confoverrides=config_overrides,
         warningiserror=args.fail_on_warning,
+        parallel=args.jobs,
     )
     app.builder.copysource = False  # Prevent unneeded source copying - we link direct to GitHub
     app.build()
