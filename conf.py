@@ -13,7 +13,7 @@ master_doc = "contents"
 # -- General configuration ---------------------------------------------------
 
 # Add any Sphinx extension module names here, as strings.
-extensions = ["pep_sphinx_extensions"]
+extensions = ["pep_sphinx_extensions", "sphinx.ext.githubpages"]
 
 # The file extensions of source files. Sphinx uses these suffixes as sources.
 source_suffix = {
