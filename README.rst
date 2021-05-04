@@ -28,7 +28,7 @@ processing and installation script knows how to produce the HTML
 for either PEP format.
 
 For processing reStructuredText format PEPs, you need the docutils
-package, which is available from `PyPI <https://pypi.python.org>`_.
+package, which is available from `PyPI <https://pypi.org/>`_.
 If you have pip, ``pip install docutils`` should install it.
 
 
