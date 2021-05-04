@@ -5,7 +5,7 @@ Python Enhancement Proposals
     :target: https://travis-ci.org/python/peps
 
 The PEPs in this repo are published automatically on the web at
-http://www.python.org/dev/peps/.  To learn more about the purpose of
+https://www.python.org/dev/peps/.  To learn more about the purpose of
 PEPs and how to go about writing a PEP, please start reading at PEP 1
 (``pep-0001.txt`` in this repo).  Note that PEP 0, the index PEP, is
 now automatically generated, and not committed to the repo.
@@ -28,7 +28,7 @@ processing and installation script knows how to produce the HTML
 for either PEP format.
 
 For processing reStructuredText format PEPs, you need the docutils
-package, which is available from `PyPI <http://pypi.python.org>`_.
+package, which is available from `PyPI <https://pypi.org/>`_.
 If you have pip, ``pip install docutils`` should install it.
 
 
