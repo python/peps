@@ -23,14 +23,11 @@ def create_parser():
     return parser.parse_args()
 
 
-def create_index_file(html_content: Path):
-    pep_zero_html = html_content / "pep-0000.html"
-    pep_zero_dir = html_content / "pep-0000" / "index.html"
-
-    if pep_zero_html.is_file():
-        shutil.copy(pep_zero_html, html_content / "index.html")
-    elif pep_zero_dir.is_file():
-        shutil.copy(pep_zero_dir, html_content / "index.html")
+def create_index_file(html_root: Path):
+    """Copies PEP 0 to the root index.html so that /peps/ works."""
+    pep_zero_path = html_root / "pep-0000" / "index.html"
+    if pep_zero_path.is_file():
+        shutil.copy(pep_zero_path, html_root / "index.html")
 
 
 if __name__ == "__main__":
