@@ -71,12 +71,3 @@ fail_on_warning:
 
 check_links:
 	$(SPHINX_BUILD) --builder linkcheck
-
-sphinx_package: all rss
-	mkdir -p package/peps
-	$(PYTHON) package.py
-	cp pep-*.txt build/peps/
-	cp pep-*.rst build/peps/
-	cp *.png build/peps/
-	cp *.rss package/peps
-	tar -C package -czf package/peps.tar.gz peps
