@@ -70,4 +70,4 @@ fail_on_warning:
 	$(SPHINX_BUILD) --fail-on-warning
 
 check_links:
-	$(SPHINX_BUILD) --builder linkcheck
+	$(SPHINX_BUILD) --check-links

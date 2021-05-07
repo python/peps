@@ -8,8 +8,8 @@ from sphinx.application import Sphinx
 
 def create_parser():
     parser = argparse.ArgumentParser(description="Build PEP documents")
-    # builders:
-    parser.add_argument("-b", "--builder", default="html", choices=("html", "dirhtml", "linkcheck"))
+    # alternative builders:
+    parser.add_argument("-l", "--check-links", action="store_true")
 
     # flags / options
     parser.add_argument("-f", "--fail-on-warning", action="store_true")
@@ -30,6 +30,12 @@ if __name__ == "__main__":
     build_directory = root_directory / "build"  # synchronise with deploy-gh-pages.yaml -> deploy step
     doctree_directory = build_directory / ".doctrees"
 
+    # builder configuration
+    sphinx_builder = "dirhtml"
+    if args.check_links:
+        sphinx_builder = "linkcheck"
+
+    # other configuration
     config_overrides = {}
     if args.nitpicky:
         config_overrides["nitpicky"] = True
@@ -39,7 +45,7 @@ if __name__ == "__main__":
         confdir=source_directory,
         outdir=build_directory,
         doctreedir=doctree_directory,
-        buildername=args.builder,
+        buildername=sphinx_builder,
         confoverrides=config_overrides,
         warningiserror=args.fail_on_warning,
         parallel=args.jobs,
