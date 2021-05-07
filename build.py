@@ -67,6 +67,7 @@ if __name__ == "__main__":
         parallel=args.jobs,
     )
     app.builder.copysource = False  # Prevent unneeded source copying - we link direct to GitHub
+    app.builder.search = False  # Disable search
     app.build()
     
     if args.index_file:
