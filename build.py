@@ -27,7 +27,7 @@ if __name__ == "__main__":
 
     root_directory = Path(".").absolute()
     source_directory = root_directory
-    build_directory = root_directory / "build"
+    build_directory = root_directory / "build"  # synchronise with deploy-gh-pages.yaml -> deploy step
     doctree_directory = build_directory / ".doctrees"
 
     config_overrides = {}
