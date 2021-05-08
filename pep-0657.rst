@@ -1,0 +1,405 @@
+PEP: 657
+Title: Include Fine Grained Error Locations in Tracebacks
+Version: $Revision$
+Last-Modified: $Date$
+Author: Pablo Galindo <pablogsal@python.org>,
+        Batuhan Taskaya <batuhan@python.org>,
+        Ammar Askar <ammar@ammaraskar.com>
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 08-May-2021
+Python-Version: 3.11
+Post-History:
+
+Abstract
+========
+
+This PEP proposes adding a mapping from each bytecode instruction to the start
+and end column offsets of the line that generated them. This data will be used
+to improve tracebacks displayed by the CPython interpreter in order to improve
+the debugging experience. The PEP also proposes adding APIs that allow other
+tools (such as coverage analysis tools, profilers, tracers, debuggers) to
+consume this information from code objects.
+
+Motivation
+==========
+
+The primary motivation for this PEP is to improve the feedback presented about the location of errors to aid with debugging.
+
+Python currently keeps a mapping of bytecode to line numbers from compilation.
+The interpreter uses this mapping to point to the source line associated with
+an error. While this line-level granularity for instructions is useful, a
+single line of Python code can compile into dozens of bytecode operations
+making it hard to track which part of the line caused the error.
+
+Consider the following line of Python code::
+
+    x['a']['b']['c']['d'] = 1
+
+If any of the values in the dictionaries are ``None``, the error shown is::
+
+    Traceback (most recent call last):
+      File "test.py", line 2, in <module>
+        x['a']['b']['c']['d'] = 1
+    TypeError: 'NoneType' object is not subscriptable
+
+From the traceback, it is impossible to determine which one of the dictionaries
+had the ``None`` element that caused the error. Users often have to attach a
+debugger or split up their expression to track down the problem.
+
+However, if the interpreter had a mapping of bytecode to column offsets as well
+as line numbers, it could helpfully display::
+
+    Traceback (most recent call last):
+      File "test.py", line 2, in <module>
+        x['a']['b']['c']['d'] = 1
+        ^^^^^^^^^^^^^^^^
+    TypeError: 'NoneType' object is not subscriptable
+
+indicating to the user that the object ``x['a']['b']`` must have been ``None``.
+This highlighting will occur for every frame in the traceback. For instance, if
+a similar error is part of a complex function call chain, the traceback would
+display the code associated to the current instruction in every frame::
+
+    Traceback (most recent call last):
+      File "test.py", line 14, in <module>
+        lel3(x)
+        ^^^^^^^
+      File "test.py", line 12, in lel3
+        return lel2(x) / 23
+               ^^^^^^^
+      File "test.py", line 9, in lel2
+        return 25 + lel(x) + lel(x)
+                    ^^^^^^
+      File "test.py", line 6, in lel
+        return 1 + foo(a,b,c=x['z']['x']['y']['z']['y'], d=e)
+                             ^^^^^^^^^^^^^^^^^^^^^
+    TypeError: 'NoneType' object is not subscriptable
+
+This problem presents itself in the following situations.
+
+* When passing down multiple objects to function calls while
+  accessing the same attribute in them.
+  For instance, this error::
+
+    Traceback (most recent call last):
+      File "test.py", line 19, in <module>
+        foo(a.name, b.name, c.name)
+    AttributeError: 'NoneType' object has no attribute 'name'
+
+  With the improvements in this PEP this would show::
+
+    Traceback (most recent call last):
+      File "test.py", line 17, in <module>
+        foo(a.name, b.name, c.name)
+                    ^^^^^^
+    AttributeError: 'NoneType' object has no attribute 'name'
+
+* When dealing with lines with complex mathematical expressions,
+  especially with libraries such as numpy where arithmetic
+  operations can fail based on the arguments. For example: ::
+
+    Traceback (most recent call last):
+      File "test.py", line 1, in <module>
+        x = (a + b) @ (c + d)
+      ValueError: operands could not be broadcast together with shapes (1,2) (2,3)
+
+  There is no clear indication as to which operation failed, was it the addition
+  on the left, the right or the matrix multiplication in the middle? With this
+  PEP the new error message would look like::
+
+    Traceback (most recent call last):
+      File "test.py", line 1, in <module>
+        x = (a + b) @ (c + d)
+                       ^^^^^
+      ValueError: operands could not be broadcast together with shapes (1,2) (2,3)
+
+  Giving a much clearer and easier to debug error message.
+
+
+Debugging aside, this extra information would also be useful for code
+coverage tools, enabling them to measure expression-level coverage instead of
+just line-level coverage. For instance, given the following line: ::
+
+    x = foo() if bar() else baz()
+
+coverage, profile or state analysis tools will highlight the full line in both
+branches, making it impossible to differentiate what branch was taken. This is
+a known problem in pycoverage_.
+
+Similar efforts to this PEP have taken place in other languages such as Java in
+the form of JEP358_. ``NullPointerExceptions`` in Java were similarly nebulous when
+it came to lines with complicated expressions. A ``NullPointerException`` would
+provide very little aid in finding the root cause of an error. The
+implementation for JEP358 is fairly complex, requiring walking back through the
+bytecode by using a control flow graph analyzer and decompilation techniques to
+recover the source code that led to the null pointer. Although the complexity
+of this solution is high and requires maintenance for the decompiler every time
+Java bytecode is changed, this improvement was deemed to be worth it for the
+extra information provided for *just one exception type*.
+
+
+Rationale
+=========
+
+In order to identify the range of source code being executed when exceptions
+are raised, this proposal requires adding new data for every bytecode
+instruction. This will have an impact on the size of ``pyc`` files on disk and
+the size of code objects in memory. The authors of this proposal have chosen
+the data types in a way that tries to minimize this impact. The proposed
+overhead is storing two ``uint8_t`` (one for the start offset and one for the
+end offset) for every bytecode instruction.
+
+As an illustrative example to gauge the impact of this change, we have
+calculated that this change will increase the size of the standard library’s
+pyc files by 22% (6MB) from 70MB to 76MB. The overhead in memory usage will be
+the same (assuming the *full standard library* is loaded into the same
+program). We believe that this is a very acceptable number since the order of
+magnitude of the overhead is very small, especially considering the storage
+size and memory capabilities of modern computers. Additionally, in general the
+memory size of a Python program is not dominated by code objects. To check this
+assumption we have executed the test suite of several popular PyPI projects
+(including NumPy, pytest, Django and Cython) as well as several applications
+(Black, pylint, mypy executed over either mypy or the standard library) and we
+found that code objects represent normally 3-6% of the average memory size of
+the program.
+
+We understand that the extra cost of this information may not be acceptable for
+some users, so we propose an opt-out mechanism when Python is executed in
+optimized mode (``python -O``), which will cause pyo files to not include the
+extra information.
+
+
+Specification
+=============
+
+In order to have enough information to correctly resolve the location within a
+given line where an error was raised, a map linking bytecode instructions and
+column offsets (start and end offset) is needed. This is similar in fashion to
+how line numbers are currently linked to bytecode instructions.
+
+The following changes will be performed as part of the implementation of this PEP:
+
+* The offset information will be exposed to Python via a new attribute in the
+  code object class called ``co_col_offsets`` that will return a sequence of
+  two-element tuples (containing the start offsets and end offsets) or None if
+  the code object was created without the offset information. 
+* Two new C-API functions, ``PyCode_Addr2StartOffset`` and
+  ``PyCode_Addr2EndOffset`` will be added that can obtain the start and end
+  offsets respectively given the index of a bytecode instruction. These
+  functions will return 0 if the offset information is not available. 
+* A new private (underscore prefixed) C-API constructor for code objects will
+  be added that takes a bytes object containing the start offsets in the even
+  position and the end offsets in the odd positions. Old constructors will be
+  left untouched for backwards compatibility and will create code objects
+  without the new field.
+
+Offset semantics
+^^^^^^^^^^^^^^^^
+
+These offsets are propagated by the compiler from the ones stored currently in
+all AST nodes. They are 1-indexed and a value of 0 will mean that the
+information is not available. Although the AST nodes use ``int`` types to store
+these values, ``uint8_t`` types will be used for storage in the new map to
+minimize storage impact. This decision allows offsets to go from 0 to 255,
+while offsets bigger than these values will be treated as missing (value of 0).
+We believe this is an acceptable compromise as line lengths in Python tend to
+be much lower than this limit (a query of the top 100 packages in PyPI shows
+that less than 0.01% of lines were longer than 255 characters).
+
+Maintaining the current behavior, only a single line will be displayed in
+tracebacks. For instructions that span multiple lines (the end offset and the
+start offset belong to different lines), the end offset will be set to 0
+(meaning it is unavailable). If the start offset is not 0, this will be
+interpreted by the displaying code as if the range spans from the starting
+offset to the end of the line. The actual end offset cannot be calculated at
+compile time since the compiler does not know how many characters “the end of
+the line” actually represents.
+
+Displaying tracebacks
+^^^^^^^^^^^^^^^^^^^^^
+
+When displaying tracebacks, the default exception hook will be modified to
+query this information from the code objects and use it to display a sequence
+of carets for every displayed line in the traceback if the information is
+available. For instance::
+
+      File "test.py", line 6, in lel
+        return 1 + foo(a,b,c=x['z']['x']['y']['z']['y'], d=e)
+                             ^^^^^^^^^^^^^^^^^^^^^
+    TypeError: 'NoneType' object is not subscriptable
+
+When displaying tracebacks, instruction offsets will be taken from the
+traceback objects. This makes highlighting exceptions that are re-raised work
+naturally without the need to store the new information in the stack. For
+example, for this code::
+
+    def foo(x):
+        1 + 1/0 + 2
+
+    def bar(x):
+        try:
+            1 + foo(x) + foo(x)
+        except Exception as e:
+            raise ValueError("oh no!") from e
+
+    bar(bar(bar(2)))
+
+The printed traceback would look like this::
+
+    Traceback (most recent call last):
+      File "test.py", line 6, in bar
+        1 + foo(x) + foo(x)
+            ^^^^^^
+      File "test.py", line 2, in foo
+        1 + 1/0 + 2
+            ^^^
+    ZeroDivisionError: division by zero
+
+    The above exception was the direct cause of the following exception:
+
+    Traceback (most recent call last):
+      File "test.py", line 10, in <module>
+        bar(bar(bar(2)))
+                ^^^^^^
+      File "test.py", line 8, in bar
+        raise ValueError("oh no!") from e
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ValueError: oh no
+
+While this code::
+
+    def foo(x):
+        1 + 1/0 + 2
+    def bar(x):
+        try:
+            1 + foo(x) + foo(x)
+        except Exception:
+            raise
+    bar(bar(bar(2)))
+
+Will be displayed as::
+
+    Traceback (most recent call last):
+      File "test.py", line 10, in <module>
+        bar(bar(bar(2)))
+                ^^^^^^
+      File "test.py", line 6, in bar
+        1 + foo(x) + foo(x)
+            ^^^^^^
+      File "test.py", line 2, in foo
+        1 + 1/0 + 2
+            ^^^
+    ZeroDivisionError: division by zero
+
+
+Opt-out mechanism
+^^^^^^^^^^^^^^^^^
+
+To offer an opt-out mechanism for those users that care about the storage and
+memory overhead, the functionality will be deactivated along with the extra
+information when Python is executed in optimized mode (``python -O``) resulting
+in ``pyo`` files not having the overhead associated with the extra required
+data.
+
+To allow third party tools and other programs that are currently parsing
+tracebacks to catch up and to allow users to deactivate the new feature, the
+following methods will be provided to deactivate displaying the new highlight
+carets (but not to avoid to storing the data, users will need to use Python in
+optimized mode for that):
+
+* A new environment variable: ``PY_DEACTIVATE_TRACEBACK_RANGES``
+* A new command line option for the dev mode: ``python -Xnotracebackranges``.
+
+These flags will be removed in the next version of the Python interpreter
+(counting from the version that releases this feature).
+
+Backwards Compatibility
+=======================
+
+The change is fully backwards compatible.
+
+
+Reference Implementation
+========================
+
+A reference implementation can be found in the implementation_ fork.
+
+Rejected Ideas
+==============
+
+Include end line number
+^^^^^^^^^^^^^^^^^^^^^^^
+Some instructions can span across multiple lines and therefore the end offset
+and the start offset can be located in two different lines. We have decided to
+set the value for the start offset to the correct value and set a value of 0 to
+the end offset. This will result in highlighting the entire line starting from
+the value of the starting offset. The reason behind this decision is that
+storing the end line will require us to store another field similar to
+``co_lnotab``, but our traceback machinery only highlights a single line
+per frame so this information would only be used to decide to highlight to the
+end of the line. On the other hand, the end line could be useful for other
+tools such as coverage-measuring tools and tracers.
+
+Have a configure flag to opt out
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Having a configure flag to opt out of the overhead even when executing Python
+in non-optimized mode may sound desirable, but it may cause problems when
+reading pyc files that were created with a version of the interpreter that was
+not compiled with the flag activated. This can lead to crashes that would be
+very difficult to debug for regular users and will make different pyc files
+incompatible between each other. As this pyc could be shipped as part of
+libraries or applications without the original source, it is also not always
+possible to force recompilation of said pyc files. For these reasons we have
+decided to use the -O flag to opt-out of this behaviour. 
+
+Lazy loading of column information
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+One potential solution to reduce the memory usage of this feature is to not
+load the column information from the pyc file when code is imported. Only if an
+uncaught exception bubbles up or if a call to the C-API functions is made will
+the column information be loaded from the pyc file. This is similar to how we
+only read source lines to display them in the traceback when an exception
+bubbles up. While this would indeed lower memory usage, it also results in a
+far more complex implementation requiring changes to the importing machinery to
+selectively ignore a part of the code object. We consider this an interesting
+avenue to explore but ultimately we think is out of the scope for this particular
+PEP. It also means that column information will not be available if the user is
+not using pyc files or for code objects created dynamically at runtime.
+
+Implement compression
+^^^^^^^^^^^^^^^^^^^^^
+Although it would be possible to implement some form of compression over the
+pyc files and the new data in code objects, we believe that this is out of the
+scope of this proposal due to its larger impact (in the case of pyc files) and
+the fact that we expect column offsets to not compress well due to the lack of
+patterns in them (in case of the new data in code objects).
+
+Acknowledgments
+===============
+Thanks to Carl Friedrich Bolz-Tereick for showing an initial prototype of this
+idea for the Pypy interpreter and for the helpful discussion.
+
+
+References
+==========
+
+.. _JEP358: https://openjdk.java.net/jeps/358
+.. _implementation: https://github.com/colnotab/cpython/tree/bpo-43950
+.. _pycoverage: https://github.com/nedbat/coveragepy/issues/509
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   coding: utf-8
+   End:
