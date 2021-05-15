@@ -45,8 +45,8 @@ Checking PEP formatting and rendering
 
 Do not commit changes with bad formatting.  To check the formatting of
 a PEP, use the Makefile.  In particular, to generate HTML for PEP 999,
-your source code should be in ``pep-0999.rst`` and the HTML will be
-generated to ``pep-0999.html`` by the command ``make pep-0999.html``.
+your source code should be in ``pep-9999.rst`` and the HTML will be
+generated to ``pep-9999.html`` by the command ``make pep-9999.html``.
 The default Make target generates HTML for all PEPs.
 
 If you don't have Make, use the ``pep2html.py`` script directly.
