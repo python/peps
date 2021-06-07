@@ -1,0 +1,81 @@
+import
+requests
+username 
+= 
+'bigguy573'
+token 
+= 
+'4e0485a4216e30fafbcbb67c6c1c6e8eacc9a344'
+
+response 
+= 
+requests
+.
+get
+(
+    'https://www.pythonanywhere.com/api/v0/user/{username}/cpu/'.format(
+        username
+      =
+      username
+    )
+,
+    headers
+  =
+  {
+    'Authorization': 
+    'Token {token}'
+    .format(
+      token
+      =
+      token
+    )
+  }
+)
+if 
+response
+.
+status
+_
+code
+=
+=
+200
+:
+    print
+    (
+      'CPU quota info:'
+    )
+    print
+    (
+      response
+      .
+      content
+    )
+else
+:
+    print
+    (
+      'Got unexpected status code 
+      {
+      }
+      :
+      {
+        !
+        r
+      }
+      '
+      .
+      format
+      (
+        response
+        .
+        status
+        _
+        code
+        ,
+        response
+        .
+        content
+      )
+    )
+                        
