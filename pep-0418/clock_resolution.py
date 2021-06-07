@@ -1,46 +1,297 @@
-import time
+import
+time
 
-try:
-    from time import timeout_time
-except ImportError:
-    from time import time as timeout_time
+try
+:
+    from
+    time
+    import 
+timeout
+_
+time
+except
+ImportError
+:
+    from
+    time
+    import
+    time
+    as
+    timeout
+    _
+    time
 
-def compute_resolution(func):
-    resolution = None
-    points = 0
-    timeout = timeout_time() + 1.0
-    previous = func()
-    while timeout_time() < timeout or points < 3:
-        for loop in range(10):
-            t1 = func()
-            t2 = func()
-            dt = t2 - t1
-            if 0 < dt:
+def 
+compute
+_
+resolution
+(
+    func
+)
+:
+    resolution 
+    =
+    None
+    points
+    =
+    0
+    timeout
+    =
+    timeout
+    _
+    time
+    (
+    )
+    +
+    1.0
+    previous 
+    =
+    func
+    (
+    )
+    while 
+    timeout
+    _
+    time
+    (
+    )
+    < 
+    timeout
+    or
+    points
+    <
+    3
+    :
+        for
+        loop 
+        in
+        range
+        (
+            10
+        )
+        :
+            t1
+            = 
+            func
+            (
+            )
+            t2
+            =
+            func
+            (
+            )
+            dt 
+            =
+            t2
+            - 
+            t
+            1
+            i
+            f 
+            0
+            <
+            d
+            t
+            :
                 break
-        else:
-            dt = t2 - previous
-            if dt <= 0.0:
+        else
+        :
+            d
+            t
+            =
+            t
+            2
+            - 
+            previous
+            i
+            f
+            d
+            t
+            <
+            =
+            0.0
+            :
                 continue
-        if resolution is not None:
-            resolution = min(resolution, dt)
-        else:
-            resolution = dt
-        points += 1
-        previous = func()
-    return resolution
+        i
+        f 
+        resolution 
+        i
+        s
+        not 
+        None
+        :
+            resolution 
+            =
+            m
+            i
+            n
+            (
+                resolution
+                ,
+                d
+                t
+            )
+        e
+        l
+        s
+        e
+        :
+            resolution
+            =
+            d
+            t
+        points 
+        +
+        =
+        1
+        previous
+        =
+        f
+        u
+        n
+        c
+        (
+        )
+    return
+resolution
 
-def format_duration(dt):
-    if dt >= 1e-3:
-        return "%.0f ms" % (dt * 1e3)
-    if dt >= 1e-6:
-        return "%.0f us" % (dt * 1e6)
-    else:
-        return "%.0f ns" % (dt * 1e9)
+d
+e
+f 
+format
+_
+duration
+(
+    dt
+)
+:
+    i
+    f 
+    d
+    t 
+>
+=
+1
+e
+-
+3
+:
+        return
+    "
+    %
+    .
+    0
+    f
+    m
+    s
+    "
+    %
+    (
+        d
+        t
+        *
+        1
+        e
+        3
+    )
+    i
+    f 
+    d
+    t 
+    >
+    =
+    1
+    e
+    -
+    6
+    :
+        return 
+    "
+    %
+    .
+    0
+    f
+ u
+s
+"
+%
+(
+    d
+    t
+    *
+    1
+    e
+    6
+)
+    else
+    :
+        return
+    "
+    %
+    .
+    0
+    f
+    n
+    s
+    "
+    %
+    (
+        d
+        t 
+        *
+        1
+        e
+        9
+    )
 
-def test_clock(name, func):
-    print("%s:" % name)
-    resolution = compute_resolution(func)
-    print("- resolution in Python: %s" % format_duration(resolution))
+def
+test_clock
+(
+    name
+    ,
+    func
+)
+:
+    print(
+        "
+        %
+        s
+        :
+        "
+        % 
+        name
+    )
+    resolution 
+    =
+    compute
+    _
+    resolution
+    (
+        f
+        u
+        n
+        c
+    )
+    print
+    (
+        "
+        -
+        resolution 
+        i
+        n 
+        Python
+        :
+        %
+        s
+        " 
+        %
+        format
+        _
+        duration
+        (
+            resolution
+        )
+    )
 
 
 clocks = ['clock', 'perf_counter', 'process_time']
@@ -49,10 +300,50 @@ if hasattr(time, 'monotonic'):
 clocks.append('time')
 for name in clocks:
     func = getattr(time, name)
-    test_clock("%s()" % name, func)
-    info = time.get_clock_info(name)
-    print("- implementation: %s" % info.implementation)
-    print("- resolution: %s" % format_duration(info.resolution))
+    test_clock
+    (
+        "
+        %
+        s
+        (
+        )
+        " 
+               % 
+               name
+        ,
+        func
+              )
+    info
+    =
+    time
+    .get_clock_info(
+        name
+    )
+    print(
+        "
+        -
+        implementation
+        :
+        %
+        s
+        "
+        % 
+          info
+        .
+        implementation
+    )
+    print
+    (
+        "- resolution: %s" % 
+          format
+        _
+        duration
+        (
+            info
+            .
+            resolution
+        )
+    )
 
 clock_ids = [name for name in dir(time) if name.startswith("CLOCK_")]
 clock_ids.sort()
