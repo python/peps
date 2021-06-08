@@ -1,7 +1,5 @@
-# Rules to only make the required HTML versions, not all of them,
-# without the user having to keep track of which.
-#
-# Not really important, but convenient.
+# Builds PEP files to HTML using docutils or sphinx
+# Also contains testing targets
 
 PEP2HTML=pep2html.py
 
@@ -34,7 +32,6 @@ install:
 
 clean:
 	-rm pep-0000.rst
-	-rm pep-0000.txt
 	-rm *.html
 	-rm -rf build
 
@@ -43,7 +40,7 @@ update:
 
 venv:
 	$(PYTHON) -m venv $(VENV_DIR)
-	./$(VENV_DIR)/bin/python -m pip install -U docutils
+	./$(VENV_DIR)/bin/python -m pip install -r requirements.txt
 
 package: all rss
 	mkdir -p build/peps
@@ -57,3 +54,20 @@ package: all rss
 lint:
 	pre-commit --version > /dev/null || python3 -m pip install pre-commit
 	pre-commit run --all-files
+
+# New Sphinx targets:
+
+SPHINX_JOBS=8
+SPHINX_BUILD=$(PYTHON) build.py -j $(SPHINX_JOBS)
+
+pages: rss
+	$(SPHINX_BUILD) --index-file
+
+sphinx:
+	$(SPHINX_BUILD)
+
+fail_on_warning:
+	$(SPHINX_BUILD) --fail-on-warning
+
+check_links:
+	$(SPHINX_BUILD) --check-links
