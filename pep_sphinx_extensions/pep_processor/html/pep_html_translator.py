@@ -29,7 +29,11 @@ class PEPTranslator(html5.HTML5Translator):
 
         # Check for custom attributes in paragraph.
         for key, value in node.non_default_attributes().items():
-            if key != "classes" or not set(value) <= {"first", "last"}:
+            # if key equals "classes", carry on
+            # if value is empty, or contains only "first", only "last", or both
+            # "first" and "last", carry on
+            # else return False
+            if any((key != "classes", not set(value) <= {"first", "last"})):
                 return False
 
         # Only first paragraph can be compact (ignoring initial label & invisible nodes)
