@@ -15,6 +15,8 @@ if TYPE_CHECKING:
     from sphinx.application import Sphinx
 
 # Monkeypatch sphinx.environment.default_settings as Sphinx doesn't allow custom settings or Readers
+# These settings should go in docutils.conf, but are overridden here for now so as not to affect
+# pep2html.py
 default_settings |= {
     "pep_references": True,
     "rfc_references": True,
