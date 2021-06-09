@@ -1,15 +1,14 @@
 """Holds type and status constants for PEP 0 generation."""
 
 STATUS_ACCEPTED = "Accepted"
+STATUS_ACTIVE = "Active"
+STATUS_DEFERRED = "Deferred"
+STATUS_DRAFT = "Draft"
+STATUS_FINAL = "Final"
 STATUS_PROVISIONAL = "Provisional"
 STATUS_REJECTED = "Rejected"
-STATUS_WITHDRAWN = "Withdrawn"
-STATUS_DEFERRED = "Deferred"
-STATUS_FINAL = "Final"
-STATUS_ACTIVE = "Active"
-STATUS_DRAFT = "Draft"
 STATUS_SUPERSEDED = "Superseded"
-STATUS_INCOMPLETE = "Incomplete"
+STATUS_WITHDRAWN = "Withdrawn"
 
 # Valid values for the Status header.
 STATUS_VALUES = {
@@ -23,11 +22,11 @@ SPECIAL_STATUSES = {
 # Draft PEPs have no status displayed, Active shares a key with Accepted
 HIDE_STATUS = {STATUS_DRAFT, STATUS_ACTIVE}
 # Dead PEP statuses
-DEAD_STATUSES = {STATUS_REJECTED, STATUS_WITHDRAWN, STATUS_INCOMPLETE, STATUS_SUPERSEDED}
+DEAD_STATUSES = {STATUS_REJECTED, STATUS_WITHDRAWN, STATUS_SUPERSEDED}
 
-TYPE_STANDARDS = "Standards Track"
 TYPE_INFO = "Informational"
 TYPE_PROCESS = "Process"
+TYPE_STANDARDS = "Standards Track"
 
 # Valid values for the Type header.
 TYPE_VALUES = {TYPE_STANDARDS, TYPE_INFO, TYPE_PROCESS}
