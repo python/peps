@@ -9,18 +9,7 @@ import textwrap
 from typing import NamedTuple
 import unicodedata
 
-
-class PEPError(Exception):
-    def __init__(self, error: str, pep_file: Path, pep_number: int | None = None):
-        super().__init__(error)
-        self.filename = pep_file
-        self.number = pep_number
-
-    def __str__(self):
-        error_msg = super(PEPError, self).__str__()
-        error_msg = f"({self.filename}): {error_msg}"
-        pep_str = f"PEP {self.number}"
-        return f"{pep_str} {error_msg}" if self.number is not None else error_msg
+from pep_sphinx_extensions.pep_zero_generator.pep_0_errors import PEPError
 
 
 class Name(NamedTuple):

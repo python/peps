@@ -4,6 +4,7 @@ import datetime
 import functools
 
 from pep_sphinx_extensions.pep_zero_generator import pep_0_parser
+from pep_sphinx_extensions.pep_zero_generator.pep_0_errors import PEPError
 
 title_length = 55
 author_length = 40
@@ -126,7 +127,7 @@ class PEPZeroWriter:
             elif pep.status == "Final":
                 finished.append(pep)
             else:
-                raise pep_0_parser.PEPError(f"unsorted ({pep.pep_type}/{pep.status})", pep.filename, pep.number)
+                raise PEPError(f"unsorted ({pep.pep_type}/{pep.status})", pep.filename, pep.number)
         return meta, info, provisional, accepted, open_, finished, historical, deferred, dead
 
     @staticmethod
