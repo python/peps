@@ -199,7 +199,7 @@ class PEP:
         # Parse the headers.
         pep_text = filename.read_text("UTF8")
         metadata = HeaderParser().parsestr(pep_text)
-        required_header_misses = self.required_headers - set(metadata.keys())
+        required_header_misses = PEP.required_headers - set(metadata.keys())
         if required_header_misses:
             msg = f"PEP is missing required headers ({', '.join(required_header_misses)})"
             self.raise_pep_error(msg)
@@ -218,14 +218,14 @@ class PEP:
 
         # Type
         self.pep_type: str = metadata["Type"]
-        if self.pep_type not in self.type_values:
+        if self.pep_type not in PEP.type_values:
             self.raise_pep_error(f"{self.pep_type} is not a valid Type value", pep_num=True)
 
         # Status
         status = metadata["Status"]
-        if status in self.special_statuses:
-            status = self.special_statuses[status]
-        if status not in self.status_values:
+        if status in PEP.special_statuses:
+            status = PEP.special_statuses[status]
+        if status not in PEP.status_values:
             self.raise_pep_error(f"{status} is not a valid Status value", pep_num=True)
 
         # Special case for Active PEPs.
