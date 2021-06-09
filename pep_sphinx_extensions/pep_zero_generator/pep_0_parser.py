@@ -182,6 +182,7 @@ class PEP:
         "April Fool!": STATUS_REJECTED,  # See PEP 401 :)
     }
     active_allowed = {TYPE_PROCESS, TYPE_INFO}
+    hide_status = {STATUS_DRAFT, STATUS_ACTIVE}
 
     def raise_pep_error(self, msg: str, pep_num: bool = False) -> None:
         pep_number = self.number if pep_num else None
@@ -229,12 +230,12 @@ class PEP:
             self.raise_pep_error(f"{status} is not a valid Status value", pep_num=True)
 
         # Special case for Active PEPs.
-        if status == "Active" and self.pep_type not in {"Process", "Informational"}:
+        if status == STATUS_ACTIVE and self.pep_type not in PEP.active_allowed:
             msg = "Only Process and Informational PEPs may have an Active status"
             self.raise_pep_error(msg, pep_num=True)
 
         # Special case for Provisional PEPs.
-        if status == "Provisional" and self.pep_type != "Standards Track":
+        if status == STATUS_PROVISIONAL and self.pep_type != TYPE_STANDARDS:
             msg = "Only Standards Track PEPs may have a Provisional status"
             self.raise_pep_error(msg, pep_num=True)
         self.status: str = status
@@ -299,7 +300,7 @@ class PEP:
             "number": self.number,
             "title": self.title_abbr,
             # how the status should be represented in the index
-            "status": self.status[0].upper() if self.status not in {"Draft", "Active"} else " ",
+            "status": self.status[0].upper() if self.status not in PEP.hide_status else " ",
             # the author list as a comma-separated with only last names
             "authors": ", ".join(x.nick for x in self.authors),
         }
