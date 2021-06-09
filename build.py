@@ -14,7 +14,7 @@ def create_parser():
     # flags / options
     parser.add_argument("-f", "--fail-on-warning", action="store_true")
     parser.add_argument("-n", "--nitpicky", action="store_true")
-    parser.add_argument("-j", "--jobs", type=int)
+    parser.add_argument("-j", "--jobs", type=int, default=1)
 
     # extra build steps
     parser.add_argument("-i", "--index-file", action="store_true")  # for PEP 0
