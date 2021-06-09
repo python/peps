@@ -42,7 +42,7 @@ class Author:
     """
     __slots__ = "last_first", "nick", "email", "_first_last"
 
-    def __init__(self, author_email_tuple: tuple[str, str], authors_exceptions: dict[str, dict[str, str]]):
+    def __init__(self, author_email_tuple: tuple[str, str], authors_overrides: dict[str, dict[str, str]]):
         """Parse the name and email address of an author."""
         name, email = author_email_tuple
         self._first_last: str = name.strip()
@@ -51,8 +51,8 @@ class Author:
         self.last_first: str = ""
         self.nick: str = ""
 
-        if self._first_last in authors_exceptions:
-            name_dict = authors_exceptions[self._first_last]
+        if self._first_last in authors_overrides:
+            name_dict = authors_overrides[self._first_last]
             self.last_first = name_dict["Surname First"]
             self.nick = name_dict["Name Reference"]
         else:
@@ -188,7 +188,7 @@ class PEP:
         pep_number = self.number if pep_num else None
         raise PEPError(msg, self.filename, pep_number=pep_number)
 
-    def __init__(self, filename: Path, author_lookup: dict, title_length: int):
+    def __init__(self, filename: Path, authors_overrides: dict, title_length: int):
         """Init object from an open PEP file object.
 
         pep_file is full text of the PEP file, filename is path of the PEP file, author_lookup is author exceptions file
@@ -241,14 +241,14 @@ class PEP:
         self.status: str = status
 
         # Parse PEP authors
-        self.authors: list[Author] = self.parse_authors(metadata["Author"], author_lookup)
+        self.authors: list[Author] = self.parse_authors(metadata["Author"], authors_overrides)
 
-    def parse_authors(self, author_header: str, author_lookup: dict) -> list[Author]:
+    def parse_authors(self, author_header: str, authors_overrides: dict) -> list[Author]:
         """Parse Author header line"""
         authors_and_emails = self._parse_author(author_header)
         if not authors_and_emails:
             raise self.raise_pep_error("no authors found", pep_num=True)
-        return [Author(author_tuple, author_lookup) for author_tuple in authors_and_emails]
+        return [Author(author_tuple, authors_overrides) for author_tuple in authors_and_emails]
 
     angled = re.compile(r"(?P<author>.+?) <(?P<email>.+?)>(,\s*)?")
     paren = re.compile(r"(?P<email>.+?) \((?P<author>.+?)\)(,\s*)?")

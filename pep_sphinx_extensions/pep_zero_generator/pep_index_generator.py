@@ -43,10 +43,10 @@ def create_pep_zero(_: Sphinx, env: BuildEnvironment, docnames: list[str]) -> No
 
     # AUTHOR_OVERRIDES.csv is an exception file for PEP0 name parsing
     with open("AUTHOR_OVERRIDES.csv", "r", encoding="utf-8") as f:
-        author_exception_data = {}
+        authors_overrides = {}
         for line in csv.DictReader(f):
             full_name = line.pop("Overridden Name")
-            author_exception_data[full_name] = line
+            authors_overrides[full_name] = line
 
     for file_path in path.iterdir():
         if not file_path.is_file():
@@ -54,7 +54,7 @@ def create_pep_zero(_: Sphinx, env: BuildEnvironment, docnames: list[str]) -> No
         if file_path.match("pep-0000*"):
             continue  # Skip pre-existing PEP 0 files
         if pep_pat.match(str(file_path)) and file_path.suffix in {".txt", ".rst"}:
-            pep = pep_0_parser.PEP(path.joinpath(file_path).absolute(), author_exception_data, title_length)
+            pep = pep_0_parser.PEP(path.joinpath(file_path).absolute(), authors_overrides, title_length)
             peps.append(pep)
     peps.sort(key=lambda pep: pep.number)
 
