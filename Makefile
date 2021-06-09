@@ -70,8 +70,8 @@ sphinx:
 sphinx-local:
 	$(SPHINX_BUILD) --build-files
 
-fail_on_warning:
+fail-warning:
 	$(SPHINX_BUILD) --fail-on-warning
 
-check_links:
+check-links:
 	$(SPHINX_BUILD) --check-links
