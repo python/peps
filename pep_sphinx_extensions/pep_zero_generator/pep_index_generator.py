@@ -41,12 +41,12 @@ def create_pep_zero(_: Sphinx, env: BuildEnvironment, docnames: list[str]) -> No
     pep_pat = re.compile(r"pep-\d{4}")  # Path.match() doesn't support regular expressions
     title_length = pep_0_writer.title_length
 
-    # AUTHORS.csv is an exception file for PEP0 name parsing
-    with open("AUTHORS.csv", "r", encoding="utf-8") as f:
+    # AUTHOR_OVERRIDES.csv is an exception file for PEP0 name parsing
+    with open("AUTHOR_OVERRIDES.csv", "r", encoding="utf-8") as f:
         read = csv.DictReader(f, quotechar='"', skipinitialspace=True)
         author_exception_data = {}
         for line in read:
-            full_name = line.pop("Full Name").strip()
+            full_name = line.pop("Overridden Name").strip()
             details = {k.strip(): v.strip() for k, v in line.items()}
             author_exception_data[full_name] = details
 
