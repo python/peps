@@ -65,38 +65,35 @@ class PEPZeroWriter:
     }
 
     def __init__(self):
-        self._output: list[str] = []
+        self.output: list[str] = []
 
-    def output(self, content: str) -> None:
-        # Appends content argument to the _output list
-        self._output.append(content)
+    def emit_text(self, content: str) -> None:
+        # Appends content argument to the output list
+        self.output.append(content)
 
     def emit_newline(self) -> None:
-        self.output("")
+        self.output.append("")
 
     def emit_table_separator(self) -> None:
-        self.output(table_separator)
+        self.output.append(table_separator)
 
     def emit_author_table_separator(self, max_name_len: int) -> None:
         author_table_separator = "=" * max_name_len + "  " + "=" * len("email address")
-        self.output(author_table_separator)
+        self.output.append(author_table_separator)
+
+    def emit_pep_row(self, pep_details: dict[str, int | str]) -> None:
+        self.emit_text(column_format(**pep_details))
 
     def emit_column_headers(self) -> None:
         """Output the column headers for the PEP indices."""
         self.emit_table_separator()
-        self.output(column_format(
-            status=".",
-            type=".",
-            number="PEP",
-            title="PEP Title",
-            authors="PEP Author(s)",
-        ))
+        self.emit_pep_row({"status": ".", "type": ".", "number": "PEP", "title": "PEP Title", "authors": "PEP Author(s)"})
         self.emit_table_separator()
 
     def emit_title(self, text: str, anchor: str, *, symbol: str = "=") -> None:
-        self.output(f".. _{anchor}:\n")
-        self.output(text)
-        self.output(symbol * len(text))
+        self.output.append(f".. _{anchor}:\n")
+        self.output.append(text)
+        self.output.append(symbol * len(text))
         self.emit_newline()
 
     def emit_subtitle(self, text: str, anchor: str) -> None:
@@ -106,19 +103,19 @@ class PEPZeroWriter:
         self.emit_subtitle(category, anchor)
         self.emit_column_headers()
         for pep in peps:
-            self.output(column_format(**pep.pep(title_length=title_length)))
+            self.output.append(column_format(**pep.pep(title_length=title_length)))
         self.emit_table_separator()
         self.emit_newline()
 
     def write_pep0(self, peps: list[PEP]):
 
         # PEP metadata
-        self.output(header)
+        self.emit_text(header)
         self.emit_newline()
 
         # Introduction
         self.emit_title("Introduction", "intro")
-        self.output(intro)
+        self.emit_text(intro)
         self.emit_newline()
 
         # PEPs by category
@@ -147,7 +144,7 @@ class PEPZeroWriter:
         for pep in peps:
             if pep.number - prev_pep > 1:
                 self.emit_newline()
-            self.output(column_format(**pep.pep(title_length=title_length)))
+            self.emit_pep_row(pep.pep(title_length=title_length))
             prev_pep = pep.number
 
         self.emit_table_separator()
@@ -157,13 +154,7 @@ class PEPZeroWriter:
         self.emit_title("Reserved PEP Numbers", "reserved")
         self.emit_column_headers()
         for number, claimants in sorted(self.RESERVED.items()):
-            self.output(column_format(
-                type=".",
-                status=".",
-                number=number,
-                title="RESERVED",
-                authors=claimants,
-            ))
+            self.emit_pep_row({"type": ".", "status": ".", "number": number, "title": "RESERVED", "authors": claimants})
 
         self.emit_table_separator()
         self.emit_newline()
@@ -171,7 +162,7 @@ class PEPZeroWriter:
         # PEP types key
         self.emit_title("PEP Types Key", "type-key")
         for type_ in sorted(TYPE_VALUES):
-            self.output(f"    {type_[0]} - {type_} PEP")
+            self.emit_text(f"    {type_[0]} - {type_} PEP")
             self.emit_newline()
 
         self.emit_newline()
@@ -186,7 +177,7 @@ class PEPZeroWriter:
                 msg = "    A - Accepted (Standards Track only) or Active proposal"
             else:
                 msg = f"    {status[0]} - {status} proposal"
-            self.output(msg)
+            self.emit_text(msg)
             self.emit_newline()
 
         self.emit_newline()
@@ -196,21 +187,21 @@ class PEPZeroWriter:
         max_name_len = max(len(author) for author in authors_dict.keys())
         self.emit_title("Authors/Owners", "authors")
         self.emit_author_table_separator(max_name_len)
-        self.output(f"{'Name':{max_name_len}}  Email Address")
+        self.emit_text(f"{'Name':{max_name_len}}  Email Address")
         self.emit_author_table_separator(max_name_len)
         for author in _sort_authors(authors_dict):
             # Use the email from authors_dict instead of the one from "author" as
             # the author instance may have an empty email.
-            self.output(f"{author.last_first:{max_name_len}}  {authors_dict[author]}")
+            self.emit_text(f"{author.last_first:{max_name_len}}  {authors_dict[author]}")
         self.emit_author_table_separator(max_name_len)
         self.emit_newline()
         self.emit_newline()
 
         # References for introduction footnotes
         self.emit_title("References", "references")
-        self.output(references)
+        self.emit_text(references)
 
-        pep0_string = "\n".join([str(s) for s in self._output])
+        pep0_string = "\n".join([str(s) for s in self.output])
         return pep0_string
 
 
