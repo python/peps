@@ -232,13 +232,13 @@ def _classify_peps(peps: list[PEP]) -> tuple[list[PEP], ...]:
     meta = sorted(pep for pep in remaining if pep.pep_type == TYPE_PROCESS and pep.status == STATUS_ACTIVE)
     remaining -= {pep for pep in meta}
 
-    dead = sorted(pep for pep in remaining if pep.pep_type == TYPE_PROCESS and pep.status in {STATUS_WITHDRAWN, STATUS_REJECTED})
+    dead = [pep for pep in remaining if pep.pep_type == TYPE_PROCESS and pep.status in {STATUS_WITHDRAWN, STATUS_REJECTED}]
     remaining -= {pep for pep in dead}
 
-    historical = sorted(pep for pep in remaining if pep.pep_type == TYPE_PROCESS)
+    historical = [pep for pep in remaining if pep.pep_type == TYPE_PROCESS]
     remaining -= {pep for pep in historical}
 
-    dead += sorted(pep for pep in remaining if pep.status in DEAD_STATUSES)
+    dead = sorted(dead + [pep for pep in remaining if pep.status in DEAD_STATUSES])
     remaining -= {pep for pep in dead}
 
     # Hack until the conflict between the use of `Final`
@@ -250,7 +250,7 @@ def _classify_peps(peps: list[PEP]) -> tuple[list[PEP], ...]:
     )
     remaining -= {pep for pep in info}
 
-    historical += sorted(pep for pep in remaining if pep.pep_type == TYPE_INFO)
+    historical = sorted(historical + [pep for pep in remaining if pep.pep_type == TYPE_INFO])
     remaining -= {pep for pep in historical}
 
     provisional = sorted(pep for pep in remaining if pep.status == STATUS_PROVISIONAL)
