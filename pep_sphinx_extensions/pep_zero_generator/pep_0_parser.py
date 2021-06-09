@@ -274,11 +274,11 @@ class PEP:
                 else:
                     email = match_dict["email"]
                 author_list.append((author, email))
-            else:
-                # If authors were found then stop searching as only expect one
-                # style of author citation.
-                if author_list:
-                    break
+
+            # If authors were found then stop searching as only expect one
+            # style of author citation.
+            if author_list:
+                break
         return author_list
 
     @property
