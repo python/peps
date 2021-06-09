@@ -91,6 +91,12 @@ class PEP:
         # Parse PEP authors
         self.authors: list[Author] = self.parse_authors(metadata["Author"], authors_overrides)
 
+    def __repr__(self) -> str:
+        return f"<PEP {self.number:0>4} - {self.title}>"
+
+    def __lt__(self, other: PEP) -> bool:
+        return self.number < other.number
+
     def parse_authors(self, author_header: str, authors_overrides: dict) -> list[Author]:
         """Parse Author header line"""
         authors_and_emails = self._parse_author(author_header)

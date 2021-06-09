@@ -55,10 +55,9 @@ def create_pep_zero(_: Sphinx, env: BuildEnvironment, docnames: list[str]) -> No
         if pep_pat.match(str(file_path)) and file_path.suffix in {".txt", ".rst"}:
             pep = parser.PEP(path.joinpath(file_path).absolute(), authors_overrides)
             peps.append(pep)
-    peps.sort(key=lambda pep: pep.number)
 
     pep_writer = writer.PEPZeroWriter()
-    pep0_text = pep_writer.write_pep0(peps)
+    pep0_text = pep_writer.write_pep0(sorted(peps))
     Path(f"{pep_zero_filename}.rst").write_text(pep0_text, encoding="utf-8")
 
     # Add to files for builder
