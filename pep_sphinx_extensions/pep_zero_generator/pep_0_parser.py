@@ -164,6 +164,9 @@ class PEP:
         "Accepted", "Provisional", "Rejected", "Withdrawn",
         "Deferred", "Final", "Active", "Draft", "Superseded",
     }
+    special_statuses = {
+        "April Fool!": "Rejected",  # See PEP 401 :)
+    }
 
     def raise_pep_error(self, msg: str, pep_num: bool = False) -> None:
         pep_number = self.number if pep_num else None
@@ -205,11 +208,10 @@ class PEP:
 
         # Status
         status = metadata["Status"]
+        if status in self.special_statuses:
+            status = self.special_statuses[status]
         if status not in self.status_values:
-            if status == "April Fool!":  # See PEP 401 :)
-                status = "Rejected"
-            else:
-                self.raise_pep_error(f"{status} is not a valid Status value", pep_num=True)
+            self.raise_pep_error(f"{status} is not a valid Status value", pep_num=True)
 
         # Special case for Active PEPs.
         if status == "Active" and self.pep_type not in {"Process", "Informational"}:
