@@ -11,11 +11,11 @@ from pep_sphinx_extensions.pep_zero_generator.author import Author
 from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_PROVISIONAL
 from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_ACTIVE
 from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_STANDARDS
-from pep_sphinx_extensions.pep_zero_generator.constants import type_values
-from pep_sphinx_extensions.pep_zero_generator.constants import status_values
-from pep_sphinx_extensions.pep_zero_generator.constants import special_statuses
-from pep_sphinx_extensions.pep_zero_generator.constants import active_allowed
-from pep_sphinx_extensions.pep_zero_generator.constants import hide_status
+from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_VALUES
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_VALUES
+from pep_sphinx_extensions.pep_zero_generator.constants import SPECIAL_STATUSES
+from pep_sphinx_extensions.pep_zero_generator.constants import ACTIVE_ALLOWED
+from pep_sphinx_extensions.pep_zero_generator.constants import HIDE_STATUS
 from pep_sphinx_extensions.pep_zero_generator.errors import PEPError
 
 
@@ -25,8 +25,8 @@ class PEP:
     Attributes:
         number : PEP number.
         title : PEP title.
-        pep_type : The type of PEP.  Can only be one of the values from PEP.type_values.
-        status : The PEP's status.  Value must be found in PEP.status_values.
+        pep_type : The type of PEP.  Can only be one of the values from TYPE_VALUES.
+        status : The PEP's status.  Value must be found in STATUS_VALUES.
         authors : A list of the authors.
 
     """
@@ -67,18 +67,18 @@ class PEP:
 
         # Type
         self.pep_type: str = metadata["Type"]
-        if self.pep_type not in type_values:
+        if self.pep_type not in TYPE_VALUES:
             self.raise_pep_error(f"{self.pep_type} is not a valid Type value", pep_num=True)
 
         # Status
         status = metadata["Status"]
-        if status in special_statuses:
-            status = special_statuses[status]
-        if status not in status_values:
+        if status in SPECIAL_STATUSES:
+            status = SPECIAL_STATUSES[status]
+        if status not in STATUS_VALUES:
             self.raise_pep_error(f"{status} is not a valid Status value", pep_num=True)
 
         # Special case for Active PEPs.
-        if status == STATUS_ACTIVE and self.pep_type not in active_allowed:
+        if status == STATUS_ACTIVE and self.pep_type not in ACTIVE_ALLOWED:
             msg = "Only Process and Informational PEPs may have an Active status"
             self.raise_pep_error(msg, pep_num=True)
 
@@ -144,7 +144,7 @@ class PEP:
             "number": self.number,
             "title": self.title_abbr(title_length),
             # how the status should be represented in the index
-            "status": self.status[0].upper() if self.status not in hide_status else " ",
+            "status": self.status[0].upper() if self.status not in HIDE_STATUS else " ",
             # the author list as a comma-separated with only last names
             "authors": ", ".join(x.nick for x in self.authors),
         }

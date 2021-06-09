@@ -7,9 +7,9 @@ import functools
 from typing import TYPE_CHECKING
 import unicodedata
 
-from pep_sphinx_extensions.pep_zero_generator.constants import type_values
-from pep_sphinx_extensions.pep_zero_generator.constants import status_values
-from pep_sphinx_extensions.pep_zero_generator.constants import hide_status
+from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_VALUES
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_VALUES
+from pep_sphinx_extensions.pep_zero_generator.constants import HIDE_STATUS
 from pep_sphinx_extensions.pep_zero_generator.errors import PEPError
 
 if TYPE_CHECKING:
@@ -254,7 +254,7 @@ class PEPZeroWriter:
 
         # PEP types key
         self.emit_title("PEP Types Key", "type-key")
-        for type_ in sorted(type_values):
+        for type_ in sorted(TYPE_VALUES):
             self.output(f"    {type_[0]} - {type_} PEP")
             self.emit_newline()
 
@@ -262,9 +262,9 @@ class PEPZeroWriter:
 
         # PEP status key
         self.emit_title("PEP Status Key", "status-key")
-        for status in sorted(status_values):
+        for status in sorted(STATUS_VALUES):
             # Draft PEPs have no status displayed, Active shares a key with Accepted
-            if status in hide_status:
+            if status in HIDE_STATUS:
                 continue
             if status == "Accepted":
                 msg = "    A - Accepted (Standards Track only) or Active proposal"
