@@ -7,11 +7,11 @@ import functools
 from typing import TYPE_CHECKING
 import unicodedata
 
-from pep_sphinx_extensions.pep_zero_generator.pep_0_parser import PEP
-from pep_sphinx_extensions.pep_zero_generator.pep_0_errors import PEPError
+from pep_sphinx_extensions.pep_zero_generator.parser import PEP
+from pep_sphinx_extensions.pep_zero_generator.errors import PEPError
 
 if TYPE_CHECKING:
-    from pep_sphinx_extensions.pep_zero_generator import pep_0_parser
+    from pep_sphinx_extensions.pep_zero_generator import parser
 
 title_length = 55
 author_length = 40
@@ -91,7 +91,7 @@ class PEPZeroWriter:
         self.emit_table_separator()
 
     @staticmethod
-    def sort_peps(peps: list[pep_0_parser.PEP]) -> tuple[list[pep_0_parser.PEP], ...]:
+    def sort_peps(peps: list[parser.PEP]) -> tuple[list[parser.PEP], ...]:
         """Sort PEPs into meta, informational, accepted, open, finished,
         and essentially dead."""
         meta = []
@@ -138,8 +138,8 @@ class PEPZeroWriter:
         return meta, info, provisional, accepted, open_, finished, historical, deferred, dead
 
     @staticmethod
-    def verify_email_addresses(peps: list[pep_0_parser.PEP]) -> dict[pep_0_parser.Author, str]:
-        authors_dict: dict[pep_0_parser.Author, set[str]] = {}
+    def verify_email_addresses(peps: list[parser.PEP]) -> dict[parser.Author, str]:
+        authors_dict: dict[parser.Author, set[str]] = {}
         for pep in peps:
             for author in pep.authors:
                 # If this is the first time we have come across an author, add them.
@@ -171,7 +171,7 @@ class PEPZeroWriter:
         return valid_authors_dict
 
     @staticmethod
-    def sort_authors(authors_dict: dict[pep_0_parser.Author, str]) -> list[pep_0_parser.Author]:
+    def sort_authors(authors_dict: dict[parser.Author, str]) -> list[parser.Author]:
         return sorted(authors_dict.keys(), key=_author_sort_by)
 
     def emit_title(self, text: str, anchor: str, *, symbol: str = "=") -> None:
@@ -183,7 +183,7 @@ class PEPZeroWriter:
     def emit_subtitle(self, text: str, anchor: str) -> None:
         self.emit_title(text, anchor, symbol="-")
 
-    def emit_pep_category(self, category: str, anchor: str, peps: list[pep_0_parser.PEP]) -> None:
+    def emit_pep_category(self, category: str, anchor: str, peps: list[parser.PEP]) -> None:
         self.emit_subtitle(category, anchor)
         self.emit_column_headers()
         for pep in peps:
@@ -191,7 +191,7 @@ class PEPZeroWriter:
         self.emit_table_separator()
         self.emit_newline()
 
-    def write_pep0(self, peps: list[pep_0_parser.PEP]):
+    def write_pep0(self, peps: list[parser.PEP]):
 
         # PEP metadata
         self.output(header)
@@ -295,7 +295,7 @@ class PEPZeroWriter:
         return pep0_string
 
 
-def _author_sort_by(author: pep_0_parser.Author) -> str:
+def _author_sort_by(author: parser.Author) -> str:
     """Skip lower-cased words in surname when sorting."""
     surname, *_ = author.last_first.split(",")
     surname_parts = surname.split()

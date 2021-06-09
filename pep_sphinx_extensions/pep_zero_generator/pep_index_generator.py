@@ -22,8 +22,8 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pep_sphinx_extensions.pep_zero_generator import pep_0_parser
-from pep_sphinx_extensions.pep_zero_generator import pep_0_writer
+from pep_sphinx_extensions.pep_zero_generator import parser
+from pep_sphinx_extensions.pep_zero_generator import writer
 
 if TYPE_CHECKING:
     from sphinx.application import Sphinx
@@ -37,9 +37,9 @@ def create_pep_zero(_: Sphinx, env: BuildEnvironment, docnames: list[str]) -> No
     path = Path(".")
 
     pep_zero_filename = "pep-0000"
-    peps: list[pep_0_parser.PEP] = []
+    peps: list[parser.PEP] = []
     pep_pat = re.compile(r"pep-\d{4}")  # Path.match() doesn't support regular expressions
-    title_length = pep_0_writer.title_length
+    title_length = writer.title_length
 
     # AUTHOR_OVERRIDES.csv is an exception file for PEP0 name parsing
     with open("AUTHOR_OVERRIDES.csv", "r", encoding="utf-8") as f:
@@ -54,11 +54,11 @@ def create_pep_zero(_: Sphinx, env: BuildEnvironment, docnames: list[str]) -> No
         if file_path.match("pep-0000*"):
             continue  # Skip pre-existing PEP 0 files
         if pep_pat.match(str(file_path)) and file_path.suffix in {".txt", ".rst"}:
-            pep = pep_0_parser.PEP(path.joinpath(file_path).absolute(), authors_overrides, title_length)
+            pep = parser.PEP(path.joinpath(file_path).absolute(), authors_overrides, title_length)
             peps.append(pep)
     peps.sort(key=lambda pep: pep.number)
 
-    pep_writer = pep_0_writer.PEPZeroWriter()
+    pep_writer = writer.PEPZeroWriter()
     pep0_text = pep_writer.write_pep0(peps)
     Path(f"{pep_zero_filename}.rst").write_text(pep0_text, encoding="utf-8")
 

@@ -8,7 +8,7 @@ import re
 import textwrap
 
 from pep_sphinx_extensions.pep_zero_generator.author import Author
-from pep_sphinx_extensions.pep_zero_generator.pep_0_errors import PEPError
+from pep_sphinx_extensions.pep_zero_generator.errors import PEPError
 
 STATUS_ACCEPTED = "Accepted"
 STATUS_PROVISIONAL = "Provisional"
