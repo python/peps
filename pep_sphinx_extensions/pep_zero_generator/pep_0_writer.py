@@ -1,10 +1,17 @@
 """Code to handle the output of PEP 0."""
 
+from __future__ import annotations
+
 import datetime
 import functools
+from typing import TYPE_CHECKING
+import unicodedata
 
-from pep_sphinx_extensions.pep_zero_generator import pep_0_parser
+from pep_sphinx_extensions.pep_zero_generator.pep_0_parser import PEP
 from pep_sphinx_extensions.pep_zero_generator.pep_0_errors import PEPError
+
+if TYPE_CHECKING:
+    from pep_sphinx_extensions.pep_zero_generator import pep_0_parser
 
 title_length = 55
 author_length = 40
@@ -165,7 +172,7 @@ class PEPZeroWriter:
 
     @staticmethod
     def sort_authors(authors_dict: dict[pep_0_parser.Author, str]) -> list[pep_0_parser.Author]:
-        return sorted(authors_dict.keys(), key=pep_0_parser.author_sort_by)
+        return sorted(authors_dict.keys(), key=_author_sort_by)
 
     def emit_title(self, text: str, anchor: str, *, symbol: str = "=") -> None:
         self.output(f".. _{anchor}:\n")
@@ -244,7 +251,7 @@ class PEPZeroWriter:
 
         # PEP types key
         self.emit_title("PEP Types Key", "type-key")
-        for type_ in sorted(pep_0_parser.PEP.type_values):
+        for type_ in sorted(PEP.type_values):
             self.output(f"    {type_[0]} - {type_} PEP")
             self.emit_newline()
 
@@ -252,7 +259,7 @@ class PEPZeroWriter:
 
         # PEP status key
         self.emit_title("PEP Status Key", "status-key")
-        for status in sorted(pep_0_parser.PEP.status_values):
+        for status in sorted(PEP.status_values):
             # Draft PEPs have no status displayed, Active shares a key with Accepted
             if status in {"Active", "Draft"}:
                 continue
@@ -286,3 +293,15 @@ class PEPZeroWriter:
 
         pep0_string = "\n".join([str(s) for s in self._output])
         return pep0_string
+
+
+def _author_sort_by(author: pep_0_parser.Author) -> str:
+    """Skip lower-cased words in surname when sorting."""
+    surname, *_ = author.last_first.split(",")
+    surname_parts = surname.split()
+    for i, part in enumerate(surname_parts):
+        if part[0].isupper():
+            base = " ".join(surname_parts[i:]).lower()
+            return unicodedata.normalize("NFKD", base)
+    # If no capitals, use the whole string
+    return unicodedata.normalize("NFKD", surname.lower())

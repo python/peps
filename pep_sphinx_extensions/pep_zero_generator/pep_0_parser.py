@@ -118,18 +118,6 @@ class Author:
             return Name(forename=forename, surname=name_parts[-1], suffix=suffix)
 
 
-def author_sort_by(author: Author) -> str:
-    """Skip lower-cased words in surname when sorting."""
-    surname, *_ = author.last_first.split(",")
-    surname_parts = surname.split()
-    for i, part in enumerate(surname_parts):
-        if part[0].isupper():
-            base = " ".join(surname_parts[i:]).lower()
-            return unicodedata.normalize("NFKD", base)
-    # If no capitals, use the whole string
-    return unicodedata.normalize("NFKD", surname.lower())
-
-
 STATUS_ACCEPTED = "Accepted"
 STATUS_PROVISIONAL = "Provisional"
 STATUS_REJECTED = "Rejected"
@@ -162,7 +150,6 @@ class PEP:
     # Valid values for the Type header.
     type_values = {TYPE_STANDARDS, TYPE_INFO, TYPE_PROCESS}
     # Valid values for the Status header.
-    # Active PEPs can only be for Informational or Process PEPs.
     status_values = {
         STATUS_ACCEPTED, STATUS_PROVISIONAL, STATUS_REJECTED, STATUS_WITHDRAWN,
         STATUS_DEFERRED, STATUS_FINAL, STATUS_ACTIVE, STATUS_DRAFT, STATUS_SUPERSEDED,
@@ -170,6 +157,7 @@ class PEP:
     special_statuses = {
         "April Fool!": STATUS_REJECTED,  # See PEP 401 :)
     }
+    # Active PEPs can only be for Informational or Process PEPs.
     active_allowed = {TYPE_PROCESS, TYPE_INFO}
     hide_status = {STATUS_DRAFT, STATUS_ACTIVE}
 
