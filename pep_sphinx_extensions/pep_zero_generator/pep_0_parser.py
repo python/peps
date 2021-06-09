@@ -141,6 +141,20 @@ def author_sort_by(author: Author) -> str:
     return unicodedata.normalize("NFKD", surname.lower())
 
 
+STATUS_ACCEPTED = "Accepted"
+STATUS_PROVISIONAL = "Provisional"
+STATUS_REJECTED = "Rejected"
+STATUS_WITHDRAWN = "Withdrawn"
+STATUS_DEFERRED = "Deferred"
+STATUS_FINAL = "Final"
+STATUS_ACTIVE = "Active"
+STATUS_DRAFT = "Draft"
+STATUS_SUPERSEDED = "Superseded"
+TYPE_STANDARDS = "Standards Track"
+TYPE_INFO = "Informational"
+TYPE_PROCESS = "Process"
+
+
 class PEP:
     """Representation of PEPs.
 
@@ -157,16 +171,17 @@ class PEP:
     required_headers = {"PEP", "Title", "Author", "Status", "Type", "Created"}
 
     # Valid values for the Type header.
-    type_values = {"Standards Track", "Informational", "Process"}
+    type_values = {TYPE_STANDARDS, TYPE_INFO, TYPE_PROCESS}
     # Valid values for the Status header.
     # Active PEPs can only be for Informational or Process PEPs.
     status_values = {
-        "Accepted", "Provisional", "Rejected", "Withdrawn",
-        "Deferred", "Final", "Active", "Draft", "Superseded",
+        STATUS_ACCEPTED, STATUS_PROVISIONAL, STATUS_REJECTED, STATUS_WITHDRAWN,
+        STATUS_DEFERRED, STATUS_FINAL, STATUS_ACTIVE, STATUS_DRAFT, STATUS_SUPERSEDED,
     }
     special_statuses = {
-        "April Fool!": "Rejected",  # See PEP 401 :)
+        "April Fool!": STATUS_REJECTED,  # See PEP 401 :)
     }
+    active_allowed = {TYPE_PROCESS, TYPE_INFO}
 
     def raise_pep_error(self, msg: str, pep_num: bool = False) -> None:
         pep_number = self.number if pep_num else None
