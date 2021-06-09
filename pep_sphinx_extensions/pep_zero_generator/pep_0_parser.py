@@ -175,15 +175,14 @@ class PEP:
         self.title_length: int = title_length
 
         # Parse the headers.
-        pep_text = filename.read_text("UTF8")
+        pep_text = filename.read_text(encoding="utf-8")
         metadata = HeaderParser().parsestr(pep_text)
         required_header_misses = PEP.required_headers - set(metadata.keys())
         if required_header_misses:
-            msg = f"PEP is missing required headers ({', '.join(required_header_misses)})"
-            self.raise_pep_error(msg)
+            self.raise_pep_error(f"PEP is missing required headers {required_header_misses}")
 
         try:
-            self.number: int = int(metadata["PEP"])
+            self.number = int(metadata["PEP"])
         except ValueError:
             self.raise_pep_error("PEP number isn't an integer")
 
