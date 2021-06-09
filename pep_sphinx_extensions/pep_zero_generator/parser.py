@@ -34,10 +34,6 @@ class PEP:
     # The required RFC 822 headers for all PEPs.
     required_headers = {"PEP", "Title", "Author", "Status", "Type", "Created"}
 
-    def raise_pep_error(self, msg: str, pep_num: bool = False) -> None:
-        pep_number = self.number if pep_num else None
-        raise PEPError(msg, self.filename, pep_number=pep_number)
-
     def __init__(self, filename: Path, authors_overrides: dict):
         """Init object from an open PEP file object.
 
@@ -51,16 +47,16 @@ class PEP:
         metadata = HeaderParser().parsestr(pep_text)
         required_header_misses = PEP.required_headers - set(metadata.keys())
         if required_header_misses:
-            self.raise_pep_error(f"PEP is missing required headers {required_header_misses}")
+            _raise_pep_error(self, f"PEP is missing required headers {required_header_misses}")
 
         try:
             self.number = int(metadata["PEP"])
         except ValueError:
-            self.raise_pep_error("PEP number isn't an integer")
+            _raise_pep_error(self, "PEP number isn't an integer")
 
         # Check PEP number matches filename
         if self.number != int(filename.stem[4:]):
-            self.raise_pep_error(f"PEP number does not match file name ({filename})", pep_num=True)
+            _raise_pep_error(self, f"PEP number does not match file name ({filename})", pep_num=True)
 
         # Title
         self.title: str = metadata["Title"]
@@ -68,28 +64,28 @@ class PEP:
         # Type
         self.pep_type: str = metadata["Type"]
         if self.pep_type not in TYPE_VALUES:
-            self.raise_pep_error(f"{self.pep_type} is not a valid Type value", pep_num=True)
+            _raise_pep_error(self, f"{self.pep_type} is not a valid Type value", pep_num=True)
 
         # Status
         status = metadata["Status"]
         if status in SPECIAL_STATUSES:
             status = SPECIAL_STATUSES[status]
         if status not in STATUS_VALUES:
-            self.raise_pep_error(f"{status} is not a valid Status value", pep_num=True)
+            _raise_pep_error(self, f"{status} is not a valid Status value", pep_num=True)
 
         # Special case for Active PEPs.
         if status == STATUS_ACTIVE and self.pep_type not in ACTIVE_ALLOWED:
             msg = "Only Process and Informational PEPs may have an Active status"
-            self.raise_pep_error(msg, pep_num=True)
+            _raise_pep_error(self, msg, pep_num=True)
 
         # Special case for Provisional PEPs.
         if status == STATUS_PROVISIONAL and self.pep_type != TYPE_STANDARDS:
             msg = "Only Standards Track PEPs may have a Provisional status"
-            self.raise_pep_error(msg, pep_num=True)
+            _raise_pep_error(self, msg, pep_num=True)
         self.status: str = status
 
         # Parse PEP authors
-        self.authors: list[Author] = self.parse_authors(metadata["Author"], authors_overrides)
+        self.authors: list[Author] = _parse_authors(self, metadata["Author"], authors_overrides)
 
     def __repr__(self) -> str:
         return f"<PEP {self.number:0>4} - {self.title}>"
@@ -97,60 +93,69 @@ class PEP:
     def __lt__(self, other: PEP) -> bool:
         return self.number < other.number
 
-    def parse_authors(self, author_header: str, authors_overrides: dict) -> list[Author]:
-        """Parse Author header line"""
-        authors_and_emails = self._parse_author(author_header)
-        if not authors_and_emails:
-            raise self.raise_pep_error("no authors found", pep_num=True)
-        return [Author(author_tuple, authors_overrides) for author_tuple in authors_and_emails]
-
-    angled = re.compile(r"(?P<author>.+?) <(?P<email>.+?)>(,\s*)?")
-    paren = re.compile(r"(?P<email>.+?) \((?P<author>.+?)\)(,\s*)?")
-    simple = re.compile(r"(?P<author>[^,]+)(,\s*)?")
-
-    @staticmethod
-    def _parse_author(data: str) -> list[tuple[str, str]]:
-        """Return a list of author names and emails."""
-
-        author_list = []
-        for regex in (PEP.angled, PEP.paren, PEP.simple):
-            for match in regex.finditer(data):
-                # Watch out for suffixes like 'Jr.' when they are comma-separated
-                # from the name and thus cause issues when *all* names are only
-                # separated by commas.
-                match_dict = match.groupdict()
-                author = match_dict["author"]
-                if not author.partition(" ")[1] and author.endswith("."):
-                    prev_author = author_list.pop()
-                    author = ", ".join([prev_author, author])
-                if "email" not in match_dict:
-                    email = ""
-                else:
-                    email = match_dict["email"]
-                author_list.append((author, email))
-
-            # If authors were found then stop searching as only expect one
-            # style of author citation.
-            if author_list:
-                break
-        return author_list
-
-    def title_abbr(self, title_length) -> str:
-        """Shorten the title to be no longer than the max title length."""
-        if len(self.title) <= title_length:
-            return self.title
-        wrapped_title, *_excess = textwrap.wrap(self.title, title_length - 4)
-        return f"{wrapped_title} ..."
-
-    def pep(self, *, title_length) -> dict[str, str | int]:
+    def details(self, *, title_length) -> dict[str, str | int]:
         """Return the line entry for the PEP."""
         return {
             # how the type is to be represented in the index
             "type": self.pep_type[0].upper(),
             "number": self.number,
-            "title": self.title_abbr(title_length),
+            "title": _title_abbr(self.title, title_length),
             # how the status should be represented in the index
-            "status": self.status[0].upper() if self.status not in HIDE_STATUS else " ",
+            "status": " " if self.status in HIDE_STATUS else self.status[0].upper(),
             # the author list as a comma-separated with only last names
             "authors": ", ".join(x.nick for x in self.authors),
         }
+
+
+def _raise_pep_error(pep: PEP, msg: str, pep_num: bool = False) -> None:
+    if pep_num:
+        raise PEPError(msg, pep.filename, pep_number=pep.number)
+    raise PEPError(msg, pep.filename)
+
+
+def _parse_authors(pep: PEP, author_header: str, authors_overrides: dict) -> list[Author]:
+    """Parse Author header line"""
+    authors_and_emails = _parse_author(author_header)
+    if not authors_and_emails:
+        raise _raise_pep_error(pep, "no authors found", pep_num=True)
+    return [Author(author_tuple, authors_overrides) for author_tuple in authors_and_emails]
+
+
+author_angled = re.compile(r"(?P<author>.+?) <(?P<email>.+?)>(,\s*)?")
+author_paren = re.compile(r"(?P<email>.+?) \((?P<author>.+?)\)(,\s*)?")
+author_simple = re.compile(r"(?P<author>[^,]+)(,\s*)?")
+
+
+def _parse_author(data: str) -> list[tuple[str, str]]:
+    """Return a list of author names and emails."""
+
+    author_list = []
+    for regex in (author_angled, author_paren, author_simple):
+        for match in regex.finditer(data):
+            # Watch out for suffixes like 'Jr.' when they are comma-separated
+            # from the name and thus cause issues when *all* names are only
+            # separated by commas.
+            match_dict = match.groupdict()
+            author = match_dict["author"]
+            if not author.partition(" ")[1] and author.endswith("."):
+                prev_author = author_list.pop()
+                author = ", ".join([prev_author, author])
+            if "email" not in match_dict:
+                email = ""
+            else:
+                email = match_dict["email"]
+            author_list.append((author, email))
+
+        # If authors were found then stop searching as only expect one
+        # style of author citation.
+        if author_list:
+            break
+    return author_list
+
+
+def _title_abbr(title, title_length) -> str:
+    """Shorten the title to be no longer than the max title length."""
+    if len(title) <= title_length:
+        return title
+    wrapped_title, *_excess = textwrap.wrap(title, title_length - 4)
+    return f"{wrapped_title} ..."
