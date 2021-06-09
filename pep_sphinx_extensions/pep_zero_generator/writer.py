@@ -10,6 +10,17 @@ import unicodedata
 from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_VALUES
 from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_VALUES
 from pep_sphinx_extensions.pep_zero_generator.constants import HIDE_STATUS
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_ACCEPTED
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_PROVISIONAL
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_REJECTED
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_WITHDRAWN
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_DEFERRED
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_FINAL
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_ACTIVE
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_DRAFT
+from pep_sphinx_extensions.pep_zero_generator.constants import DEAD_STATUSES
+from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_INFO
+from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_PROCESS
 from pep_sphinx_extensions.pep_zero_generator.errors import PEPError
 
 if TYPE_CHECKING:
@@ -173,7 +184,7 @@ class PEPZeroWriter:
             # Draft PEPs have no status displayed, Active shares a key with Accepted
             if status in HIDE_STATUS:
                 continue
-            if status == "Accepted":
+            if status == STATUS_ACCEPTED:
                 msg = "    A - Accepted (Standards Track only) or Active proposal"
             else:
                 msg = f"    {status[0]} - {status} proposal"
@@ -212,43 +223,43 @@ def _classify_peps(peps: list[PEP]) -> tuple[list[PEP], ...]:
 
     # The order of the comprehensions below is important. Key status values
     # take precedence over type value, and vice-versa.
-    open_ = sorted(pep for pep in remaining if pep.status == "Draft")
+    open_ = sorted(pep for pep in remaining if pep.status == STATUS_DRAFT)
     remaining -= {pep for pep in open_}
 
-    deferred = sorted(pep for pep in remaining if pep.status == "Deferred")
+    deferred = sorted(pep for pep in remaining if pep.status == STATUS_DEFERRED)
     remaining -= {pep for pep in deferred}
 
-    meta = sorted(pep for pep in remaining if pep.pep_type == "Process" and pep.status == "Active")
+    meta = sorted(pep for pep in remaining if pep.pep_type == TYPE_PROCESS and pep.status == STATUS_ACTIVE)
     remaining -= {pep for pep in meta}
 
-    dead = sorted(pep for pep in remaining if pep.pep_type == "Process" and pep.status in {"Withdrawn", "Rejected"})
+    dead = sorted(pep for pep in remaining if pep.pep_type == TYPE_PROCESS and pep.status in {STATUS_WITHDRAWN, STATUS_REJECTED})
     remaining -= {pep for pep in dead}
 
-    historical = sorted(pep for pep in remaining if pep.pep_type == "Process")
+    historical = sorted(pep for pep in remaining if pep.pep_type == TYPE_PROCESS)
     remaining -= {pep for pep in historical}
 
-    dead += sorted(pep for pep in remaining if pep.status in {"Rejected", "Withdrawn", "Incomplete", "Superseded"})
+    dead += sorted(pep for pep in remaining if pep.status in DEAD_STATUSES)
     remaining -= {pep for pep in dead}
 
-    # Hack until the conflict between the use of "Final"
+    # Hack until the conflict between the use of `Final`
     # for both API definition PEPs and other (actually
     # obsolete) PEPs is addressed
     info = sorted(
         pep for pep in remaining
-        if pep.pep_type == "Informational" and (pep.status == "Active" or "Release Schedule" not in pep.title)
+        if pep.pep_type == TYPE_INFO and (pep.status == STATUS_ACTIVE or "Release Schedule" not in pep.title)
     )
     remaining -= {pep for pep in info}
 
-    historical += sorted(pep for pep in remaining if pep.pep_type == "Informational")
+    historical += sorted(pep for pep in remaining if pep.pep_type == TYPE_INFO)
     remaining -= {pep for pep in historical}
 
-    provisional = sorted(pep for pep in remaining if pep.status == "Provisional")
+    provisional = sorted(pep for pep in remaining if pep.status == STATUS_PROVISIONAL)
     remaining -= {pep for pep in provisional}
 
-    accepted = sorted(pep for pep in remaining if pep.status in {"Accepted", "Active"})
+    accepted = sorted(pep for pep in remaining if pep.status in {STATUS_ACCEPTED, STATUS_ACTIVE})
     remaining -= {pep for pep in accepted}
 
-    finished = sorted(pep for pep in remaining if pep.status == "Final")
+    finished = sorted(pep for pep in remaining if pep.status == STATUS_FINAL)
     remaining -= {pep for pep in finished}
 
     for pep in remaining:

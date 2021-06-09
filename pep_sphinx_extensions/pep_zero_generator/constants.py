@@ -9,6 +9,7 @@ STATUS_FINAL = "Final"
 STATUS_ACTIVE = "Active"
 STATUS_DRAFT = "Draft"
 STATUS_SUPERSEDED = "Superseded"
+STATUS_INCOMPLETE = "Incomplete"
 
 # Valid values for the Status header.
 STATUS_VALUES = {
@@ -21,6 +22,8 @@ SPECIAL_STATUSES = {
 }
 # Draft PEPs have no status displayed, Active shares a key with Accepted
 HIDE_STATUS = {STATUS_DRAFT, STATUS_ACTIVE}
+# Dead PEP statuses
+DEAD_STATUSES = {STATUS_REJECTED, STATUS_WITHDRAWN, STATUS_INCOMPLETE, STATUS_SUPERSEDED}
 
 TYPE_STANDARDS = "Standards Track"
 TYPE_INFO = "Informational"
