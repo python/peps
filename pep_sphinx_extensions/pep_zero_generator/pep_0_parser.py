@@ -257,8 +257,6 @@ class PEP:
     @staticmethod
     def _parse_author(data: str) -> list[tuple[str, str]]:
         """Return a list of author names and emails."""
-        # XXX Consider using email.utils.parseaddr (doesn't work with names
-        # lacking an email address.
 
         author_list = []
         for regex in (PEP.angled, PEP.paren, PEP.simple):
