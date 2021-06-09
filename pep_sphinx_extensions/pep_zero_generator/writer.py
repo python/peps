@@ -93,95 +93,6 @@ class PEPZeroWriter:
         ))
         self.emit_table_separator()
 
-    @staticmethod
-    def sort_peps(peps: list[PEP]) -> tuple[list[PEP], ...]:
-        """Sort PEPs into meta, informational, accepted, open, finished,
-        and essentially dead."""
-        remaining = set(peps)
-
-        # The order of the comprehensions below is important. Key status values
-        # take precedence over type value, and vice-versa.
-        open_ = sorted(pep for pep in remaining if pep.status == "Draft")
-        remaining -= {pep for pep in open_}
-
-        deferred = sorted(pep for pep in remaining if pep.status == "Deferred")
-        remaining -= {pep for pep in deferred}
-
-        meta = sorted(pep for pep in remaining if pep.pep_type == "Process" and pep.status == "Active")
-        remaining -= {pep for pep in meta}
-
-        dead = sorted(pep for pep in remaining if pep.pep_type == "Process" and pep.status in {"Withdrawn", "Rejected"})
-        remaining -= {pep for pep in dead}
-
-        historical = sorted(pep for pep in remaining if pep.pep_type == "Process")
-        remaining -= {pep for pep in historical}
-
-        dead += sorted(pep for pep in remaining if pep.status in {"Rejected", "Withdrawn", "Incomplete", "Superseded"})
-        remaining -= {pep for pep in dead}
-
-        # Hack until the conflict between the use of "Final"
-        # for both API definition PEPs and other (actually
-        # obsolete) PEPs is addressed
-        info = sorted(
-            pep for pep in remaining
-            if pep.pep_type == "Informational" and (pep.status == "Active" or "Release Schedule" not in pep.title)
-        )
-        remaining -= {pep for pep in info}
-
-        historical += sorted(pep for pep in remaining if pep.pep_type == "Informational")
-        remaining -= {pep for pep in historical}
-
-        provisional = sorted(pep for pep in remaining if pep.status == "Provisional")
-        remaining -= {pep for pep in provisional}
-
-        accepted = sorted(pep for pep in remaining if pep.status in {"Accepted", "Active"})
-        remaining -= {pep for pep in accepted}
-
-        finished = sorted(pep for pep in remaining if pep.status == "Final")
-        remaining -= {pep for pep in finished}
-
-        for pep in remaining:
-            raise PEPError(f"unsorted ({pep.pep_type}/{pep.status})", pep.filename, pep.number)
-
-        return meta, info, provisional, accepted, open_, finished, historical, deferred, dead
-
-    @staticmethod
-    def verify_email_addresses(peps: list[PEP]) -> dict[Author, str]:
-        authors_dict: dict[Author, set[str]] = {}
-        for pep in peps:
-            for author in pep.authors:
-                # If this is the first time we have come across an author, add them.
-                if author not in authors_dict:
-                    authors_dict[author] = {author.email} if author.email else set()
-                else:
-                    # If the new email is an empty string, move on.
-                    if not author.email:
-                        continue
-                    # If the email has not been seen, add it to the list.
-                    authors_dict[author].add(author.email)
-
-        valid_authors_dict = {}
-        too_many_emails = []
-        for author, emails in authors_dict.items():
-            if len(emails) > 1:
-                too_many_emails.append((author.last_first, emails))
-            else:
-                valid_authors_dict[author] = next(iter(emails), "")
-        if too_many_emails:
-            err_output = []
-            for author, emails in too_many_emails:
-                err_output.append(" " * 4 + f"{author}: {emails}")
-            raise ValueError(
-                "some authors have more than one email address listed:\n"
-                + "\n".join(err_output)
-            )
-
-        return valid_authors_dict
-
-    @staticmethod
-    def sort_authors(authors_dict: dict[Author, str]) -> list[Author]:
-        return sorted(authors_dict.keys(), key=_author_sort_by)
-
     def emit_title(self, text: str, anchor: str, *, symbol: str = "=") -> None:
         self.output(f".. _{anchor}:\n")
         self.output(text)
@@ -212,7 +123,7 @@ class PEPZeroWriter:
 
         # PEPs by category
         self.emit_title("Index by Category", "by-category")
-        meta, info, provisional, accepted, open_, finished, historical, deferred, dead = self.sort_peps(peps)
+        meta, info, provisional, accepted, open_, finished, historical, deferred, dead = _classify_peps(peps)
         pep_categories = [
             ("Meta-PEPs (PEPs about PEPs or Processes)", "by-category-meta", meta),
             ("Other Informational PEPs", "by-category-other-info", info),
@@ -281,13 +192,13 @@ class PEPZeroWriter:
         self.emit_newline()
 
         # PEP owners
-        authors_dict = self.verify_email_addresses(peps)
+        authors_dict = _verify_email_addresses(peps)
         max_name_len = max(len(author) for author in authors_dict.keys())
         self.emit_title("Authors/Owners", "authors")
         self.emit_author_table_separator(max_name_len)
         self.output(f"{'Name':{max_name_len}}  Email Address")
         self.emit_author_table_separator(max_name_len)
-        for author in self.sort_authors(authors_dict):
+        for author in _sort_authors(authors_dict):
             # Use the email from authors_dict instead of the one from "author" as
             # the author instance may have an empty email.
             self.output(f"{author.last_first:{max_name_len}}  {authors_dict[author]}")
@@ -301,6 +212,95 @@ class PEPZeroWriter:
 
         pep0_string = "\n".join([str(s) for s in self._output])
         return pep0_string
+
+
+def _classify_peps(peps: list[PEP]) -> tuple[list[PEP], ...]:
+    """Sort PEPs into meta, informational, accepted, open, finished,
+    and essentially dead."""
+    remaining = set(peps)
+
+    # The order of the comprehensions below is important. Key status values
+    # take precedence over type value, and vice-versa.
+    open_ = sorted(pep for pep in remaining if pep.status == "Draft")
+    remaining -= {pep for pep in open_}
+
+    deferred = sorted(pep for pep in remaining if pep.status == "Deferred")
+    remaining -= {pep for pep in deferred}
+
+    meta = sorted(pep for pep in remaining if pep.pep_type == "Process" and pep.status == "Active")
+    remaining -= {pep for pep in meta}
+
+    dead = sorted(pep for pep in remaining if pep.pep_type == "Process" and pep.status in {"Withdrawn", "Rejected"})
+    remaining -= {pep for pep in dead}
+
+    historical = sorted(pep for pep in remaining if pep.pep_type == "Process")
+    remaining -= {pep for pep in historical}
+
+    dead += sorted(pep for pep in remaining if pep.status in {"Rejected", "Withdrawn", "Incomplete", "Superseded"})
+    remaining -= {pep for pep in dead}
+
+    # Hack until the conflict between the use of "Final"
+    # for both API definition PEPs and other (actually
+    # obsolete) PEPs is addressed
+    info = sorted(
+        pep for pep in remaining
+        if pep.pep_type == "Informational" and (pep.status == "Active" or "Release Schedule" not in pep.title)
+    )
+    remaining -= {pep for pep in info}
+
+    historical += sorted(pep for pep in remaining if pep.pep_type == "Informational")
+    remaining -= {pep for pep in historical}
+
+    provisional = sorted(pep for pep in remaining if pep.status == "Provisional")
+    remaining -= {pep for pep in provisional}
+
+    accepted = sorted(pep for pep in remaining if pep.status in {"Accepted", "Active"})
+    remaining -= {pep for pep in accepted}
+
+    finished = sorted(pep for pep in remaining if pep.status == "Final")
+    remaining -= {pep for pep in finished}
+
+    for pep in remaining:
+        raise PEPError(f"unsorted ({pep.pep_type}/{pep.status})", pep.filename, pep.number)
+
+    return meta, info, provisional, accepted, open_, finished, historical, deferred, dead
+
+
+def _verify_email_addresses(peps: list[PEP]) -> dict[Author, str]:
+    authors_dict: dict[Author, set[str]] = {}
+    for pep in peps:
+        for author in pep.authors:
+            # If this is the first time we have come across an author, add them.
+            if author not in authors_dict:
+                authors_dict[author] = {author.email} if author.email else set()
+            else:
+                # If the new email is an empty string, move on.
+                if not author.email:
+                    continue
+                # If the email has not been seen, add it to the list.
+                authors_dict[author].add(author.email)
+
+    valid_authors_dict = {}
+    too_many_emails = []
+    for author, emails in authors_dict.items():
+        if len(emails) > 1:
+            too_many_emails.append((author.last_first, emails))
+        else:
+            valid_authors_dict[author] = next(iter(emails), "")
+    if too_many_emails:
+        err_output = []
+        for author, emails in too_many_emails:
+            err_output.append(" " * 4 + f"{author}: {emails}")
+        raise ValueError(
+            "some authors have more than one email address listed:\n"
+            + "\n".join(err_output)
+        )
+
+    return valid_authors_dict
+
+
+def _sort_authors(authors_dict: dict[Author, str]) -> list[Author]:
+    return sorted(authors_dict.keys(), key=_author_sort_by)
 
 
 def _author_sort_by(author: Author) -> str:
