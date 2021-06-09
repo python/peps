@@ -54,7 +54,7 @@ def create_pep_zero(_: Sphinx, env: BuildEnvironment, docnames: list[str]) -> No
         if file_path.match("pep-0000*"):
             continue  # Skip pre-existing PEP 0 files
         if pep_pat.match(str(file_path)) and file_path.suffix in {".txt", ".rst"}:
-            pep = parser.PEP(path.joinpath(file_path).absolute(), authors_overrides, title_length)
+            pep = parser.PEP(path.joinpath(file_path).absolute(), authors_overrides)
             peps.append(pep)
     peps.sort(key=lambda pep: pep.number)
 

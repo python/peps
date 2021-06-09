@@ -57,14 +57,13 @@ class PEP:
         pep_number = self.number if pep_num else None
         raise PEPError(msg, self.filename, pep_number=pep_number)
 
-    def __init__(self, filename: Path, authors_overrides: dict, title_length: int):
+    def __init__(self, filename: Path, authors_overrides: dict):
         """Init object from an open PEP file object.
 
         pep_file is full text of the PEP file, filename is path of the PEP file, author_lookup is author exceptions file
 
         """
         self.filename: Path = filename
-        self.title_length: int = title_length
 
         # Parse the headers.
         pep_text = filename.read_text(encoding="utf-8")
@@ -149,22 +148,20 @@ class PEP:
                 break
         return author_list
 
-    @property
-    def title_abbr(self) -> str:
+    def title_abbr(self, title_length) -> str:
         """Shorten the title to be no longer than the max title length."""
-        if len(self.title) <= self.title_length:
+        if len(self.title) <= title_length:
             return self.title
-        wrapped_title, *_excess = textwrap.wrap(self.title, self.title_length - 4)
+        wrapped_title, *_excess = textwrap.wrap(self.title, title_length - 4)
         return f"{wrapped_title} ..."
 
-    @property
-    def pep(self) -> dict[str, str | int]:
+    def pep(self, *, title_length) -> dict[str, str | int]:
         """Return the line entry for the PEP."""
         return {
             # how the type is to be represented in the index
             "type": self.pep_type[0].upper(),
             "number": self.number,
-            "title": self.title_abbr,
+            "title": self.title_abbr(title_length),
             # how the status should be represented in the index
             "status": self.status[0].upper() if self.status not in PEP.hide_status else " ",
             # the author list as a comma-separated with only last names

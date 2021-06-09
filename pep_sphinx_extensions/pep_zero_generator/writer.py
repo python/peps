@@ -187,7 +187,7 @@ class PEPZeroWriter:
         self.emit_subtitle(category, anchor)
         self.emit_column_headers()
         for pep in peps:
-            self.output(column_format(**pep.pep))
+            self.output(column_format(**pep.pep(title_length=title_length)))
         self.emit_table_separator()
         self.emit_newline()
 
@@ -228,7 +228,7 @@ class PEPZeroWriter:
         for pep in peps:
             if pep.number - prev_pep > 1:
                 self.emit_newline()
-            self.output(column_format(**pep.pep))
+            self.output(column_format(**pep.pep(title_length=title_length)))
             prev_pep = pep.number
 
         self.emit_table_separator()
