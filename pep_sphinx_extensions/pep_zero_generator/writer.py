@@ -24,8 +24,7 @@ from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_VALUES
 from pep_sphinx_extensions.pep_zero_generator.errors import PEPError
 
 if TYPE_CHECKING:
-    from pep_sphinx_extensions.pep_zero_generator.author import Author
-    from pep_sphinx_extensions.pep_zero_generator.parser import PEP 
+    from pep_sphinx_extensions.pep_zero_generator.parser import PEP
 
 title_length = 55
 author_length = 40
@@ -195,15 +194,15 @@ class PEPZeroWriter:
 
         # PEP owners
         authors_dict = _verify_email_addresses(peps)
-        max_name_len = max(len(author.last_first) for author in authors_dict.keys())
+        max_name_len = max(len(author_name) for author_name in authors_dict)
         self.emit_title("Authors/Owners", "authors")
         self.emit_author_table_separator(max_name_len)
         self.emit_text(f"{'Name':{max_name_len}}  Email Address")
         self.emit_author_table_separator(max_name_len)
-        for author in _sort_authors(authors_dict):
+        for author_name in _sort_authors(authors_dict):
             # Use the email from authors_dict instead of the one from "author" as
             # the author instance may have an empty email.
-            self.emit_text(f"{author.last_first:{max_name_len}}  {authors_dict[author]}")
+            self.emit_text(f"{author_name:{max_name_len}}  {authors_dict[author_name]}")
         self.emit_author_table_separator(max_name_len)
         self.emit_newline()
         self.emit_newline()
@@ -268,27 +267,27 @@ def _classify_peps(peps: list[PEP]) -> tuple[list[PEP], ...]:
     return meta, info, provisional, accepted, open_, finished, historical, deferred, dead
 
 
-def _verify_email_addresses(peps: list[PEP]) -> dict[Author, str]:
-    authors_dict: dict[Author, set[str]] = {}
+def _verify_email_addresses(peps: list[PEP]) -> dict[str, str]:
+    authors_dict: dict[str, set[str]] = {}
     for pep in peps:
         for author in pep.authors:
             # If this is the first time we have come across an author, add them.
-            if author not in authors_dict:
-                authors_dict[author] = {author.email} if author.email else set()
-            else:
-                # If the new email is an empty string, move on.
-                if not author.email:
-                    continue
-                # If the email has not been seen, add it to the list.
-                authors_dict[author].add(author.email)
+            if author.last_first not in authors_dict:
+                authors_dict[author.last_first] = set()
 
-    valid_authors_dict = {}
-    too_many_emails = []
-    for author, emails in authors_dict.items():
+            # If the new email is an empty string, move on.
+            if not author.email:
+                continue
+            # If the email has not been seen, add it to the list.
+            authors_dict[author.last_first].add(author.email)
+
+    valid_authors_dict: dict[str, str] = {}
+    too_many_emails: list[tuple[str, set[str]]] = []
+    for last_first, emails in authors_dict.items():
         if len(emails) > 1:
-            too_many_emails.append((author.last_first, emails))
+            too_many_emails.append((last_first, emails))
         else:
-            valid_authors_dict[author] = next(iter(emails), "")
+            valid_authors_dict[last_first] = next(iter(emails), "")
     if too_many_emails:
         err_output = []
         for author, emails in too_many_emails:
@@ -301,13 +300,13 @@ def _verify_email_addresses(peps: list[PEP]) -> dict[Author, str]:
     return valid_authors_dict
 
 
-def _sort_authors(authors_dict: dict[Author, str]) -> list[Author]:
-    return sorted(authors_dict.keys(), key=_author_sort_by)
+def _sort_authors(authors_dict: dict[str, str]) -> list[str]:
+    return sorted(authors_dict, key=_author_sort_by)
 
 
-def _author_sort_by(author: Author) -> str:
+def _author_sort_by(author_name: str) -> str:
     """Skip lower-cased words in surname when sorting."""
-    surname, *_ = author.last_first.split(",")
+    surname, *_ = author_name.split(",")
     surname_parts = surname.split()
     for i, part in enumerate(surname_parts):
         if part[0].isupper():

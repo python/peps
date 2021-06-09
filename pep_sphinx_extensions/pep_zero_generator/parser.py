@@ -107,7 +107,7 @@ class PEP:
             # how the status should be represented in the index
             "status": " " if self.status in HIDE_STATUS else self.status[0].upper(),
             # the author list as a comma-separated with only last names
-            "authors": ", ".join(x.nick for x in self.authors),
+            "authors": ", ".join(author.nick for author in self.authors),
         }
 
 

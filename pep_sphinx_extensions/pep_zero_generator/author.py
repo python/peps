@@ -37,7 +37,7 @@ def parse_author_email(author_email_tuple: tuple[str, str], authors_overrides: d
         # Add an escape to avoid docutils turning `v.` into `22.`.
         name_parts.surname = f"\\{name_parts.surname}"
 
-    if name_parts.suffix is not None:
+    if name_parts.suffix:
         last_first = f"{name_parts.surname}, {name_parts.forename}, {name_parts.suffix}"
         return Author(last_first, name_parts.surname, email)
 
