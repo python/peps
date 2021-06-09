@@ -5,7 +5,7 @@ import unicodedata
 
 
 class Name(NamedTuple):
-    name: str = None  # mononym
+    mononym: str = None
     forename: str = None
     surname: str = None
     suffix: str = None
@@ -37,9 +37,9 @@ class Author:
             self.last_first = name_dict["Surname First"]
             self.nick = name_dict["Name Reference"]
         else:
-            name_parts = self._parse_name(self._first_last)
-            if name_parts.name is not None:
-                self.last_first = self.nick = name_parts.name
+            name_parts = _parse_name(self._first_last)
+            if name_parts.mononym is not None:
+                self.last_first = self.nick = name_parts.mononym
             else:
                 if name_parts.surname[1] == ".":
                     # Add an escape to avoid docutils turning `v.` into `22.`.
@@ -61,50 +61,50 @@ class Author:
     def __len__(self):
         return len(unicodedata.normalize("NFC", self.last_first))
 
-    @staticmethod
-    def _parse_name(full_name: str) -> Name:
-        """Decompose a full name into parts.
 
-        If a mononym (e.g, 'Aahz') then return the full name. If there are
-        suffixes in the name (e.g. ', Jr.' or 'III'), then find and extract
-        them. If there is a middle initial followed by a full stop, then
-        combine the following words into a surname (e.g. N. Vander Weele). If
-        there is a leading, lowercase portion to the last name (e.g. 'van' or
-        'von') then include it in the surname.
+def _parse_name(full_name: str) -> Name:
+    """Decompose a full name into parts.
 
-        """
-        possible_suffixes = {"Jr", "Jr.", "II", "III"}
+    If a mononym (e.g, 'Aahz') then return the full name. If there are
+    suffixes in the name (e.g. ', Jr.' or 'II'), then find and extract
+    them. If there is a middle initial followed by a full stop, then
+    combine the following words into a surname (e.g. N. Vander Weele). If
+    there is a leading, lowercase portion to the last name (e.g. 'van' or
+    'von') then include it in the surname.
 
-        pre_suffix, _, raw_suffix = full_name.partition(",")
-        name_parts = pre_suffix.strip().split(" ")
-        num_parts = len(name_parts)
-        suffix = raw_suffix.strip() or None
+    """
+    possible_suffixes = {"Jr", "Jr.", "II", "III"}
 
-        if num_parts == 0:
-            raise ValueError("Name is empty!")
-        elif num_parts == 1:
-            return Name(name=name_parts[0], suffix=suffix)
-        elif num_parts == 2:
-            return Name(forename=name_parts[0].strip(), surname=name_parts[1], suffix=suffix)
+    pre_suffix, _, raw_suffix = full_name.partition(",")
+    name_parts = pre_suffix.strip().split(" ")
+    num_parts = len(name_parts)
+    suffix = raw_suffix.strip() or None
 
-        # handles rogue uncaught suffixes
-        if name_parts[-1] in possible_suffixes:
-            suffix = f"{name_parts.pop(-1)} {suffix}".strip()
+    if num_parts == 0:
+        raise ValueError("Name is empty!")
+    elif num_parts == 1:
+        return Name(mononym=name_parts[0], suffix=suffix)
+    elif num_parts == 2:
+        return Name(forename=name_parts[0].strip(), surname=name_parts[1], suffix=suffix)
 
-        # handles von, van, v. etc.
-        if name_parts[-2].islower():
-            forename = " ".join(name_parts[:-2]).strip()
-            surname = " ".join(name_parts[-2:])
-            return Name(forename=forename, surname=surname, suffix=suffix)
+    # handles rogue uncaught suffixes
+    if name_parts[-1] in possible_suffixes:
+        suffix = f"{name_parts.pop(-1)} {suffix}".strip()
 
-        # handles double surnames after a middle initial (e.g. N. Vander Weele)
-        elif any(s.endswith(".") for s in name_parts):
-            split_position = [i for i, x in enumerate(name_parts) if x.endswith(".")][-1] + 1
-            forename = " ".join(name_parts[:split_position]).strip()
-            surname = " ".join(name_parts[split_position:])
-            return Name(forename=forename, surname=surname, suffix=suffix)
+    # handles von, van, v. etc.
+    if name_parts[-2].islower():
+        forename = " ".join(name_parts[:-2]).strip()
+        surname = " ".join(name_parts[-2:])
+        return Name(forename=forename, surname=surname, suffix=suffix)
 
-        # default to using the last item as the surname
-        else:
-            forename = " ".join(name_parts[:-1]).strip()
-            return Name(forename=forename, surname=name_parts[-1], suffix=suffix)
+    # handles double surnames after a middle initial (e.g. N. Vander Weele)
+    elif any(s.endswith(".") for s in name_parts):
+        split_position = [i for i, x in enumerate(name_parts) if x.endswith(".")][-1] + 1
+        forename = " ".join(name_parts[:split_position]).strip()
+        surname = " ".join(name_parts[split_position:])
+        return Name(forename=forename, surname=surname, suffix=suffix)
+
+    # default to using the last item as the surname
+    else:
+        forename = " ".join(name_parts[:-1]).strip()
+        return Name(forename=forename, surname=name_parts[-1], suffix=suffix)
