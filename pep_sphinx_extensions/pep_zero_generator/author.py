@@ -1,68 +1,51 @@
 from __future__ import annotations
 
 from typing import NamedTuple
-import unicodedata
 
 
-class Name(NamedTuple):
+class _Name(NamedTuple):
     mononym: str = None
     forename: str = None
     surname: str = None
     suffix: str = None
 
 
-class Author:
-    """Represent PEP authors.
-
-    Attributes:
-        last_first: The author's name in Surname, Forename, Suffix order.
-        nick: Author's nickname for PEP tables. Defaults to surname.
-        email: The author's email address.
-        _first_last: The author's full name, unchanged
-
-    """
-    __slots__ = "last_first", "nick", "email", "_first_last"
-
-    def __init__(self, author_email_tuple: tuple[str, str], authors_overrides: dict[str, dict[str, str]]):
-        """Parse the name and email address of an author."""
-        name, email = author_email_tuple
-        self._first_last: str = name.strip()
-        self.email: str = email.lower()
-
-        self.last_first: str = ""
-        self.nick: str = ""
-
-        if self._first_last in authors_overrides:
-            name_dict = authors_overrides[self._first_last]
-            self.last_first = name_dict["Surname First"]
-            self.nick = name_dict["Name Reference"]
-        else:
-            name_parts = _parse_name(self._first_last)
-            if name_parts.mononym is not None:
-                self.last_first = self.nick = name_parts.mononym
-            else:
-                if name_parts.surname[1] == ".":
-                    # Add an escape to avoid docutils turning `v.` into `22.`.
-                    name_parts.surname = f"\\{name_parts.surname}"
-                self.last_first = f"{name_parts.surname}, {name_parts.forename}"
-                self.nick = name_parts.surname
-
-            if name_parts.suffix is not None:
-                self.last_first += f", {name_parts.suffix}"
-
-    def __hash__(self):
-        return hash(self.last_first)
-
-    def __eq__(self, other):
-        if not isinstance(other, Author):
-            return NotImplemented
-        return self.last_first == other.last_first
-
-    def __len__(self):
-        return len(unicodedata.normalize("NFC", self.last_first))
+class Author(NamedTuple):
+    """Represent PEP authors."""
+    last_first: str  # The author's name in Surname, Forename, Suffix order.
+    nick: str  # Author's nickname for PEP tables. Defaults to surname.
+    email: str  # The author's email address.
 
 
-def _parse_name(full_name: str) -> Name:
+def parse_author_email(author_email_tuple: tuple[str, str], authors_overrides: dict[str, dict[str, str]]) -> Author:
+    """Parse the name and email address of an author."""
+    name, email = author_email_tuple
+    _first_last = name.strip()
+    email = email.lower()
+
+    if _first_last in authors_overrides:
+        name_dict = authors_overrides[_first_last]
+        last_first = name_dict["Surname First"]
+        nick = name_dict["Name Reference"]
+        return Author(last_first, nick, email)
+
+    name_parts = _parse_name(_first_last)
+    if name_parts.mononym is not None:
+        return Author(name_parts.mononym, name_parts.mononym, email)
+
+    if name_parts.surname[1] == ".":
+        # Add an escape to avoid docutils turning `v.` into `22.`.
+        name_parts.surname = f"\\{name_parts.surname}"
+
+    if name_parts.suffix is not None:
+        last_first = f"{name_parts.surname}, {name_parts.forename}, {name_parts.suffix}"
+        return Author(last_first, name_parts.surname, email)
+
+    last_first = f"{name_parts.surname}, {name_parts.forename}"
+    return Author(last_first, name_parts.surname, email)
+
+
+def _parse_name(full_name: str) -> _Name:
     """Decompose a full name into parts.
 
     If a mononym (e.g, 'Aahz') then return the full name. If there are
@@ -78,14 +61,14 @@ def _parse_name(full_name: str) -> Name:
     pre_suffix, _, raw_suffix = full_name.partition(",")
     name_parts = pre_suffix.strip().split(" ")
     num_parts = len(name_parts)
-    suffix = raw_suffix.strip() or None
+    suffix = raw_suffix.strip()
 
     if num_parts == 0:
         raise ValueError("Name is empty!")
     elif num_parts == 1:
-        return Name(mononym=name_parts[0], suffix=suffix)
+        return _Name(mononym=name_parts[0], suffix=suffix)
     elif num_parts == 2:
-        return Name(forename=name_parts[0].strip(), surname=name_parts[1], suffix=suffix)
+        return _Name(forename=name_parts[0].strip(), surname=name_parts[1], suffix=suffix)
 
     # handles rogue uncaught suffixes
     if name_parts[-1] in possible_suffixes:
@@ -95,16 +78,16 @@ def _parse_name(full_name: str) -> Name:
     if name_parts[-2].islower():
         forename = " ".join(name_parts[:-2]).strip()
         surname = " ".join(name_parts[-2:])
-        return Name(forename=forename, surname=surname, suffix=suffix)
+        return _Name(forename=forename, surname=surname, suffix=suffix)
 
     # handles double surnames after a middle initial (e.g. N. Vander Weele)
     elif any(s.endswith(".") for s in name_parts):
         split_position = [i for i, x in enumerate(name_parts) if x.endswith(".")][-1] + 1
         forename = " ".join(name_parts[:split_position]).strip()
         surname = " ".join(name_parts[split_position:])
-        return Name(forename=forename, surname=surname, suffix=suffix)
+        return _Name(forename=forename, surname=surname, suffix=suffix)
 
     # default to using the last item as the surname
     else:
         forename = " ".join(name_parts[:-1]).strip()
-        return Name(forename=forename, surname=name_parts[-1], suffix=suffix)
+        return _Name(forename=forename, surname=name_parts[-1], suffix=suffix)

@@ -195,7 +195,7 @@ class PEPZeroWriter:
 
         # PEP owners
         authors_dict = _verify_email_addresses(peps)
-        max_name_len = max(len(author) for author in authors_dict.keys())
+        max_name_len = max(len(author.last_first) for author in authors_dict.keys())
         self.emit_title("Authors/Owners", "authors")
         self.emit_author_table_separator(max_name_len)
         self.emit_text(f"{'Name':{max_name_len}}  Email Address")

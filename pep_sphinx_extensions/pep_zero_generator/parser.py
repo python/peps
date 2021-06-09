@@ -6,8 +6,9 @@ from email.parser import HeaderParser
 from pathlib import Path
 import re
 import textwrap
+from typing import TYPE_CHECKING
 
-from pep_sphinx_extensions.pep_zero_generator.author import Author
+from pep_sphinx_extensions.pep_zero_generator.author import parse_author_email
 from pep_sphinx_extensions.pep_zero_generator.constants import ACTIVE_ALLOWED
 from pep_sphinx_extensions.pep_zero_generator.constants import HIDE_STATUS
 from pep_sphinx_extensions.pep_zero_generator.constants import SPECIAL_STATUSES
@@ -17,6 +18,9 @@ from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_VALUES
 from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_STANDARDS
 from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_VALUES
 from pep_sphinx_extensions.pep_zero_generator.errors import PEPError
+
+if TYPE_CHECKING:
+    from pep_sphinx_extensions.pep_zero_generator.author import Author
 
 
 class PEP:
@@ -118,7 +122,7 @@ def _parse_authors(pep: PEP, author_header: str, authors_overrides: dict) -> lis
     authors_and_emails = _parse_author(author_header)
     if not authors_and_emails:
         raise _raise_pep_error(pep, "no authors found", pep_num=True)
-    return [Author(author_tuple, authors_overrides) for author_tuple in authors_and_emails]
+    return [parse_author_email(author_tuple, authors_overrides) for author_tuple in authors_and_emails]
 
 
 author_angled = re.compile(r"(?P<author>.+?) <(?P<email>.+?)>(,\s*)?")
