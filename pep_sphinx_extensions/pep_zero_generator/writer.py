@@ -97,47 +97,52 @@ class PEPZeroWriter:
     def sort_peps(peps: list[PEP]) -> tuple[list[PEP], ...]:
         """Sort PEPs into meta, informational, accepted, open, finished,
         and essentially dead."""
-        meta = []
-        info = []
-        provisional = []
-        accepted = []
-        open_ = []
-        finished = []
-        historical = []
-        deferred = []
-        dead = []
-        for pep in peps:
-            # Order of 'if' statement important.  Key Status values take precedence
-            # over Type value, and vice-versa.
-            if pep.status == "Draft":
-                open_.append(pep)
-            elif pep.status == "Deferred":
-                deferred.append(pep)
-            elif pep.pep_type == "Process":
-                if pep.status == "Active":
-                    meta.append(pep)
-                elif pep.status in {"Withdrawn", "Rejected"}:
-                    dead.append(pep)
-                else:
-                    historical.append(pep)
-            elif pep.status in {"Rejected", "Withdrawn", "Incomplete", "Superseded"}:
-                dead.append(pep)
-            elif pep.pep_type == "Informational":
-                # Hack until the conflict between the use of "Final"
-                # for both API definition PEPs and other (actually
-                # obsolete) PEPs is addressed
-                if pep.status == "Active" or "Release Schedule" not in pep.title:
-                    info.append(pep)
-                else:
-                    historical.append(pep)
-            elif pep.status == "Provisional":
-                provisional.append(pep)
-            elif pep.status in {"Accepted", "Active"}:
-                accepted.append(pep)
-            elif pep.status == "Final":
-                finished.append(pep)
-            else:
-                raise PEPError(f"unsorted ({pep.pep_type}/{pep.status})", pep.filename, pep.number)
+        remaining = set(peps)
+
+        # The order of the comprehensions below is important. Key status values
+        # take precedence over type value, and vice-versa.
+        open_ = sorted(pep for pep in remaining if pep.status == "Draft")
+        remaining -= {pep for pep in open_}
+
+        deferred = sorted(pep for pep in remaining if pep.status == "Deferred")
+        remaining -= {pep for pep in deferred}
+
+        meta = sorted(pep for pep in remaining if pep.pep_type == "Process" and pep.status == "Active")
+        remaining -= {pep for pep in meta}
+
+        dead = sorted(pep for pep in remaining if pep.pep_type == "Process" and pep.status in {"Withdrawn", "Rejected"})
+        remaining -= {pep for pep in dead}
+
+        historical = sorted(pep for pep in remaining if pep.pep_type == "Process")
+        remaining -= {pep for pep in historical}
+
+        dead += sorted(pep for pep in remaining if pep.status in {"Rejected", "Withdrawn", "Incomplete", "Superseded"})
+        remaining -= {pep for pep in dead}
+
+        # Hack until the conflict between the use of "Final"
+        # for both API definition PEPs and other (actually
+        # obsolete) PEPs is addressed
+        info = sorted(
+            pep for pep in remaining
+            if pep.pep_type == "Informational" and (pep.status == "Active" or "Release Schedule" not in pep.title)
+        )
+        remaining -= {pep for pep in info}
+
+        historical += sorted(pep for pep in remaining if pep.pep_type == "Informational")
+        remaining -= {pep for pep in historical}
+
+        provisional = sorted(pep for pep in remaining if pep.status == "Provisional")
+        remaining -= {pep for pep in provisional}
+
+        accepted = sorted(pep for pep in remaining if pep.status in {"Accepted", "Active"})
+        remaining -= {pep for pep in accepted}
+
+        finished = sorted(pep for pep in remaining if pep.status == "Final")
+        remaining -= {pep for pep in finished}
+
+        for pep in remaining:
+            raise PEPError(f"unsorted ({pep.pep_type}/{pep.status})", pep.filename, pep.number)
+
         return meta, info, provisional, accepted, open_, finished, historical, deferred, dead
 
     @staticmethod
