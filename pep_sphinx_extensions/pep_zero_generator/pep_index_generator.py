@@ -18,8 +18,8 @@ to allow it to be processed as normal.
 from __future__ import annotations
 
 import csv
-import re
 from pathlib import Path
+import re
 from typing import TYPE_CHECKING
 
 from pep_sphinx_extensions.pep_zero_generator import parser

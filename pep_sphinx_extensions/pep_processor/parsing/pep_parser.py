@@ -4,10 +4,10 @@ from typing import TYPE_CHECKING
 
 from sphinx import parsers
 
-from pep_sphinx_extensions.pep_processor.transforms import pep_headers
-from pep_sphinx_extensions.pep_processor.transforms import pep_title
 from pep_sphinx_extensions.pep_processor.transforms import pep_contents
 from pep_sphinx_extensions.pep_processor.transforms import pep_footer
+from pep_sphinx_extensions.pep_processor.transforms import pep_headers
+from pep_sphinx_extensions.pep_processor.transforms import pep_title
 
 if TYPE_CHECKING:
     from docutils import transforms

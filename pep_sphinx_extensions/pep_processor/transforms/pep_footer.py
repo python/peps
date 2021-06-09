@@ -1,6 +1,6 @@
 import datetime
-import subprocess
 from pathlib import Path
+import subprocess
 
 from docutils import nodes
 from docutils import transforms

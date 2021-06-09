@@ -8,14 +8,14 @@ import re
 import textwrap
 
 from pep_sphinx_extensions.pep_zero_generator.author import Author
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_PROVISIONAL
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_ACTIVE
-from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_STANDARDS
-from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_VALUES
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_VALUES
-from pep_sphinx_extensions.pep_zero_generator.constants import SPECIAL_STATUSES
 from pep_sphinx_extensions.pep_zero_generator.constants import ACTIVE_ALLOWED
 from pep_sphinx_extensions.pep_zero_generator.constants import HIDE_STATUS
+from pep_sphinx_extensions.pep_zero_generator.constants import SPECIAL_STATUSES
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_ACTIVE
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_PROVISIONAL
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_VALUES
+from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_STANDARDS
+from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_VALUES
 from pep_sphinx_extensions.pep_zero_generator.errors import PEPError
 
 

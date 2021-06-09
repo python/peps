@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from sphinx.environment import default_settings
 from docutils.writers.html5_polyglot import HTMLTranslator
+from sphinx.environment import default_settings
 
 from pep_sphinx_extensions.pep_processor.html import pep_html_translator
 from pep_sphinx_extensions.pep_processor.parsing import pep_parser

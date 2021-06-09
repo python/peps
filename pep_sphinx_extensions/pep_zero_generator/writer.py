@@ -7,25 +7,25 @@ import functools
 from typing import TYPE_CHECKING
 import unicodedata
 
-from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_VALUES
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_VALUES
+from pep_sphinx_extensions.pep_zero_generator.constants import DEAD_STATUSES
 from pep_sphinx_extensions.pep_zero_generator.constants import HIDE_STATUS
 from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_ACCEPTED
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_ACTIVE
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_DEFERRED
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_DRAFT
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_FINAL
 from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_PROVISIONAL
 from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_REJECTED
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_VALUES
 from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_WITHDRAWN
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_DEFERRED
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_FINAL
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_ACTIVE
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_DRAFT
-from pep_sphinx_extensions.pep_zero_generator.constants import DEAD_STATUSES
 from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_INFO
 from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_PROCESS
+from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_VALUES
 from pep_sphinx_extensions.pep_zero_generator.errors import PEPError
 
 if TYPE_CHECKING:
-    from pep_sphinx_extensions.pep_zero_generator.parser import PEP
-    from pep_sphinx_extensions.pep_zero_generator.author import Author 
+    from pep_sphinx_extensions.pep_zero_generator.author import Author
+    from pep_sphinx_extensions.pep_zero_generator.parser import PEP 
 
 title_length = 55
 author_length = 40
