@@ -66,6 +66,10 @@ pages: rss
 sphinx:
 	$(SPHINX_BUILD)
 
+# for building Sphinx without a web-server
+sphinx-local:
+	$(SPHINX_BUILD) --build-files
+
 fail_on_warning:
 	$(SPHINX_BUILD) --fail-on-warning
 
