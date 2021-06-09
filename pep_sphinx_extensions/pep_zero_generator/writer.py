@@ -7,11 +7,14 @@ import functools
 from typing import TYPE_CHECKING
 import unicodedata
 
-from pep_sphinx_extensions.pep_zero_generator.parser import PEP
+from pep_sphinx_extensions.pep_zero_generator.constants import type_values
+from pep_sphinx_extensions.pep_zero_generator.constants import status_values
+from pep_sphinx_extensions.pep_zero_generator.constants import hide_status
 from pep_sphinx_extensions.pep_zero_generator.errors import PEPError
 
 if TYPE_CHECKING:
-    from pep_sphinx_extensions.pep_zero_generator import parser
+    from pep_sphinx_extensions.pep_zero_generator.parser import PEP
+    from pep_sphinx_extensions.pep_zero_generator.author import Author 
 
 title_length = 55
 author_length = 40
@@ -91,7 +94,7 @@ class PEPZeroWriter:
         self.emit_table_separator()
 
     @staticmethod
-    def sort_peps(peps: list[parser.PEP]) -> tuple[list[parser.PEP], ...]:
+    def sort_peps(peps: list[PEP]) -> tuple[list[PEP], ...]:
         """Sort PEPs into meta, informational, accepted, open, finished,
         and essentially dead."""
         meta = []
@@ -138,8 +141,8 @@ class PEPZeroWriter:
         return meta, info, provisional, accepted, open_, finished, historical, deferred, dead
 
     @staticmethod
-    def verify_email_addresses(peps: list[parser.PEP]) -> dict[parser.Author, str]:
-        authors_dict: dict[parser.Author, set[str]] = {}
+    def verify_email_addresses(peps: list[PEP]) -> dict[Author, str]:
+        authors_dict: dict[Author, set[str]] = {}
         for pep in peps:
             for author in pep.authors:
                 # If this is the first time we have come across an author, add them.
@@ -171,7 +174,7 @@ class PEPZeroWriter:
         return valid_authors_dict
 
     @staticmethod
-    def sort_authors(authors_dict: dict[parser.Author, str]) -> list[parser.Author]:
+    def sort_authors(authors_dict: dict[Author, str]) -> list[Author]:
         return sorted(authors_dict.keys(), key=_author_sort_by)
 
     def emit_title(self, text: str, anchor: str, *, symbol: str = "=") -> None:
@@ -183,7 +186,7 @@ class PEPZeroWriter:
     def emit_subtitle(self, text: str, anchor: str) -> None:
         self.emit_title(text, anchor, symbol="-")
 
-    def emit_pep_category(self, category: str, anchor: str, peps: list[parser.PEP]) -> None:
+    def emit_pep_category(self, category: str, anchor: str, peps: list[PEP]) -> None:
         self.emit_subtitle(category, anchor)
         self.emit_column_headers()
         for pep in peps:
@@ -191,7 +194,7 @@ class PEPZeroWriter:
         self.emit_table_separator()
         self.emit_newline()
 
-    def write_pep0(self, peps: list[parser.PEP]):
+    def write_pep0(self, peps: list[PEP]):
 
         # PEP metadata
         self.output(header)
@@ -251,7 +254,7 @@ class PEPZeroWriter:
 
         # PEP types key
         self.emit_title("PEP Types Key", "type-key")
-        for type_ in sorted(PEP.type_values):
+        for type_ in sorted(type_values):
             self.output(f"    {type_[0]} - {type_} PEP")
             self.emit_newline()
 
@@ -259,9 +262,9 @@ class PEPZeroWriter:
 
         # PEP status key
         self.emit_title("PEP Status Key", "status-key")
-        for status in sorted(PEP.status_values):
+        for status in sorted(status_values):
             # Draft PEPs have no status displayed, Active shares a key with Accepted
-            if status in {"Active", "Draft"}:
+            if status in hide_status:
                 continue
             if status == "Accepted":
                 msg = "    A - Accepted (Standards Track only) or Active proposal"
@@ -295,7 +298,7 @@ class PEPZeroWriter:
         return pep0_string
 
 
-def _author_sort_by(author: parser.Author) -> str:
+def _author_sort_by(author: Author) -> str:
     """Skip lower-cased words in surname when sorting."""
     surname, *_ = author.last_first.split(",")
     surname_parts = surname.split()

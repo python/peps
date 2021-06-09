@@ -8,20 +8,15 @@ import re
 import textwrap
 
 from pep_sphinx_extensions.pep_zero_generator.author import Author
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_PROVISIONAL
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_ACTIVE
+from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_STANDARDS
+from pep_sphinx_extensions.pep_zero_generator.constants import type_values
+from pep_sphinx_extensions.pep_zero_generator.constants import status_values
+from pep_sphinx_extensions.pep_zero_generator.constants import special_statuses
+from pep_sphinx_extensions.pep_zero_generator.constants import active_allowed
+from pep_sphinx_extensions.pep_zero_generator.constants import hide_status
 from pep_sphinx_extensions.pep_zero_generator.errors import PEPError
-
-STATUS_ACCEPTED = "Accepted"
-STATUS_PROVISIONAL = "Provisional"
-STATUS_REJECTED = "Rejected"
-STATUS_WITHDRAWN = "Withdrawn"
-STATUS_DEFERRED = "Deferred"
-STATUS_FINAL = "Final"
-STATUS_ACTIVE = "Active"
-STATUS_DRAFT = "Draft"
-STATUS_SUPERSEDED = "Superseded"
-TYPE_STANDARDS = "Standards Track"
-TYPE_INFO = "Informational"
-TYPE_PROCESS = "Process"
 
 
 class PEP:
@@ -38,20 +33,6 @@ class PEP:
 
     # The required RFC 822 headers for all PEPs.
     required_headers = {"PEP", "Title", "Author", "Status", "Type", "Created"}
-
-    # Valid values for the Type header.
-    type_values = {TYPE_STANDARDS, TYPE_INFO, TYPE_PROCESS}
-    # Valid values for the Status header.
-    status_values = {
-        STATUS_ACCEPTED, STATUS_PROVISIONAL, STATUS_REJECTED, STATUS_WITHDRAWN,
-        STATUS_DEFERRED, STATUS_FINAL, STATUS_ACTIVE, STATUS_DRAFT, STATUS_SUPERSEDED,
-    }
-    special_statuses = {
-        "April Fool!": STATUS_REJECTED,  # See PEP 401 :)
-    }
-    # Active PEPs can only be for Informational or Process PEPs.
-    active_allowed = {TYPE_PROCESS, TYPE_INFO}
-    hide_status = {STATUS_DRAFT, STATUS_ACTIVE}
 
     def raise_pep_error(self, msg: str, pep_num: bool = False) -> None:
         pep_number = self.number if pep_num else None
@@ -86,18 +67,18 @@ class PEP:
 
         # Type
         self.pep_type: str = metadata["Type"]
-        if self.pep_type not in PEP.type_values:
+        if self.pep_type not in type_values:
             self.raise_pep_error(f"{self.pep_type} is not a valid Type value", pep_num=True)
 
         # Status
         status = metadata["Status"]
-        if status in PEP.special_statuses:
-            status = PEP.special_statuses[status]
-        if status not in PEP.status_values:
+        if status in special_statuses:
+            status = special_statuses[status]
+        if status not in status_values:
             self.raise_pep_error(f"{status} is not a valid Status value", pep_num=True)
 
         # Special case for Active PEPs.
-        if status == STATUS_ACTIVE and self.pep_type not in PEP.active_allowed:
+        if status == STATUS_ACTIVE and self.pep_type not in active_allowed:
             msg = "Only Process and Informational PEPs may have an Active status"
             self.raise_pep_error(msg, pep_num=True)
 
@@ -163,7 +144,7 @@ class PEP:
             "number": self.number,
             "title": self.title_abbr(title_length),
             # how the status should be represented in the index
-            "status": self.status[0].upper() if self.status not in PEP.hide_status else " ",
+            "status": self.status[0].upper() if self.status not in hide_status else " ",
             # the author list as a comma-separated with only last names
             "authors": ", ".join(x.nick for x in self.authors),
         }

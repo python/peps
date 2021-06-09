@@ -39,7 +39,6 @@ def create_pep_zero(_: Sphinx, env: BuildEnvironment, docnames: list[str]) -> No
     pep_zero_filename = "pep-0000"
     peps: list[parser.PEP] = []
     pep_pat = re.compile(r"pep-\d{4}")  # Path.match() doesn't support regular expressions
-    title_length = writer.title_length
 
     # AUTHOR_OVERRIDES.csv is an exception file for PEP0 name parsing
     with open("AUTHOR_OVERRIDES.csv", "r", encoding="utf-8") as f:
