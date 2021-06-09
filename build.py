@@ -10,9 +10,11 @@ def create_parser():
     parser = argparse.ArgumentParser(description="Build PEP documents")
     # alternative builders:
     parser.add_argument("-l", "--check-links", action="store_true")
+    parser.add_argument("-f", "--build-files", action="store_true")
+    parser.add_argument("-d", "--build-dirs", action="store_true")
 
     # flags / options
-    parser.add_argument("-f", "--fail-on-warning", action="store_true")
+    parser.add_argument("-w", "--fail-on-warning", action="store_true")
     parser.add_argument("-n", "--nitpicky", action="store_true")
     parser.add_argument("-j", "--jobs", type=int, default=1)
 
@@ -31,9 +33,15 @@ if __name__ == "__main__":
     doctree_directory = build_directory / ".doctrees"
 
     # builder configuration
-    sphinx_builder = "dirhtml"
-    if args.check_links:
+    if args.build_files:
+        sphinx_builder = "html"
+    elif args.build_dirs:
+        sphinx_builder = "dirhtml"
+    elif args.check_links:
         sphinx_builder = "linkcheck"
+    else:
+        # default builder
+        sphinx_builder = "dirhtml"
 
     # other configuration
     config_overrides = {}
