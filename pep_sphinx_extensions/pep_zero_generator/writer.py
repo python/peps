@@ -218,52 +218,47 @@ class PEPZeroWriter:
 def _classify_peps(peps: list[PEP]) -> tuple[list[PEP], ...]:
     """Sort PEPs into meta, informational, accepted, open, finished,
     and essentially dead."""
-    remaining = set(peps)
-
-    # The order of the comprehensions below is important. Key status values
-    # take precedence over type value, and vice-versa.
-    open_ = sorted(pep for pep in remaining if pep.status == STATUS_DRAFT)
-    remaining -= {pep for pep in open_}
-
-    deferred = sorted(pep for pep in remaining if pep.status == STATUS_DEFERRED)
-    remaining -= {pep for pep in deferred}
-
-    meta = sorted(pep for pep in remaining if pep.pep_type == TYPE_PROCESS and pep.status == STATUS_ACTIVE)
-    remaining -= {pep for pep in meta}
-
-    dead = [pep for pep in remaining if pep.pep_type == TYPE_PROCESS and pep.status in {STATUS_WITHDRAWN, STATUS_REJECTED}]
-    remaining -= {pep for pep in dead}
-
-    historical = [pep for pep in remaining if pep.pep_type == TYPE_PROCESS]
-    remaining -= {pep for pep in historical}
-
-    dead = sorted(dead + [pep for pep in remaining if pep.status in DEAD_STATUSES])
-    remaining -= {pep for pep in dead}
-
-    # Hack until the conflict between the use of `Final`
-    # for both API definition PEPs and other (actually
-    # obsolete) PEPs is addressed
-    info = sorted(
-        pep for pep in remaining
-        if pep.pep_type == TYPE_INFO and (pep.status == STATUS_ACTIVE or "Release Schedule" not in pep.title)
-    )
-    remaining -= {pep for pep in info}
-
-    historical = sorted(historical + [pep for pep in remaining if pep.pep_type == TYPE_INFO])
-    remaining -= {pep for pep in historical}
-
-    provisional = sorted(pep for pep in remaining if pep.status == STATUS_PROVISIONAL)
-    remaining -= {pep for pep in provisional}
-
-    accepted = sorted(pep for pep in remaining if pep.status in {STATUS_ACCEPTED, STATUS_ACTIVE})
-    remaining -= {pep for pep in accepted}
-
-    finished = sorted(pep for pep in remaining if pep.status == STATUS_FINAL)
-    remaining -= {pep for pep in finished}
-
-    for pep in remaining:
-        raise PEPError(f"unsorted ({pep.pep_type}/{pep.status})", pep.filename, pep.number)
-
+    meta = []
+    info = []
+    provisional = []
+    accepted = []
+    open_ = []
+    finished = []
+    historical = []
+    deferred = []
+    dead = []
+    for pep in peps:
+        # Order of 'if' statement important.  Key Status values take precedence
+        # over Type value, and vice-versa.
+        if pep.status == STATUS_DRAFT:
+            open_.append(pep)
+        elif pep.status == STATUS_DEFERRED:
+            deferred.append(pep)
+        elif pep.pep_type == TYPE_PROCESS:
+            if pep.status == STATUS_ACTIVE:
+                meta.append(pep)
+            elif pep.status in {STATUS_WITHDRAWN, STATUS_REJECTED}:
+                dead.append(pep)
+            else:
+                historical.append(pep)
+        elif pep.status in DEAD_STATUSES:
+            dead.append(pep)
+        elif pep.pep_type == TYPE_INFO:
+            # Hack until the conflict between the use of "Final"
+            # for both API definition PEPs and other (actually
+            # obsolete) PEPs is addressed
+            if pep.status == STATUS_ACTIVE or "Release Schedule" not in pep.title:
+                info.append(pep)
+            else:
+                historical.append(pep)
+        elif pep.status == STATUS_PROVISIONAL:
+            provisional.append(pep)
+        elif pep.status in {STATUS_ACCEPTED, STATUS_ACTIVE}:
+            accepted.append(pep)
+        elif pep.status == STATUS_FINAL:
+            finished.append(pep)
+        else:
+            raise PEPError(f"Unsorted ({pep.pep_type}/{pep.status})", pep.filename, pep.number)
     return meta, info, provisional, accepted, open_, finished, historical, deferred, dead
 
 
