@@ -97,6 +97,9 @@ class PEP:
     def __lt__(self, other: PEP) -> bool:
         return self.number < other.number
 
+    def __eq__(self, other):
+        return self.number == other.number
+
     def details(self, *, title_length) -> dict[str, str | int]:
         """Return the line entry for the PEP."""
         return {
