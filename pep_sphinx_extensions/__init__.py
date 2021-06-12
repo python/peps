@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from docutils.writers.html5_polyglot import HTMLTranslator
 from sphinx.environment import default_settings
+from sphinx.environment import BuildEnvironment
 
 from pep_sphinx_extensions.pep_processor.html import pep_html_translator
 from pep_sphinx_extensions.pep_processor.parsing import pep_parser
@@ -25,6 +26,10 @@ default_settings |= {
     "pep_file_url_template": "pep-%04d.html",
     "_disable_config": True,  # disable using docutils.conf whilst running both PEP generators
 }
+
+# Monkeypatch sphinx.environment.BuildEnvironment.collect_relations, as it takes a long time
+# and we don't use the parent/next/prev functionality
+BuildEnvironment.collect_relations = lambda self: {}
 
 
 def _depart_maths():
