@@ -1,13 +1,13 @@
-import re
 from pathlib import Path
+import re
 
 from docutils import nodes
 from docutils import transforms
 from docutils.transforms import peps
 from sphinx import errors
 
-from pep_sphinx_extensions.pep_processor.transforms import pep_zero
 from pep_sphinx_extensions.config import pep_url
+from pep_sphinx_extensions.pep_processor.transforms import pep_zero
 
 
 class PEPParsingError(errors.SphinxError):

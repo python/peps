@@ -2,6 +2,7 @@
 
 import argparse
 from pathlib import Path
+import shutil
 
 from sphinx.application import Sphinx
 
@@ -22,6 +23,13 @@ def create_parser():
     parser.add_argument("-i", "--index-file", action="store_true")  # for PEP 0
 
     return parser.parse_args()
+
+
+def create_index_file(html_root: Path):
+    """Copies PEP 0 to the root index.html so that /peps/ works."""
+    pep_zero_path = html_root / "pep-0000" / "index.html"
+    if pep_zero_path.is_file():
+        shutil.copy(pep_zero_path, html_root / "index.html")
 
 
 if __name__ == "__main__":
@@ -60,3 +68,6 @@ if __name__ == "__main__":
     )
     app.builder.copysource = False  # Prevent unneeded source copying - we link direct to GitHub
     app.build()
+    
+    if args.index_file:
+        create_index_file(build_directory)
