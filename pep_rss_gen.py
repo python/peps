@@ -95,7 +95,14 @@ def main():
 
         title = first_line_starting_with(full_path, "Title:")
         author = first_line_starting_with(full_path, "Author:")
-        parsed_authors = email.utils.getaddresses([author]) if "@" in author else [(author, "")]
+        if "@" in author or " at " in author:
+            parsed_authors = email.utils.getaddresses([author])
+            # ideal would be to pass as a list of dicts with names and emails to
+            # item.author, but FeedGen's RSS <author/> output doesn't pass W3C
+            # validation (as of 12/06/2021)
+            joined_authors = ", ".join(f"{name} ({email_address})" for name, email_address in parsed_authors)
+        else:
+            joined_authors = author
         url = f"https://www.python.org/dev/peps/pep-{pep_num:0>4}"
 
         item = entry.FeedEntry()
@@ -104,7 +111,7 @@ def main():
         item.description(pep_abstract(full_path))
         item.guid(url, permalink=True)
         item.published(dt.replace(tzinfo=datetime.timezone.utc))  # ensure datetime has a timezone
-        item.author([dict(name=parsed_author[0], email=parsed_author[1]) for parsed_author in parsed_authors])
+        item.author(email=joined_authors)
         items.append(item)
 
     # The rss envelope
