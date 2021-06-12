@@ -130,6 +130,7 @@ def main():
     # Add metadata
     fg.title("Newest Python PEPs")
     fg.link(href="https://www.python.org/dev/peps")
+    fg.link(href="https://www.python.org/dev/peps/peps.rss", rel="self")
     fg.description(desc)
     fg.lastBuildDate(datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc))
 
