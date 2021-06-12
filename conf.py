@@ -53,5 +53,5 @@ html_use_index = False  # Disable index (we use PEP 0)
 html_sourcelink_suffix = ""  # Fix links to GitHub (don't append .txt)
 html_style = ""  # must be defined here or in theme.conf, but is unused
 
-templates_path = ['pep_sphinx_extensions/theme/static/templates']  # Theme template relative paths from `confdir`
+templates_path = ['pep_sphinx_extensions/theme/templates']  # Theme template relative paths from `confdir`
 template_bridge = "pep_sphinx_extensions.theme.pep_jinja2.PEPTemplateLoader"
