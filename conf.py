@@ -44,3 +44,13 @@ html_math_renderer = "maths_to_html"  # Maths rendering
 html_show_copyright = False  # Turn off miscellany
 html_show_sphinx = False
 html_title = "peps.python.org"  # Set <title/>
+
+# Theme settings
+html_theme_path = ["pep_sphinx_extensions"]
+html_theme = "theme"  # The actual theme directory (child of html_theme_path)
+html_favicon = Path(html_theme_path[0], html_theme, "static/py.png").as_posix()
+html_use_index = False  # Disable index (we use PEP 0)
+html_sourcelink_suffix = ""  # Fix links to GitHub (don't append .txt)
+
+templates_path = ['pep_sphinx_extensions/theme/static/templates']  # Theme template relative paths from `confdir`
+template_bridge = "pep_sphinx_extensions.theme.pep_jinja2.PEPTemplateLoader"

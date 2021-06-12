@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import re
-from sphinx import jinja2glue
 from typing import TYPE_CHECKING
+
+from sphinx import jinja2glue
 
 from pep_sphinx_extensions.config import pep_stem
 
