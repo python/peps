@@ -1,9 +1,5 @@
-/* Sphinx JavaScript utilities for all documentation.
- * Adapted from https://github.com/sphinx-doc/sphinx/blob/master/sphinx/themes/basic/static/doctools.js
- * Removed libraries (jQuery/underscores) & stripped down
- */
+/* JavaScript utilities for all documentation. */
 
 // Footnote fixer
-document.querySelectorAll("span.brackets").forEach(el => {
-    if (!el.children.length) el.innerText = "[" + el.innerText + "]"
-})
+document.querySelectorAll("span.brackets").forEach(el => el.innerHTML = "[" + el.innerHTML + "]")
+document.querySelectorAll("a.brackets").forEach(el => el.innerHTML = "[" + el.innerHTML + "]")
