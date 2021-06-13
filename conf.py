@@ -52,5 +52,6 @@ html_favicon = Path(html_theme_path[0], html_theme, "static/py.png").as_posix()
 html_use_index = False  # Disable index (we use PEP 0)
 html_sourcelink_suffix = ""  # Fix links to GitHub (don't append .txt)
 html_style = ""  # must be defined here or in theme.conf, but is unused
+html_permalinks = False  # handled in the PEPContents transform
 
 templates_path = ['pep_sphinx_extensions/theme/templates']  # Theme template relative paths from `confdir`
