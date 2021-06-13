@@ -25,9 +25,9 @@ def create_parser():
     return parser.parse_args()
 
 
-def create_index_file(html_root: Path):
+def create_index_file(html_root: Path, builder: str):
     """Copies PEP 0 to the root index.html so that /peps/ works."""
-    pep_zero_path = html_root / "pep-0000" / "index.html"
+    pep_zero_path = html_root / ("pep-0000.html" if builder == "html" else "pep-0000/index.html")
     if pep_zero_path.is_file():
         shutil.copy(pep_zero_path, html_root / "index.html")
 
@@ -71,4 +71,4 @@ if __name__ == "__main__":
     app.build()
     
     if args.index_file:
-        create_index_file(build_directory)
+        create_index_file(build_directory, sphinx_builder)
