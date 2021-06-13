@@ -91,7 +91,7 @@ class PEPFooter(transforms.Transform):
         """Add link to source text on VCS (GitHub)"""
         source_link = config.pep_vcs_url + pep_source_path.name
         link_node = nodes.reference("", source_link, refuri=source_link)
-        span_node = nodes.inline("", "Source: ", link_node)
+        span_node = nodes.inline("", "Source: ", link_node, classes=["footer-metadata"])
         self.document.append(span_node)
 
     def add_commit_history_info(self, pep_source_path: Path) -> None:
@@ -105,7 +105,6 @@ class PEPFooter(transforms.Transform):
             return None
 
         commit_link = config.pep_commits_url + pep_source_path.name
-        link_node = nodes.reference("", f"{dt.isoformat()}Z", refuri=commit_link)
-        span_node = nodes.inline("", "Last modified: ", link_node)
-        self.document.append(nodes.line("", "", classes=["zero-height"]))
+        link_node = nodes.reference("", f"{dt.isoformat(sep=' ')} GMT", refuri=commit_link)
+        span_node = nodes.inline("", "Last modified: ", link_node, classes=["footer-metadata"])
         self.document.append(span_node)
