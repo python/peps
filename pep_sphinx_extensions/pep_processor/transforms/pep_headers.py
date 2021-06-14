@@ -3,7 +3,6 @@ import re
 
 from docutils import nodes
 from docutils import transforms
-from docutils.transforms import peps
 from sphinx import errors
 
 from pep_sphinx_extensions.config import pep_url
@@ -74,7 +73,7 @@ class PEPHeaders(transforms.Transform):
                 for node in para:
                     if isinstance(node, nodes.reference):
                         pep_num = pep if name == "discussions-to" else -1
-                        node.replace_self(peps.mask_email(node, pep_num))
+                        node.replace_self(_mask_email(node, pep_num))
             elif name in {"replaces", "superseded-by", "requires"}:
                 # replace PEP numbers with normalised list of links to PEPs
                 new_body = []
@@ -107,13 +106,13 @@ def _mask_email(ref: nodes.reference, pep_num: int = -1) -> nodes.reference:
     """
     if "refuri" in ref and ref["refuri"].startswith("mailto:"):
         non_masked_addresses = {"peps@python.org", "python-list@python.org", "python-dev@python.org"}
-        if ref['refuri'].removeprefix("mailto:").strip() in non_masked_addresses:
+        if ref["refuri"].removeprefix("mailto:").strip() in non_masked_addresses:
             replacement = ref[0]
         else:
             replacement_text = ref.astext().replace("@", "&#32;&#97;t&#32;")
-            replacement = nodes.raw('', replacement_text, format="html")
+            replacement = nodes.raw("", replacement_text, format="html")
 
         if pep_num != -1:
-            replacement['refuri'] += f"?subject=PEP%20{pep_num}"
+            replacement["refuri"] += f"?subject=PEP%20{pep_num}"
         return replacement
     return ref

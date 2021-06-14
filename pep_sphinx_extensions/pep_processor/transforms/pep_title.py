@@ -34,13 +34,7 @@ class PEPTitle(transforms.Transform):
         pep_title_string = f"PEP {pep_number} -- {pep_title}"  # double hyphen for en dash
 
         # Generate the title section node and its properties
-        pep_title_node = nodes.section()
-        text_node = nodes.Text(pep_title_string, pep_title_string)
-        title_node = nodes.title(pep_title_string, "", text_node)
-        title_node["classes"].append("page-title")
-        name = " ".join(title_node.astext().lower().split())  # normalise name
-        pep_title_node["names"].append(name)
-        pep_title_node += title_node
+        pep_title_node = nodes.section("", nodes.title("", pep_title_string, classes=["page-title"]), names=["pep-content"])
 
         # Insert the title node as the root element, move children down
         document_children = self.document.children
