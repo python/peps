@@ -69,42 +69,43 @@ class PEPFooter(transforms.Transform):
 
         # If there are no references after TargetNotes has finished, remove the
         # references section
-        pending = nodes.pending(misc.CallBack, details={"callback": self.cleanup_callback})
+        pending = nodes.pending(misc.CallBack, details={"callback": _cleanup_callback})
         reference_section.append(pending)
         self.document.note_pending(pending, priority=1)
 
         # Add link to source text and last modified date
-        self.add_source_link(pep_source_path)
-        self.add_commit_history_info(pep_source_path)
+        if pep_source_path.stem != "pep-0000":
+            self.document += _add_source_link(pep_source_path)
+            self.document += _add_commit_history_info(pep_source_path)
 
-    @staticmethod
-    def cleanup_callback(pending: nodes.pending) -> None:
-        """Remove an empty "References" section.
 
-        Called after the `references.TargetNotes` transform is complete.
+def _cleanup_callback(pending: nodes.pending) -> None:
+    """Remove an empty "References" section.
 
-        """
-        if len(pending.parent) == 2:  # <title> and <pending>
-            pending.parent.parent.remove(pending.parent)
+    Called after the `references.TargetNotes` transform is complete.
 
-    def add_source_link(self, pep_source_path: Path) -> None:
-        """Add link to source text on VCS (GitHub)"""
-        source_link = config.pep_vcs_url + pep_source_path.name
-        link_node = nodes.reference("", source_link, refuri=source_link)
-        span_node = nodes.inline("", "Source: ", link_node, classes=["footer-metadata"])
-        self.document.append(span_node)
+    """
+    if len(pending.parent) == 2:  # <title> and <pending>
+        pending.parent.parent.remove(pending.parent)
 
-    def add_commit_history_info(self, pep_source_path: Path) -> None:
-        """Use local git history to find last modified date."""
-        args = ["git", "--no-pager", "log", "-1", "--format=%at", pep_source_path.name]
-        try:
-            file_modified = subprocess.check_output(args)
-            since_epoch = file_modified.decode("utf-8").strip()
-            dt = datetime.datetime.utcfromtimestamp(float(since_epoch))
-        except (subprocess.CalledProcessError, ValueError):
-            return None
 
-        commit_link = config.pep_commits_url + pep_source_path.name
-        link_node = nodes.reference("", f"{dt.isoformat(sep=' ')} GMT", refuri=commit_link)
-        span_node = nodes.inline("", "Last modified: ", link_node, classes=["footer-metadata"])
-        self.document.append(span_node)
+def _add_source_link(pep_source_path: Path) -> nodes.paragraph:
+    """Add link to source text on VCS (GitHub)"""
+    source_link = config.pep_vcs_url + pep_source_path.name
+    link_node = nodes.reference("", source_link, refuri=source_link)
+    return nodes.paragraph("", "Source: ", link_node)
+
+
+def _add_commit_history_info(pep_source_path: Path) -> nodes.paragraph:
+    """Use local git history to find last modified date."""
+    args = ["git", "--no-pager", "log", "-1", "--format=%at", pep_source_path.name]
+    try:
+        file_modified = subprocess.check_output(args)
+        since_epoch = file_modified.decode("utf-8").strip()
+        dt = datetime.datetime.utcfromtimestamp(float(since_epoch))
+    except (subprocess.CalledProcessError, ValueError):
+        return nodes.paragraph()
+
+    commit_link = config.pep_commits_url + pep_source_path.name
+    link_node = nodes.reference("", f"{dt.isoformat(sep=' ')} GMT", refuri=commit_link)
+    return nodes.paragraph("", "Last modified: ", link_node)
