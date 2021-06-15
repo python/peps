@@ -60,7 +60,11 @@ lint:
 SPHINX_JOBS=8
 SPHINX_BUILD=$(PYTHON) build.py -j $(SPHINX_JOBS)
 
-pages: rss
+# TODO replace `rss:` with this when merged & tested
+pep_rss:
+	$(PYTHON) pep_rss_gen.py
+
+pages: pep_rss
 	$(SPHINX_BUILD) --index-file
 
 sphinx:
