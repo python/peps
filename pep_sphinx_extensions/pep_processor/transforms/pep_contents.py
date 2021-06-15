@@ -44,19 +44,12 @@ class Contents(parts.Contents):
         self.backlinks = None
 
     def apply(self) -> None:
-
-        # let the writer (or output software) build the contents list?
-        if getattr(self.document.settings, "use_latex_toc", False):
-            # move customisation settings to the parent node
-            self.startnode.parent.attributes.update(self.startnode.details)
-            self.startnode.parent.remove(self.startnode)
+        contents = self.build_contents(self.document[0][4:])  # skip PEP title, headers, <hr/>, and contents
+        if contents:
+            self.startnode.replace_self(contents)
         else:
-            contents = self.build_contents(self.document[0][4:])  # skip PEP title, headers, <hr/>, and contents
-            if contents:
-                self.startnode.replace_self(contents)
-            else:
-                # if no contents, remove the empty placeholder
-                self.startnode.parent.parent.remove(self.startnode.parent)
+            # if no contents, remove the empty placeholder
+            self.startnode.parent.parent.remove(self.startnode.parent)
 
     def build_contents(self, node, level=0):
         level += 1

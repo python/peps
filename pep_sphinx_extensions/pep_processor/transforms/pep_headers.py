@@ -79,12 +79,9 @@ class PEPHeaders(transforms.Transform):
             elif name in {"replaces", "superseded-by", "requires"}:
                 # replace PEP numbers with normalised list of links to PEPs
                 new_body = []
-                space = nodes.Text(" ")
                 for ref_pep in re.split(r",?\s+", body.astext()):
-                    new_body.append(nodes.reference(
-                        ref_pep, ref_pep,
-                        refuri=(self.document.settings.pep_base_url + pep_url.format(int(ref_pep)))))
-                    new_body.append(space)
+                    new_body += [nodes.reference("", ref_pep, refuri=pep_url.format(int(ref_pep)))]
+                    new_body += [nodes.Text(", ")]
                 para[:] = new_body[:-1]  # drop trailing space
             elif name in {"last-modified", "content-type", "version"}:
                 # Mark unneeded fields

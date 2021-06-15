@@ -8,9 +8,8 @@ class PEPRole(roles.PEP):
 
     def build_uri(self) -> str:
         """Get PEP URI from role text."""
-        base_url = self.inliner.document.settings.pep_base_url
         pep_num, _, fragment = self.target.partition("#")
-        pep_base = base_url + pep_url.format(int(pep_num))
+        pep_base = pep_url.format(int(pep_num))
         if fragment:
             return f"{pep_base}#{fragment}"
         return pep_base
