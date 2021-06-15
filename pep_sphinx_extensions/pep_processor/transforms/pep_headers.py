@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from pathlib import Path
 import re
 
@@ -68,11 +70,11 @@ class PEPHeaders(transforms.Transform):
                 raise PEPParsingError(msg)
 
             para = body[0]
-            if name in {"author", "bdfl-delegate", "pep-delegate", "sponsor"}:
+            if name in {"author", "bdfl-delegate", "pep-delegate", "discussions-to", "sponsor"}:
                 # mask emails
                 for node in para:
                     if isinstance(node, nodes.reference):
-                        pep_num = pep if name == "discussions-to" else -1
+                        pep_num = pep if name == "discussions-to" else None
                         node.replace_self(_mask_email(node, pep_num))
             elif name in {"replaces", "superseded-by", "requires"}:
                 # replace PEP numbers with normalised list of links to PEPs
@@ -93,7 +95,7 @@ class PEPHeaders(transforms.Transform):
             field.parent.remove(field)
 
 
-def _mask_email(ref: nodes.reference, pep_num: int = -1) -> nodes.reference:
+def _mask_email(ref: nodes.reference, pep_num: int | None = None) -> nodes.reference:
     """Mask the email address in `ref` and return a replacement node.
 
     `ref` is returned unchanged if it contains no email address.
@@ -104,15 +106,12 @@ def _mask_email(ref: nodes.reference, pep_num: int = -1) -> nodes.reference:
     If given a PEP number `pep_num`, add a default email subject.
 
     """
-    if "refuri" in ref and ref["refuri"].startswith("mailto:"):
-        non_masked_addresses = {"peps@python.org", "python-list@python.org", "python-dev@python.org"}
-        if ref["refuri"].removeprefix("mailto:").strip() in non_masked_addresses:
-            replacement = ref[0]
-        else:
-            replacement_text = ref.astext().replace("@", "&#32;&#97;t&#32;")
-            replacement = nodes.raw("", replacement_text, format="html")
-
-        if pep_num != -1:
-            replacement["refuri"] += f"?subject=PEP%20{pep_num}"
-        return replacement
+    if "refuri" not in ref or not ref["refuri"].startswith("mailto:"):
+        return ref
+    non_masked_addresses = {"peps@python.org", "python-list@python.org", "python-dev@python.org"}
+    if ref["refuri"].removeprefix("mailto:").strip() not in non_masked_addresses:
+        ref[0] = nodes.raw("", ref[0].replace("@", "&#32;&#97;t&#32;"), format="html")
+    if pep_num is None:
+        return ref[0]  # return email text without mailto link
+    ref["refuri"] += f"?subject=PEP%20{pep_num}"
     return ref
