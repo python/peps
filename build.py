@@ -2,7 +2,6 @@
 
 import argparse
 from pathlib import Path
-import shutil
 
 from sphinx.application import Sphinx
 
@@ -25,11 +24,16 @@ def create_parser():
     return parser.parse_args()
 
 
-def create_index_file(html_root: Path, builder: str):
+def create_index_file(html_root: Path, builder: str) -> None:
     """Copies PEP 0 to the root index.html so that /peps/ works."""
-    pep_zero_path = html_root / ("pep-0000.html" if builder == "html" else "pep-0000/index.html")
-    if pep_zero_path.is_file():
-        shutil.copy(pep_zero_path, html_root / "index.html")
+    pep_zero_file = "pep-0000.html" if builder == "html" else "pep-0000/index.html"
+    try:
+        pep_zero_text = html_root.joinpath(pep_zero_file).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    if builder == "dirhtml":
+        pep_zero_text = pep_zero_text.replace('="../', '="')  # remove relative directory links
+    html_root.joinpath("index.html").write_text(pep_zero_text, encoding="utf-8")
 
 
 if __name__ == "__main__":
