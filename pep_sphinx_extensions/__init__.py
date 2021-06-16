@@ -8,6 +8,7 @@ from docutils.writers.html5_polyglot import HTMLTranslator
 from sphinx.environment import BuildEnvironment
 from sphinx.environment import default_settings
 
+from pep_sphinx_extensions import config
 from pep_sphinx_extensions.pep_processor.html import pep_html_translator
 from pep_sphinx_extensions.pep_processor.parsing import pep_parser
 from pep_sphinx_extensions.pep_processor.parsing import pep_role
@@ -36,6 +37,12 @@ def _depart_maths():
     pass  # No-op callable for the type checker
 
 
+def _update_config_for_builder(app: Sphinx):
+    if app.builder.name == "dirhtml":
+        config.pep_url = f"../{config.pep_stem}"
+        app.env.settings["pep_file_url_template"] = "../pep-%04d"
+
+
 def setup(app: Sphinx) -> dict[str, bool]:
     """Initialize Sphinx extension."""
 
@@ -45,6 +52,7 @@ def setup(app: Sphinx) -> dict[str, bool]:
     app.set_translator("html", pep_html_translator.PEPTranslator)  # Docutils Node Visitor overrides (html builder)
     app.set_translator("dirhtml", pep_html_translator.PEPTranslator)  # Docutils Node Visitor overrides (dirhtml builder)
     app.connect("env-before-read-docs", create_pep_zero)  # PEP 0 hook
+    app.connect("builder-inited", _update_config_for_builder)  # Update configuration values for builder used
 
     # Mathematics rendering
     inline_maths = HTMLTranslator.visit_math, _depart_maths

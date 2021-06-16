@@ -7,7 +7,7 @@ from docutils import nodes
 from docutils import transforms
 from sphinx import errors
 
-from pep_sphinx_extensions.config import pep_url
+from pep_sphinx_extensions import config
 from pep_sphinx_extensions.pep_processor.transforms import pep_zero
 
 
@@ -80,7 +80,7 @@ class PEPHeaders(transforms.Transform):
                 # replace PEP numbers with normalised list of links to PEPs
                 new_body = []
                 for ref_pep in re.split(r",?\s+", body.astext()):
-                    new_body += [nodes.reference("", ref_pep, refuri=pep_url.format(int(ref_pep)))]
+                    new_body += [nodes.reference("", ref_pep, refuri=config.pep_url.format(int(ref_pep)))]
                     new_body += [nodes.Text(", ")]
                 para[:] = new_body[:-1]  # drop trailing space
             elif name in {"last-modified", "content-type", "version"}:
