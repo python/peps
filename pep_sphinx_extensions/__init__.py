@@ -5,8 +5,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from docutils.writers.html5_polyglot import HTMLTranslator
-from sphinx.environment import default_settings
 from sphinx.environment import BuildEnvironment
+from sphinx.environment import default_settings
 
 from pep_sphinx_extensions.pep_processor.html import pep_html_translator
 from pep_sphinx_extensions.pep_processor.parsing import pep_parser
@@ -42,7 +42,8 @@ def setup(app: Sphinx) -> dict[str, bool]:
     # Register plugin logic
     app.add_source_parser(pep_parser.PEPParser)  # Add PEP transforms
     app.add_role("pep", pep_role.PEPRole(), override=True)  # Transform PEP references to links
-    app.set_translator("html", pep_html_translator.PEPTranslator)  # Docutils Node Visitor overrides
+    app.set_translator("html", pep_html_translator.PEPTranslator)  # Docutils Node Visitor overrides (html builder)
+    app.set_translator("dirhtml", pep_html_translator.PEPTranslator)  # Docutils Node Visitor overrides (dirhtml builder)
     app.connect("env-before-read-docs", create_pep_zero)  # PEP 0 hook
 
     # Mathematics rendering
