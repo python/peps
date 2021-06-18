@@ -79,3 +79,6 @@ fail-warning:
 
 check-links:
 	$(SPHINX_BUILD) --check-links
+
+sphinx-epub:
+	$(SPHINX_BUILD) --build-epub
