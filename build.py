@@ -2,6 +2,7 @@
 
 import argparse
 from pathlib import Path
+import time
 
 from sphinx.application import Sphinx
 
@@ -12,6 +13,7 @@ def create_parser():
     parser.add_argument("-l", "--check-links", action="store_true")
     parser.add_argument("-f", "--build-files", action="store_true")
     parser.add_argument("-d", "--build-dirs", action="store_true")
+    parser.add_argument("-e", "--build-epub", action="store_true")
 
     # flags / options
     parser.add_argument("-w", "--fail-on-warning", action="store_true")
@@ -49,6 +51,8 @@ if __name__ == "__main__":
         sphinx_builder = "html"
     elif args.build_dirs:
         sphinx_builder = "dirhtml"
+    elif args.build_epub:
+        sphinx_builder = "epub"
     elif args.check_links:
         sphinx_builder = "linkcheck"
     else:
@@ -59,6 +63,14 @@ if __name__ == "__main__":
     config_overrides = {}
     if args.nitpicky:
         config_overrides["nitpicky"] = True
+    if sphinx_builder == "epub":
+        config_overrides |= {
+            "master_doc": "contents-epub",
+            "version": time.strftime("%Y-%m-%d %H:%M"),
+            "epub_copyright": "PSF",
+            "epub_description": "Python Enhancement Proposals",
+            "epub_author": "PEP Authors",
+        }
 
     app = Sphinx(
         source_directory,
