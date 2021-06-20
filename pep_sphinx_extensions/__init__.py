@@ -39,8 +39,15 @@ def _depart_maths():
 
 def _update_config_for_builder(app: Sphinx):
     if app.builder.name == "dirhtml":
+        # Docutils Node Visitor overrides (dirhtml builder)
+        app.set_translator("dirhtml", pep_html_translator.PEPTranslator)
+
+        # PEP url overrides
         config.pep_url = f"../{config.pep_stem}"
         app.env.settings["pep_file_url_template"] = "../pep-%04d"
+    elif app.builder.name == "epub":
+        # Docutils Node Visitor overrides (epub builder)
+        app.set_translator("epub", pep_html_translator.PEPTranslator)
 
 
 def setup(app: Sphinx) -> dict[str, bool]:
@@ -50,7 +57,6 @@ def setup(app: Sphinx) -> dict[str, bool]:
     app.add_source_parser(pep_parser.PEPParser)  # Add PEP transforms
     app.add_role("pep", pep_role.PEPRole(), override=True)  # Transform PEP references to links
     app.set_translator("html", pep_html_translator.PEPTranslator)  # Docutils Node Visitor overrides (html builder)
-    app.set_translator("dirhtml", pep_html_translator.PEPTranslator)  # Docutils Node Visitor overrides (dirhtml builder)
     app.connect("env-before-read-docs", create_pep_zero)  # PEP 0 hook
     app.connect("builder-inited", _update_config_for_builder)  # Update configuration values for builder used
 

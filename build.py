@@ -66,15 +66,14 @@ if __name__ == "__main__":
     if sphinx_builder == "epub":
         config_overrides |= {
             "master_doc": "contents-epub",
+            "epub_theme": "pep_theme_epub",
+            "templates_path": ["pep_sphinx_extensions/pep_theme_epub/templates"],
+            "suppress_warnings": ["epub.unknown_project_files"],
+            # epub metadata:
             "version": time.strftime("%Y-%m-%d"),
             "epub_copyright": "PSF",
             "epub_description": "Python Enhancement Proposals",
             "epub_author": "PEP Authors",
-            # clear conflicting conf.py settings
-            "html_theme_path": [],
-            "html_theme": "epub",
-            "html_style": None,
-            "templates_path": [],
         }
 
     app = Sphinx(
