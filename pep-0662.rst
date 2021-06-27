@@ -1,0 +1,428 @@
+PEP: 662
+Title: Editable installs via virtual wheels
+Author: Bernát Gábor <gaborjbernat@gmail.com>
+Sponsor: Brett Cannon <brett@python.org>
+Discussions-To: https://discuss.python.org/t/discuss-tbd-editable-installs-by-gaborbernat/9071
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 28-May-2021
+Post-History:
+
+Abstract
+========
+
+This document describes extensions to the build backend and frontend
+communication (as introduced by :pep:`517`) to allow projects to be installed in
+editable mode by introducing virtual wheels.
+
+Motivation
+==========
+
+During development, many Python users prefer to install their libraries so that
+changes to the underlying source code and resources are automatically reflected
+in subsequent interpreter invocations without an additional installation step.
+This mode is usually called "development mode" or "editable installs".
+Currently, there is no standardized way to accomplish this, as it was explicitly
+left out of :pep:`517` due to the complexity of the actual observed behaviors.
+
+At the moment, users to get this behaviour perform one of the following:
+
+-  For just Python code by adding the relevant source directories to
+   ``sys.path`` (configurable from the command line interface via the
+   ``PYTHONPATH`` environment variable). Note in this case, the users have to
+   install the project dependencies themselves, and entry points or project
+   metadata are not generated.
+
+-  setuptools_ provides the `setup.py develop`_ mechanism: that installs a
+   ``pth`` file that injects the project root onto the ``sys.path`` at
+   interpreter startup time, generates the project metadata, and also installs
+   project dependencies. pip_ exposes calling this mechanism via the
+   `pip install -e <project_directory>`_ command-line interface.
+
+-  flit_ provides the `flit install --symlink`_ command that symlinks the
+   project files into the interpreters ``purelib`` folder, generates the
+   project metadata, and also installs dependencies. Note, this allows
+   supporting resource files too.
+
+As these examples shows an editable install can be achieved in multiple ways
+and at the moment there's no standard way of doing it. Furthermore, it's not
+clear whose responsibility it is to achieve and define what an editable
+installation is:
+
+1. allow the build backend to define and materialize it,
+2. allow the build frontend to define and materialize it,
+3. explicitly define and standardize one method from the possible options.
+
+The author of this PEP believes there's no one size fits all solution here,
+each method of achieving editable effect has its pros and cons. Therefore
+this PEP rejects option three as it's unlikely for the community to agree on a
+single solution. Furthermore, question remains as to whether the frontend or the
+build backend should own this responsibility. :pep:`660` proposes the build
+backend to own this, while the current PEP proposes primarily the frontend, 
+but still allows the backend to take take control if it wants to do so.
+
+Rationale
+=========
+
+:pep:`517` deferred "Editable installs" because this would have delayed further
+its adoption, and there wasn't an agreement on how editable installs should be
+achieved. Due to the popularity of the setuptools_ and pip_ projects, the status
+quo prevailed, and the backend could achieve editable mode by providing a
+``setup.py develop`` implementation, which the user could trigger via `pip
+install -e <project_directory>`_. By defining an editable interface between the
+build backend and frontend, we can eliminate the ``setup.py`` file and their
+current communication method.
+
+Terminology and goals
+=====================
+
+This PEP aims to delineate the frontend and the backend roles clearly and give
+the developers of each the maximum ability to provide valuable features to
+their users. In this proposal, the backend's role is to prepare the project for
+an editable installation, and then provide enough information to the frontend
+so that the frontend can manifest and enforce the editable installation.
+
+The information the backend provides to the frontend is a wheel that follows
+the existing specification within :pep:`427`. The wheel metadata about the
+archive itself (``{distribution}-{version}.dist-info/WHEEL``) must also contain
+the key ``Editable`` with value of ``true``.
+
+However, instead of providing the project files within the wheel, it must
+provide an ``editable.json`` file (at the root level of the wheel) that defines
+the files to be exposed by the frontend. The content of this file is formulated
+as a mapping of absolute source tree paths to relative target interpreter
+destination paths within a scheme mapping.
+
+A wheel that satisfies the previous two paragraphs is a virtual wheel. The
+frontend's role is to take the virtual wheel and install the project in
+editable mode. The way it achieves this is entirely up to the frontend and is
+considered implementation detail.
+
+The editable installation mode implies that the source code of the project
+being installed is available in a local directory. Once the project is
+installed in editable mode, some changes to the project code in the local
+source tree will become effective without the need for a new installation step.
+At a minimum, changes to the text of non-generated files that existed at the
+installation time should be reflected upon the subsequent import of the
+package.
+
+Some kinds of changes, such as adding or modifying entry points or new
+dependencies, require a new installation step to become effective. These changes
+are typically made in build backend configuration files (such as
+``pyproject.toml``). This requirement is consistent with the general user
+expectation that such modifications will only become effective after
+re-installation.
+
+While users expect editable installations to behave identically to standard
+installations, this may not always be possible and may be in tension with other
+user expectations. Depending on how a frontend implements the editable mode,
+some differences may be visible, such as the presence of additional files
+(compared to a typical installation), either in the source tree or the
+interpreter's installation path.
+
+Frontends should seek to minimize differences between the behavior of editable
+and standard installations and document known differences.
+
+For reference, a non-editable installation works as follows:
+
+#. The **developer** is using a tool, we'll call it here the **frontend**, to
+   drive the project development (e.g., pip_). When the user wants to trigger a
+   package build and installation of a project, they'll communicate with the
+   **frontend**.
+
+#. The frontend uses a **build frontend** to trigger the build of a wheel (e.g.,
+   build_). The build frontend uses :pep:`517` to communicate with the **build
+   backend** (e.g. setuptools_) - with the build backend installed into a
+   :pep:`518` environment. Once invoked, the backend returns a wheel.
+
+#. The frontend takes the wheel and feeds it to an **installer**
+   (e.g.,`installer`_) to install the wheel into the target Python interpreter.
+
+The Mechanism
+=============
+
+This PEP adds two optional hooks to the :pep:`517` backend interface. One of the
+hooks is used to specify the build dependencies of an editable install. The
+other hook returns the necessary information via the build frontend the frontend
+needs to create an editable install.
+
+``get_requires_for_build_editable``
+-----------------------------------
+
+.. code::
+
+   def get_requires_for_build_editable(config_settings=None):
+       ...
+
+This hook MUST return an additional sequence of strings containing :pep:`508`
+dependency specifications, above and beyond those specified in the
+``pyproject.toml`` file. The frontend must ensure that these dependencies are
+available in the build environment in which the ``build_editable`` hook is
+called.
+
+If not defined, the default implementation is equivalent to returning ``[]``.
+
+``prepare_metadata_for_build_editable``
+---------------------------------------
+
+::
+
+  def prepare_metadata_for_build_editable(metadata_directory, config_settings=None):
+      ...
+
+Must create a ``.dist-info`` directory containing wheel metadata
+inside the specified ``metadata_directory`` (i.e., creates a directory
+like ``{metadata_directory}/{package}-{version}.dist-info/``). This
+directory MUST be a valid ``.dist-info`` directory as defined in the
+wheel specification, except that it need not contain ``RECORD`` or
+signatures. The hook MAY also create other files inside this
+directory, and a build frontend MUST preserve, but otherwise ignore, such files;
+the intention here is that in cases where the metadata depends on build-time
+decisions, the build backend may need to record these decisions in
+some convenient format for re-use by the actual wheel-building step.
+
+This must return the basename (not the full path) of the ``.dist-info``
+directory it creates, as a unicode string.
+
+If a build frontend needs this information and the method is
+not defined, it should call ``build_editable`` and look at the resulting
+metadata directly.
+
+
+``build_editable``
+------------------
+
+.. code::
+
+   def build_editable(self, wheel_directory, config_settings=None,
+                       metadata_directory=None):
+       ...
+
+Must build a .whl file, and place it in the specified ``wheel_directory``. It
+must return the basename (not the full path) of the ``.whl`` file it creates,
+as a unicode string. The wheel file must be of type virtual wheel as defined
+under the terminology section.
+
+If the build frontend has previously called ``prepare_metadata_for_build_editable``
+and depends on the wheel resulting from this call to have metadata
+matching this earlier call, then it should provide the path to the created
+``.dist-info`` directory as the ``metadata_directory`` argument. If this
+argument is provided, then ``build_editable`` MUST produce a wheel with identical
+metadata. The directory passed in by the build frontend MUST be
+identical to the directory created by ``prepare_metadata_for_build_editable``,
+including any unrecognized files it created.
+
+Backends which do not provide the ``prepare_metadata_for_build_editable`` hook may
+either silently ignore the ``metadata_directory`` parameter to ``build_editable``,
+or else raise an exception when it is set to anything other than ``None``.
+
+The source directory may be read-only, in such cases the backend may raise an
+error that the frontend can display to the user. The backend may store intermediate
+artifacts in cache locations or temporary directories. The presence or absence of
+any caches should not make a material difference to the final result of the build.
+
+The content of the ``editable.json`` MUST pass against the following JSON schema:
+
+.. include:: pep-0662/pep-0662-editable.json
+   :code:
+
+For example:
+
+.. code::
+
+   {
+      "version": 1,
+      "scheme": {
+         "purelib": {"/src/tree/a.py": "tree/a.py"},
+         "platlib": {},
+         "data": {"/src/tree/py.typed": "tree/py.typed"},
+         "headers": {},
+         "scripts": {}
+      }
+   }
+
+The scheme paths map from project source absolute paths to target directory
+relative paths. We allow backends to change the project layout from the project
+source directory to what the interpreter will see by using the mapping.
+
+For example if the backend returns ``"purelib": {"/me/project/src": ""}`` this
+would mean that expose all files and modules within ``/me/project/src`` at the
+root of the ``purelib`` path within the target interpreter.
+
+Build frontend requirements
+---------------------------
+
+The build frontend is responsible for setting up the environment for the build
+backend to generate the virtual wheel. All recommendations from :pep:`517` for
+the build wheel hook applies here too.
+
+Frontend requirements
+---------------------
+
+The frontend must install the virtual wheel exactly as defined within
+:pep:`427`. Furthermore is responsible for also installing the files defined
+witin the ``editable.json`` file. The manner in which it does is left up to
+the frontend, and is encouraged for the frontend to communicate with the user
+exactly the method choosen, and what limitations that solution will have.
+
+The frontend must create a ``direct_url.json`` file in the ``.dist-info``
+directory of the installed distribution, in compliance with PEP 610. The ``url``
+value must be a ``file://`` URL pointing to the project directory (i.e., the
+directory containing ``pyproject.toml``), and the ``dir_info`` value must be
+``{'editable': true}``.
+
+The frontend can rely on the ``prepare_metadata_for_build_editable`` hook when
+installing in editable mode.
+
+If the frontend concludes it cannot achieve an editable installation with the
+information provided by the build backend it should fail and raise an error to
+clarify to the user why not.
+
+The frontend might implement one or more editable installation mechanisms and
+can leave it up to the user the choose one that its optimal to the use case
+of the user. For example, pip could add an editable mode flag, and allow the
+user to choose between ``pth`` files or symlinks (
+``pip install -e . --editable-mode=pth`` vs
+``pip install -e . --editable-mode=symlink``).
+
+Example editable implementations
+--------------------------------
+
+To show how this PEP might be used, we'll now present a few case studies. Note
+the offered solutions are purely for illustration purpose and are not normative
+for the frontend/backend.
+
+Add the source tree as is to the interpreter
+''''''''''''''''''''''''''''''''''''''''''''
+
+This is one of the simplest implementations, it will add the source tree as is
+into the interpreters scheme paths, the ``editable.json`` within the virtual wheel
+might look like:
+
+.. code::
+
+   {
+     {"version": 1, "scheme": {"purelib": {"<project dir>": "<project dir>"}}}
+   }
+
+The frontend then could either:
+
+-  Add the source directory onto the target interpreters ``sys.path`` during
+   startup of it. This is done by creating a ``pth`` file into the target
+   interpreters ``purelib`` folder. setuptools_ does this today and is what `pip
+   install -e <project_directory>`_ translate too. This solution is fast and
+   cross-platform compatible. However, this puts the entire source tree onto the
+   system, potentially exposing modules that would not be available in a
+   standard installation case.
+
+-  Symlink the folder, or the individual files within it. This method is what
+   flit does via its `flit install --symlink`_. This solution requires the
+   current platform to support symlinks. Still, it allows potentially to symlink
+   individual files, which could solve the problem of including files that
+   should be excluded from the source tree.
+
+Using custom importers
+''''''''''''''''''''''
+
+For a more robust and more dynamic collaboration between the build backend and
+the target interpreter, we can take advantage of the import system allowing the
+registration of custom importers. See :pep:`302` for more details and editables_
+as an example of this. The backend can generate a new importer during the
+editable build (or install it as an additional dependency) and register it at
+interpreter startup by adding a ``pth`` file.
+
+.. code::
+
+   {
+      "version": 1,
+      "scheme": {
+         "purelib": {
+           "<project dir>/.editable/_register_importer.pth": "<project dir>/_register_importer.pth".
+           "<project dir>/.editable/_editable_importer.py": "<project dir>/_editable_importer.py"
+         }
+       }
+     }
+   }
+
+The backend here registered a hook that is called whenever a new module is
+imported, allowing dynamic and on-demand functionality. Potential use cases
+where this is useful:
+
+-  Expose a source folder, but honor module excludes: the backend may generate
+   an import hook that consults the exclusion table before allowing a source
+   file loader to discover a file in the source directory or not.
+
+-  For a project, let there be two modules, ``A.py`` and ``B.py``. These are two
+   separate files in the source directory; however, while building a wheel, they
+   are merged into one mega file ``project.py``. In this case, with this PEP,
+   the backend could generate an import hook that reads the source files at
+   import time and merges them in memory before materializing it as a module.
+
+-  Automatically update out-of-date C-extensions: the backend may generate an
+   import hook that checks the last modified timestamp for a C-extension source
+   file. If it is greater than the current C-extension binary, trigger an update
+   by calling the compiler before import.
+
+Rejected ideas
+==============
+
+This PEP competes with :pep:`660` and rejects that proposal because we think
+the mechanism of achieving an editable installation should be within the
+frontend rather than the build backend. Furthermore, this approach allows the
+ecosystem to use alternative means to accomplish the editable installation
+effect (e.g., insert path on ``sys.path`` or symlinks instead of just implying
+the loose wheel mode from the backend described by that PEP).
+
+Prominently, :pep:`660` does not allow using symlinks to expose code and data
+files without also extending the wheel file standard with symlink support. It's
+not clear how the wheel format could be extended to support symlinks that refer
+not to files within the wheel itself, but files only available on the local
+disk. It's important to note that the backend itself (or backend generated
+code) must not generate these symlinks (e.g., at interpreter startup time) as
+that would conflict with the frontends book keeping of what files need to be
+uninstalled.
+
+Finally, :pep:`660` adds support only for ``purelib`` and ``platlib`` files. It
+purposefully avoids supporting other types of information that the wheel format
+supports: ``include``, ``data`` and ``scripts``. With this path the frontend
+can support these on a best effort basis via the symlinks mechanism (though
+this feature is not universally available - on Windows require enablement). We
+believe its beneficial to add best effort support for these file types, rather
+than exclude the possibility of supporting them at all.
+
+References
+==========
+
+.. _build: https://pypa-build.readthedocs.io
+
+.. _editables: https://pypi.org/project/editables
+
+.. _flit: https://flit.readthedocs.io/en/latest/index.html
+
+.. _flit install --symlink: https://flit.readthedocs.io/en/latest/cmdline.html#cmdoption-flit-install-s
+
+.. _installer: https://pypi.org/project/installer
+
+.. _pip: https://pip.pypa.io
+
+.. _pip install -e <project_directory>: https://pip.pypa.io/en/stable/cli/pip_install/#install-editable
+
+.. _setup.py develop: https://setuptools.readthedocs.io/en/latest/userguide/commands.html#develop-deploy-the-project-source-in-development-mode
+
+.. _setuptools: https://setuptools.readthedocs.io/en/latest/
+
+Copyright
+=========
+
+This document is placed in the public domain or under the CC0-1.0-Universal
+license, whichever is more permissive.
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   coding: utf-8
+   End:

@@ -1,0 +1,889 @@
+PEP: 653
+Title: Precise Semantics for Pattern Matching
+Author: Mark Shannon <mark@hotpy.org>
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 09-Feb-2021
+Post-History: 18-Feb-2021
+
+
+Abstract
+========
+
+This PEP proposes a semantics for pattern matching that respects the general concept of PEP 634,
+but is more precise, easier to reason about, and should be faster.
+
+The object model will be extended with two special (dunder) attributes, ``__match_container__`` and
+``__match_class__``, in addition to the ``__match_args__`` attribute from PEP 634, to support pattern matching.
+Both of these new attributes must be integers and ``__match_args__`` is required to be a tuple of unique strings.
+
+With this PEP:
+
+* The semantics of pattern matching will be clearer, so that patterns are easier to reason about.
+* It will be possible to implement pattern matching in a more efficient fashion.
+* Pattern matching will be more usable for complex classes, by allowing classes some more control over which patterns they match.
+
+Motivation
+==========
+
+Pattern matching in Python, as described in PEP 634, is to be added to Python 3.10.
+Unfortunately, PEP 634 is not as precise about the semantics as it could be,
+nor does it allow classes sufficient control over how they match patterns.
+
+Precise semantics
+-----------------
+
+PEP 634 explicitly includes a section on undefined behavior.
+Large amounts of undefined behavior may be acceptable in a language like C,
+but in Python it should be kept to a minimum.
+Pattern matching in Python can be defined more precisely without loosing expressiveness or performance.
+
+Improved control over class matching
+------------------------------------
+
+PEP 634 delegates the decision over whether a class is a sequence or mapping to ``collections.abc``.
+Not all classes that could be considered sequences are registered as subclasses of ``collections.abc.Sequence``.
+This PEP allows them to match sequence patterns, without the full ``collections.abc.Sequence`` machinery.
+
+PEP 634 privileges some builtin classes with a special form of matching, the "self" match.
+For example the pattern ``list(x)`` matches a list and assigns the list to ``x``.
+By allowing classes to choose which kinds of pattern they match, other classes can use this form as well.
+
+For example, using ``sympy``, we might want to write::
+
+    # a*a == a**2
+    case Mul(args=[Symbol(a), Symbol(b)]) if a == b:
+        return Pow(a, 2)
+
+Which requires the sympy class ``Symbol`` to "self" match.
+For ``sympy`` to support this pattern with PEP 634 is possible, but a bit tricky.
+With this PEP it can be implemented very easily [1]_.
+
+Robustness
+----------
+
+With this PEP, access to attributes during pattern matching becomes well defined and deterministic.
+This makes pattern matching less error prone when matching objects with hidden side effects, such as object-relational mappers.
+Objects will have more control over their own deconstruction, which can help prevent unintended consequences should attribute access have side-effects.
+
+PEP 634 relies on the ``collections.abc`` module when determining which patterns a value can match, implicitly importing it if necessary.
+This PEP will eliminate surprising import errors and misleading audit events from those imports.
+
+
+Efficient implementation
+------------------------
+
+The semantics proposed in this PEP will allow efficient implementation, partly as a result of having precise semantics
+and partly from using the object model.
+
+With precise semantics, it is possible to reason about what code transformations are correct,
+and thus apply optimizations effectively.
+
+Because the object model is a core part of Python, implementations already handle special attribute lookup efficiently.
+Looking up a special attribute is much faster than performing a subclass test on an abstract base class.
+
+Rationale
+=========
+
+The object model and special methods are at the core of the Python language. Consequently, 
+implementations support them well.
+Using special attributes for pattern matching allows pattern matching to be implemented in a way that
+integrates well with the rest of the implementation, and is thus easier to maintain and is likely to perform better.
+
+A match statement performs a sequence of pattern matches. In general, matching a pattern has three parts:
+
+1. Can the value match this kind of pattern?
+2. When deconstructed, does the value match this particular pattern?
+3. Is the guard true?
+
+To determine whether a value can match a particular kind of pattern, we add the ``__match_container__``
+and ``__match_class__`` attributes.
+This allows the kind of a value to be determined in a efficient fashion.
+
+Specification
+=============
+
+Additions to the object model
+-----------------------------
+
+The ``__match_container__ ``and ``__match_class__`` attributes will be added to ``object``.
+``__match_container__`` should be overridden by classes that want to match mapping or sequence patterns.
+``__match_class__`` should be overridden by classes that want to change the default behavior when matching class patterns.
+
+``__match_container__`` must be an integer and should be exactly one of these::
+
+  0
+  MATCH_SEQUENCE = 1
+  MATCH_MAPPING = 2
+
+``MATCH_SEQUENCE`` is used to indicate that instances of the class can match sequence patterns.
+
+``MATCH_MAPPING`` is used to indicate that instances of the class can match mapping patterns.
+
+``__match_class__`` must be an integer and should be exactly one of these::
+
+  0
+  MATCH_SELF = 8
+
+``MATCH_SELF`` is used to indicate that for a single positional argument class pattern, the subject will be used and not deconstructed.
+
+.. note::
+    In the rest of this document, we will refer to the above values by name only.
+    Symbolic constants will be provided both for Python and C, and the values will
+    never be changed.
+
+``object`` will have the following values for the special attributes::
+
+  __match_container__ = 0
+  __match_class__= 0
+  __match_args__ = ()
+
+These special attributes will be inherited as normal.
+
+If ``__match_args__`` is overridden, then it is required to hold a tuple of unique strings. It may be empty.
+
+.. note::
+    ``__match_args__`` will be automatically generated for dataclasses and named tuples, as specified in PEP 634.
+
+The pattern matching implementation is *not* required to check that any of these attributes behave as specified.
+If the value of ``__match_container__``, ``__match_class__`` or ``__match_args__`` is not as specified, then
+the implementation may raise any exception, or match the wrong pattern.
+Of course, implementations are free to check these properties and provide meaningful error messages if they can do so efficiently.
+
+Semantics of the matching process
+---------------------------------
+
+In the following, all variables of the form ``$var`` are temporary variables and are not visible to the Python program.
+They may be visible via introspection, but that is an implementation detail and should not be relied on.
+The psuedo-statement ``FAIL`` is used to signify that matching failed for this pattern and that matching should move to the next pattern.
+If control reaches the end of the translation without reaching a ``FAIL``, then it has matched, and following patterns are ignored.
+
+Variables of the form ``$ALL_CAPS`` are meta-variables holding a syntactic element, they are not normal variables.
+So, ``$VARS = $items`` is not an assignment of ``$items`` to ``$VARS``,
+but an unpacking of ``$items`` into the variables that ``$VARS`` holds.
+For example, with the abstract syntax ``case [$VARS]:``, and the concrete syntax ``case[a, b]:`` then ``$VARS`` would hold the variables ``(a, b)``,
+not the values of those variables.
+
+The psuedo-function ``QUOTE`` takes a variable and returns the name of that variable.
+For example, if the meta-variable ``$VAR`` held the variable ``foo`` then ``QUOTE($VAR) == "foo"``.
+
+All additional code listed below that is not present in the original source will not trigger line events, conforming to PEP 626.
+
+
+Preamble
+''''''''
+
+Before any patterns are matched, the expression being matched is evaluated::
+
+    match expr:
+
+translates to::
+
+    $value = expr
+
+Capture patterns
+''''''''''''''''
+
+Capture patterns always match, so the irrefutable match::
+
+    case capture_var:
+
+translates to::
+
+    capture_var = $value
+
+Wildcard patterns
+'''''''''''''''''
+
+Wildcard patterns always match, so::
+
+    case _:
+
+translates to::
+
+    # No code -- Automatically matches
+
+
+Literal Patterns
+''''''''''''''''
+
+The literal pattern::
+
+    case LITERAL:
+
+translates to::
+
+    if $value != LITERAL:
+        FAIL
+
+except when the literal is one of ``None``, ``True`` or ``False`` ,
+when it translates to::
+
+    if $value is not LITERAL:
+        FAIL
+
+Value Patterns
+''''''''''''''
+
+The value pattern::
+
+    case value.pattern:
+
+translates to::
+
+    if $value != value.pattern:
+        FAIL
+
+Sequence Patterns
+'''''''''''''''''
+
+A pattern not including a star pattern::
+
+    case [$VARS]:
+
+translates to::
+
+    $kind = type($value).__match_container__
+    if $kind != MATCH_SEQUENCE:
+        FAIL
+    if len($value) != len($VARS):
+        FAIL
+    $VARS = $value
+
+Example: [2]_
+
+A pattern including a star pattern::
+
+    case [$VARS]
+
+translates to::
+
+    $kind = type($value).__match_container__
+    if $kind != MATCH_SEQUENCE:
+        FAIL
+    if len($value) < len($VARS):
+        FAIL
+    $VARS = $value # Note that $VARS includes a star expression.
+
+Example: [3]_
+
+Mapping Patterns
+''''''''''''''''
+
+A pattern not including a double-star pattern::
+
+    case {$KEYWORD_PATTERNS}:
+
+translates to::
+
+    $sentinel = object()
+    $kind = type($value).__match_container__
+    if $kind != MATCH_MAPPING:
+        FAIL
+    # $KEYWORD_PATTERNS is a meta-variable mapping names to variables.
+    for $KEYWORD in $KEYWORD_PATTERNS:
+        $tmp = $value.get(QUOTE($KEYWORD), $sentinel)
+        if $tmp is $sentinel:
+            FAIL
+        $KEYWORD_PATTERNS[$KEYWORD] = $tmp
+
+Example: [4]_
+
+A pattern including a double-star pattern::
+
+    case {$KEYWORD_PATTERNS, **$DOUBLE_STARRED_PATTERN}:
+
+translates to::
+
+    $kind = type($value).__match_container__
+    if $kind != MATCH_MAPPING:
+        FAIL
+    # $KEYWORD_PATTERNS is a meta-variable mapping names to variables.
+    $tmp = dict($value)
+    if not $tmp.keys() >= $KEYWORD_PATTERNS.keys():
+        FAIL:
+    for $KEYWORD in $KEYWORD_PATTERNS:
+        $KEYWORD_PATTERNS[$KEYWORD] = $tmp.pop(QUOTE($KEYWORD))
+    $DOUBLE_STARRED_PATTERN = $tmp
+
+Example: [5]_
+
+Class Patterns
+''''''''''''''
+
+Class pattern with no arguments::
+
+    case ClsName():
+
+translates to::
+
+    if not isinstance($value, ClsName):
+        FAIL
+
+Class pattern with a single positional pattern::
+
+    case ClsName($VAR):
+
+translates to::
+
+    $kind = type($value).__match_class__
+    if $kind == MATCH_SELF:
+        if not isinstance($value, ClsName):
+            FAIL
+        $VAR = $value
+    else:
+        As other positional-only class pattern
+
+
+Positional-only class pattern::
+
+    case ClsName($VARS):
+
+translates to::
+
+    if not isinstance($value, ClsName):
+        FAIL
+    $attrs = ClsName.__match_args__
+    if len($attr) < len($VARS):
+        raise TypeError(...)
+    try:
+        for i, $VAR in enumerate($VARS):
+            $VAR = getattr($value, $attrs[i])
+    except AttributeError:
+        FAIL
+
+Example: [6]_
+
+Class patterns with all keyword patterns::
+
+    case ClsName($KEYWORD_PATTERNS):
+
+translates to::
+
+    if not isinstance($value, ClsName):
+        FAIL
+    try:
+        for $KEYWORD in $KEYWORD_PATTERNS:
+            $tmp = getattr($value, QUOTE($KEYWORD))
+            $KEYWORD_PATTERNS[$KEYWORD] = $tmp
+    except AttributeError:
+        FAIL
+
+Example: [7]_
+
+Class patterns with positional and keyword patterns::
+
+    case ClsName($VARS, $KEYWORD_PATTERNS):
+
+translates to::
+
+    if not isinstance($value, ClsName):
+        FAIL
+    $attrs = ClsName.__match_args__
+    if len($attr) < len($VARS):
+        raise TypeError(...)
+    $pos_attrs = $attrs[:len($VARS)]
+    try:
+        for i, $VAR in enumerate($VARS):
+            $VAR = getattr($value, $attrs[i])
+        for $KEYWORD in $KEYWORD_PATTERNS:
+            $name = QUOTE($KEYWORD)
+            if $name in pos_attrs:
+                raise TypeError(...)
+            $KEYWORD_PATTERNS[$KEYWORD] = getattr($value, $name)
+    except AttributeError:
+        FAIL
+
+Example: [8]_
+
+
+Nested patterns
+'''''''''''''''
+
+The above specification assumes that patterns are not nested. For nested patterns
+the above translations are applied recursively by introducing temporary capture patterns.
+
+For example, the pattern::
+
+    case [int(), str()]:
+
+translates to::
+
+    $kind = type($value).__match_class__
+    if $kind != MATCH_SEQUENCE:
+        FAIL
+    if len($value) != 2:
+        FAIL
+    $value_0, $value_1 = $value
+    #Now match on temporary values
+    if not isinstance($value_0, int):
+        FAIL
+    if not isinstance($value_1, str):
+        FAIL
+
+Guards
+''''''
+
+Guards translate to a test following the rest of the translation::
+
+    case pattern if guard:
+
+translates to::
+
+    [translation for pattern]
+    if not guard:
+        FAIL
+
+
+Non-conforming special attributes
+'''''''''''''''''''''''''''''''''
+
+All classes should ensure that the the values of ``__match_container__``, ``__match_class__``
+and ``__match_args__`` follow the specification.
+Therefore, implementations can assume, without checking, that the following are true::
+
+    __match_container__ == 0 or __match_container__ == MATCH_SEQUENCE or __match_container__ == MATCH_MAPPING
+    __match_class__ == 0 or __match_class__ == MATCH_SELF
+
+and that ``__match_args__`` is a tuple of unique strings.
+
+Values of the special attributes for classes in the standard library
+--------------------------------------------------------------------
+
+For the core builtin container classes ``__match_container__`` will be:
+
+* ``list``: ``MATCH_SEQUENCE``
+* ``tuple``: ``MATCH_SEQUENCE``
+* ``dict``: ``MATCH_MAPPING``
+* ``bytearray``: 0
+* ``bytes``: 0
+* ``str``: 0
+
+Named tuples will have ``__match_container__`` set to ``MATCH_SEQUENCE``.
+
+* All other standard library classes for which ``issubclass(cls, collections.abc.Mapping)`` is true will have ``__match_container__`` set to ``MATCH_MAPPING``.
+* All other standard library classes for which ``issubclass(cls, collections.abc.Sequence)`` is true will have ``__match_container__`` set to ``MATCH_SEQUENCE``.
+
+For the following builtin classes ``__match_class__`` will be set to ``MATCH_SELF``:
+
+* ``bool``
+* ``bytearray``
+* ``bytes``
+* ``float``
+* ``frozenset``
+* ``int``
+* ``set``
+* ``str``
+* ``list``
+* ``tuple``
+* ``dict``
+
+Legal optimizations
+-------------------
+
+The above semantics implies a lot of redundant effort and copying in the implementation.
+However, it is possible to implement the above semantics efficiently by employing semantic preserving transformations
+on the naive implementation.
+
+When performing matching, implementations are allowed
+to treat the following functions and methods as pure:
+
+For any class supporting ``MATCH_SEQUENCE``::
+
+* ``cls.__len__()``
+* ``cls.__getitem__()``
+
+For any class supporting ``MATCH_MAPPING``::
+
+* ``cls.get()`` (Two argument form only)
+
+Implementations are allowed to make the following assumptions:
+
+* ``isinstance(obj, cls)`` can be freely replaced with ``issubclass(type(obj), cls)`` and vice-versa.
+* ``isinstance(obj, cls)`` will always return the same result for any ``(obj, cls)`` pair and repeated calls can thus be elided.
+* Reading any of ``__match_container__``, ``__match_class__`` or ``__match_args__`` is a pure operation, and may be cached.
+* Sequences, that is any class for which ``__match_container__ == MATCH_SEQUENCE`` is not zero, are not modified by iteration, subscripting or calls to ``len()``.
+  Consequently, those operations can be freely substituted for each other where they would be equivalent when applied to an immutable sequence.
+* Mappings, that is any class for which ``__match_container__ == MATCH_MAPPING`` is not zero, will not capture the second argument of the ``get()`` method.
+  So, the ``$sentinel`` value may be freely re-used.
+
+In fact, implementations are encouraged to make these assumptions, as it is likely to result in signficantly better performance.
+
+
+Security Implications
+=====================
+
+None.
+
+Implementation
+==============
+
+The naive implementation that follows from the specification will not be very efficient.
+Fortunately, there are some reasonably straightforward transformations that can be used to improve performance.
+Performance should be comparable to the implementation of PEP 634 (at time of writing) by the release of 3.10.
+Further performance improvements may have to wait for the 3.11 release.
+
+Possible optimizations
+----------------------
+
+The following is not part of the specification,
+but guidelines to help developers create an efficient implementation.
+
+Splitting evaluation into lanes
+'''''''''''''''''''''''''''''''
+
+Since the first step in matching each pattern is check to against the kind, it is possible to combine all the checks against kind into a single multi-way branch at the beginning
+of the match. The list of cases can then be duplicated into several "lanes" each corresponding to one kind.
+It is then trivial to remove unmatchable cases from each lane.
+Depending on the kind, different optimization strategies are possible for each lane.
+Note that the body of the match clause does not need to be duplicated, just the pattern.
+
+Sequence patterns
+'''''''''''''''''
+
+This is probably the most complex to optimize and the most profitable in terms of performance.
+Since each pattern can only match a range of lengths, often only a single length,
+the sequence of tests can be rewitten in as an explicit iteration over the sequence,
+attempting to match only those patterns that apply to that sequence length.
+
+For example:
+
+::
+
+    case []:
+        A
+    case [x]:
+        B
+    case [x, y]:
+        C
+    case other:
+        D
+
+Can be compiled roughly as:
+
+::
+
+    # Choose lane
+    $i = iter($value)
+    for $0 in $i:
+        break
+    else:
+        A
+        goto done
+    for $1 in $i:
+        break
+    else:
+        x = $0
+        B
+        goto done
+    for $2 in $i:
+        del $0, $1, $2
+        break
+    else:
+        x = $0
+        y = $1
+        C
+        goto done
+    other = $value
+    D
+  done:
+
+
+Mapping patterns
+''''''''''''''''
+
+The best stategy here is probably to form a decision tree based on the size of the mapping and which keys are present.
+There is no point repeatedly testing for the presence of a key.
+For example::
+
+    match obj:
+        case {a:x, b:y}:
+            W
+        case {a:x, c:y}:
+            X
+        case {a:x, b:_, c:y}:
+            Y
+        case other:
+            Z
+
+If the key ``"a"`` is not present when checking for case X, there is no need to check it again for Y.
+
+The mapping lane can be implemented, roughly as:
+
+::
+
+    # Choose lane
+    if len($value) == 2:
+        if "a" in $value:
+            if "b" in $value:
+                x = $value["a"]
+                y = $value["b"]
+                goto W
+            if "c" in $value:
+                x = $value["a"]
+                y = $value["c"]
+                goto X
+    elif len($value) == 3:
+        if "a" in $value and "b" in $value:
+            x = $value["a"]
+            y = $value["c"]
+            goto Y
+    other = $value
+    goto Z
+
+Summary of differences between this PEP and PEP 634
+===================================================
+
+
+The changes to the semantics can be summarized as:
+
+* Requires ``__match_args__`` to be a *tuple* of strings, not just a sequence.
+  This make pattern matching a bit more robust and optimizable as ``__match_args__`` can be assumed to be immutable.
+* Selecting the kind of container patterns that can be matched uses ``cls.__match_container__`` instead of
+  ``issubclass(cls, collections.abc.Mapping)`` and ``issubclass(cls, collections.abc.Sequence)``.
+* Allows classes to opt out of deconstruction altogether, if neccessary, but setting ``__match_class__ = 0``.
+* The behavior when matching patterns is more precisely defined, but is otherwise unchanged.
+
+There are no changes to syntax. All examples given in the PEP 636 tutorial should continue to work as they do now.
+
+Rejected Ideas
+==============
+
+Using attributes from the instance's dictionary
+-----------------------------------------------
+
+An earlier version of this PEP only used attributes from the instance's dictionary when matching a class pattern with ``__match_class__`` was the default value.
+The intent was to avoid capturing bound-methods and other synthetic attributes. However, this also mean that properties were ignored.
+
+For the class::
+
+    class C:
+        def __init__(self):
+            self.a = "a"
+        @property
+        def p(self):
+            ...
+        def m(self):
+            ...
+
+Ideally we would match the attributes "a" and "p", but not "m".
+However, there is no general way to do that, so this PEP now follows the semantics of PEP 634.
+
+Lookup of ``__match_args__`` on the subject not the pattern
+-----------------------------------------------------------
+
+An earlier version of this PEP looked up ``__match_args__`` on the class of the subject and
+not the class specified in the pattern.
+This has been rejected for a few reasons::
+
+* Using the class specified in the pattern is more amenable to optimization and can offer better performance.
+* Using the class specified in the pattern has the potential to provide better error reporting is some cases.
+* Neither approach is perfect, both have odd corner cases. Keeping the status quo minimizes disruption.
+
+Combining ``__match_class__`` and ``__match_container__`` into a single value
+-----------------------------------------------------------------------------
+
+An earlier version of this PEP combined ``__match_class__`` and ``__match_container__`` into a single value, ``__match_kind__``.
+Using a single value has a small advantage in terms of performance,
+but is likely to result in unintended changes to container matching when overriding class matching behavior, and vice versa.
+
+
+Deferred Ideas
+==============
+
+The original version of this PEP included the match kind ``MATCH_POSITIONAL`` and special method
+``__deconstruct__`` which would allow classes full control over their matching. This is important
+for libraries like ``sympy``.
+
+For example, using ``sympy``, we might want to write::
+
+    # sin(x)**2 + cos(x)**2 == 1
+    case Add(Pow(sin(a), 2), Pow(cos(b), 2)) if a == b:
+        return 1
+
+For ``sympy`` to support the positional patterns with current pattern matching is possible,
+but is tricky. With these additional features it can be implemented easily [9]_.
+
+This idea will feature in a future PEP for 3.11.
+However, it is too late in the 3.10 development cycle for such a change.
+
+Having a separate value to reject all class matches
+---------------------------------------------------
+
+In an earlier version of this PEP, there was a distinct value for ``__match_class__`` that allowed classes to not match any class
+pattern that would have required deconstruction. However, this would become redundant once ``MATCH_POSITIONAL`` is introduced, and
+complicates the specification for an extremely rare case.
+
+References
+==========
+
+PEP 634
+https://www.python.org/dev/peps/pep-0634
+
+Code examples
+=============
+
+.. [1]
+
+::
+
+    class Symbol:
+        __match_class__ = MATCH_SELF
+
+.. [2]
+
+This::
+
+    case [a, b] if a is b:
+
+translates to::
+
+    $kind = type($value).__match_container__
+    if $kind != MATCH_SEQUENCE:
+        FAIL
+    if len($value) != 2:
+        FAIL
+    a, b = $value
+    if not a is b:
+        FAIL
+
+.. [3]
+
+This::
+
+    case [a, *b, c]:
+
+translates to::
+
+    $kind = type($value).__match_container__
+    if $kind != MATCH_SEQUENCE:
+        FAIL
+    if len($value) < 2:
+        FAIL
+    a, *b, c = $value
+
+.. [4]
+
+This::
+
+    case {"x": x, "y": y} if x > 2:
+
+translates to::
+
+    $kind = type($value).__match_container__
+    if $kind != MATCH_MAPPING:
+        FAIL
+    $tmp = $value.get("x", $sentinel)
+    if $tmp is $sentinel:
+        FAIL
+    x = $tmp
+    $tmp = $value.get("y", $sentinel)
+    if $tmp is $sentinel:
+        FAIL
+    y = $tmp
+    if not x > 2:
+        FAIL
+
+.. [5]
+
+This::
+
+    case {"x": x, "y": y, **z}:
+
+translates to::
+
+    $kind = type($value).__match_container__
+    if $kind != MATCH_MAPPING:
+        FAIL
+    $tmp = dict($value)
+    if not $tmp.keys() >= {"x", "y"}:
+        FAIL
+    x = $tmp.pop("x")
+    y = $tmp.pop("y")
+    z = $tmp
+
+.. [6]
+
+This::
+
+    match ClsName(x, y):
+
+translates to::
+
+    if not isinstance($value, ClsName):
+        FAIL
+    $attrs = ClsName.__match_args__
+    if len($attr) < 2:
+        FAIL
+    try:
+        x = getattr($value, $attrs[0])
+        y = getattr($value, $attrs[1])
+    except AttributeError:
+        FAIL
+
+.. [7]
+
+This::
+
+    match ClsName(a=x, b=y):
+
+translates to::
+
+    if not isinstance($value, ClsName):
+        FAIL
+    try:
+        x = $value.a
+        y = $value.b
+    except AttributeError:
+        FAIL
+
+.. [8]
+
+This::
+
+    match ClsName(x, a=y):
+
+translates to::
+
+
+    if not isinstance($value, ClsName):
+        FAIL
+    $attrs = ClsName.__match_args__
+    if len($attr) < 1:
+        raise TypeError(...)
+    $positional_names = $attrs[:1]
+    try:
+        x = getattr($value, $attrs[0])
+        if "a" in $positional_names:
+            raise TypeError(...)
+        y = $value.a
+    except AttributeError:
+        FAIL
+
+.. [9]
+
+::
+
+    class Basic:
+        __match_class__ = MATCH_POSITIONAL
+        def __deconstruct__(self):
+            return self._args
+
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
+
+
+
+..
+    Local Variables:
+    mode: indented-text
+    indent-tabs-mode: nil
+    sentence-end-double-space: t
+    fill-column: 70
+    coding: utf-8
+    End:
