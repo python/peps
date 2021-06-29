@@ -54,10 +54,7 @@ class Contents(parts.Contents):
     def build_contents(self, node, level=0):
         level += 1
         entries = []
-        try:
-            children = node.children
-        except AttributeError:
-            children = node
+        children = getattr(node, "children", node)
 
         for section in children:
             if not isinstance(section, nodes.section):
