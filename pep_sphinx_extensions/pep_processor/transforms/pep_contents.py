@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from pathlib import Path
 
 from docutils import nodes
@@ -36,7 +38,7 @@ class PEPContents(transforms.Transform):
 
 class Contents(parts.Contents):
     """Build Table of Contents from document."""
-    def __init__(self, document, startnode=None):
+    def __init__(self, document: nodes.document, startnode: nodes.Node | None = None):
         super().__init__(document, startnode)
 
         # used in parts.Contents.build_contents
@@ -51,8 +53,7 @@ class Contents(parts.Contents):
             # if no contents, remove the empty placeholder
             self.startnode.parent.parent.remove(self.startnode.parent)
 
-    def build_contents(self, node, level=0):
-        level += 1
+    def build_contents(self, node: nodes.Node | list[nodes.Node], _level: None = None):
         entries = []
         children = getattr(node, "children", node)
 
@@ -68,9 +69,7 @@ class Contents(parts.Contents):
             reference = nodes.reference("", "", refid=ref_id, *entry_text)
             item = nodes.list_item("", nodes.paragraph("", "", reference))
 
-            if level < 1_000_000:
-                sub_sections = self.build_contents(section, level)
-                item += sub_sections
+            item += self.build_contents(section)  # recurse to add sub-sections
             entries.append(item)
         if entries:
             return nodes.bullet_list('', *entries)
