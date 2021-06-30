@@ -89,8 +89,8 @@ Build PEPs with Sphinx locally:
    not impact the build process.
 4. Navigate to the ``build`` directory of your PEPs repo to find the HTML pages.
 
-Arguments to the build file:
-----------------------------
+Arguments to ``build.py``:
+--------------------------
 
 Renderers:
 
