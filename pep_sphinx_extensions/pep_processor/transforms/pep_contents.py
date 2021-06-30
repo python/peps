@@ -62,9 +62,12 @@ class Contents(parts.Contents):
                 continue
 
             title = section[0]
+
+            # remove all pre-existing hyperlinks in the title (e.g. PEP references)
+            while (link_node := title.next_node(nodes.reference)) is not None:
+                link_node.replace_self(link_node[0])
             ref_id = section['ids'][0]
-            if title.next_node(nodes.reference) is None:
-                title["refid"] = ref_id  # Add a link to self
+            title["refid"] = ref_id  # Add a link to self
             entry_text = self.copy_and_filter(title)
             reference = nodes.reference("", "", refid=ref_id, *entry_text)
             item = nodes.list_item("", nodes.paragraph("", "", reference))
