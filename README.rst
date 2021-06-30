@@ -75,6 +75,14 @@ rendering pipeline:
 Rendering PEPs with Sphinx
 ==========================
 
+There is a Sphinx-rendered version of the PEPs at https://python.github.io/peps/
+(updated on every push to ``master``)
+
+**Warning:** This version is not, and should not be taken to be, a canonical
+source for PEPs whilst it remains in preview (`please report any rendering bugs
+<https://github.com/python/peps/issues/new>`_). The canonical source for PEPs remains
+https://www.python.org/dev/peps/
+
 Build PEPs with Sphinx locally:
 -------------------------------
 
