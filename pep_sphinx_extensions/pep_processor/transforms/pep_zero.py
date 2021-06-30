@@ -2,7 +2,7 @@ from docutils import nodes
 from docutils import transforms
 from docutils.transforms import peps
 
-from pep_sphinx_extensions.config import pep_url
+from pep_sphinx_extensions import config
 
 
 class PEPZero(transforms.Transform):
@@ -68,7 +68,7 @@ class PEPZeroSpecial(nodes.SparseNodeVisitor):
             if isinstance(para, nodes.paragraph) and len(para) == 1:
                 pep_str = para.astext()
                 try:
-                    ref = self.document.settings.pep_base_url + pep_url.format(int(pep_str))
+                    ref = config.pep_url.format(int(pep_str))
                     para[0] = nodes.reference(pep_str, pep_str, refuri=ref)
                 except ValueError:
                     pass
