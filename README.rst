@@ -78,7 +78,7 @@ Rendering PEPs with Sphinx
 Build PEPs with Sphinx locally:
 -------------------------------
 
-1. Ensure you have Python 3.9 and Sphinx installed
+1. Ensure you have Python >=3.9 and Sphinx installed
 2. If you have access to ``make``, follow (i), otherwise (ii)
 
    i.  Run ``make sphinx-local``
