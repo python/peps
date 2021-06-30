@@ -70,3 +70,51 @@ rendering pipeline:
   local clone of the PEP repository
 * Run ``./manage.py generate_pep_pages`` as described in
   https://pythondotorg.readthedocs.io/pep_generation.html
+
+
+Rendering PEPs with Sphinx
+==========================
+
+Build PEPs with Sphinx locally:
+-------------------------------
+
+1. Ensure you have Python 3.9 and Sphinx installed
+2. If you have access to ``make``, follow (i), otherwise (ii)
+
+   i.  Run ``make sphinx-local``
+   ii. Run ``python build.py -j 8 --build-files``. Note that the jobs argument
+       only takes effect on unix (non-mac) systems.
+3. Wait for Sphinx to render the PEPs. There may be a series of warnings about
+   unreferenced citations or labels -- whilst these are valid warnings they do
+   not impact the build process.
+4. Navigate to the ``build`` directory of your PEPs repo to find the HTML pages.
+
+Arguments to the build file:
+----------------------------
+
+Renderers:
+
+``-f`` or ``--build-files``
+    Renders PEPs to ``pep-XXXX.html`` files
+
+``-d`` or ``--build-dirs``
+    Renders PEPs to ``index.html`` files within ``pep-XXXX`` directories
+
+Options:
+
+``-i`` or ``--index-file``
+    Copies PEP 0 to a base index file
+
+``-j`` or ``--jobs``
+    How many parallel jobs to run (if supported). Integer, default 1
+
+``-n`` or ``--nitpicky``
+    Runs Sphinx in `nitpicky` mode
+
+``-w`` or ``--fail-on-warning``
+    Fails Sphinx on warnings
+
+Tools:
+
+``-l`` or ``--check-links``
+    Checks validity of links within PEP sources
