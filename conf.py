@@ -1,7 +1,7 @@
 """Configuration for building PEPs using Sphinx."""
 
-import sys
 from pathlib import Path
+import sys
 
 sys.path.append(str(Path("pep_sphinx_extensions").absolute()))
 
