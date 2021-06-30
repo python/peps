@@ -96,6 +96,7 @@ Build PEPs with Sphinx locally:
    unreferenced citations or labels -- whilst these are valid warnings they do
    not impact the build process.
 4. Navigate to the ``build`` directory of your PEPs repo to find the HTML pages.
+   PEP 0 provides a formatted index, and may be a useful reference.
 
 Arguments to ``build.py``:
 --------------------------
