@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3.9
 """Convert PEPs to (X)HTML - courtesy of /F
 
 Usage: %(PROGRAM)s [options] [<peps> ...]
