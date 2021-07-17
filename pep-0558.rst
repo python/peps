@@ -8,7 +8,7 @@ Type: Standards Track
 Content-Type: text/x-rst
 Created: 08-Sep-2017
 Python-Version: 3.11
-Post-History: 2017-09-08, 2019-05-22, 2019-05-30, 2019-12-30
+Post-History: 2017-09-08, 2019-05-22, 2019-05-30, 2019-12-30, 2021-07-18
 
 
 Abstract
@@ -32,6 +32,7 @@ Python C API/ABI::
 
 It also proposes the addition of several supporting functions and type
 definitions to the CPython C API.
+
 
 Rationale
 =========
@@ -277,9 +278,10 @@ Summary of proposed implementation-specific changes
 * Corresponding frame accessor functions for these new public APIs are added to
   the CPython frame C API
 * On optimised frames, the Python level ``f_locals`` API will become a direct
-  read/write proxy for the frame's local and closure variable storage, and hence
-  no longer support storing additional data that doesn't correspond to a local
-  or closure variable on the underyling frame object
+  read/write proxy for the frame's local and closure variable storage, but
+  will use the C level ``f_locals`` struct field to hold a value cache that
+  also allows for storage of arbitrary additional keys. Additional details on
+  the expected behaviour of that fast locals proxy are given below.
 * No C API function is added to get access to a mutable mapping for the local
   namespace. Instead, ``PyObject_GetAttrString(frame, "f_locals")`` is used, the
   same API as is used in Python code.
@@ -358,8 +360,19 @@ API:
 * *frame*: the underlying frame that the snapshot is for
 * *fast_refs*: a mapping from variable names to either fast local storage
   offsets (for local variables) or to closure cells (for closure variables).
-  This mapping is lazily initialized on the first access to the mapping, rather
-  than being eagerly populated as soon as the proxy is created.
+  This mapping is lazily initialized on the first read or write access through
+  the proxy, rather than being eagerly populated as soon as the proxy is created.
+
+The C level ``f_locals`` attribute on the frame object is treated as a cache
+by the fast locals proxy, as some operations (such as equality comparisons)
+require a regular dictionary mapping from names to their respective values.
+Fast local variables and cell variables are stored in the cache if they are
+currently bound to a value. Arbitrary additional attributes may also be stored
+in the cache. It *is* possible for the cache to get out of sync with the actual
+frame state (e.g. as code executes binding and unbinding operations, or if
+changes are made directly to the cache dict). A dedicated ``sync_frame_cache()``
+method is provided that runs ``PyFrame_FastToLocalsWithError()`` to ensure the
+cache is consistent with the current frame state.
 
 ``__getitem__`` operations on the proxy will populate the ``fast_refs`` mapping
 (if it is not already populated), and then either return the relevant value
@@ -369,39 +382,38 @@ that are defined, but not yet bound raise ``KeyError`` (just as they're
 omitted from the result of ``locals()``).
 
 As the frame storage is always accessed directly, the proxy will automatically
-pick up name binding operations that take place as the function executes.
+pick up name binding operations that take place as the function executes. The
+cache dictionary is implicitly updated when individual variables are read
+from the frame state (including for containment checks, which need to check if
+the name is currently bound or unbound).
 
 Similarly, ``__setitem__`` and ``__delitem__`` operations on the proxy will
 directly affect the corresponding fast local or cell reference on the underlying
 frame, ensuring that changes are immediately visible to the running Python code,
 rather than needing to be written back to the runtime storage at some later time.
+Such changes are also immediately written to the ``f_locals`` cache to reduce the
+opportunities for the cache to get out of sync with the frame state.
 
 Keys that are not defined as local or closure variables on the underlying frame
-will instead be written to the ``f_locals`` shared dynamic snapshot on optimised
-frames. This allows utilities like ``pdb`` (which writes ``__return__`` and
-``__exception__`` values into the frame ``f_locals`` mapping) to continue
-working as they always have.
+are still written to the ``f_locals`` cache on optimised frames. This allows
+utilities like ``pdb`` (which writes ``__return__`` and ``__exception__``
+values into the frame ``f_locals`` mapping) to continue working as they always
+have. These additional keys that do not correspond to a local or closure
+variable on the frame will be left alone by future cache sync operations.
 
 Other ``Mapping`` and ``MutableMapping`` methods will behave as expected for a
-mapping with these essential method semantics.
+mapping with these essential method semantics, with the exception that only
+intrinsically ``O(n)`` operations (e.g. copying, rendering as a string) and
+operations that operate on a single key (e.g. getting, setting, deleting, or
+popping) will implicitly refresh the value cache. Other operations
+(e.g. length checks, equality checks, iteration) may use the value cache without
+first ensuring that it is up to date (as ensuring the cache is up to date is
+itself an ``O(n)`` operation).
 
-For backwards compatibility with the existing ``PyEval_GetLocals()`` C API, the
-C level ``f_locals`` struct field does *not* store an instance of the new proxy
-type. In most cases the C level ``f_locals`` struct field will be ``NULL`` on an
-optimised frame, but if ``PyEval_GetLocals()`` is called, or
-``PyFrame_FastToLocals()`` or ``PyFrame_FastToLocalsWithError()`` are called for
-any other reason (e.g. to resolve a Python level ``locals()`` builtin call),
-then the field will be populated with an implicitly updated snapshot of the
-local variables and closure references for the frame, just as it is today.
-
-This internal dynamic snapshot will preserve the existing semantics where keys
-that are added but do not correspond to a local or closure variable on the frame
-will be left alone by future snapshot updates.
-
-Storing only the optional dynamic snapshot on the frame rather than storing an
-instance of the proxy type also avoids creating a reference cycle from the frame
-back to itself, so the frame will only be kept alive if another object retains a
-reference to a proxy instance.
+An additional benefit of storing only the variable value cache on the frame
+(rather than storing an instance of the proxy type), is that it avoids
+creating a reference cycle from the frame back to itself, so the frame will
+only be kept alive if another object retains a reference to a proxy instance.
 
 
 Changes to the stable C API/ABI
@@ -490,12 +502,13 @@ will be updated only in the following circumstance:
 * any call to ``PyFrame_GetLocals()``, ``PyFrame_GetLocalsCopy()``,
   ``_PyFrame_BorrowLocals()``, ``PyFrame_FastToLocals()``, or
   ``PyFrame_FastToLocalsWithError()`` for the frame
+* any call to the ``sync_frame_cache()`` method on a fast locals object
+  referencing that frame
 * any operation on a fast locals proxy object that requires the shared
   mapping to be up to date on the underlying frame. In the initial reference
-  implementation, those operations are any that require a full set of mapping
-  keys and/or values, including ``len(flp)``, ``flp.keys()``, ``flp.values()``,
-  ``flp.items()``, ``flp.copy()``, iteration, containment checks, object
-  comparison, and rendering as a string.
+  implementation, those operations are those that are intrinsically ``O(n)``
+  operations (``flp.copy()`` and rendering as a string), as well as those that
+  refresh the cache entries for individual keys.
 
 Accessing the frame "view" APIs will *not* implicitly update the shared dynamic
 snapshot, and the CPython trace hook handling will no longer implicitly update
@@ -745,11 +758,15 @@ arbitrary frames, so the standard library test suite fails if that functionality
 no longer works.
 
 Accordingly, the ability to store arbitrary keys was retained, at the expense
-of certain operations on proxy objects currently being slower than desired (as
-they need to update the dynamic snapshot in order to provide a reliable answer).
+of certain operations on proxy objects currently either being slower than desired
+(as they need to update the dynamic snapshot in order to provide correct
+behaviour), or else assuming that the cache is currently up to date (and hence
+potentially giving an incorrect answer if the frame state has changed in a
+way that doesn't automatically update the cache contents).
 
-Future implementation improvements should allow that lost performance to be
-recovered by only refreshing the snapshot when it is known to be out of date.
+It is expected that the exact details of the interaction between the fast locals
+proxy and the ``f_locals`` value cache on the underlying frame will evolve over
+time as opportunities for improvement are identified.
 
 
 Historical semantics at function scope
