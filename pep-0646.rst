@@ -733,28 +733,159 @@ hopefully enable a thriving ecosystem of tools for analysing and verifying
 shape properties of numerical computing programs.
 
 
+Grammar Changes
+===============
+
+This PEP would require two grammar changes. Full diffs of ``python.gram``
+and simple tests to confirm correct behaviour are available at
+https://github.com/mrahtz/cpython/commits/pep646-grammar.
+
+Star expressions in indexes
+---------------------------
+
+The first grammar change enables use of star expressions in index operations (that is,
+within square brackets), necessary to support star-unpacking of TypeVarTuples.
+
+Before:
+
+::
+    
+    slices[expr_ty]:
+        | a=slice !',' { a }
+        | a[asdl_expr_seq*]=','.slice+ [','] { _PyAST_Tuple(a, Load, EXTRA) }
+
+After:
+
+::
+    
+    slices[expr_ty]:
+        | a=slice !',' { a }
+        | a[asdl_expr_seq*]=','.(slice | starred_expression)+ [','] { _PyAST_Tuple(a, Load, EXTRA) }
+
+As with star-unpacking in other contexts, the star operator would call ``__iter__`` on the callee,
+and add the contents of the resulting iterator to the list of index arguments.
+This would enable ``TypeVarTuple`` to be implemented as roughly:
+
+::
+
+    class TypeVarTuple:
+        def __iter__(self):
+            yield _UnpackedTypeVarTuple()
+
+There are three things to note about this grammar change. First, for consistency with
+star-unpacking in other contexts, ``_UnpackedTypeVarTuple`` would always be received
+by ``__class_getitem__`` as part of a tuple:
+
+::
+
+    class C:
+        def __class_getitem__(self, x):
+            ...
+            
+    [*(1,)]      # = [1]
+    [*(1,), 2]   # = [1, 2]
+    C[int]       # __class_getitem__ receives x=int
+    # But perhaps surprisingly:
+    C[*Ts]       # __class_getitem__ receives x=(_UnpackedTypeVarTuple, )
+    # This is consistent with:
+    C[*Ts, int]  # __class_getitem__ receives x=(_UnpackedTypeVarTuple, int)
+
+
+Second, the change would also enable star-unpacking of other structures within
+indexing operations:
+
+::
+
+    idxs_to_select = (1, 2, 3)
+    array[0, *idxs_to_select, -1]
+
+Third, more than one instance of a star-unpack can occur within an index:
+
+::
+
+    array[*idxs_to_select, *idxs_to_select]
+
+The requirement that only one unpacked TypeVarTuple may be used per list of type parameters
+would therefore be implemented in e.g. ``typing.py`` rather than at the syntax level.
+
+Finally, note that star expressions within slices remain invalid:
+
+::
+
+    # Syntax error
+    array[*idxs_start:*idxs_end]
+
+``*args`` as a TypeVarTuple
+---------------------------
+
+The second change enables use of ``*args: *Ts``.
+
+Before:
+
+::
+
+    star_etc[StarEtc*]:
+    | '*' a=param_no_default b=param_maybe_default* c=[kwds] {
+        _PyPegen_star_etc(p, a, b, c) }
+    | '*' ',' b=param_maybe_default+ c=[kwds] {
+        _PyPegen_star_etc(p, NULL, b, c) }
+    | a=kwds { _PyPegen_star_etc(p, NULL, NULL, a) }
+
+After:
+
+::
+
+    star_etc[StarEtc*]:
+    | '*' a=param_no_default b=param_maybe_default* c=[kwds] {
+        _PyPegen_star_etc(p, a, b, c) }
+    | '*' a=param_no_default_star_annotation b=param_maybe_default* c=[kwds] {
+        _PyPegen_star_etc(p, a, b, c) }
+    | '*' ',' b=param_maybe_default+ c=[kwds] {
+        _PyPegen_star_etc(p, NULL, b, c) }
+    | a=kwds { _PyPegen_star_etc(p, NULL, NULL, a) }
+
+Where:
+
+::
+
+    param_no_default_star_annotation[arg_ty]:
+    | a=param_star_annotation ',' tc=TYPE_COMMENT? { _PyPegen_add_type_comment_to_arg(p, a, tc) }
+    | a=param_star_annotation tc=TYPE_COMMENT? &')' { _PyPegen_add_type_comment_to_arg(p, a, tc) }
+
+    param_star_annotation[arg_ty]: a=NAME b=star_annotation { _PyAST_arg(a->v.Name.id, b, NULL, EXTRA) }
+
+    star_annotation[expr_ty]: ':' a=star_expression { _PyAST_Tuple(_PyPegen_singleton_seq(p, a), Load, EXTRA) }
+
+This accomplishes the desired outcome:
+
+::
+
+    >>> def foo(*args: *b): pass
+    >>> foo.__annotations__
+    {'args': (_UnpackedTypeVarTuple,)}
+
+Note that the only scenario in which this grammar change allows ``*Ts`` to be used as a direct
+annotation (rather than being wrapped in e.g. ``Tuple[*Ts]``) is ``*args``. Other uses are still
+invalid:
+
+::
+
+    x: *Ts                 # Syntax error
+    def foo(x: *Ts): pass  # Syntax error
+
+Alternatives
+------------
+
+If these two grammar changes are considered too burdensome, there are two alternatives:
+
+1. **Support change 1 but not change 2**. Starred expressions within indexes are
+   more important to us than the ability to annotation ``*args``.
+2. **Use ``Unpack`` instead** - though in this case it might be better for us to
+   reconsider our options to see whether there isn't another option which would be
+   more readable.
+
 Backwards Compatibility
 =======================
-
-In order to use the star operator for unpacking of ``TypeVarTuple`` instances,
-we would need to make two grammar changes:
-
-1. Star expressions must be made valid in at least index operations.
-   For example, ``Tuple[*Ts]`` and ``Tuple[T1, *Ts, T2]`` would both
-   be valid. (This PEP does not allow multiple unpacked ``TypeVarTuple``
-   instances to appear in a single parameter list, so ``Tuple[*Ts1, *Ts2]``
-   would be a runtime error. Also note that star expressions would *not*
-   be valid in slice expressions -  e.g. ``Tuple[*Ts:*Ts]`` is
-   nonsensical and should remain invalid.)
-2. We would need to make '``*args: *Ts``' valid in function definitions.
-
-In both cases, at runtime the star operator would call ``Ts.__iter__()``.
-This would, in turn, return an instance of a helper class, e.g.
-``UnpackedTypeVarTuple``, whose ``repr`` would be ``*Ts``.
-
-If these grammar changes are considered too burdensome, we could instead
-simply use ``Unpack`` - though in this case it might be better for us to
-first decide whether there's a better option.
 
 The ``Unpack`` version of the PEP should be back-portable to previous
 versions of Python.
@@ -765,7 +896,6 @@ that if existing classes are made generic, a) all existing (unparameterised)
 uses of the class will still work, and b) parameterised and unparameterised
 versions of the class can be used together (relevant if, for example, library
 code is updated to use parameters while user code is not, or vice-versa).
-
 
 Reference Implementation
 ========================
