@@ -21,9 +21,9 @@ Unfortunately this meant that the views of the namespaces, ``locals()`` and
 as threads, generators and coroutines were added.
 
 This PEP proposes make the views of namespaces consistent once more.
-Modifications to ``locals()`` will show in the underlying variables.
-``frame.f_locals`` will be consistent with ``locals()`` and both will be
-consistent with the underlying variables regardless of threading or coroutines.
+Modifications to ``locals()`` will be visible in the underlying variables,
+``frame.f_locals`` will be consistent with ``locals()``, and they will all be
+consistent regardless of threading or coroutines.
 
 Motivation
 ==========
@@ -65,9 +65,9 @@ Rationale
 The current implementation of ``locals()``  and ``frame.f_locals``
 returns a dictionary that is created on the fly from the array of
 local variables. This can result in the array and dictionary getting
-out of sync with each other. Writes to the ``locals()`` do not show
-up as modifications local variables. Writes to local variables can
-ven get lost.
+out of sync with each other. Writes to the ``locals()`` may not show
+up as modifications to local variables. Writes to local variables can
+get lost.
 
 By making ``locals()`` and ``frame.f_locals`` return a view on the
 underlying frame, these problems go away. ``locals()`` is always in
