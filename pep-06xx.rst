@@ -12,16 +12,17 @@ Abstract
 ========
 
 In early versions of Python, back in the 20th century, all namespaces,
-whether in functions, classes or modules, were implemented the same way as a dictionary.
+whether in functions, classes or modules, were all implemented the same way,
+as a dictionary.
 
 For performance reasons, the implementation of function namespaces was changed.
 Unfortunately this meant that the views of the namespaces, ``locals()`` and
-``frame.f_locals`` ceased to be consistent and some odd bugs crept in over the yields
+``frame.f_locals``, ceased to be consistent and some odd bugs crept in over the years
 as threads, generators and coroutines were added.
 
 This PEP proposes make the views of namespaces consistent once more.
-Modifications to ``locals()`` will show in the underlying variables,
-``frame.f_locals`` will be consistent with ``locals()`` and will be
+Modifications to ``locals()`` will show in the underlying variables.
+``frame.f_locals`` will be consistent with ``locals()`` and both will be
 consistent with the underlying variables regardless of threading or coroutines.
 
 Motivation
@@ -62,11 +63,11 @@ Rationale
 =========
 
 The current implementation of ``locals()``  and ``frame.f_locals``
-returns a dictionary that it created on the fly from the array of 
-local variables. This can result in the array getting out of sync,
-resulting in writes to the ``locals()`` object not showing as
-modifications local variables, or worse writes to local variables
-being lost.
+returns a dictionary that is created on the fly from the array of
+local variables. This can result in the array and dictionary getting
+out of sync with each other. Writes to the ``locals()`` do not show
+up as modifications local variables. Writes to local variables can
+ven get lost.
 
 By making ``locals()`` and ``frame.f_locals`` return a view on the
 underlying frame, these problems go away. ``locals()`` is always in
@@ -89,13 +90,12 @@ implements the ``collections.abc.Mapping`` interface.
 
 All writes to the ``f_locals`` mapping will be immediately visible
 in the underlying variables. All changes to the underlying variables
-will be immediately visible in the mapping. The ``f_locals`` is a full
-mapping, and can have arbitrary key-value pairs added to it.
+will be immediately visible in the mapping. The ``f_locals`` will be a
+full mapping, and can have arbitrary key-value pairs added to it.
 
 For example::
 
     def test():
-        nonlocal var
         x = 1
         locals()['x'] = 2
         locals()['y'] = 4
@@ -105,8 +105,8 @@ For example::
 
 ``test()`` will print ``{'x': 2, 'y': 4, 'z': 5} 2``
 
-In 3.10, the above will fail with a ``NameError`` as ``y`` 
-as the definition ``locals()['y'] = 4`` is lost.
+In 3.10, the above will fail with a ``NameError``, as the
+definition of ``y`` by ``locals()['y'] = 4`` is lost.
 
 C-API
 -----
@@ -134,11 +134,9 @@ Although ``f.f_locals`` behaves as if it were the namespace of the function,
 some differences will be observable, 
 most notably that ``f.f_locals is f.f_locals`` may be ``False``.
 
-However ``f.f_locals == f.f_locals`` will be ``True`` and
-any changes to the underlying variables, by any means, will be
-visible to all accesses to those variables.
-
-
+However ``f.f_locals == f.f_locals`` will be ``True``, and
+all changes to the underlying variables, by any means, will be
+always be visible.
 
 Backwards Compatibility
 =======================
