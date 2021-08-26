@@ -8,7 +8,7 @@ Type: Standards Track
 Content-Type: text/x-rst
 Created: 08-Sep-2017
 Python-Version: 3.11
-Post-History: 2017-09-08, 2019-05-22, 2019-05-30, 2019-12-30, 2021-07-18
+Post-History: 2017-09-08, 2019-05-22, 2019-05-30, 2019-12-30, 2021-07-18, 2021-08-26
 
 
 Abstract
@@ -28,7 +28,8 @@ Python C API/ABI::
     typedef enum {
       PyLocals_UNDEFINED = -1,
       PyLocals_DIRECT_REFERENCE = 0,
-      PyLocals_SHALLOW_COPY = 1
+      PyLocals_SHALLOW_COPY = 1,
+      _PyLocals_ENSURE_32BIT_ENUM = 2147483647
     } PyLocals_Kind;
 
     PyLocals_Kind PyLocals_GetKind();
@@ -40,8 +41,8 @@ It also proposes the addition of several supporting functions and type
 definitions to the CPython C API.
 
 
-Rationale
-=========
+Motivation
+==========
 
 While the precise semantics of the ``locals()`` builtin are nominally undefined,
 in practice, many Python programs depend on it behaving exactly as it behaves in
@@ -91,7 +92,10 @@ mode from the CPython reference implementation. In releases up to and including
 Python 3.10, the CPython interpreter behaves differently when a trace hook has
 been registered in one or more threads via an implementation dependent mechanism
 like ``sys.settrace`` ([4]_) in CPython's ``sys`` module or
-``PyEval_SetTrace`` ([5]_) in CPython's C API.
+``PyEval_SetTrace`` ([5]_) in CPython's C API. If this PEP is accepted, then
+the only remaining behavioural difference when a trace hook is installed is that
+some optimisations in the interpreter eval loop are disabled when the tracing
+logic needs to run after each opcode.
 
 This PEP proposes changes to CPython's behaviour at function scope that make
 the ``locals()`` builtin semantics when a trace hook is registered identical to
@@ -258,7 +262,7 @@ implementation, as CPython currently returns a shared mapping object that may
 be implicitly refreshed by additional calls to ``locals()``, and the
 "write back" strategy currently used to support namespace changes
 from trace functions also doesn't comply with it (and causes the quirky
-behavioural problems mentioned in the Rationale).
+behavioural problems mentioned in the Motivation above).
 
 
 CPython Implementation Changes
@@ -283,20 +287,23 @@ Summary of proposed implementation-specific changes
      PyObject * PyLocals_GetView();
 * Corresponding frame accessor functions for these new public APIs are added to
   the CPython frame C API
-* On optimised frames, the Python level ``f_locals`` API will become a direct
-  read/write proxy for the frame's local and closure variable storage, but
-  will use the C level ``f_locals`` struct field to hold a value cache that
-  also allows for storage of arbitrary additional keys. Additional details on
-  the expected behaviour of that fast locals proxy are given below.
+* On optimised frames, the Python level ``f_locals`` API will return dynamically
+  created read/write proxy objects that directly access the frame's local and
+  closure variable storage. To provide interoperability with the existing
+  ``PyEval_GetLocals()`` API, the proxy objects will continue to use the C level
+  frame locals data storage field to hold a value cache that also allows for
+  storage of arbitrary additional keys. Additional details on the expected
+  behaviour of these fast locals proxy objects are covered below.
 * No C API function is added to get access to a mutable mapping for the local
   namespace. Instead, ``PyObject_GetAttrString(frame, "f_locals")`` is used, the
   same API as is used in Python code.
 * ``PyEval_GetLocals()`` remains supported and does not emit a programmatic
   warning, but will be deprecated in the documentation in favour of the new
-  APIs
+  APIs that don't rely on returning a borrowed reference
 * ``PyFrame_FastToLocals()`` and ``PyFrame_FastToLocalsWithError()`` remain
   supported and do not emit a programmatic warning, but will be deprecated in
-  the documentation in favour of the new APIs
+  the documentation in favour of the new APIs that don't require direct access
+  to the internal data storage layout of frame objects
 * ``PyFrame_LocalsToFast()`` always raises ``RuntimeError()``, indicating that
   ``PyObject_GetAttrString(frame, "f_locals")`` should be used to obtain a
   mutable read/write mapping for the local variables.
@@ -310,8 +317,9 @@ Providing the updated Python level semantics
 --------------------------------------------
 
 The implementation of the ``locals()`` builtin is modified to return a distinct
-copy of the local namespace rather than a direct reference to the internal
-dynamically updated snapshot returned by ``PyEval_GetLocals()``.
+copy of the local namespace for optimised frames, rather than a direct reference
+to the internal frame value cache updated by the ``PyFrame_FastToLocals()`` C
+API and returned by the ``PyEval_GetLocals()`` C API.
 
 
 Resolving the issues with tracing mode behaviour
@@ -326,26 +334,27 @@ that locals mutation support for trace hooks is currently implemented: the
 When a trace function is installed, CPython currently does the following for
 function frames (those where the code object uses "fast locals" semantics):
 
-1. Calls ``PyFrame_FastToLocals`` to update the dynamic snapshot
+1. Calls ``PyFrame_FastToLocals`` to update the frame value cache
 2. Calls the trace hook (with tracing of the hook itself disabled)
-3. Calls ``PyFrame_LocalsToFast`` to capture any changes made to the dynamic
-   snapshot
+3. Calls ``PyFrame_LocalsToFast`` to capture any changes made to the frame
+   value cache
 
 This approach is problematic for a few different reasons:
 
-* Even if the trace function doesn't mutate the snapshot, the final step resets
-  any cell references back to the state they were in before the trace function
-  was called (this is the root cause of the bug report in [1]_)
-* If the trace function *does* mutate the snapshot, but then does something
-  that causes the snapshot to be refreshed, those changes are lost (this is
-  one aspect of the bug report in [3]_)
+* Even if the trace function doesn't mutate the value cache, the final step
+  resets any cell references back to the state they were in before the trace
+  function was called (this is the root cause of the bug report in [1]_)
+* If the trace function *does* mutate the value cache, but then does something
+  that causes the value cache to be refreshed from the frame, those changes are
+  lost (this is one aspect of the bug report in [3]_)
 * If the trace function attempts to mutate the local variables of a frame other
   than the one being traced (e.g. ``frame.f_back.f_locals``), those changes
   will almost certainly be lost (this is another aspect of the bug report in
   [3]_)
-* If a ``locals()`` reference is passed to another function, and *that*
-  function mutates the snapshot namespace, then those changes *may* be written
-  back to the execution frame *if* a trace hook is installed
+* If a reference to the frame value cache (e.g. retrieved via ``locals()``) is
+  passed to another function, and *that* function mutates the value cache, then
+  those changes *may* be written back to the execution frame *if* a trace hook
+  is installed
 
 The proposed resolution to this problem is to take advantage of the fact that
 whereas functions typically access their *own* namespace using the language
@@ -353,69 +362,160 @@ defined ``locals()`` builtin, trace functions necessarily use the implementation
 dependent ``frame.f_locals`` interface, as a frame reference is what gets
 passed to hook implementations.
 
-Instead of being a direct reference to the internal dynamic snapshot used to
-populate the independent snapshots returned by ``locals()``, the Python level
-``frame.f_locals`` will be updated to instead return a dedicated proxy type
-that has two internal attributes not exposed as part of the Python runtime
-API:
+Instead of being a direct reference to the internal frame value cache historically
+returned by the ``locals()`` builtin, the Python level ``frame.f_locals`` will be
+updated to instead return instances of a dedicated fast locals proxy type that
+writes and reads values directly to and from the fast locals array on the
+underlying frame. Each access of the attribute produces a new instance of the
+proxy (so creating proxy instances is intentionally a cheap operation).
 
-* *frame*: the underlying frame that the snapshot is for
-* *fast_refs*: a mapping from variable names to either fast local storage
+Despite the new proxy type becoming the preferred way to access local variables
+on optimised frames, the internal value cache stored on the frame is still
+retained for two key purposes:
+
+* maintaining backwards compatibility for and interoperability with the
+  ``PyEval_GetLocals()`` C API
+* providing storage space for additional keys that don't have slots in the
+  fast locals array (e.g. the ``__return__`` and ``__exception__`` keys set by
+  ``pdb`` when tracing code execution for debugging purposes)
+
+With the changes in this PEP, this internal frame value cache is no longer
+directly accessible from Python code (whereas historically it was both
+returned by the ``locals()`` builtin and available as the ``frame.f_locals``
+attribute). Instead, the value cache is only accessible via the
+``PyEval_GetLocals()`` C API and by directly accessing the internal storage of
+a frame object.
+
+Fast locals proxy objects and the internal frame value cache returned by
+``PyEval_GetLocals()`` offer the following behavioural guarantees:
+
+* changes made via a fast locals proxy will be immediately visible to the frame
+  itself, to other fast locals proxy objects for the same frame, and in the
+  internal value cache stored on the frame (it is this last point that provides
+  ``PyEval_GetLocals()`` interoperability)
+* changes made directly to the internal frame value cache will never be visible
+  to the frame itself, and will only be reliably visible via fast locals proxies
+  for the same frame if the change relates to extra variables that don't have
+  slots in the frame's fast locals array
+* changes made by executing code in the frame will be visible to newly created
+  fast locals proxy objects, when directly accessing specific keys on existing
+  fast locals proxy objects, and when performing intrinsically O(n) operations
+  on existing fast locals proxy objects. Visibility in the internal frame value
+  cache (and in fast locals proxy operations that rely on the frame) cache is
+  subject to the cache update guidelines discussed in the next section
+
+Due to the last point, the frame API documentation will recommend that a new
+``frame.f_locals`` reference be retrieved whenever an optimised frame (or
+a related frame) might have been running code that binds or unbinds local
+variable or cell references, and the code iterates over the proxy, checks
+its length, or calls ``popitem()``. This will be the most natural style of use
+in tracing function implementations, as those are passed references to frames
+rather than directly to ``frames.f_locals``.
+
+
+Fast locals proxy implementation details
+----------------------------------------
+
+Each fast locals proxy instance has two internal attributes that are not
+exposed as part of the Python runtime API:
+
+* *frame*: the underlying optimised frame that the proxy provides access to
+* *frame_cache_updated*: whether this proxy has already updated the frame's
+  internal value cache at least once
+
+In addition, proxy instances use and update the following attributes stored on the
+underlying frame:
+
+* *fast_refs*: a hidden mapping from variable names to either fast local storage
   offsets (for local variables) or to closure cells (for closure variables).
-  This mapping is lazily initialized on the first read or write access through
-  the proxy, rather than being eagerly populated as soon as the proxy is created.
-
-The C level ``f_locals`` attribute on the frame object is treated as a cache
-by the fast locals proxy, as some operations (such as equality comparisons)
-require a regular dictionary mapping from names to their respective values.
-Fast local variables and cell variables are stored in the cache if they are
-currently bound to a value. Arbitrary additional attributes may also be stored
-in the cache. It *is* possible for the cache to get out of sync with the actual
-frame state (e.g. as code executes binding and unbinding operations, or if
-changes are made directly to the cache dict). A dedicated ``sync_frame_cache()``
-method is provided that runs ``PyFrame_FastToLocalsWithError()`` to ensure the
-cache is consistent with the current frame state.
+  This mapping is lazily initialized on the first frame read or write access
+  through a fast locals proxy, rather than being eagerly populated as soon as
+  the first fast locals proxy is created.
+* *locals*: the internal frame value cache returned by the ``PyEval_GetLocals()``
+  C API and updated by the ``PyFrame_FastToLocals()`` C API. This is the mapping
+  that the ``locals()`` builtin returns in Python 3.10 and earlier.
 
 ``__getitem__`` operations on the proxy will populate the ``fast_refs`` mapping
 (if it is not already populated), and then either return the relevant value
-(if the key is found in either the ``fast_refs`` mapping or the ``f_locals``
-dynamic snapshot stored on the frame), or else raise ``KeyError``. Variables
-that are defined but not currently bound raise ``KeyError`` (just as they're
-omitted from the result of ``locals()``).
+(if the key is found in either the ``fast_refs`` mapping or the internal frame
+value cache), or else raise ``KeyError``. Variables that are defined on the
+frame but not currently bound raise ``KeyError`` (just as they're omitted from
+the result of ``locals()``).
 
 As the frame storage is always accessed directly, the proxy will automatically
-pick up name binding operations that take place as the function executes. The
-cache dictionary is implicitly updated when individual variables are read
-from the frame state (including for containment checks, which need to check if
-the name is currently bound or unbound).
+pick up name binding and unbinding operations that take place as the function
+executes. The internal value cache is implicitly updated when individual
+variables are read from the frame state (including for containment checks,
+which need to check if the name is currently bound or unbound).
 
 Similarly, ``__setitem__`` and ``__delitem__`` operations on the proxy will
 directly affect the corresponding fast local or cell reference on the underlying
 frame, ensuring that changes are immediately visible to the running Python code,
 rather than needing to be written back to the runtime storage at some later time.
-Such changes are also immediately written to the ``f_locals`` cache to reduce the
-opportunities for the cache to get out of sync with the frame state.
+Such changes are also immediately written to the internal frame value cache to
+reduce the opportunities for the cache to get out of sync with the frame state
+and to make them visible to users of the ``PyEval_GetLocals()`` C API.
 
 Keys that are not defined as local or closure variables on the underlying frame
-are still written to the ``f_locals`` cache on optimised frames. This allows
+are still written to the internal value cache on optimised frames. This allows
 utilities like ``pdb`` (which writes ``__return__`` and ``__exception__``
-values into the frame ``f_locals`` mapping) to continue working as they always
+values into the frame's ``f_locals`` mapping) to continue working as they always
 have. These additional keys that do not correspond to a local or closure
 variable on the frame will be left alone by future cache sync operations.
 
-Other ``Mapping`` and ``MutableMapping`` methods will behave as expected for a
-mapping with these essential method semantics, with the exception that only
-intrinsically ``O(n)`` operations (e.g. copying, rendering as a string) and
-operations that operate on a single key (e.g. getting, setting, deleting, or
-popping) will implicitly refresh the value cache. Other operations
-(e.g. length checks, equality checks, iteration) may use the value cache without
-first ensuring that it is up to date (as ensuring the cache is up to date is
-itself an ``O(n)`` operation).
+Fast locals proxy objects offer a proxy-specific method that explicitly syncs
+the internal frame cache with the current state of the fast locals array:
+``proxy.sync_frame_cache()``. This method runs ``PyFrame_FastToLocalsWithError()``
+to ensure the cache is consistent with the current frame state.
+
+Using a particular proxy instance to sync the frame cache sets the internal
+``frame_cache_updated`` flag on that instance.
+
+For most use cases, explicitly syncing the frame cache shouldn't be necessary,
+as the following intrinsically O(n) operations implicitly sync the frame cache
+whenever they're called on a proxy instance:
+
+* ``__str__``
+* ``__or__`` (dict union)
+* ``copy()``
+
+While the following operations will implicitly sync the frame cache if
+``frame_cache_updated`` has not yet been set on that instance:
+
+
+  * ``__len__``
+  * ``__iter__``
+  * ``__reversed__``
+  * ``keys()``
+  * ``values()``
+  * ``items()``
+  * ``popitem()``
+  * value comparison operations
+
+
+Other ``Mapping`` and ``MutableMapping`` methods on the proxy will behave as
+expected for a mapping with these essential method semantics regardless of
+whether the internal frame value cache is up to date or not.
 
 An additional benefit of storing only the variable value cache on the frame
 (rather than storing an instance of the proxy type), is that it avoids
 creating a reference cycle from the frame back to itself, so the frame will
 only be kept alive if another object retains a reference to a proxy instance.
+
+Note: calling the ``proxy.clear()`` method has a similarly broad impact as
+calling ``PyFrame_LocalsToFast()`` on an empty frame value cache in earlier
+versions. Not only will the frame local variables be cleared, but also any cell
+variables accessible from the frame (whether those cells are owned by the
+frame itself or by an outer frame). This *can* clear a class's ``__class__``
+cell if called on the frame of a method that uses the zero-arg ``super()``
+construct (or otherwise references ``__class__``). This exceeds the scope of
+calling ``frame.clear()``, as that only drop's the frame's references to cell
+variables, it doesn't clear the cells themselves. This PEP could be a potential
+opportunity to narrow the scope of attempts to clear the frame variables
+directly by leaving cells belonging to outer frames alone, and only clearing
+local variables and cells belonging directly to the frame underlying the proxy
+(this issue affects PEP 667 as well, as the question relates to the handling of
+cell variables, and is entirely independent of the internal frame value cache).
 
 
 Changes to the stable C API/ABI
@@ -451,6 +551,10 @@ enum, with the following options being available:
   local namespace for the running frame.
 * ``PyLocals_UNDEFINED``: an error occurred (e.g. no active Python thread
   state). A Python exception will be set if this value is returned.
+
+Since the enum is used in the stable ABI, an additional 31-bit value is set to
+ensure that it is safe to cast arbitrary signed 32-bit signed integers to
+``PyLocals_Kind`` values.
 
 This query API allows extension module code to determine the potential impact
 of mutating the mapping returned by ``PyLocals_Get()`` without needing access
@@ -569,8 +673,7 @@ In addition to the above documented interfaces, the draft reference
 implementation also exposes the following undocumented interfaces::
 
     PyTypeObject _PyFastLocalsProxy_Type;
-    #define _PyFastLocalsProxy_CheckExact(self) \
-        (Py_TYPE(self) == &_PyFastLocalsProxy_Type)
+    #define _PyFastLocalsProxy_CheckExact(self) Py_IS_TYPE(op, &_PyFastLocalsProxy_Type)
 
 This type is what the reference implementation actually returns from
 ``PyObject_GetAttrString(frame, "f_locals")`` for optimized frames (i.e.
@@ -598,8 +701,8 @@ The PEP necessarily also drops the implicit call to ``PyFrame_LocalsToFast()``
 when returning from a trace hook, as that API now always raises an exception.
 
 
-Design Discussion
-=================
+Rationale and Design Discussion
+===============================
 
 Changing ``locals()`` to return independent snapshots at function scope
 -----------------------------------------------------------------------
@@ -694,6 +797,33 @@ Returning snapshots from ``locals()`` at function scope also means that static
 analysis for function level code will be more reliable, as only access to the
 frame machinery will allow rebinding of local and nonlocal variable
 references in a way that is hidden from static analysis.
+
+
+Retaining the internal frame value cache
+----------------------------------------
+
+Retaining the internal frame value cache results in some visible quirks when
+frame proxy instances are kept around and re-used after name binding and
+unbinding operations have been executed on the frame.
+
+The primary reason for retaining the frame value cache is to maintain backwards
+compatibility with the ``PyEval_GetLocals()`` API. That API returns a borrowed
+reference, so it must refer to persistent state stored on the frame object.
+Storing a fast locals proxy object on the frame creates a problematic reference
+cycle, so the cleanest option is to instead continue to return a frame value
+cache, just as this function has done since optimised frames were first
+introduced.
+
+With the frame value cache being kept around anyway, it then further made sense
+to rely on it to simplify the fast locals proxy mapping implementation.
+
+
+Delaying implicit frame value cache updates
+-------------------------------------------
+
+Earlier iterations of this PEP proposed updating the internal frame value cache
+whenever a new fast locals proxy instance was created for that frame. They also
+proposed storing a separate copy of the ``fast_refs`` lookup mapping on each
 
 
 What happens with the default args for ``eval()`` and ``exec()``?
@@ -858,6 +988,178 @@ semantics that they actually need, giving Python implementations more
 flexibility in how they provide those capabilities.
 
 
+Comparison with PEP 667
+-----------------------
+
+PEP 667 offers a partially competing proposal for this PEP that suggests it
+would be reasonable to eliminate the internal frame value cache on optimised
+frames entirely.
+
+These changes were originally offered as amendments to PEP 558, and the PEP
+author rejected them for three main reasons:
+
+* the claim that ``PyEval_GetLocals()`` is unfixable because it returns a
+  borrowed reference is simply false, as it is still working in the PEP 558
+  reference implementation. All that is required to keep it working is to
+  retain the internal frame value cache and design the fast locals proxy in
+  such a way that it is reasonably straightforward to keep the cache up to date
+  with changes in the frame state without incurring significant runtime overhead
+  when the cache isn't needed. Given that this claim is false, the proposal to
+  require that all code using the ``PyEval_GetLocals()`` API be rewritten to use
+  a new API with different refcounting semantics fails PEP 387's requirement
+  that API compatibility breaks should have a large benefit to breakage ratio
+  (since there's no significant benefit gained from dropping the cache, no code
+  breakage can be justified). The only genuinely unfixable public API is
+  ``PyFrame_LocalsToFast()`` (which is why both PEPs propose breaking that).
+* without some form of internal value cache, the API performance characteristics
+  of the fast locals proxy mapping become quite unintuitive. ``len(proxy)``, for
+  example, becomes consistently O(n) in the number of variables defined on the
+  frame, as the proxy has to iterate over the entire fast locals array to see
+  which names are currently bound to values before it can determine the answer.
+  By contrast, maintaining an internal frame value cache allows proxies to
+  largely be treated as normal dictionaries from an algorithmic complexity point
+  of view, with allowances only needing to be made for the initial implicit O(n)
+  cache refresh that runs the first time an operation that relies on the cache
+  being up to date is executed.
+* the claim that a cache-free implementation would be simpler is highly suspect,
+  as PEP 667 includes only a pure Python sketch of a subset of a mutable mapping
+  implementation, rather than a full-fledged C implementation of a new mapping
+  type integrated with the underlying data storage for optimised frames.
+  PEP 558's fast locals proxy implementation delegates heavily to the
+  frame value cache for the operations needed to fully implement the mutable
+  mapping API, allowing it to re-use the existing dict implementations of the
+  following operations:
+
+  * ``__len__``
+  * ``__str__``
+  * ``__or__`` (dict union)
+  * ``__iter__`` (allowing the ``dict_keyiterator`` type to be reused)
+  * ``__reversed__`` (allowing the ``dict_reversekeyiterator`` type to be reused)
+  * ``keys()`` (allowing the ``dict_keys`` type to be reused)
+  * ``values()`` (allowing the ``dict_values`` type to be reused)
+  * ``items()`` (allowing the ``dict_items`` type to be reused)
+  * ``copy()``
+  * ``popitem()``
+  * value comparison operations
+
+Of the three reasons, the first is the most important (since we need compelling
+reasons to break API backwards compatibility, and we don't have them).
+
+The other two points relate to why the author of this PEP doesn't believe PEP
+667's proposal would actually offer any significant benefits to either API
+consumers (while the author of this PEP concedes that PEP 558's internal frame
+cache sync management is more complex to deal with than PEP 667's API
+algorithmic complexity quirks, it's still markedly less complex than the
+tracing mode semantics in current Python versions) or to CPython core developers
+(the author of this PEP certainly didn't want to write C implementations of five
+new fast locals proxy specific mutable mapping helper types when he could
+instead just write a single cache refresh helper method and then reuse the
+existing builtin dict method implementations).
+
+Taking the specific frame access example cited in PEP 667::
+
+    def foo():
+        x = sys._getframe().f_locals
+        y = locals()
+        print(tuple(x))
+        print(tuple(y))
+
+Following the implementation improvements prompted by the suggestions in PEP 667,
+PEP 558 prints the same result as PEP 667 does::
+
+    ('x', 'y')
+    ('x',)
+
+That said, it's certainly possible to desynchronise the cache quite easily when
+keeping proxy references around while letting code run in the frame.
+This isn't a new problem, as it's similar to the way that
+``sys._getframe().f_locals`` behaves in existing versions when no trace hooks
+are installed. The following example::
+
+    def foo():
+        x = sys._getframe().f_locals
+        print(tuple(x))
+        y = locals()
+        print(tuple(x))
+        print(tuple(y))
+
+will print the following under PEP 558, as the first ``tuple(x)`` call consumes
+the single implicit cache update performed by the proxy instance, and ``y``
+hasn't been bound yet when the ``locals()`` call refreshes it again::
+
+    ('x',)
+    ('x',)
+    ('x',)
+
+However, this is the origin of the coding style guideline in the body of the
+PEP: don't keep fast locals proxy references around if code might have been
+executed in that frame since the proxy instance was created. With the code
+updated to follow that guideline::
+
+    def foo():
+        x = sys._getframe().f_locals
+        print(tuple(x))
+        y = locals()
+        x = sys._getframe().f_locals
+        print(tuple(x))
+        print(tuple(y))
+
+
+The output once again becomes the same as it would be under PEP 667::
+
+    ('x',)
+    ('x', 'y',)
+    ('x',)
+
+Tracing function implementations, which are expected to be the main consumer of
+the fast locals proxy API, generally won't run into the above problem, since
+they get passed a reference to the frame object (and retrieve a fresh fast
+locals proxy instance from that), while the frame itself isn't running code
+while the trace function is running. If the trace function *does* allow code to
+be run on the frame (e.g. it's a debugger), then it should also follow the
+coding guideline and retrieve a new proxy instance each time it allows code
+to run in the frame.
+
+Most trace functions are going to be reading or writing individual keys, or
+running intrinsically O(n) operations like iterating over all currently bound
+variables, so they also shouldn't be impacted *too* badly by the performance
+quirks in the PEP 667 proposal. The most likely source of annoyance would be
+the O(n) ``len(proxy)`` implementation.
+
+Note: the simplest way to convert the PEP 558 reference implementation into a
+PEP 667 implementation that doesn't break ``PyEval_GetLocals()`` would be to
+remove the ``frame_cache_updated`` checks in affected operations, and instead
+always sync the frame cache in those methods. Adopting that approach would
+change the algorithmic complexity of the following operations as shown
+(where ``n`` is the number of local and cell variables defined on the frame):
+
+  * ``__len__``: O(1) -> O(n)
+  * ``__iter__``: O(1) -> O(n)
+  * ``__reversed__``: O(1) -> O(n)
+  * ``keys()``: O(1) -> O(n)
+  * ``values()``: O(1) -> O(n)
+  * ``items()``: O(1) -> O(n)
+  * ``popitem()``: O(1) -> O(n)
+  * value comparison operations: no longer benefit from O(1) length check shortcut
+
+Keeping the iterator/iterable retrieval methods as ``O(1)`` would involve
+writing custom replacements for the corresponding builtin dict helper types.
+``popitem()`` could be improved from "always O(n)" to "O(n) worst case" by
+creating a custom implementation that iterates over the fast locals array
+directly. The length check and value comparison operations have very limited
+opportunities for improvement: without a cache, the only way to know how many
+variables are currently bound is to iterate over all of them and check, and if
+the implementation is going to be spending that much time on an operation
+anyway, it may as well spend it updating the frame value cache and then
+consuming the result.
+
+This feels worse than PEP 558 as written, where folks that don't want to think
+too hard about the cache management details, and don't care about potential
+performance issues with large frames, are free to add as many
+``proxy.sync_frame_cache()`` (or other internal frame cache updating) calls to
+their code as they like.
+
+
 Implementation
 ==============
 
@@ -875,10 +1177,17 @@ PEP that attempted to avoid introducing such a proxy.
 Thanks to Steve Dower and Petr Viktorin for asking that more attention be paid
 to the developer experience of the proposed C API additions [8,13]_.
 
+Thanks to Larry Hastings for the suggestion on how to use enums in the stable
+ABI while ensuring that they safely support typecasting from arbitrary
+integers.
+
 Thanks to Mark Shannon for pushing for further simplification of the C level
 API and semantics, as well as significant clarification of the PEP text (and for
 restarting discussion on the PEP in early 2021 after a further year of
-inactivity) [10,11,12].
+inactivity) [10,11,12]_. Mark's comments that were ultimately published as
+PEP 667 also directly resulted in several implementation efficiency improvements
+that avoid incurring the cost of redundant O(n) mapping refresh operations
+when the relevant mappings aren't used.
 
 
 References
