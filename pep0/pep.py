@@ -196,14 +196,13 @@ class PEP(object):
                                    pep_file.name)
         except StopIteration:
             raise PEPError("headers missing or out of order",
-                                pep_file.name)
+                           pep_file.name)
         required = False
         try:
             while not required:
                 current_header, required = next(header_order)
-            else:
-                raise PEPError("PEP is missing its %r" % (current_header,),
-                               pep_file.name)
+            raise PEPError("PEP is missing its %r" % (current_header,),
+                           pep_file.name)
         except StopIteration:
             pass
         # 'PEP'.
@@ -272,11 +271,10 @@ class PEP(object):
                 else:
                     email = match_dict['email']
                 author_list.append((author, email))
-            else:
-                # If authors were found then stop searching as only expect one
-                # style of author citation.
-                if author_list:
-                    break
+            # If authors were found then stop searching as only expect one
+            # style of author citation.
+            if author_list:
+                break
         return author_list
 
     @property
