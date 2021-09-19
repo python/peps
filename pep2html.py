@@ -538,7 +538,7 @@ def make_html(inpath, verbose=0):
                               % (inpath, pep_type)), file=sys.stderr)
         sys.stdout.flush()
         return None
-    elif PEP_TYPE_DISPATCH[pep_type] == None:
+    elif PEP_TYPE_DISPATCH[pep_type] is None:
         pep_type_error(inpath, pep_type)
         return None
     outpath = os.path.splitext(inpath)[0] + ".html"
