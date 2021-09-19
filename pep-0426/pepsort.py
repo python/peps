@@ -146,7 +146,6 @@ class Analysis:
         ]
 
         sort_key = SORT_KEYS[pepno]
-        sort_failures = 0
         for i, (pname, versions) in enumerate(projects.items()):
             if i % 100 == 0:
                 sys.stderr.write('%s / %s\r' % (i, num_projects))
