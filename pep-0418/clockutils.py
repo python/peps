@@ -249,6 +249,7 @@ else:
                     epoch = 0
                     flags = WALLCLOCK
                     resolution = timespec.tv_sec + timespec.tv_nsec / 1000000000
+                    @staticmethod
                     def now():
                         timespec = _time.clock_gettime(_time.CLOCK_REALTIME)
                         return timespec.tv_sec + timespec.tv_nsec / 1000000000
@@ -269,6 +270,7 @@ else:
                     '''
                     flags = MONOTONIC|STEADY|ADJUSTED
                     resolution = timespec.tv_sec + timespec.tv_nsec / 1000000000
+                    @staticmethod
                     def now():
                         timespec = _time.clock_gettime(_time.CLOCK_MONOTONIC)
                         return timespec.tv_sec + timespec.tv_nsec / 1000000000
@@ -289,6 +291,7 @@ else:
                     '''
                     flags = MONOTONIC|STEADY
                     resolution = timespec.tv_sec + timespec.tv_nsec / 1000000000
+                    @staticmethod
                     def now():
                         timespec = _time.clock_gettime(_time.CLOCK_MONOTONIC_RAW)
                         return timespec.tv_sec + timespec.tv_nsec / 1000000000
@@ -309,6 +312,7 @@ else:
                     '''
                     flags = MONOTONIC
                     resolution = timespec.tv_sec + timespec.tv_nsec / 1000000000
+                    @staticmethod
                     def now():
                         timespec = _time.clock_gettime(_time.CLOCK_PROCESS_CPUTIME_ID)
                         return timespec.tv_sec + timespec.tv_nsec / 1000000000
@@ -329,6 +333,7 @@ else:
                     '''
                     flags = MONOTONIC
                     resolution = timespec.tv_sec + timespec.tv_nsec / 1000000000
+                    @staticmethod
                     def now():
                         timespec = _time.clock_gettime(_time.CLOCK_THREAD_CPUTIME_ID)
                         return timespec.tv_sec + timespec.tv_nsec / 1000000000
