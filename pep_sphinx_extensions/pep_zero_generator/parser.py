@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import textwrap
 from typing import TYPE_CHECKING
+from functools import total_ordering
 
 from pep_sphinx_extensions.pep_zero_generator.author import parse_author_email
 from pep_sphinx_extensions.pep_zero_generator.constants import ACTIVE_ALLOWED
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
     from pep_sphinx_extensions.pep_zero_generator.author import Author
 
 
+@total_ordering
 class PEP:
     """Representation of PEPs.
 
