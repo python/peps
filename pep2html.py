@@ -52,7 +52,7 @@ except ImportError:
 
 from docutils import core, nodes, utils
 from docutils.readers import standalone
-from docutils.transforms import peps, references, misc, frontmatter, Transform
+from docutils.transforms import peps, frontmatter, Transform
 from docutils.parsers import rst
 
 class DataError(Exception):
