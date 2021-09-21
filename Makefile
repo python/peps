@@ -27,12 +27,16 @@ pep-0000.rst: $(wildcard pep-????.txt) $(wildcard pep-????.rst) $(wildcard pep0/
 rss:
 	$(PYTHON) pep2rss.py .
 
+bib: pep-0000.rst
+	$(PYTHON) pep2bib.py .
+
 install:
 	echo "Installing is not necessary anymore. It will be done in post-commit."
 
 clean:
 	-rm pep-0000.rst
 	-rm *.html
+	-rm *.bib
 	-rm -rf build
 
 update:
