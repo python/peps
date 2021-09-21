@@ -52,7 +52,7 @@ except ImportError:
 
 from docutils import core, nodes, utils
 from docutils.readers import standalone
-from docutils.transforms import peps, references, misc, frontmatter, Transform
+from docutils.transforms import peps, frontmatter, Transform
 from docutils.parsers import rst
 
 class DataError(Exception):
@@ -538,7 +538,7 @@ def make_html(inpath, verbose=0):
                               % (inpath, pep_type)), file=sys.stderr)
         sys.stdout.flush()
         return None
-    elif PEP_TYPE_DISPATCH[pep_type] == None:
+    elif PEP_TYPE_DISPATCH[pep_type] is None:
         pep_type_error(inpath, pep_type)
         return None
     outpath = os.path.splitext(inpath)[0] + ".html"
