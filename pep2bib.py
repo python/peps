@@ -53,7 +53,7 @@ def main():
     peps.extend(glob.glob('pep-*.rst'))
 
     peps_with_dt = [(pep_number(full_path), pep_creation_dt(full_path), full_path) for full_path in peps]
-    # sort peps by date, newest first
+    # sort peps by number
     peps_with_dt.sort()
 
     items = {}
