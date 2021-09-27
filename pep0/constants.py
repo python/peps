@@ -21,8 +21,8 @@ Created: 13-Jul-2000
 
 intro = """\
 This PEP contains the index of all Python Enhancement Proposals,
-known as PEPs.  PEP numbers are assigned by the PEP editors, and
-once assigned are never changed [1_].  The version control history [2_] of
+known as PEPs.  PEP numbers are assigned by the PEP editors[1_], and
+once assigned are never changed.  The version control history [2_] of
 the PEP texts represent their historical record.
 """
 
