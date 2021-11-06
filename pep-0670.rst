@@ -1,0 +1,367 @@
+PEP: 670
+Title: Convert macros to functions in the Python C API
+Author: Erlend Egeberg Aasland <erlend.aasland@protonmail.com>,
+        Victor Stinner <vstinner@python.org>
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 19-Oct-2021
+Python-Version: 3.11
+
+
+Abstract
+========
+
+Convert macros to static inline functions or regular functions.
+
+Remove the return value of macros having a return value, whereas they
+should not, to aid detecting bugs in C extensions when the C API is
+misused.
+
+Some function arguments are still cast to ``PyObject*`` to prevent
+emitting new compiler warnings.
+
+
+Rationale
+=========
+
+The use of macros may have unintended adverse effects that are hard to
+avoid, even for experienced C developers. Some issues have been known
+for years, while others have been discovered recently in Python.
+Working around macro pitfalls makes the macro coder harder to read and
+to maintain.
+
+Converting macros to functions has multiple advantages:
+
+* By design, functions don't have macro pitfalls.
+* Arguments type and return type are well defined.
+* Debuggers and profilers can retrieve the name of inlined functions.
+* Debuggers can put breakpoints on inlined functions.
+* Variables have a well defined scope.
+* Code is usually easier to read and to maintain than similar macro
+  code.  Functions don't need the following workarounds for macro
+  pitfalls:
+
+  * Add parentheses around arguments.
+  * Use line continuation characters if the function is written on
+    multiple lines.
+  * Add commas to execute multiple expressions.
+  * Use ``do { ... } while (0)`` to write multiple statements.
+
+Converting macros and static inline functions to regular functions makes
+these regular functions accessible to projects which use Python but
+cannot use macros and static inline functions.
+
+
+Macro Pitfalls
+==============
+
+The `GCC documentation
+<https://gcc.gnu.org/onlinedocs/cpp/Macro-Pitfalls.html>`_ lists several
+common macro pitfalls:
+
+- Misnesting
+- Operator precedence problems
+- Swallowing the semicolon
+- Duplication of side effects
+- Self-referential macros
+- Argument prescan
+- Newlines in arguments
+
+
+Performance and inlining
+========================
+
+Static inline functions is a feature added to the C99 standard. Modern C
+compilers have efficient heuristics to decide if a function should be
+inlined or not.
+
+When a C compiler decides to not inline, there is likely a good reason.
+For example, inlining would reuse a register which require to
+save/restore the register value on the stack and so increase the stack
+memory usage or be less efficient.
+
+
+Debug build
+-----------
+
+When Python is built in debug mode, most compiler optimizations are
+disabled.  For example, Visual Studio disables inlining. Benchmarks must
+not be run on a Python debug build, only on release build: using LTO and
+PGO is recommended for reliable benchmarks. PGO helps the compiler to
+decide if function should be inlined or not.
+
+
+Force inlining
+--------------
+
+The ``Py_ALWAYS_INLINE`` macro can be used to force inlining. This macro
+uses ``__attribute__((always_inline))`` with GCC and Clang, and
+``__forceinline`` with MSC.
+
+So far, previous attempts to use ``Py_ALWAYS_INLINE`` didn't show any
+benefit and were abandoned. See for example: `bpo-45094
+<https://bugs.python.org/issue45094>`_: "Consider using
+``__forceinline`` and ``__attribute__((always_inline))`` on static
+inline functions (``Py_INCREF``, ``Py_TYPE``) for debug build".
+
+When the ``Py_INCREF()`` macro was converted to a static inline
+functions in 2018 (`commit
+<https://github.com/python/cpython/commit/2aaf0c12041bcaadd7f2cc5a54450eefd7a6ff12>`__),
+it was decided not to force inlining. The machine code was analyzed with
+multiple C compilers and compiler options: ``Py_INCREF()`` was always
+inlined without having to force inlining. The only case where it was not
+inlined was the debug build. See discussion in the `bpo-35059
+<https://bugs.python.org/issue35059>`_: "Convert ``Py_INCREF()`` and
+``PyObject_INIT()`` to inlined functions".
+
+
+Disable inlining
+----------------
+
+On the other side, the ``Py_NO_INLINE`` macro can be used to disable
+inlining.  It is useful to reduce the stack memory usage. It is
+especially useful on a LTO+PGO build which is more aggressive to inline
+code: see `bpo-33720 <https://bugs.python.org/issue33720>`_. The
+``Py_NO_INLINE`` macro uses ``__attribute__ ((noinline))`` with GCC and
+Clang, and ``__declspec(noinline)`` with MSC.
+
+
+Specification
+=============
+
+Convert macros to static inline functions
+-----------------------------------------
+
+Most macros should be converted to static inline functions to prevent
+`macro pitfalls`_.
+
+The following macros should not be converted:
+
+* Empty macros. Example: ``#define Py_HAVE_CONDVAR``.
+* Macros only defining a number, even if a constant with a well defined
+  type can better. Example: ``#define METH_VARARGS 0x0001``.
+* Compatibility layer for different C compilers, C language extensions,
+  or recent C features.
+  Example: ``#define Py_ALWAYS_INLINE __attribute__((always_inline))``.
+
+
+Convert static inline functions to regular functions
+----------------------------------------------------
+
+The performance impact of converting static inline functions to regular
+functions should be measured with benchmarks. If there is a significant
+slowdown, there should be a good reason to do the conversion. One reason
+can be hiding implementation details.
+
+Using static inline functions in the internal C API is fine: the
+internal C API exposes implemenation details by design and should not be
+used outside Python.
+
+Cast to PyObject*
+-----------------
+
+When a macro is converted to a function and the macro casts its
+arguments to ``PyObject*``, the new function comes with a new macro
+which cast arguments to ``PyObject*`` to prevent emitting new compiler
+warnings. So the converted functions still accept pointers to structures
+inheriting from ``PyObject`` (ex: ``PyTupleObject``).
+
+For example, the ``Py_TYPE(obj)`` macro casts its ``obj`` argument to
+``PyObject*``::
+
+    #define _PyObject_CAST_CONST(op) ((const PyObject*)(op))
+
+    static inline PyTypeObject* _Py_TYPE(const PyObject *ob) {
+        return ob->ob_type;
+    }
+    #define Py_TYPE(ob) _Py_TYPE(_PyObject_CAST_CONST(ob))
+
+The undocumented private ``_Py_TYPE()`` function must not be called
+directly. Only the documented public ``Py_TYPE()`` macro must be used.
+
+Later, the cast can be removed on a case by case basis, but that is out
+of scope for this PEP.
+
+Remove the return value
+-----------------------
+
+When a macro is implemented as an expression, it has an implicit return
+value. In some cases, the macro must not have a return value and can be
+misused in third party C extensions. See `bpo-30459
+<https://bugs.python.org/issue30459>`_ for the example of
+``PyList_SET_ITEM()`` and ``PyCell_SET()`` macros. It is not easy to
+notice this issue while reviewing macro code.
+
+These macros are converted to functions using the ``void`` return type
+to remove their return value. Removing the return value aids detecting
+bugs in C extensions when the C API is misused.
+
+
+Backwards Compatibility
+=======================
+
+Removing the return value of macros is an incompatible API change made
+on purpose: see the `Remove the return value`_ section.
+
+
+Rejected Ideas
+==============
+
+Keep macros, but fix some macro issues
+--------------------------------------
+
+Converting macros to functions is not needed to `remove the return
+value`_: casting a macro return value to ``void`` also fix the issue.
+For example, the ``PyList_SET_ITEM()`` macro was already fixed like
+that.
+
+Macros are always "inlined" with any C compiler.
+
+The duplication of side effects can be worked around in the caller of
+the macro.
+
+People using macros should be considered "consenting adults". People who
+feel unsafe with macros should simply not use them.
+
+Examples of hard to read macros
+===============================
+
+_Py_NewReference()
+------------------
+
+Example showing the usage of an ``#ifdef`` inside a macro.
+
+Python 3.7 macro (simplified code)::
+
+    #ifdef COUNT_ALLOCS
+    #  define _Py_INC_TPALLOCS(OP) inc_count(Py_TYPE(OP))
+    #  define _Py_COUNT_ALLOCS_COMMA  ,
+    #else
+    #  define _Py_INC_TPALLOCS(OP)
+    #  define _Py_COUNT_ALLOCS_COMMA
+    #endif /* COUNT_ALLOCS */
+
+    #define _Py_NewReference(op) (                   \
+        _Py_INC_TPALLOCS(op) _Py_COUNT_ALLOCS_COMMA  \
+        Py_REFCNT(op) = 1)
+
+Python 3.8 function (simplified code)::
+
+    static inline void _Py_NewReference(PyObject *op)
+    {
+        _Py_INC_TPALLOCS(op);
+        Py_REFCNT(op) = 1;
+    }
+
+PyObject_INIT()
+---------------
+
+Example showing the usage of commas in a macro.
+
+Python 3.7 macro::
+
+    #define PyObject_INIT(op, typeobj) \
+        ( Py_TYPE(op) = (typeobj), _Py_NewReference((PyObject *)(op)), (op) )
+
+Python 3.8 function (simplified code)::
+
+    static inline PyObject*
+    _PyObject_INIT(PyObject *op, PyTypeObject *typeobj)
+    {
+        Py_TYPE(op) = typeobj;
+        _Py_NewReference(op);
+        return op;
+    }
+
+    #define PyObject_INIT(op, typeobj) \
+        _PyObject_INIT(_PyObject_CAST(op), (typeobj))
+
+The function doesn't need the line continuation character. It has an
+explicit ``"return op;"`` rather than a surprising ``", (op)"`` at the
+end of the macro.  It uses one short statement per line, rather than a
+single long line. Inside the function, the *op* argument has a well
+defined type: ``PyObject*``.
+
+
+Macros converted to functions since Python 3.8
+==============================================
+
+Macros converted to static inline functions
+-------------------------------------------
+
+Python 3.8:
+
+* ``Py_DECREF()``
+* ``Py_INCREF()``
+* ``Py_XDECREF()``
+* ``Py_XINCREF()``
+* ``PyObject_INIT()``
+* ``PyObject_INIT_VAR()``
+* ``_PyObject_GC_UNTRACK()``
+* ``_Py_Dealloc()``
+
+Python 3.10:
+
+* ``Py_REFCNT()``
+
+Python 3.11:
+
+* ``Py_TYPE()``
+* ``Py_SIZE()``
+
+Macros converted to regular functions
+-------------------------------------
+
+Python 3.9:
+
+* ``PyIndex_Check()``
+* ``PyObject_CheckBuffer()``
+* ``PyObject_GET_WEAKREFS_LISTPTR()``
+* ``PyObject_IS_GC()``
+* ``PyObject_NEW()``: alias to ``PyObject_New()``
+* ``PyObject_NEW_VAR()``: alias to ``PyObjectVar_New()``
+
+To avoid any risk of performance slowdown on Python built without LTO,
+private static inline functions have been added to the internal C API:
+
+* ``_PyIndex_Check()``
+* ``_PyObject_IS_GC()``
+* ``_PyType_HasFeature()``
+* ``_PyType_IS_GC()``
+
+Static inline functions converted to regular functions
+-------------------------------------------------------
+
+Python 3.11:
+
+* ``PyObject_CallOneArg()``
+* ``PyObject_Vectorcall()``
+* ``PyVectorcall_Function()``
+* ``_PyObject_FastCall()``
+
+To avoid any risk of performance slowdown on Python built without LTO, a
+private static inline function has been added to the internal C API:
+
+* ``_PyVectorcall_FunctionInline()``
+
+
+References
+==========
+
+* `bpo-45490 <https://bugs.python.org/issue45490>`_:
+  [meta][C API] Avoid C macro pitfalls and usage of static inline
+  functions (October 2021).
+* `What to do with unsafe macros
+  <https://discuss.python.org/t/what-to-do-with-unsafe-macros/7771>`_
+  (March 2021).
+* `bpo-43502 <https://bugs.python.org/issue43502>`_:
+  [C-API] Convert obvious unsafe macros to static inline functions
+  (March 2021).
+
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
