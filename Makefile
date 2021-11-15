@@ -55,6 +55,10 @@ lint:
 	pre-commit --version > /dev/null || python3 -m pip install pre-commit
 	pre-commit run --all-files
 
+spellcheck:
+	pre-commit --version > /dev/null || python3 -m pip install pre-commit
+	pre-commit run --all-files --hook-stage manual codespell
+
 # New Sphinx targets:
 
 SPHINX_JOBS=8
