@@ -45,6 +45,7 @@ import errno
 import random
 import time
 from io import open
+from pathlib import Path
 try:
     from html import escape
 except ImportError:
@@ -52,7 +53,7 @@ except ImportError:
 
 from docutils import core, nodes, utils
 from docutils.readers import standalone
-from docutils.transforms import peps, frontmatter, Transform
+from docutils.transforms import frontmatter, misc, peps, Transform
 from docutils.parsers import rst
 
 class DataError(Exception):
@@ -433,6 +434,46 @@ class PEPHeaders(Transform):
             elif name == 'version' and len(body):
                 utils.clean_rcs_keywords(para, self.rcs_keyword_substitutions)
 
+
+class PEPFooter(Transform):
+    """Remove the References section if it is empty when rendered."""
+
+    # Uses same priority as docutils.transforms.TargetNotes
+    default_priority = 520
+
+    def apply(self):
+        pep_source_path = Path(self.document["source"])
+        if not pep_source_path.match("pep-*"):
+            return  # not a PEP file, exit early
+
+        doc = self.document
+        reference_section = None
+
+        # Iterate through sections from the end of the document
+        for i, section in enumerate(reversed(doc)):
+            if not isinstance(section, nodes.section):
+                continue
+            title_words = section[0].astext().lower().split()
+            if "references" in title_words:
+                reference_section = section
+                break
+
+        # Remove references section if there are no displayed footnotes
+        if reference_section:
+            pending = nodes.pending(
+                misc.CallBack, details={"callback": _cleanup_callback})
+            reference_section.append(pending)
+            self.document.note_pending(pending, priority=1)
+
+
+def _cleanup_callback(pending):
+    """Remove an empty "References" section."""
+    for footer_node in pending.parent:
+        if isinstance(footer_node, (nodes.title, nodes.target, nodes.pending)):
+            return
+    pending.parent.parent.remove(pending.parent)
+
+
 class PEPReader(standalone.Reader):
 
     supported = ('pep',)
@@ -453,7 +494,7 @@ class PEPReader(standalone.Reader):
         transforms.remove(frontmatter.DocTitle)
         transforms.remove(frontmatter.SectionSubTitle)
         transforms.remove(frontmatter.DocInfo)
-        transforms.extend([PEPHeaders, peps.Contents, peps.TargetNotes])
+        transforms.extend([PEPHeaders, peps.Contents, PEPFooter])
         return transforms
 
     settings_default_overrides = {'pep_references': 1, 'rfc_references': 1}
