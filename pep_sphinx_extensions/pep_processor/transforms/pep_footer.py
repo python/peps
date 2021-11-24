@@ -4,7 +4,6 @@ import subprocess
 
 from docutils import nodes
 from docutils import transforms
-from docutils.transforms import misc
 
 from pep_sphinx_extensions import config
 
@@ -29,38 +28,23 @@ class PEPFooter(transforms.Transform):
         if not pep_source_path.match("pep-*"):
             return  # not a PEP file, exit early
 
-        doc = self.document[0]
-        reference_section = None
-
         # Iterate through sections from the end of the document
-        for i, section in enumerate(reversed(doc)):
+        for section in reversed(self.document[0]):
             if not isinstance(section, nodes.section):
                 continue
             title_words = section[0].astext().lower().split()
             if "references" in title_words:
-                reference_section = section
+                # Remove references section if there are no displayed
+                # footnotes (it only has title & link target nodes)
+                if all(isinstance(ref_node, (nodes.title, nodes.target))
+                       for ref_node in section):
+                    section.parent.remove(section)
                 break
-
-        # Remove references section if there are no displayed footnotes
-        if reference_section:
-            pending = nodes.pending(misc.CallBack, details={"callback": _cleanup_callback})
-            reference_section.append(pending)
-            self.document.note_pending(pending, priority=1)
 
         # Add link to source text and last modified date
         if pep_source_path.stem != "pep-0000":
             self.document += _add_source_link(pep_source_path)
             self.document += _add_commit_history_info(pep_source_path)
-
-
-def _cleanup_callback(pending: nodes.pending) -> None:
-    """Remove an empty "References" section."""
-    for ref_node in pending.parent:
-        # Don't remove section if has more than title, link targets and pending
-        if not isinstance(
-                ref_node, (nodes.title, nodes.target, nodes.pending)):
-            return
-    pending.parent.parent.remove(pending.parent)
 
 
 def _add_source_link(pep_source_path: Path) -> nodes.paragraph:

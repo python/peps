@@ -53,7 +53,7 @@ except ImportError:
 
 from docutils import core, nodes, utils
 from docutils.readers import standalone
-from docutils.transforms import frontmatter, misc, peps, Transform
+from docutils.transforms import frontmatter, peps, Transform
 from docutils.parsers import rst
 
 class DataError(Exception):
@@ -442,36 +442,22 @@ class PEPFooter(Transform):
     default_priority = 520
 
     def apply(self):
-        pep_source_path = Path(self.document["source"])
-        if not pep_source_path.match("pep-*"):
+        pep_source_path = Path(self.document['source'])
+        if not pep_source_path.match('pep-*'):
             return  # not a PEP file, exit early
 
-        doc = self.document
-        reference_section = None
-
         # Iterate through sections from the end of the document
-        for i, section in enumerate(reversed(doc)):
+        for section in reversed(self.document):
             if not isinstance(section, nodes.section):
                 continue
             title_words = section[0].astext().lower().split()
-            if "references" in title_words:
-                reference_section = section
+            if 'references' in title_words:
+                # Remove references section if there are no displayed
+                # footnotes (it only has title & link target nodes)
+                if all(isinstance(ref_node, (nodes.title, nodes.target))
+                       for ref_node in section):
+                    section.parent.remove(section)
                 break
-
-        # Remove references section if there are no displayed footnotes
-        if reference_section:
-            pending = nodes.pending(
-                misc.CallBack, details={"callback": _cleanup_callback})
-            reference_section.append(pending)
-            self.document.note_pending(pending, priority=1)
-
-
-def _cleanup_callback(pending):
-    """Remove an empty "References" section."""
-    for footer_node in pending.parent:
-        if isinstance(footer_node, (nodes.title, nodes.target, nodes.pending)):
-            return
-    pending.parent.parent.remove(pending.parent)
 
 
 class PEPReader(standalone.Reader):
