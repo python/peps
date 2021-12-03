@@ -1,8 +1,8 @@
 Python Enhancement Proposals
 ============================
 
-.. image:: https://travis-ci.org/python/peps.svg?branch=master
-    :target: https://travis-ci.org/python/peps
+.. image:: https://github.com/python/peps/actions/workflows/build.yml/badge.svg
+    :target: https://github.com/python/peps/actions
 
 The PEPs in this repo are published automatically on the web at
 https://www.python.org/dev/peps/.  To learn more about the purpose of
@@ -58,7 +58,7 @@ Generating HTML for python.org
 python.org includes its own helper modules to render PEPs as HTML, with
 suitable links back to the source pages in the version control repository.
 
-These can be found at https://github.com/python/pythondotorg/tree/master/peps
+These can be found at https://github.com/python/pythondotorg/tree/main/peps
 
 When making changes to the PEP management process that may impact python.org's
 rendering pipeline:
@@ -76,7 +76,7 @@ Rendering PEPs with Sphinx
 ==========================
 
 There is a Sphinx-rendered version of the PEPs at https://python.github.io/peps/
-(updated on every push to ``master``)
+(updated on every push to ``main``).
 
 **Warning:** This version is not, and should not be taken to be, a canonical
 source for PEPs whilst it remains in preview (`please report any rendering bugs
