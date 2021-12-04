@@ -57,26 +57,34 @@ class PEPTranslator(html5.HTML5Translator):
         """Add corresponding end tag from `visit_paragraph`."""
         self.body.append(self.context.pop())
 
+    def visit_footnote_reference(self, node):
+        self.body.append(self.starttag(node, "a", suffix="[",
+            CLASS=f"footnote-reference {self.settings.footnote_references}",
+            href=f"#{node['refid']}"
+        ))
+
+    def depart_footnote_reference(self, node):
+        self.body.append(']</a>')
+
+    def visit_label(self, node):
+        # pass parent node to get id into starttag:
+        self.body.append(self.starttag(node.parent, "dt", suffix="[", CLASS="label"))
+
+        # footnote/citation backrefs:
+        back_refs = node.parent["backrefs"]
+        if self.settings.footnote_backlinks and len(back_refs) == 1:
+            self.body.append(f'<a href="#{back_refs[0]}">')
+            self.context.append(f"</a>]")
+        else:
+            self.context.append("]")
+
     def depart_label(self, node) -> None:
         """PEP link/citation block cleanup with italicised backlinks."""
-        if not self.settings.footnote_backlinks:
-            self.body.append("</span>")
-            self.body.append("</dt>\n<dd>")
-            return
-
-        # If only one reference to this footnote
-        back_references = node.parent["backrefs"]
-        if len(back_references) == 1:
-            self.body.append("</a>")
-
-        # Close the tag
-        self.body.append("</span>")
-
-        # If more than one reference
-        if len(back_references) > 1:
-            back_links = [f"<a href='#{ref}'>{i}</a>" for i, ref in enumerate(back_references, start=1)]
-            back_links_str = ", ".join(back_links)
-            self.body.append(f"<span class='fn-backref''><em> ({back_links_str}) </em></span>")
+        self.body.append(self.context.pop())
+        back_refs = node.parent["backrefs"]
+        if self.settings.footnote_backlinks and len(back_refs) > 1:
+            back_links = ", ".join(f"<a href='#{ref}'>{i}</a>" for i, ref in enumerate(back_refs, start=1))
+            self.body.append(f"<em> ({back_links}) </em>")
 
         # Close the def tags
         self.body.append("</dt>\n<dd>")
