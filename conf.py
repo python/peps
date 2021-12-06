@@ -27,12 +27,14 @@ exclude_patterns = [
     "Thumbs.db",
     ".DS_Store",
     # Python:
+    ".venv",
     "venv",
     "requirements.txt",
     # Sphinx:
     "build",
     "output.txt",  # Link-check output
     # PEPs:
+    "pep-0012",
     "README.rst",
     "CONTRIBUTING.rst",
 ]
