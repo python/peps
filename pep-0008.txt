@@ -189,15 +189,8 @@ Spaces are the preferred indentation method.
 Tabs should be used solely to remain consistent with code that is
 already indented with tabs.
 
-Python 3 disallows mixing the use of tabs and spaces for indentation.
+Python disallows mixing tabs and spaces for indentation.
 
-Python 2 code indented with a mixture of tabs and spaces should be
-converted to using spaces exclusively.
-
-When invoking the Python 2 command line interpreter with
-the ``-t`` option, it issues warnings about code that illegally mixes
-tabs and spaces.  When using ``-tt`` these warnings become errors.
-These options are highly recommended!
 
 Maximum Line Length
 -------------------
@@ -311,28 +304,19 @@ control-L as a form feed and will show another glyph in its place.
 Source File Encoding
 --------------------
 
-Code in the core Python distribution should always use UTF-8 (or ASCII
-in Python 2).
+Code in the core Python distribution should always use UTF-8, and should not
+have an encoding declaration.
 
-Files using ASCII (in Python 2) or UTF-8 (in Python 3) should not have
-an encoding declaration.
+In the standard library, non-UTF-8 encodings should be used only for
+test purposes. Use non-ASCII characters sparingly, preferably only to
+denote places and human names. If using non-ASCII characters as data,
+avoid noisy Unicode characters like z̯̯͡a̧͎̺l̡͓̫g̹̲o̡̼̘ and byte order
+marks.
 
-In the standard library, non-default encodings should be used only for
-test purposes or when a comment or docstring needs to mention an author
-name that contains non-ASCII characters; otherwise, using ``\x``,
-``\u``, ``\U``, or ``\N`` escapes is the preferred way to include
-non-ASCII data in string literals.
-
-For Python 3.0 and beyond, the following policy is prescribed for the
-standard library (see PEP 3131): All identifiers in the Python
-standard library MUST use ASCII-only identifiers, and SHOULD use
-English words wherever feasible (in many cases, abbreviations and
-technical terms are used which aren't English). In addition, string
-literals and comments must also be in ASCII. The only exceptions are
-(a) test cases testing the non-ASCII features, and
-(b) names of authors. Authors whose names are not based on the
-Latin alphabet (latin-1, ISO/IEC 8859-1 character set) MUST provide
-a transliteration of their names in this character set.
+All identifiers in the Python standard library MUST use ASCII-only
+identifiers, and SHOULD use English words wherever feasible (in many
+cases, abbreviations and technical terms are used which aren't
+English).
 
 Open source projects with a global audience are encouraged to adopt a
 similar policy.
@@ -386,9 +370,6 @@ Imports
 
   Standard library code should avoid complex package layouts and always
   use absolute imports.
-
-  Implicit relative imports should *never* be used and have been removed
-  in Python 3.
 
 - When importing a class from a class-containing module, it's usually
   okay to spell this::
@@ -674,9 +655,8 @@ When to Use Trailing Commas
 ===========================
 
 Trailing commas are usually optional, except they are mandatory when
-making a tuple of one element (and in Python 2 they have semantics for
-the ``print`` statement).  For clarity, it is recommended to surround
-the latter in (technically redundant) parentheses::
+making a tuple of one element.  For clarity, it is recommended to
+surround the latter in (technically redundant) parentheses::
 
     # Correct:
     FILES = ('setup.cfg',)
@@ -1043,12 +1023,10 @@ With this in mind, here are the Pythonic guidelines:
   functional implementation behind simple data attribute access
   syntax.
 
-  Note 1: Properties only work on new-style classes.
-
-  Note 2: Try to keep the functional behavior side-effect free,
+  Note 1: Try to keep the functional behavior side-effect free,
   although side-effects such as caching are generally fine.
 
-  Note 3: Avoid using properties for computationally expensive
+  Note 2: Avoid using properties for computationally expensive
   operations; the attribute notation makes the caller believe that
   access is (relatively) cheap.
 
@@ -1189,25 +1167,15 @@ Programming Recommendations
   error.  Non-error exceptions that are used for non-local flow control
   or other forms of signaling need no special suffix.
 
-- Use exception chaining appropriately. In Python 3, "raise X from Y"
+- Use exception chaining appropriately. ``raise X from Y``
   should be used to indicate explicit replacement without losing the
   original traceback.
 
-  When deliberately replacing an inner exception (using "raise X" in
-  Python 2 or "raise X from None" in Python 3.3+), ensure that relevant
-  details are transferred to the new exception (such as preserving the
-  attribute name when converting KeyError to AttributeError, or
-  embedding the text of the original exception in the new exception
-  message).
-
-- When raising an exception in Python 2, use ``raise ValueError('message')``
-  instead of the older form ``raise ValueError, 'message'``.
-
-  The latter form is not legal Python 3 syntax.
-
-  The paren-using form also means that when the exception arguments are
-  long or include string formatting, you don't need to use line
-  continuation characters thanks to the containing parentheses.
+  When deliberately replacing an inner exception (using ``raise X from
+  None``), ensure that relevant details are transferred to the new
+  exception (such as preserving the attribute name when converting
+  KeyError to AttributeError, or embedding the text of the original
+  exception in the new exception message).
 
 - When catching exceptions, mention specific exceptions whenever
   possible instead of using a bare ``except:`` clause::
@@ -1234,17 +1202,6 @@ Programming Recommendations
   2. If the code needs to do some cleanup work, but then lets the
      exception propagate upwards with ``raise``.  ``try...finally``
      can be a better way to handle this case.
-
-- When binding caught exceptions to a name, prefer the explicit name
-  binding syntax added in Python 2.6::
-
-      try:
-          process_data()
-      except Exception as exc:
-          raise DataProcessingFailedError(str(exc))
-
-  This is the only syntax supported in Python 3, and avoids the
-  ambiguity problems associated with the older comma-based syntax.
 
 - When catching operating system errors, prefer the explicit exception
   hierarchy introduced in Python 3.3 over introspection of ``errno``
@@ -1327,12 +1284,6 @@ Programming Recommendations
               return
           return math.sqrt(x)
 
-- Use string methods instead of the string module.
-
-  String methods are always much faster and share the same API with
-  unicode strings.  Override this rule if backwards compatibility with
-  Pythons older than 2.0 is required.
-
 - Use ``''.startswith()`` and ``''.endswith()`` instead of string
   slicing to check for prefixes or suffixes.
 
@@ -1356,16 +1307,6 @@ Programming Recommendations
 
       # Wrong:
       if type(obj) is type(1):
-
-When checking if an object is a string, keep in mind that it might
-be a unicode string too!  In Python 2, str and unicode have a
-common base class, basestring, so you can do::
-
-      if isinstance(obj, basestring):
-
-Note that in Python 3, ``unicode`` and ``basestring`` no longer exist
-(there is only ``str``) and a bytes object is no longer a kind of
-string (it is a sequence of integers instead).
 
 - For sequences, (strings, lists, tuples), use the fact that empty
   sequences are false::
@@ -1416,11 +1357,10 @@ Function Annotations
 --------------------
 
 With the acceptance of PEP 484, the style rules for function
-annotations are changing.
+annotations have changed.
 
-- In order to be forward compatible, function annotations in Python 3
-  code should preferably use PEP 484 syntax.  (There are some
-  formatting recommendations for annotations in the previous section.)
+- Function annotations should use PEP 484 syntax (There are some
+  formatting recommendations for annotations in the previous section).
 
 - The experimentation with annotation styles that was recommended
   previously in this PEP is no longer encouraged.
@@ -1440,7 +1380,7 @@ annotations are changing.
 
       # type: ignore
 
-  near the top of the file; this tells type checker to ignore all
+  near the top of the file; this tells type checkers to ignore all
   annotations.  (More fine-grained ways of disabling complaints from
   type checkers can be found in PEP 484.)
 
@@ -1456,9 +1396,6 @@ annotations are changing.
   Stub files can be distributed with a library, or separately (with
   the library author's permission) through the typeshed repo [5]_.
 
-- For code that needs to be backwards compatible, type annotations
-  can be added in the form of comments.  See the relevant section of
-  PEP 484 [6]_.
 
 Variable Annotations
 --------------------
@@ -1521,8 +1458,6 @@ References
 .. [5] Typeshed repo
    https://github.com/python/typeshed
 
-.. [6] Suggested syntax for Python 2.7 and straddling code
-   https://www.python.org/dev/peps/pep-0484/#suggested-syntax-for-python-2-7-and-straddling-code
 
 
 Copyright

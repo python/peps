@@ -1,0 +1,419 @@
+PEP: 667
+Title: Consistent views of namespaces
+Author: Mark Shannon <mark@hotpy.org>
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 30-Jul-2021
+Post-History: 20-Aug-2021
+
+
+Abstract
+========
+
+In early versions of Python all namespaces, whether in functions,
+classes or modules, were all implemented the same way: as a dictionary.
+
+For performance reasons, the implementation of function namespaces was
+changed. Unfortunately this meant that accessing these namespaces through
+``locals()`` and ``frame.f_locals`` ceased to be consistent and some
+odd bugs crept in over the years as threads, generators and coroutines
+were added.
+
+This PEP proposes making these namespaces consistent once more.
+Modifications to ``frame.f_locals`` will always be visible in
+the underlying variables. Modifications to local variables will
+immediately be visible in ``frame.f_locals``, and they will be
+consistent regardless of threading or coroutines.
+
+The ``locals()`` function will act the same as it does now for class
+and modules scopes. For function scopes it will return an instantaneous
+snapshot of the underlying ``frame.f_locals``.
+
+Motivation
+==========
+
+The current implementation of ``locals()`` and ``frame.f_locals`` is slow,
+inconsistent and buggy.
+We want to make it faster, consistent, and most importantly fix the bugs.
+
+For example::
+
+    class C:
+        x = 1
+        sys._getframe().f_locals['x'] = 2
+        print(x)
+
+prints ``2``
+
+but::
+
+    def f():
+        x = 1
+        sys._getframe().f_locals['x'] = 2
+        print(x)
+    f()
+
+prints ``1``
+
+This is inconsistent, and confusing.
+With this PEP both examples would print ``2``.
+
+Worse than that, the current behavior can result in strange bugs [1]_
+
+There are no compensating advantages for the current behavior;
+it is unreliable and slow.
+
+Rationale
+=========
+
+The current implementation of ``frame.f_locals`` returns a dictionary
+that is created on the fly from the array of local variables.
+This can result in the array and dictionary getting out of sync with
+each other. Writes to the ``f_locals`` may not show up as
+modifications to local variables. Writes to local variables can get lost.
+
+By making ``frame.f_locals`` return a view on the
+underlying frame, these problems go away. ``frame.f_locals`` is always in
+sync with the frame because it is a view of it, not a copy of it.
+
+Specification
+=============
+
+Python
+------
+
+``frame.f_locals`` will return a view object on the frame that
+implements the ``collections.abc.Mapping`` interface.
+
+For module and class scopes ``frame.f_locals`` will be a dictionary,
+for function scopes it will be a custom class.
+
+``locals()`` will be defined as::
+
+    def locals():
+        frame = sys._getframe(1)
+        f_locals = frame.f_locals
+        if frame.is_function():
+            f_locals = dict(f_locals)
+        return f_locals
+
+All writes to the ``f_locals`` mapping will be immediately visible
+in the underlying variables. All changes to the underlying variables
+will be immediately visible in the mapping. The ``f_locals`` object will
+be a full mapping, and can have arbitrary key-value pairs added to it.
+
+For example::
+
+    def l():
+        "Get the locals of caller"
+        return sys._getframe(1).f_locals
+
+    def test():
+        if 0: y = 1 # Make 'y' a local variable
+        x = 1
+        l()['x'] = 2
+        l()['y'] = 4
+        l()['z'] = 5
+        y
+        print(locals(), x)
+
+``test()`` will print ``{'x': 2, 'y': 4, 'z': 5} 2``
+
+In Python 3.10, the above will fail with a ``NameError``,
+as the definition of ``y`` by ``l()['y'] = 4`` is lost.
+
+C-API
+-----
+
+Extensions to the API
+'''''''''''''''''''''
+
+Two new C-API functions will be added::
+
+    PyObject *PyEval_Locals(void)
+    PyObject *PyFrame_GetLocals(PyFrameObject *f)
+
+``PyEval_Locals()`` is equivalent to: ``locals()``.
+
+``PyFrame_GetLocals(f)`` is equivalent to: ``f.f_locals``.
+
+Both functions will return a new reference.
+
+Changes to existing APIs
+''''''''''''''''''''''''
+
+The C-API function ``PyEval_GetLocals()`` will be deprecated.
+``PyEval_Locals()`` should be used instead.
+
+The following three functions will become no-ops, and will be deprecated::
+
+    PyFrame_FastToLocalsWithError()
+    PyFrame_FastToLocals()
+    PyFrame_LocalsToFast()
+
+The above four deprecated functions will be removed in 3.13.
+
+Behavior of f_locals for optimized functions
+--------------------------------------------
+
+Although ``f.f_locals`` behaves as if it were the namespace of the function,
+there will be some observable differences.
+For example, ``f.f_locals is f.f_locals`` may be ``False``.
+
+However ``f.f_locals == f.f_locals`` will be ``True``, and
+all changes to the underlying variables, by any means, will be
+always be visible.
+
+Backwards Compatibility
+=======================
+
+Python
+------
+
+The current implementation has many corner cases and oddities.
+Code that works around those may need to be changed.
+Code that uses ``locals()`` for simple templating, or print debugging,
+will continue to work correctly. Debuggers and other tools that use
+``f_locals`` to modify local variables, will now work correctly,
+even in the presence of threaded code, coroutines and generators.
+
+C-API
+-----
+
+PyEval_GetLocals
+''''''''''''''''
+
+Because ``PyEval_GetLocals()`` returns a borrowed reference, it requires
+the dictionary to be cached on the frame, extending its lifetime and
+forces memory to be allocated for the frame object on the heap as well.
+
+Using ``PyEval_Locals()`` will be much more efficient
+than ``PyEval_GetLocals()``.
+
+This code::
+
+    locals = PyEval_GetLocals();
+    if (locals == NULL) {
+        goto error_handler;
+    }
+    Py_INCREF(locals);
+
+should be replaced with::
+
+    locals = PyEval_Locals();
+    if (locals == NULL) {
+        goto error_handler;
+    }
+
+PyFrame_FastToLocals, etc.
+''''''''''''''''''''''''''
+
+These functions were designed to convert the internal "fast" representation 
+of the locals variables of a function to a dictionary, and vice versa.
+
+Calls to them are no longer required. C code that directly accesses the
+``f_locals`` field of a frame should be modified to call
+``PyFrame_GetLocals()`` instead::
+
+    PyFrame_FastToLocals(frame);
+    PyObject *locals = frame.f_locals;
+    Py_INCREF(locals);
+
+becomes::
+
+    PyObject *locals = PyFrame_GetLocals(frame);
+    if (frame == NULL)
+        goto error_handler;
+
+Implementation
+==============
+
+Each read of ``frame.f_locals`` will create a new proxy object that gives
+the appearance of being the mapping of local (including cell and free)
+variable names to the values of those local variables.
+
+A possible implementation is sketched out below.
+All attributes that start with an underscore are invisible and
+cannot be accessed directly.
+They serve only to illustrate the proposed design.
+
+::
+
+    NULL: Object # NULL is a singleton representing the absence of a value.
+
+    class CodeType:
+
+        _name_to_offset_mapping_impl: dict | NULL
+        _cells: frozenset # Set of indexes of cell and free variables
+        ...
+
+        def __init__(self, ...):
+            self._name_to_offset_mapping_impl = NULL
+            self._variable_names = deduplicate(
+                self.co_varnames + self.co_cellvars + self.co_freevars
+            )
+            ...
+
+        @property
+        def _name_to_offset_mapping(self):
+            "Mapping of names to offsets in local variable array."
+            if self._name_to_offset_mapping_impl is NULL:
+                self._name_to_offset_mapping_impl = {
+                    name: index for (index, name) in enumerate(self._variable_names)
+                }
+            return self._name_to_offset_mapping_impl
+
+    class FrameType:
+
+        _locals : array[Object] # The values of the local variables, items may be NULL.
+        _extra_locals: dict | NULL # Dictionary for storing extra locals not in _locals.
+
+        def __init__(self, ...):
+            self._extra_locals = NULL
+            ...
+
+        @property
+        def f_locals(self):
+            return FrameLocalsProxy(self)
+
+    class FrameLocalsProxy:
+        "Implements collections.MutableMapping."
+
+        __slots__ "_frame"
+
+        def __init__(self, frame:FrameType):
+            self._frame = frame
+
+        def __getitem__(self, name):
+            f = self._frame
+            co = f.f_code
+            if name in co._name_to_offset_mapping:
+                index = co._name_to_offset_mapping[name]
+                val = f._locals[index]
+                if val is NULL:
+                    raise KeyError(name)
+                if index in co._cells
+                    val = val.cell_contents
+                    if val is NULL:
+                        raise KeyError(name)
+                return val
+            else:
+                if f._extra_locals is NULL:
+                    raise KeyError(name)
+                return f._extra_locals[name]
+
+        def __setitem__(self, name, value):
+            f = self._frame
+            co = f.f_code
+            if name in co._name_to_offset_mapping:
+                index = co._name_to_offset_mapping[name]
+                kind = co._local_kinds[index]
+                if index in co._cells
+                    cell = f._locals[index]
+                    cell.cell_contents = val
+                else:
+                    f._locals[index] = val
+            else:
+                if f._extra_locals is NULL:
+                    f._extra_locals = {}
+                f._extra_locals[name] = val
+
+        def __iter__(self):
+            f = self._frame
+            co = f.f_code
+            yield from iter(f._extra_locals)
+            for index, name in enumerate(co._variable_names):
+                val = f._locals[index]
+                if val is NULL:
+                    continue
+                if index in co._cells:
+                    val = val.cell_contents
+                    if val is NULL:
+                        continue
+                yield name
+
+        def __contains__(self, item):
+            f = self._frame
+            if item in f._extra_locals:
+                return True
+            return item in co._variable_names
+
+        def __len__(self):
+            f = self._frame
+            co = f.f_code
+            res = 0
+            for index, _ in enumerate(co._variable_names):
+                val = f._locals[index]
+                if val is NULL:
+                    continue
+                if index in co._cells:
+                    if val.cell_contents is NULL:
+                        continue
+                res += 1
+            return len(self._extra_locals) + res
+
+C API
+-----
+
+``PyEval_GetLocals()`` will be implemented roughly as follows::
+
+    PyObject *PyEval_GetLocals(void) {
+        PyFrameObject * = ...; // Get the current frame.
+        Py_CLEAR(frame->_locals_cache);
+        frame->_locals_cache = PyEval_Locals();
+        return frame->_locals_cache;
+    }
+
+As with all functions that return a borrowed reference, care must be taken to
+ensure that the reference is not used beyond the lifetime of the object.
+
+Comparison with PEP 558
+=======================
+
+This PEP and PEP 558 [2]_ share a common goal: 
+to make the semantics of  ``locals()`` and ``frame.f_locals()``
+intelligible, and their operation reliable.
+
+
+The key difference between this PEP and PEP 558 is that
+PEP 558 keeps an internal copy of the local variables,
+whereas this PEP does not.
+
+PEP 558 does not specify exactly when the internal copy is
+updated, making the behavior of PEP 558 impossible to reason about.
+
+
+Open Issues
+===========
+
+An alternative way to define ``locals()`` would be simply as::
+
+    def locals():
+        return sys._getframe(1).f_locals
+
+This would be simpler and easier to understand. However,
+there would be backwards compatibility issues when ``locals`` is assigned
+to a local variable or when passed to ``eval`` or ``exec``.
+
+References
+==========
+
+.. [1] https://bugs.python.org/issue30744
+
+.. [2] https://www.python.org/dev/peps/pep-0558/
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
+
+..
+    Local Variables:
+    mode: indented-text
+    indent-tabs-mode: nil
+    sentence-end-double-space: t
+    fill-column: 70
+    coding: utf-8
+    End:

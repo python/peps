@@ -733,28 +733,225 @@ hopefully enable a thriving ecosystem of tools for analysing and verifying
 shape properties of numerical computing programs.
 
 
+Grammar Changes
+===============
+
+This PEP requires two grammar changes. Full diffs of ``python.gram``
+and simple tests to confirm correct behaviour are available at
+https://github.com/mrahtz/cpython/commits/pep646-grammar.
+
+Change 1: Star Expressions in Indexes
+-------------------------------------
+
+The first grammar change enables use of star expressions in index operations (that is,
+within square brackets), necessary to support star-unpacking of TypeVarTuples:
+
+::
+
+    DType = TypeVar('DType')
+    Shape = TypeVarTuple('Shape')
+    class Array(Generic[DType, *Shape]):
+        ...
+
+Before:
+
+::
+    
+    slices:
+        | slice !','
+        | ','.slice+ [',']
+
+After:
+
+::
+    
+    slices:
+        | slice !','
+        | ','.(slice | starred_expression)+ [',']
+
+As with star-unpacking in other contexts, the star operator calls ``__iter__``
+on the callee, and adds the contents of the resulting iterator to the argument
+passed to ``__getitem__``. For example, if we do ``foo[a, *b, c]``, and
+``b.__iter__`` produces an iterator yielding ``d`` and ``e``,
+``foo.__getitem__`` would receive ``(a, d, e, c)``.
+
+To put it another way, note that ``x[..., *a, ...]`` produces the same result
+as ``x[(..., *a, ...)]``` (with any slices ``i:j`` in ``...`` replaced with
+``slice(i, j)``, with the one edge case that ``x[*a]`` becomes ``x[(*a,)]``).
+
+TypeVarTuple Implementation
+'''''''''''''''''''''''''''
+
+With this grammar change, ``TypeVarTuple`` is implemented as follows.
+Note that this implementation is useful only for the benefit of a) correct
+``repr()`` and b) runtime analysers; static analysers would not use the
+implementation.
+
+::
+
+    class TypeVarTuple:
+        def __init__(self, name):
+            self._name = name
+            self._unpacked = UnpackedTypeVarTuple(name) 
+        def __iter__(self):
+            yield self._unpacked
+        def __repr__(self):
+            return self._name
+
+    class UnpackedTypeVarTuple:
+        def __init__(self, name):
+            self._name = name
+        def __repr__(self):
+            return '*' + self._name
+
+Implications
+''''''''''''
+
+This grammar change implies a number of additional changes in behaviour not
+required by this PEP. We choose to allow these additional changes rather than
+disallowing them at a syntax level in order to keep the syntax change as small
+as possible.
+
+First, the grammar change enables star-unpacking of other structures, such
+as lists, within indexing operations:
+
+::
+
+    idxs_to_select = (1, 2)
+    array[0, *idxs_to_select, -1]  # Equivalent to [0, 1, 2, -1]
+
+Second, more than one instance of a star-unpack can occur within an index:
+
+::
+
+    array[*idxs_to_select, *idxs_to_select]  # Equivalent to array[1, 2, 1, 2]
+
+Note that this PEP disallows multiple unpacked TypeVarTuples within a single
+type parameter list. This requirement would therefore need to be implemented
+in type checking tools themselves rather than at the syntax level.
+
+Third, slices may co-occur with starred expressions:
+
+::
+
+    array[3:5, *idxs_to_select]  # Equivalent to array[3:5, 1, 2]
+
+However, note that slices involving starred expressions are still invalid:
+
+::
+
+    # Syntax error
+    array[*idxs_start:*idxs_end]
+
+
+Change 2: ``*args`` as a TypeVarTuple
+-------------------------------------
+
+The second change enables use of ``*args: *Ts`` in function definitions.
+
+Before:
+
+::
+
+    star_etc:
+    | '*' param_no_default param_maybe_default* [kwds]
+    | '*' ',' param_maybe_default+ [kwds]
+    | kwds
+
+After:
+
+::
+
+    star_etc:
+    | '*' param_no_default param_maybe_default* [kwds]
+    | '*' param_no_default_star_annotation param_maybe_default* [kwds]  # New
+    | '*' ',' param_maybe_default+ [kwds]
+    | kwds
+
+Where:
+
+::
+
+    param_no_default_star_annotation:
+    | param_star_annotation ',' TYPE_COMMENT?
+    | param_star_annotation TYPE_COMMENT? &')'
+
+    param_star_annotation: NAME star_annotation
+
+    star_annotation: ':' star_expression
+
+This accomplishes the desired outcome (making ``*args: *Ts`` not be a syntax
+error) while matching the behaviour of star-unpacking in other contexts:
+at runtime, ``__iter__`` is called on the starred object, and a tuple
+containing the items of the resulting iterator is set as the type annotion
+for ``args``. In other words, at runtime ``*args: *foo`` is equivalent to
+``*args: tuple(foo)``.
+
+::
+
+    >>> Ts = TypeVarTuple('Ts')
+    >>> def foo(*args: *Ts): pass  # Equivalent to `*args: tuple(Ts)`
+    >>> foo.__annotations__
+    {'args': (*Ts,)}
+    # *Ts is the repr() of Ts._unpacked, an instance of UnpackedTypeVarTuple
+
+Note that the only scenario in which this grammar change allows ``*Ts`` to be
+used as a direct annotation (rather than being wrapped in e.g. ``Tuple[*Ts]``)
+is ``*args``. Other uses are still invalid:
+
+::
+
+    x: *Ts                 # Syntax error
+    def foo(x: *Ts): pass  # Syntax error
+
+Implications
+''''''''''''
+
+As with the first grammar change, this change also has a number of side effects.
+In particular, the annotation of ``*args`` could be set to a starred object
+other than a ``TypeVarTuple`` - for example, the following nonsensical
+annotation is possible:
+
+::
+
+    >>> foo = [1, 2, 3]
+    >>> def bar(*args: *foo): pass  # Equivalent to `*args: tuple(foo)`
+    >>> bar.__annotations__
+    {'args': (1, 2, 3)}
+
+Again, prevention of such annotations will need to be done by, say, static
+checkers, rather than at the level of syntax.
+
+Alternatives (Why Not Just Use ``Unpack``?)
+-------------------------------------------
+
+If these grammar changes are considered too burdensome, there are two
+alternatives.
+
+The first would be to **support change 1 but not change 2**. Variadic generics
+are more important to us than the ability to annotate ``*args``.
+
+The second alternative would be to **use ``Unpack`` instead**, requiring no
+grammar changes. However, we regard this as a suboptimal solution for two
+reasons:
+
+* **Readability**. ``class Array(Generic[DType, Unpack[Shape]])`` is a bit
+  of a mouthful; the flow of reading is interrupted by length of ``Unpack`` and
+  the extra set of square brackets. ``class Array(Generic[DType, *Shape])``
+  is much easier to skim, while still marking ``Shape`` as special.
+* **Intuitiveness**. We think a user is more likely to intuitively understand
+  the meaning of ``*Ts`` - especially when they see that ``Ts`` is a
+  TypeVar**Tuple** - than the meaning of ``Unpack[Ts]``. (This assumes
+  the user is familiar with star-unpacking in other contexts; if the
+  user is reading or writing code that uses variadic generics, this seems
+  reasonable.)
+  
+If even change 1 is thought too significant a change, therefore, it might be
+better for us to reconsider our options before going ahead with this second
+alternative.
+
 Backwards Compatibility
 =======================
-
-In order to use the star operator for unpacking of ``TypeVarTuple`` instances,
-we would need to make two grammar changes:
-
-1. Star expressions must be made valid in at least index operations.
-   For example, ``Tuple[*Ts]`` and ``Tuple[T1, *Ts, T2]`` would both
-   be valid. (This PEP does not allow multiple unpacked ``TypeVarTuple``
-   instances to appear in a single parameter list, so ``Tuple[*Ts1, *Ts2]``
-   would be a runtime error. Also note that star expressions would *not*
-   be valid in slice expressions -  e.g. ``Tuple[*Ts:*Ts]`` is
-   nonsensical and should remain invalid.)
-2. We would need to make '``*args: *Ts``' valid in function definitions.
-
-In both cases, at runtime the star operator would call ``Ts.__iter__()``.
-This would, in turn, return an instance of a helper class, e.g.
-``UnpackedTypeVarTuple``, whose ``repr`` would be ``*Ts``.
-
-If these grammar changes are considered too burdensome, we could instead
-simply use ``Unpack`` - though in this case it might be better for us to
-first decide whether there's a better option.
 
 The ``Unpack`` version of the PEP should be back-portable to previous
 versions of Python.
@@ -765,7 +962,6 @@ that if existing classes are made generic, a) all existing (unparameterised)
 uses of the class will still work, and b) parameterised and unparameterised
 versions of the class can be used together (relevant if, for example, library
 code is updated to use parameters while user code is not, or vice-versa).
-
 
 Reference Implementation
 ========================
@@ -946,7 +1142,7 @@ A question we are often asked about this PEP is: why not just use named tensors?
 The answer is that we consider the named tensors approach insufficient, for two main reasons:
 
 * **Static checking** of shape correctness is not possible. As mentioned in `Motivation`_,
-  this is a highly desireable feature in machine learning code where iteration times
+  this is a highly desirable feature in machine learning code where iteration times
   are slow by default.
 * **Interface documentation** is still not possible with this approach. If a function should
   *only* be willing to take array arguments that have image-like shapes, this cannot be stipulated
@@ -988,6 +1184,68 @@ Footnotes
    shape begins with 'time × batch', then ``videos_batch[1][0]`` would select the
    same frame.
 
+Endorsements
+============
+
+Variadic generics have a wide range of uses. For the fraction of that range
+involving numerical computing, how likely is it that relevant libraries will
+actually make use of the features proposed in this PEP?
+
+We reached out to a number of people with this question, and received the
+following endorsements.
+
+From **Stephan Hoyer**, member of the NumPy Steering Council:
+[#stephan-endorsement]_
+
+    I just wanted to thank Matthew & Pradeep for writing this PEP and for
+    clarifications to the broader context of PEP 646 for array typing in
+    https://github.com/python/peps/pull/1904.
+
+    As someone who is heavily involved in the Python numerical computing
+    community (e.g., NumPy, JAX, Xarray), but who is not so familiar with the
+    details of Python's type system, it is reassuring to see that a broad range
+    of use-cases related to type checking of named axes & shapes have been
+    considered, and could build upon the infrastructure in this PEP.
+
+    Type checking for shapes is something the NumPy community is very
+    interested in -- there are more thumbs up on the relevant issue on NumPy's
+    GitHub than any others (https://github.com/numpy/numpy/issues/7370) and we
+    recently added a "typing" module that is under active development.
+
+    It will certainly require experimentation to figure out the best ways to
+    use type checking for ndarrays, but this PEP looks like an excellent
+    foundation for such work.
+
+From **Bas van Beek**, who has worked on preliminary support for
+shape-generics in NumPy:
+
+    I very much share Stephan's opinion here and look forward to integrating the
+    new PEP 646 variadics into numpy.
+
+    In the context of numpy (and tensor typing general): the typing of array
+    shapes is a fairly complicated subject and the introduction of variadics
+    will likely play in big role in laying its foundation, as it allows for the
+    expression of both dimensioability as well as basic shape manipulation.
+
+    All in all, I'm very interested in where both PEP 646 and future PEPs will
+    take us and look forward to further developments.
+
+From **Dan Moldovan**, a Senior Software Engineer on the TensorFlow Dev Team
+and author of the TensorFlow RFC, `TensorFlow Canonical Type System`_: [#dan-endorsement]_
+
+    I'd be interested in using this the mechanisms defined in this PEP to define
+    rank-generic Tensor types in TensorFlow, which are important in specifying
+    ``tf.function`` signatures in a Pythonic way, using type annotations (rather
+    than the custom ``input_signature`` mechanism we have today - see this
+    issue: https://github.com/tensorflow/tensorflow/issues/31579). Variadic
+    generics are among the last few missing pieces to create an elegant set of
+    type definitions for tensors and shapes.
+
+(For the sake of transparency - we also reached out to folks from a third popular
+numerical computing library, PyTorch, but did *not* receive a statement of
+endorsement from them. Our understanding is that although they are interested
+in some of the same issues - e.g. static shape inference - they are currently
+focusing on enabling this through a DSL rather than the Python type system.)
 
 Acknowledgements
 ================
@@ -997,7 +1255,7 @@ Thank you to **Alfonso Castaño**, **Antoine Pitrou**, **Bas v.B.**, **David Fos
 **Sergei Lebedev**, and **Vladimir Mikulik** for helpful feedback and suggestions on
 drafts of this PEP.
 
-Thank you especially to **Lucio** for suggesting the star syntax (which has made multiple aspects of this proposal much more concise and intuitive), and to **Stephan Hoyer** for his kind `endorsement`_ of the PEP on the python-dev mailing list.
+Thank you especially to **Lucio** for suggesting the star syntax (which has made multiple aspects of this proposal much more concise and intuitive), and to **Stephan Hoyer** and **Dan Moldovan** for their endorsements.
 
 Resources
 =========
@@ -1050,7 +1308,11 @@ References
 
 .. _this exercise: https://spinningup.openai.com/en/latest/spinningup/exercise2_2_soln.html
 
-.. _endorsement: https://mail.python.org/archives/list/python-dev@python.org/message/UDM7Y6HLHQBKXQEBIBD5ZLB5XNPDZDXV/
+.. _TensorFlow Canonical Type System: https://github.com/tensorflow/community/pull/208
+
+.. [#stephan-endorsement] https://mail.python.org/archives/list/python-dev@python.org/message/UDM7Y6HLHQBKXQEBIBD5ZLB5XNPDZDXV/
+
+.. [#dan-endorsement] https://mail.python.org/archives/list/python-dev@python.org/message/HTCARTYYCHETAMHB6OVRNR5EW5T2CP4J/
 
 Copyright
 =========
