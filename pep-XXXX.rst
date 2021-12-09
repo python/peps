@@ -64,7 +64,7 @@ This is shorter and requires fewer imports. It also has far less nesting of squa
 Rationale
 =========
 
-The ``Callable`` type is widely used. For example, in typeshed [#typeshed-stats]_ it is the fifth most common complex type, after ``Optional``, ``Tuple``, ``Union``, and ``List``.
+The ``Callable`` type is widely used. For example, as of October 2021 it is the fifth most common complex type in typeshed [#typeshed-stats]_, after ``Optional``, ``Tuple``, ``Union``, and ``List``.
 
 Most of the other commonly used types have had their syntax improved via either PEP 604 or PEP 585. ``Callable`` is used heavily enough to similarly justify a more usable syntax.
 
