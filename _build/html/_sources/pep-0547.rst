@@ -1,0 +1,217 @@
+PEP: 547
+Title: Running extension modules using the -m option
+Version: $Revision$
+Last-Modified: $Date$
+Author: Marcel Plch <gmarcel.plch@gmail.com>,
+        Petr Viktorin <encukou@gmail.com>
+Status: Deferred
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 25-May-2017
+Python-Version: 3.7
+Post-History:
+
+
+Deferral Notice
+===============
+
+Cython -- the most important use case for this PEP and the only explicit
+one -- is not ready for multi-phase initialization yet.
+It keeps global state in C-level static variables.
+See discussion at `Cython issue 1923`_.
+
+The PEP is deferred until the situation changes.
+
+
+Abstract
+========
+
+This PEP proposes implementation that allows built-in and extension
+modules to be executed in the ``__main__`` namespace using
+the PEP 489 multi-phase initialization.
+
+With this, a multi-phase initialization enabled module can be run
+using following command::
+
+    $ python3 -m _testmultiphase
+    This is a test module named __main__.
+
+
+Motivation
+==========
+
+Currently, extension modules do not support all functionality of
+Python source modules.
+Specifically, it is not possible to run extension modules as scripts using
+Python's ``-m`` option.
+
+The technical groundwork to make this possible has been done for PEP 489,
+and enabling the ``-m`` option is listed in that PEP's
+“Possible Future Extensions” section.
+Technically, the additional changes proposed here are relatively small.
+
+
+Rationale
+=========
+
+Extension modules' lack of support for the ``-m`` option has traditionally
+been worked around by providing a Python wrapper.
+For example, the ``_pickle`` module's command line interface is in the
+pure-Python ``pickle`` module (along with a pure-Python reimplementation).
+
+This works well for standard library modules, as building command line
+interfaces using the C API is cumbersome.
+However, other users may want to create executable extension modules directly.
+
+An important use case is Cython, a Python-like language that compiles to
+C extension modules.
+Cython is a (near) superset of Python, meaning that compiling a Python module
+with Cython will typically not change the module's functionality, allowing
+Cython-specific features to be added gradually.
+This PEP will allow Cython extension modules to behave the same as their Python
+counterparts when run using the ``-m`` option.
+Cython developers consider the feature worth implementing (see
+`Cython issue 1715`_).
+
+
+Background
+==========
+
+Python's ``-m`` option is handled by the function
+``runpy._run_module_as_main``.
+
+The module specified by ``-m`` is not imported normally.
+Instead, it is executed in the namespace of the ``__main__`` module,
+which is created quite early in interpreter initialization.
+
+For Python source modules, running in another module's namespace is not
+a problem: the code is executed with ``locals`` and ``globals`` set to the
+existing module's ``__dict__``.
+This is not the case for extension modules, whose ``PyInit_*`` entry point
+traditionally both created a new module object (using ``PyModule_Create``),
+and initialized it.
+
+Since Python 3.5, extension modules can use PEP 489 multi-phase initialization.
+In this scenario, the ``PyInit_*`` entry point returns a ``PyModuleDef``
+structure: a description of how the module should be created and initialized.
+The extension can choose to customize creation of the module object using
+the ``Py_mod_create`` callback, or opt to use a normal module object by not
+specifying ``Py_mod_create``.
+Another callback, ``Py_mod_exec``, is then called to initialize the module
+object, e.g. by populating it with methods and classes.
+
+
+Proposal
+========
+
+Multi-phase initialization makes it possible to execute an extension module in
+another module's namespace: if a ``Py_mod_create`` callback is not specified,
+the ``__main__`` module can be passed to the ``Py_mod_exec`` callback to be
+initialized, as if ``__main__`` was a freshly constructed module object.
+
+One complication in this scheme is C-level module state.
+Each module has a ``md_state`` pointer that points to a region of memory
+allocated when an extension module is created.
+The ``PyModuleDef`` specifies how much memory is to be allocated.
+
+The implementation must take care that ``md_state`` memory is allocated at most
+once.
+Also, the ``Py_mod_exec`` callback should only be called once per module.
+The implications of multiply-initialized modules are too subtle to require
+expecting extension authors to reason about them.
+The ``md_state`` pointer itself will serve as a guard: allocating the memory
+and calling ``Py_mod_exec`` will always be done together, and initializing an
+extension module will fail if ``md_state`` is already non-NULL.
+
+Since the ``__main__`` module is not created as an extension module,
+its ``md_state`` is normally ``NULL``.
+Before initializing an extension module in ``__main__``'s context, its module
+state will be allocated according to the ``PyModuleDef`` of that module.
+
+While PEP 489 was designed to make these changes generally possible,
+it's necessary to decouple module discovery, creation, and initialization
+steps for extension modules, so that another module can be used instead of
+a newly initialized one, and the functionality needs to be added to
+``runpy`` and ``importlib``.
+
+
+Specification
+=============
+
+A new optional method for importlib loaders will be added.
+This method will be called ``exec_in_module`` and will take two
+positional arguments: module spec and an already existing module.
+Any import-related attributes, such as ``__spec__`` or ``__name__``,
+already set on the module will be ignored.
+
+The ``runpy._run_module_as_main`` function will look for this new
+loader method.
+If it is present, ``runpy`` will execute it instead of trying to load and
+run the module's Python code.
+Otherwise, ``runpy`` will act as before.
+
+
+ExtensionFileLoader Changes
+---------------------------
+
+importlib's ``ExtensionFileLoader`` will get an implementation of
+``exec_in_module`` that will call a new function, ``_imp.exec_in_module``.
+
+``_imp.exec_in_module`` will use existing machinery to find and call an
+extension module's ``PyInit_*`` function.
+
+The ``PyInit_*`` function can return either a fully initialized module
+(single-phase initialization) or a ``PyModuleDef`` (for PEP 489 multi-phase
+initialization).
+
+In the single-phase initialization case, ``_imp.exec_in_module`` will raise
+``ImportError``.
+
+In the multi-phase initialization case, the ``PyModuleDef`` and the module to
+be initialized will be passed to a new function, ``PyModule_ExecInModule``.
+
+This function raises ``ImportError`` if the ``PyModuleDef`` specifies
+a ``Py_mod_create`` slot, or if the module has already been initialized
+(i.e. its ``md_state`` pointer is not ``NULL``).
+Otherwise, the function will initialize the module according to the
+``PyModuleDef``.
+
+
+Backwards Compatibility
+=======================
+
+This PEP maintains backwards compatibility.
+It only adds new functions, and a new loader method that is added for
+a loader that previously did not support running modules as ``__main__``.
+
+
+Reference Implementation
+========================
+
+The reference implementation of this PEP is available at GitHub_.
+
+
+References
+==========
+
+.. _GitHub: https://github.com/python/cpython/pull/1761
+.. _Cython issue 1715: https://github.com/cython/cython/issues/1715
+.. _Possible Future Extensions section: https://www.python.org/dev/peps/pep-0489/#possible-future-extensions
+.. _Cython issue 1923: https://github.com/cython/cython/pull/1923
+
+
+Copyright
+=========
+
+This document has been placed in the public domain.
+
+
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   coding: utf-8
+   End:

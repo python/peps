@@ -1,0 +1,458 @@
+PEP: 556
+Title: Threaded garbage collection
+Author: Antoine Pitrou <solipsis@pitrou.net>
+Status: Deferred
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 08-Sep-2017
+Python-Version: 3.7
+Post-History: 2017-09-08
+
+
+Deferral Notice
+===============
+
+This PEP is currently not being actively worked on.  It may be revived
+in the future.  The main missing steps are:
+
+* polish the implementation, adapting the test suite where necessary;
+
+* ensure setting threaded garbage collection does not disrupt existing
+  code in unexpected ways (expected impact includes lengthening the
+  lifetime of objects in reference cycles).
+
+
+Abstract
+========
+
+This PEP proposes a new optional mode of operation for CPython's cyclic
+garbage collector (GC) where implicit (i.e. opportunistic) collections
+happen in a dedicated thread rather than synchronously.
+
+
+Terminology
+===========
+
+An "implicit" GC run (or "implicit" collection) is one that is triggered
+opportunistically based on a certain heuristic computed over allocation
+statistics, whenever a new allocation is requested.  Details of the
+heuristic are not relevant to this PEP, as it does not propose to change it.
+
+An "explicit" GC run (or "explicit" collection) is one that is requested
+programmatically by an API call such as ``gc.collect``.
+
+"Threaded" refers to the fact that GC runs happen in a dedicated thread
+separate from sequential execution of application code.  It does not mean
+"concurrent" (the Global Interpreter Lock, or GIL, still serializes
+execution among Python threads *including* the dedicated GC thread)
+nor "parallel" (the GC is not able to distribute its work onto several
+threads at once to lower wall-clock latencies of GC runs).
+
+
+Rationale
+=========
+
+The mode of operation for the GC has always been to perform implicit
+collections synchronously.  That is, whenever the aforementioned heuristic
+is activated, execution of application code in the current thread is
+suspended and the GC is launched in order to reclaim dead reference
+cycles.
+
+There is a catch, though.  Over the course of reclaiming dead reference
+cycles (and any ancillary objects hanging at those cycles), the GC can
+execute arbitrary finalization code in the form of ``__del__`` methods
+and ``weakref`` callbacks.  Over the years, Python has been used for more
+and more sophisticated purposes, and it is increasingly common for
+finalization code to perform complex tasks, for example in distributed
+systems where loss of an object may require notifying other (logical
+or physical) nodes.
+
+Interrupting application code at arbitrary points to execute finalization
+code that may rely on a consistent internal state and/or on acquiring
+synchronization primitives gives rise to reentrancy issues that even the
+most seasoned experts have trouble fixing properly [#queue-reentrancy-bug]_.
+
+This PEP bases itself on the observation that, despite the apparent
+similarities, same-thread reentrancy is a fundamentally harder
+problem than multi-thread synchronization.  Instead of letting each
+developer or library author struggle with extremely hard reentrancy
+issues, one by one, this PEP proposes to allow the GC to run in a
+separate thread where well-known multi-thread synchronization practices
+are sufficient.
+
+
+Proposal
+========
+
+Under this PEP, the GC has two modes of operation:
+
+* "serial", which is the default and legacy mode, where an implicit GC
+  run is performed immediately in the thread that detects such an implicit
+  run is desired (based on the aforementioned allocation heuristic).
+
+* "threaded", which can be explicitly enabled at runtime on a per-process
+  basis, where implicit GC runs are *scheduled* whenever the allocation
+  heuristic is triggered, but run in a dedicated background thread.
+
+Hard reentrancy problems which plague sophisticated uses of finalization
+callbacks in the "serial" mode become relatively easy multi-thread
+synchronization problems in the "threaded" mode of operation.
+
+The GC also traditionally allows for explicit GC runs, using the Python
+API ``gc.collect`` and the C API ``PyGC_Collect``.  The visible semantics
+of these two APIs are left unchanged: they perform a GC run immediately
+when called, and only return when the GC run is finished.
+
+
+New public APIs
+---------------
+
+Two new Python APIs are added to the ``gc`` module:
+
+* ``gc.set_mode(mode)`` sets the current mode of operation (either "serial"
+  or "threaded").  If setting to "serial" and the current mode is
+  "threaded", then the function also waits for the GC thread to end.
+
+* ``gc.get_mode()`` returns the current mode of operation.
+
+It is allowed to switch back and forth between modes of operation.
+
+
+Intended use
+------------
+
+Given the per-process nature of the switch and its repercussions on
+semantics of all finalization callbacks, it is recommended that it is
+set at the beginning of an application's code (and/or in initializers
+for child processes e.g. when using ``multiprocessing``).  Library functions
+should probably not mess with this setting, just as they shouldn't call
+``gc.enable`` or ``gc.disable``, but there's nothing to prevent them from
+doing so.
+
+
+Non-goals
+---------
+
+This PEP does not address reentrancy issues with other kinds of
+asynchronous code execution (for example signal handlers registered
+with the ``signal`` module).  The author believes that the overwhelming
+majority of painful reentrancy issues occur with finalizers.  Most of the
+time, signal handlers are able to set a single flag and/or wake up a
+file descriptor for the main program to notice.  As for those signal
+handlers which raise an exception, they *have* to execute in-thread.
+
+This PEP also does not change the execution of finalization callbacks
+when they are called as part of regular reference counting, i.e. when
+releasing a visible reference drops an object's reference count to zero.
+Since such execution happens at deterministic points in code, it is usually
+not a problem.
+
+
+Internal details
+================
+
+TODO: Update this section to conform to the current implementation.
+
+``gc`` module
+-------------
+
+An internal flag ``gc_is_threaded`` is added, telling whether GC is serial
+or threaded.
+
+An internal structure ``gc_mutex`` is added to avoid two GC runs at once:
+
+.. code-block::
+
+   static struct {
+       PyThread_type_lock lock;  /* taken when collecting */
+       PyThreadState *owner;  /* whichever thread is currently collecting
+                                 (NULL if no collection is taking place) */
+   } gc_mutex;
+
+An internal structure ``gc_thread`` is added to handle synchronization with
+the GC thread:
+
+.. code-block::
+
+   static struct {
+      PyThread_type_lock wakeup; /* acts as an event
+                                    to wake up the GC thread */
+      int collection_requested; /* non-zero if collection requested */
+      PyThread_type_lock done; /* acts as an event signaling
+                                  the GC thread has exited */
+   } gc_thread;
+
+
+``threading`` module
+--------------------
+
+Two private functions are added to the ``threading`` module:
+
+* ``threading._ensure_dummy_thread(name)`` creates and registers a ``Thread``
+  instance for the current thread with the given *name*, and returns it.
+
+* ``threading._remove_dummy_thread(thread)`` removes the given *thread*
+  (as returned by ``_ensure_dummy_thread``) from the threading module's
+  internal state.
+
+The purpose of these two functions is to improve debugging and introspection
+by letting ``threading.current_thread()`` return a more meaningfully-named
+object when called inside a finalization callback in the GC thread.
+
+
+Pseudo-code
+-----------
+
+Here is a proposed pseudo-code for the main primitives, public and internal,
+required for implementing this PEP.  All of them will be implemented in C
+and live inside the ``gc`` module, unless otherwise noted:
+
+.. code-block::
+
+   def collect_with_callback(generation):
+       """
+       Collect up to the given *generation*.
+       """
+       # Same code as currently (see collect_with_callback() in gcmodule.c)
+
+
+   def collect_generations():
+       """
+       Collect as many generations as desired by the heuristic.
+       """
+       # Same code as currently (see collect_generations() in gcmodule.c)
+
+
+   def lock_and_collect(generation=-1):
+       """
+       Perform a collection with thread safety.
+       """
+       me = PyThreadState_GET()
+       if gc_mutex.owner == me:
+           # reentrant GC collection request, bail out
+           return
+       Py_BEGIN_ALLOW_THREADS
+       gc_mutex.lock.acquire()
+       Py_END_ALLOW_THREADS
+       gc_mutex.owner = me
+       try:
+           if generation >= 0:
+               return collect_with_callback(generation)
+           else:
+               return collect_generations()
+       finally:
+           gc_mutex.owner = NULL
+           gc_mutex.lock.release()
+
+
+   def schedule_gc_request():
+       """
+       Ask the GC thread to run an implicit collection.
+       """
+       assert gc_is_threaded == True
+       # Note this is extremely fast if a collection is already requested
+       if gc_thread.collection_requested == False:
+           gc_thread.collection_requested = True
+           gc_thread.wakeup.release()
+
+
+   def is_implicit_gc_desired():
+       """
+       Whether an implicit GC run is currently desired based on allocation
+       stats.  Return a generation number, or -1 if none desired.
+       """
+       # Same heuristic as currently (see _PyObject_GC_Alloc in gcmodule.c)
+
+
+   def PyGC_Malloc():
+       """
+       Allocate a GC-enabled object.
+       """
+       # Update allocation statistics (same code as currently, omitted for brevity)
+       if is_implicit_gc_desired():
+           if gc_is_threaded:
+               schedule_gc_request()
+           else:
+               lock_and_collect()
+       # Go ahead with allocation (same code as currently, omitted for brevity)
+
+
+   def gc_thread(interp_state):
+       """
+       Dedicated loop for threaded GC.
+       """
+       # Init Python thread state (omitted, see t_bootstrap in _threadmodule.c)
+       # Optional: init thread in Python threading module, for better introspection
+       me = threading._ensure_dummy_thread(name="GC thread")
+
+       while gc_is_threaded == True:
+           Py_BEGIN_ALLOW_THREADS
+           gc_thread.wakeup.acquire()
+           Py_END_ALLOW_THREADS
+           if gc_thread.collection_requested != 0:
+               gc_thread.collection_requested = 0
+               lock_and_collect(generation=-1)
+
+       threading._remove_dummy_thread(me)
+       # Signal we're exiting
+       gc_thread.done.release()
+       # Free Python thread state (omitted)
+
+
+   def gc.set_mode(mode):
+       """
+       Set current GC mode.  This is a process-global setting.
+       """
+       if mode == "threaded":
+           if not gc_is_threaded == False:
+               # Launch thread
+               gc_thread.done.acquire(block=False)  # should not fail
+               gc_is_threaded = True
+               PyThread_start_new_thread(gc_thread)
+       elif mode == "serial":
+           if gc_is_threaded == True:
+               # Wake up thread, asking it to end
+               gc_is_threaded = False
+               gc_thread.wakeup.release()
+               # Wait for thread exit
+               Py_BEGIN_ALLOW_THREADS
+               gc_thread.done.acquire()
+               Py_END_ALLOW_THREADS
+               gc_thread.done.release()
+       else:
+           raise ValueError("unsupported mode %r" % (mode,))
+
+
+   def gc.get_mode(mode):
+       """
+       Get current GC mode.
+       """
+       return "threaded" if gc_is_threaded else "serial"
+
+
+   def gc.collect(generation=2):
+       """
+       Schedule collection of the given generation and wait for it to
+       finish.
+       """
+       return lock_and_collect(generation)
+
+
+Discussion
+==========
+
+Default mode
+------------
+
+One may wonder whether the default mode should simply be changed to "threaded".
+For multi-threaded applications, it would probably not be a problem:
+those applications must already be prepared for finalization handlers to
+be run in arbitrary threads.  In single-thread applications, however, it
+is currently guaranteed that finalizers will always be called in the main
+thread.  Breaking this property may induce subtle behaviour changes or bugs,
+for example if finalizers rely on some thread-local values.
+
+Another problem is when a program uses ``fork()`` for concurrency.
+Calling ``fork()`` from a single-threaded program is safe,
+but it's fragile (to say the least) if the program is multi-threaded.
+
+Explicit collections
+--------------------
+
+One may ask whether explicit collections should also be delegated to the
+background thread.  The answer is it doesn't really matter: since
+``gc.collect`` and ``PyGC_Collect`` actually *wait* for the collection to
+end (breaking this property would break compatibility), delegating the
+actual work to a background thread wouldn't ease synchronization with the
+thread requesting an explicit collection.
+
+In the end, this PEP choses the behaviour that seems simpler to implement
+based on the pseudo-code above.
+
+Impact on memory use
+--------------------
+
+The "threaded" mode incurs a slight delay in implicit collections compared
+to the default "serial" mode.  This obviously may change the memory profile
+of certain applications.  By how much remains to be measured in real-world
+use, but we expect the impact to remain minor and bearable.  First because
+implicit collections are based on a *heuristic* whose effect does not result
+in deterministic visible behaviour anyway.  Second because the GC deals
+with reference cycles while many objects are reclaimed immediately when their
+last visible reference disappears.
+
+Impact on CPU consumption
+-------------------------
+
+The pseudo-code above adds two lock operations for each implicit collection
+request in "threaded" mode: one in the thread making the request (a
+``release`` call) and one in the GC thread (an ``acquire`` call).
+It also adds two other lock operations, regardless of the current mode,
+around each actual collection.
+
+We expect the cost of those lock operations to be very small, on modern
+systems, compared to the actual cost of crawling through the chains of
+pointers during the collection itself ("pointer chasing" being one of
+the hardest workloads on modern CPUs, as it lends itself poorly to
+speculation and superscalar execution).
+
+Actual measurements on worst-case mini-benchmarks may help provide
+reassuring upper bounds.
+
+Impact on GC pauses
+-------------------
+
+While this PEP does not concern itself with GC pauses, there is a
+practical chance that releasing the GIL at some point during an implicit
+collection (for example by virtue of executing a pure Python finalizer)
+will allow application code to run in-between, lowering the *visible* GC
+pause time for some applications.
+
+If this PEP is accepted, future work may try to better realize this potential
+by speculatively releasing the GIL during collections, though it is unclear
+how doable that is.
+
+
+Open issues
+===========
+
+* ``gc.set_mode`` should probably be protected against multiple concurrent
+  invocations.  Also, it should raise when called from *inside* a GC run
+  (i.e. from a finalizer).
+
+* What happens at shutdown?  Does the GC thread run until ``_PyGC_Fini()``
+  is called?
+
+
+Implementation
+==============
+
+A draft implementation is available in the ``threaded_gc`` branch
+[#implementation-branch]_ of the author's Github fork [#cpython-pitrou-fork]_.
+
+
+References
+==========
+
+.. [#queue-reentrancy-bug] https://bugs.python.org/issue14976
+
+.. [#implementation-branch] https://github.com/pitrou/cpython/tree/threaded_gc
+
+.. [#cpython-pitrou-fork] https://github.com/pitrou/cpython/
+
+
+Copyright
+=========
+
+This document has been placed in the public domain.
+
+
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   coding: utf-8
+   End:

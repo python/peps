@@ -1,0 +1,336 @@
+PEP: 590
+Title: Vectorcall: a fast calling protocol for CPython
+Author: Mark Shannon <mark@hotpy.org>, Jeroen Demeyer <J.Demeyer@UGent.be>
+BDFL-Delegate: Petr Viktorin <encukou@gmail.com>
+Status: Accepted
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 29-Mar-2019
+Python-Version: 3.8
+Post-History:
+
+Abstract
+========
+
+This PEP introduces a new C API to optimize calls of objects.
+It introduces a new "vectorcall" protocol and calling convention.
+This is based on the "fastcall" convention, which is already used internally by CPython.
+The new features can be used by any user-defined extension class.
+
+Most of the new API is private in CPython 3.8.
+The plan is to finalize semantics and make it public in Python 3.9.
+
+**NOTE**: This PEP deals only with the Python/C API,
+it does not affect the Python language or standard library.
+
+
+Motivation
+==========
+
+The choice of a calling convention impacts the performance and flexibility of code on either side of the call.
+Often there is tension between performance and flexibility.
+
+The current ``tp_call`` [2]_ calling convention is sufficiently flexible to cover all cases, but its performance is poor.
+The poor performance is largely a result of having to create intermediate tuples, and possibly intermediate dicts, during the call.
+This is mitigated in CPython by including special-case code to speed up calls to Python and builtin functions.
+Unfortunately, this means that other callables such as classes and third party extension objects are called using the
+slower, more general ``tp_call`` calling convention.
+
+This PEP proposes that the calling convention used internally for Python and builtin functions is generalized and published
+so that all calls can benefit from better performance.
+The new proposed calling convention is not fully general, but covers the large majority of calls.
+It is designed to remove the overhead of temporary object creation and multiple indirections.
+
+Another source of inefficiency in the ``tp_call`` convention is that it has one function pointer per class,
+rather than per object.
+This is inefficient for calls to classes as several intermediate objects need to be created.
+For a class ``cls``, at least one intermediate object is created for each call in the sequence
+``type.__call__``, ``cls.__new__``, ``cls.__init__``.
+
+This PEP proposes an interface for use by extension modules.
+Such interfaces cannot effectively be tested, or designed, without having the
+consumers in the loop.
+For that reason, we provide private (underscore-prefixed) names.
+The API may change (based on consumer feedback) in Python 3.9, where we expect
+it to be finalized, and the underscores removed.
+
+
+Specification
+=============
+
+The function pointer type
+-------------------------
+
+Calls are made through a function pointer taking the following parameters:
+
+* ``PyObject *callable``: The called object
+* ``PyObject *const *args``: A vector of arguments
+* ``size_t nargs``: The number of arguments plus the optional flag ``PY_VECTORCALL_ARGUMENTS_OFFSET`` (see below)
+* ``PyObject *kwnames``: Either ``NULL`` or a tuple with the names of the keyword arguments
+
+This is implemented by the function pointer type:
+``typedef PyObject *(*vectorcallfunc)(PyObject *callable, PyObject *const *args, size_t nargs, PyObject *kwnames);``
+
+Changes to the ``PyTypeObject`` struct
+--------------------------------------
+
+The unused slot ``printfunc tp_print`` is replaced with ``tp_vectorcall_offset``. It has the type ``Py_ssize_t``.
+A new ``tp_flags`` flag is added, ``_Py_TPFLAGS_HAVE_VECTORCALL``,
+which must be set for any class that uses the vectorcall protocol.
+
+If ``_Py_TPFLAGS_HAVE_VECTORCALL`` is set, then ``tp_vectorcall_offset`` must be a positive integer.
+It is the offset into the object of the vectorcall function pointer of type ``vectorcallfunc``.
+This pointer may be ``NULL``, in which case the behavior is the same as if ``_Py_TPFLAGS_HAVE_VECTORCALL`` was not set.
+
+The ``tp_print`` slot is reused as the ``tp_vectorcall_offset`` slot to make it easier for external projects to backport the vectorcall protocol to earlier Python versions.
+In particular, the Cython project has shown interest in doing that (see https://mail.python.org/pipermail/python-dev/2018-June/153927.html).
+
+Descriptor behavior
+-------------------
+
+One additional type flag is specified: ``Py_TPFLAGS_METHOD_DESCRIPTOR``.
+
+``Py_TPFLAGS_METHOD_DESCRIPTOR`` should be set if the callable uses the descriptor protocol to create a bound method-like object.
+This is used by the interpreter to avoid creating temporary objects when calling methods
+(see ``_PyObject_GetMethod`` and the ``LOAD_METHOD``/``CALL_METHOD`` opcodes).
+
+Concretely, if ``Py_TPFLAGS_METHOD_DESCRIPTOR`` is set for ``type(func)``, then:
+
+- ``func.__get__(obj, cls)(*args, **kwds)`` (with ``obj`` not None)
+  must be equivalent to ``func(obj, *args, **kwds)``.
+
+- ``func.__get__(None, cls)(*args, **kwds)`` must be equivalent to ``func(*args, **kwds)``.
+
+There are no restrictions on the object ``func.__get__(obj, cls)``.
+The latter is not required to implement the vectorcall protocol.
+
+The call
+--------
+
+The call takes the form ``((vectorcallfunc)(((char *)o)+offset))(o, args, n, kwnames)`` where
+``offset`` is ``Py_TYPE(o)->tp_vectorcall_offset``.
+The caller is responsible for creating the ``kwnames`` tuple and ensuring that there are no duplicates in it.
+
+``n`` is the number of positional arguments plus possibly the ``PY_VECTORCALL_ARGUMENTS_OFFSET`` flag.
+
+PY_VECTORCALL_ARGUMENTS_OFFSET
+------------------------------
+
+The flag ``PY_VECTORCALL_ARGUMENTS_OFFSET`` should be added to ``n``
+if the callee is allowed to temporarily change ``args[-1]``.
+In other words, this can be used if ``args`` points to argument 1 in the allocated vector.
+The callee must restore the value of ``args[-1]`` before returning.
+
+Whenever they can do so cheaply (without allocation), callers are encouraged to use ``PY_VECTORCALL_ARGUMENTS_OFFSET``.
+Doing so will allow callables such as bound methods to make their onward calls cheaply.
+The bytecode interpreter already allocates space on the stack for the callable,
+so it can use this trick at no additional cost.
+
+See [3]_ for an example of how ``PY_VECTORCALL_ARGUMENTS_OFFSET`` is used by a callee to avoid allocation.
+
+For getting the actual number of arguments from the parameter ``n``,
+the macro ``PyVectorcall_NARGS(n)`` must be used.
+This allows for future changes or extensions.
+
+
+New C API and changes to CPython
+================================
+
+The following functions or macros are added to the C API:
+
+- ``PyObject *_PyObject_Vectorcall(PyObject *obj, PyObject *const *args, size_t nargs, PyObject *keywords)``:
+  Calls ``obj`` with the given arguments.
+  Note that ``nargs`` may include the flag ``PY_VECTORCALL_ARGUMENTS_OFFSET``.
+  The actual number of positional arguments is given by ``PyVectorcall_NARGS(nargs)``.
+  The argument ``keywords`` is a tuple of keyword names or ``NULL``.
+  An empty tuple has the same effect as passing ``NULL``.
+  This uses either the vectorcall protocol or ``tp_call`` internally;
+  if neither is supported, an exception is raised.
+
+- ``PyObject *PyVectorcall_Call(PyObject *obj, PyObject *tuple, PyObject *dict)``:
+  Call the object (which must support vectorcall) with the old
+  ``*args`` and ``**kwargs`` calling convention.
+  This is mostly meant to put in the ``tp_call`` slot.
+
+- ``Py_ssize_t PyVectorcall_NARGS(size_t nargs)``: Given a vectorcall ``nargs`` argument,
+  return the actual number of arguments.
+  Currently equivalent to ``nargs & ~PY_VECTORCALL_ARGUMENTS_OFFSET``.
+
+Subclassing
+-----------
+
+Extension types inherit the type flag ``_Py_TPFLAGS_HAVE_VECTORCALL``
+and the value ``tp_vectorcall_offset`` from the base class,
+provided that they implement ``tp_call`` the same way as the base class.
+Additionally, the flag ``Py_TPFLAGS_METHOD_DESCRIPTOR``
+is inherited if ``tp_descr_get`` is implemented the same way as the base class.
+
+Heap types never inherit the vectorcall protocol because
+that would not be safe (heap types can be changed dynamically).
+This restriction may be lifted in the future, but that would require
+special-casing ``__call__`` in ``type.__setattribute__``.
+
+
+Finalizing the API
+==================
+
+The underscore in the names ``_PyObject_Vectorcall`` and
+``_Py_TPFLAGS_HAVE_VECTORCALL`` indicates that this API may change in minor
+Python versions.
+When finalized (which is planned for Python 3.9), they will be renamed to
+``PyObject_Vectorcall`` and ``Py_TPFLAGS_HAVE_VECTORCALL``.
+The old underscore-prefixed names will remain available as aliases.
+
+The new API will be documented as normal, but will warn of the above.
+
+Semantics for the other names introduced in this PEP (``PyVectorcall_NARGS``,
+``PyVectorcall_Call``, ``Py_TPFLAGS_METHOD_DESCRIPTOR``,
+``PY_VECTORCALL_ARGUMENTS_OFFSET``) are final.
+
+
+Internal CPython changes
+========================
+
+Changes to existing classes
+---------------------------
+
+The ``function``, ``builtin_function_or_method``, ``method_descriptor``, ``method``, ``wrapper_descriptor``, ``method-wrapper``
+classes will use the vectorcall protocol
+(not all of these will be changed in the initial implementation).
+
+For ``builtin_function_or_method`` and ``method_descriptor``
+(which use the ``PyMethodDef`` data structure),
+one could implement a specific vectorcall wrapper for every existing calling convention.
+Whether or not it is worth doing that remains to be seen.
+
+Using the vectorcall protocol for classes
+-----------------------------------------
+
+For a class ``cls``, creating a new instance using ``cls(xxx)``
+requires multiple calls.
+At least one intermediate object is created for each call in the sequence
+``type.__call__``, ``cls.__new__``, ``cls.__init__``.
+So it makes a lot of sense to use vectorcall for calling classes.
+This really means implementing the vectorcall protocol for ``type``.
+Some of the most commonly used classes will use this protocol,
+probably ``range``, ``list``, ``str``, and ``type``.
+
+The ``PyMethodDef`` protocol and Argument Clinic
+------------------------------------------------
+
+Argument Clinic [4]_ automatically generates wrapper functions around lower-level callables, providing safe unboxing of primitive types and
+other safety checks.
+Argument Clinic could be extended to generate wrapper objects conforming to the new ``vectorcall`` protocol.
+This will allow execution to flow from the caller to the Argument Clinic generated wrapper and
+thence to the hand-written code with only a single indirection.
+
+
+Third-party extension classes using vectorcall
+==============================================
+
+To enable call performance on a par with Python functions and built-in functions,
+third-party callables should include a ``vectorcallfunc`` function pointer,
+set ``tp_vectorcall_offset`` to the correct value and add the ``_Py_TPFLAGS_HAVE_VECTORCALL`` flag.
+Any class that does this must implement the ``tp_call`` function and make sure its behaviour is consistent with the ``vectorcallfunc`` function.
+Setting ``tp_call`` to ``PyVectorcall_Call`` is sufficient.
+
+
+Performance implications of these changes
+=========================================
+
+This PEP should not have much impact on the performance of existing code
+(neither in the positive nor the negative sense).
+It is mainly meant to allow efficient new code to be written,
+not to make existing code faster.
+
+Nevertheless, this PEP optimizes for ``METH_FASTCALL`` functions.
+Performance of functions using ``METH_VARARGS`` will become slightly worse.
+
+
+Stable ABI
+==========
+
+Nothing from this PEP is added to the stable ABI (PEP 384).
+
+
+Alternative Suggestions
+=======================
+
+bpo-29259
+---------
+
+PEP 590 is close to what was proposed in bpo-29259 [#bpo29259]_.
+The main difference is that this PEP stores the function pointer
+in the instance rather than in the class.
+This makes more sense for implementing functions in C,
+where every instance corresponds to a different C function.
+It also allows optimizing ``type.__call__``, which is not possible with bpo-29259.
+
+PEP 576 and PEP 580
+-------------------
+
+Both PEP 576 and PEP 580 are designed to enable 3rd party objects to be both expressive and performant (on a par with
+CPython objects). The purpose of this PEP is provide a uniform way to call objects in the CPython ecosystem that is
+both expressive and as performant as possible.
+
+This PEP is broader in scope than PEP 576 and uses variable rather than fixed offset function-pointers.
+The underlying calling convention is similar. Because PEP 576 only allows a fixed offset for the function pointer,
+it would not allow the improvements to any objects with constraints on their layout.
+
+PEP 580 proposes a major change to the ``PyMethodDef`` protocol used to define builtin functions.
+This PEP provides a more general and simpler mechanism in the form of a new calling convention.
+This PEP also extends the ``PyMethodDef`` protocol, but merely to formalise existing conventions.
+
+Other rejected approaches
+-------------------------
+
+A longer, 6 argument, form combining both the vector and optional tuple and dictionary arguments was considered.
+However, it was found that the code to convert between it and the old ``tp_call`` form was overly cumbersome and inefficient.
+Also, since only 4 arguments are passed in registers on x64 Windows, the two extra arguments would have non-negligible costs.
+
+Removing any special cases and making all calls use the ``tp_call`` form was also considered.
+However, unless a much more efficient way was found to create and destroy tuples, and to a lesser extent dictionaries,
+then it would be too slow.
+
+
+Acknowledgements
+================
+
+Victor Stinner for developing the original "fastcall" calling convention internally to CPython.
+This PEP codifies and extends his work.
+
+
+References
+==========
+
+.. [#bpo29259] Add tp_fastcall to PyTypeObject: support FASTCALL calling convention for all callable objects,
+               https://bugs.python.org/issue29259
+.. [2] tp_call/PyObject_Call calling convention
+   https://docs.python.org/3/c-api/typeobj.html#c.PyTypeObject.tp_call
+.. [3] Using PY_VECTORCALL_ARGUMENTS_OFFSET in callee
+   https://github.com/markshannon/cpython/blob/vectorcall-minimal/Objects/classobject.c#L53
+.. [4] Argument Clinic
+   https://docs.python.org/3/howto/clinic.html
+
+
+Reference implementation
+========================
+
+A minimal implementation can be found at https://github.com/markshannon/cpython/tree/vectorcall-minimal
+
+
+Copyright
+=========
+
+This document has been placed in the public domain.
+
+
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   coding: utf-8
+   End:

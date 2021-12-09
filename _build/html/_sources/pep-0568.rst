@@ -1,0 +1,371 @@
+PEP: 568
+Title: Generator-sensitivity for Context Variables
+Author: Nathaniel J. Smith <njs@pobox.com>
+Status: Deferred
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 04-Jan-2018
+Python-Version: 3.8
+Post-History:
+
+
+Abstract
+========
+
+Context variables provide a generic mechanism for tracking dynamic,
+context-local state, similar to thread-local storage but generalized
+to cope work with other kinds of thread-like contexts, such as asyncio
+Tasks. PEP 550 proposed a mechanism for context-local state that was
+also sensitive to generator context, but this was pretty complicated,
+so the BDFL requested it be simplified. The result was PEP 567, which
+is targeted for inclusion in 3.7. This PEP then extends PEP 567's
+machinery to add generator context sensitivity.
+
+This PEP is starting out in the "deferred" status, because there isn't
+enough time to give it proper consideration before the 3.7 feature
+freeze. The only goal *right now* is to understand what would be
+required to add generator context sensitivity in 3.8, so that we can
+avoid shipping something in 3.7 that would rule it out by accident.
+(Ruling it out on purpose can wait until 3.8 ;-).)
+
+
+Rationale
+=========
+
+[Currently the point of this PEP is just to understand *how* this
+would work, with discussion of *whether* it's a good idea deferred
+until after the 3.7 feature freeze. So rationale is TBD.]
+
+
+High-level summary
+==================
+
+Instead of holding a single ``Context``, the threadstate now holds a
+``ChainMap`` of ``Context``\s. ``ContextVar.get`` and
+``ContextVar.set`` are backed by the ``ChainMap``. Generators and
+async generators each have an associated ``Context`` that they push
+onto the ``ChainMap`` while they're running to isolate their
+context-local changes from their callers, though this can be
+overridden in cases like ``@contextlib.contextmanager`` where
+"leaking" context changes from the generator into its caller is
+desirable.
+
+
+Specification
+=============
+
+Review of PEP 567
+-----------------
+
+Let's start by reviewing how PEP 567 works, and then in the next
+section we'll describe the differences.
+
+In PEP 567, a ``Context`` is a ``Mapping`` from ``ContextVar`` objects
+to arbitrary values. In our pseudo-code here we'll pretend that it
+uses a ``dict`` for backing storage. (The real implementation uses a
+HAMT, which is semantically equivalent to a ``dict`` but with
+different performance trade-offs.)::
+
+   class Context(collections.abc.Mapping):
+       def __init__(self):
+           self._data = {}
+           self._in_use = False
+
+       def __getitem__(self, key):
+           return self._data[key]
+
+       def __iter__(self):
+           return iter(self._data)
+
+       def __len__(self):
+           return len(self._data)
+
+At any given moment, the threadstate holds a current ``Context``
+(initialized to an empty ``Context`` when the threadstate is created);
+we can use ``Context.run`` to temporarily switch the current
+``Context``::
+
+   # Context.run
+   def run(self, fn, *args, **kwargs):
+       if self._in_use:
+           raise RuntimeError("Context already in use")
+       tstate = get_thread_state()
+       old_context = tstate.current_context
+       tstate.current_context = self
+       self._in_use = True
+       try:
+           return fn(*args, **kwargs)
+       finally:
+           state.current_context = old_context
+           self._in_use = False
+
+We can fetch a shallow copy of the current ``Context`` by calling
+``copy_context``; this is commonly used when spawning a new task, so
+that the child task can inherit context from its parent::
+
+   def copy_context():
+       tstate = get_thread_state()
+       new_context = Context()
+       new_context._data = dict(tstate.current_context)
+       return new_context
+
+In practice, what end users generally work with is ``ContextVar``
+objects, which also provide the only way to mutate a ``Context``. They
+work with a utility class ``Token``, which can be used to restore a
+``ContextVar`` to its previous value::
+
+   class Token:
+       MISSING = sentinel_value()
+
+       # Note: constructor is private
+       def __init__(self, context, var, old_value):
+           self._context = context
+           self.var = var
+           self.old_value = old_value
+
+       # XX: PEP 567 currently makes this a method on ContextVar, but
+       # I'm going to propose it switch to this API because it's simpler.
+       def reset(self):
+           # XX: should we allow token reuse?
+           # XX: should we allow tokens to be used if the saved
+           # context is no longer active?
+           if self.old_value is self.MISSING:
+               del self._context._data[self.context_var]
+           else:
+               self._context._data[self.context_var] = self.old_value
+
+   # XX: the handling of defaults here uses the simplified proposal from
+   # https://mail.python.org/pipermail/python-dev/2018-January/151596.html
+   # This can be updated to whatever we settle on, it was just less
+   # typing this way :-)
+   class ContextVar:
+       def __init__(self, name, *, default=None):
+           self.name = name
+           self.default = default
+
+       def get(self):
+           context = get_thread_state().current_context
+           return context.get(self, self.default)
+
+       def set(self, new_value):
+           context = get_thread_state().current_context
+           token = Token(context, self, context.get(self, Token.MISSING))
+           context._data[self] = new_value
+           return token
+
+
+Changes from PEP 567 to this PEP
+--------------------------------
+
+In general, ``Context`` remains the same. However, now instead of
+holding a single ``Context`` object, the threadstate stores a stack of
+them. This stack acts just like a ``collections.ChainMap``, so we'll
+use that in our pseudocode. ``Context.run`` then becomes::
+
+   # Context.run
+   def run(self, fn, *args, **kwargs):
+       if self._in_use:
+           raise RuntimeError("Context already in use")
+       tstate = get_thread_state()
+       old_context_stack = tstate.current_context_stack
+       tstate.current_context_stack = ChainMap([self])     # changed
+       self._in_use = True
+       try:
+           return fn(*args, **kwargs)
+       finally:
+           state.current_context_stack = old_context_stack
+           self._in_use = False
+
+Aside from some updated variables names (e.g.,
+``tstate.current_context`` → ``tstate.current_context_stack``), the
+only change here is on the marked line, which now wraps the context in
+a ``ChainMap`` before stashing it in the threadstate.
+
+We also add a ``Context.push`` method, which is almost exactly like
+``Context.run``, except that it temporarily pushes the ``Context``
+onto the existing stack, instead of temporarily replacing the whole
+stack::
+
+   # Context.push
+   def push(self, fn, *args, **kwargs):
+       if self._in_use:
+           raise RuntimeError("Context already in use")
+       tstate = get_thread_state()
+       tstate.current_context_stack.maps.insert(0, self)  # different from run
+       self._in_use = True
+       try:
+           return fn(*args, **kwargs)
+       finally:
+           tstate.current_context_stack.maps.pop(0)       # different from run
+           self._in_use = False
+
+In most cases, we don't expect ``push`` to be used directly; instead,
+it will be used implicitly by generators. Specifically, every
+generator object and async generator object gains a new attribute
+``.context``. When an (async) generator object is created, this
+attribute is initialized to an empty ``Context`` (``self.context =
+Context()``). This is a mutable attribute; it can be changed by user
+code. But trying to set it to anything that isn't a ``Context`` object
+or ``None`` will raise an error.
+
+Whenever we enter an generator via ``__next__``, ``send``, ``throw``,
+or ``close``, or enter an async generator by calling one of those
+methods on its ``__anext__``, ``asend``, ``athrow``, or ``aclose``
+coroutines, then its ``.context`` attribute is checked, and if
+non-``None``, is automatically pushed::
+
+   # GeneratorType.__next__
+   def __next__(self):
+       if self.context is not None:
+           return self.context.push(self.__real_next__)
+       else:
+           return self.__real_next__()
+
+While we don't expect people to use ``Context.push`` often, making it
+a public API preserves the principle that a generator can always be
+rewritten as an explicit iterator class with equivalent semantics.
+
+Also, we modify ``contextlib.(async)contextmanager`` to always set its
+(async) generator objects' ``.context`` attribute to ``None``::
+
+   # contextlib._GeneratorContextManagerBase.__init__
+   def __init__(self, func, args, kwds):
+       self.gen = func(*args, **kwds)
+       self.gen.context = None                  # added
+       ...
+
+This makes sure that code like this continues to work as expected::
+
+   @contextmanager
+   def decimal_precision(prec):
+       with decimal.localcontext() as ctx:
+           ctx.prec = prec
+           yield
+
+   with decimal_precision(2):
+       ...
+
+The general idea here is that by default, every generator object gets
+its own local context, but if users want to explicitly get some other
+behavior then they can do that.
+
+Otherwise, things mostly work as before, except that we go through and
+swap everything to use the threadstate ``ChainMap`` instead of the
+threadstate ``Context``. In full detail:
+
+The ``copy_context`` function now returns a flattened copy of the
+"effective" context. (As an optimization, the implementation might
+choose to do this flattening lazily, but if so this will be made
+invisible to the user.) Compared to our previous implementation above,
+the only change here is that ``tstate.current_context`` has been
+replaced with ``tstate.current_context_stack``::
+
+   def copy_context() -> Context:
+       tstate = get_thread_state()
+       new_context = Context()
+       new_context._data = dict(tstate.current_context_stack)
+       return new_context
+
+``Token`` is unchanged, and the changes to ``ContextVar.get`` are
+trivial::
+
+   # ContextVar.get
+   def get(self):
+       context_stack = get_thread_state().current_context_stack
+       return context_stack.get(self, self.default)
+
+``ContextVar.set`` is a little more interesting: instead of going
+through the ``ChainMap`` machinery like everything else, it always
+mutates the top ``Context`` in the stack, and – crucially! – sets up
+the returned ``Token`` to restore *its* state later. This allows us to
+avoid accidentally "promoting" values between different levels in the
+stack, as would happen if we did ``old = var.get(); ...;
+var.set(old)``::
+
+   # ContextVar.set
+   def set(self, new_value):
+       top_context = get_thread_state().current_context_stack.maps[0]
+       token = Token(top_context, self, top_context.get(self, Token.MISSING))
+       top_context._data[self] = new_value
+       return token
+
+And finally, to allow for introspection of the full context stack, we
+provide a new function ``contextvars.get_context_stack``::
+
+   def get_context_stack() -> List[Context]:
+       return list(get_thread_state().current_context_stack.maps)
+
+That's all.
+
+
+Comparison to PEP 550
+=====================
+
+The main difference from PEP 550 is that it reified what we're calling
+"contexts" and "context stacks" as two different concrete types
+(``LocalContext`` and ``ExecutionContext`` respectively). This led to
+lots of confusion about what the differences were, and which object
+should be used in which places. This proposal simplifies things by
+only reifying the ``Context``, which is "just a dict", and makes the
+"context stack" an unnamed feature of the interpreter's runtime state
+– though it is still possible to introspect it using
+``get_context_stack``, for debugging and other purposes.
+
+
+Implementation notes
+====================
+
+``Context`` will continue to use a HAMT-based mapping structure under
+the hood instead of ``dict``, since we expect that calls to
+``copy_context`` are much more common than ``ContextVar.set``. In
+almost all cases, ``copy_context`` will find that there's only one
+``Context`` in the stack (because it's rare for generators to spawn
+new tasks), and can simply re-use it directly; in other cases HAMTs
+are cheap to merge and this can be done lazily.
+
+Rather than using an actual ``ChainMap`` object, we'll represent the
+context stack using some appropriate structure – the most appropriate
+options are probably either a bare ``list`` with the "top" of the
+stack being the end of the list so we can use ``push``\/``pop``, or
+else an intrusive linked list (``PyThreadState`` → ``Context`` →
+``Context`` → ...), with the "top" of the stack at the beginning of
+the list to allow efficient push/pop.
+
+A critical optimization in PEP 567 is the caching of values inside
+``ContextVar``. Switching from a single context to a context stack
+makes this a little bit more complicated, but not too much. Currently,
+we invalidate the cache whenever the threadstate's current ``Context``
+changes (on thread switch, and when entering/exiting ``Context.run``).
+The simplest approach here would be to invalidate the cache whenever
+stack changes (on thread switch, when entering/exiting
+``Context.run``, and when entering/leaving ``Context.push``). The main
+effect of this is that iterating a generator will invalidate the
+cache. It seems unlikely that this will cause serious problems, but if
+it does, then I think it can be avoided with a cleverer cache key that
+recognizes that pushing and then popping a ``Context`` returns the
+threadstate to its previous state. (Idea: store the cache key for a
+particular stack configuration in the topmost ``Context``.)
+
+It seems unavoidable in this design that uncached ``get`` will be
+O(n), where n is the size of the context stack. However, n will
+generally be very small – it's roughly the number of nested
+generators, so usually n=1, and it will be extremely rare to see n
+greater than, say, 5. At worst, n is bounded by the recursion limit.
+In addition, we can expect that in most cases of deep generator
+recursion, most of the ``Context``\s in the stack will be empty, and
+thus can be skipped extremely quickly during lookup. And for repeated
+lookups the caching mechanism will kick in. So it's probably possible
+to construct some extreme case where this causes performance problems,
+but ordinary code should be essentially unaffected.
+
+
+Copyright
+=========
+
+This document has been placed in the public domain.
+
+..
+   Local Variables:
+   indent-tabs-mode: nil
+   coding: utf-8
+   End:

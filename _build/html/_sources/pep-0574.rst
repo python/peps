@@ -1,0 +1,581 @@
+PEP: 574
+Title: Pickle protocol 5 with out-of-band data
+Version: $Revision$
+Last-Modified: $Date$
+Author: Antoine Pitrou <solipsis@pitrou.net>
+BDFL-Delegate: Nick Coghlan
+Status: Final
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 23-Mar-2018
+Python-Version: 3.8
+Post-History: 28-Mar-2018, 30-Apr-2019
+Resolution: https://mail.python.org/pipermail/python-dev/2019-May/157284.html
+
+
+Abstract
+========
+
+This PEP proposes to standardize a new pickle protocol version, and
+accompanying APIs to take full advantage of it:
+
+1. A new pickle protocol version (5) to cover the extra metadata needed
+   for out-of-band data buffers.
+2. A new ``PickleBuffer`` type for ``__reduce_ex__`` implementations
+   to return out-of-band data buffers.
+3. A new ``buffer_callback`` parameter when pickling, to handle out-of-band
+   data buffers.
+4. A new ``buffers`` parameter when unpickling to provide out-of-band data
+   buffers.
+
+The PEP guarantees unchanged behaviour for anyone not using the new APIs.
+
+
+Rationale
+=========
+
+The pickle protocol was originally designed in 1995 for on-disk persistency
+of arbitrary Python objects.  The performance of a 1995-era storage medium
+probably made it irrelevant to focus on performance metrics such as
+use of RAM bandwidth when copying temporary data before writing it to disk.
+
+Nowadays the pickle protocol sees a growing use in applications where most
+of the data isn't ever persisted to disk (or, when it is, it uses a portable
+format instead of Python-specific).  Instead, pickle is being used to transmit
+data and commands from one process to another, either on the same machine
+or on multiple machines.  Those applications will sometimes deal with very
+large data (such as Numpy arrays or Pandas dataframes) that need to be
+transferred around.  For those applications, pickle is currently
+wasteful as it imposes spurious memory copies of the data being serialized.
+
+As a matter of fact, the standard ``multiprocessing`` module uses pickle
+for serialization, and therefore also suffers from this problem when
+sending large data to another process.
+
+Third-party Python libraries, such as Dask [#dask]_, PyArrow [#pyarrow]_
+and IPyParallel [#ipyparallel]_, have started implementing alternative
+serialization schemes with the explicit goal of avoiding copies on large
+data.  Implementing a new serialization scheme is difficult and often
+leads to reduced generality (since many Python objects support pickle
+but not the new serialization scheme).  Falling back on pickle for
+unsupported types is an option, but then you get back the spurious
+memory copies you wanted to avoid in the first place.  For example,
+``dask`` is able to avoid memory copies for Numpy arrays and
+built-in containers thereof (such as lists or dicts containing Numpy
+arrays), but if a large Numpy array is an attribute of a user-defined
+object, ``dask`` will serialize the user-defined object as a pickle
+stream, leading to memory copies.
+
+The common theme of these third-party serialization efforts is to generate
+a stream of object metadata (which contains pickle-like information about
+the objects being serialized) and a separate stream of zero-copy buffer
+objects for the payloads of large objects.  Note that, in this scheme,
+small objects such as ints, etc. can be dumped together with the metadata
+stream.  Refinements can include opportunistic compression of large data
+depending on its type and layout, like ``dask`` does.
+
+This PEP aims to make ``pickle`` usable in a way where large data is handled
+as a separate stream of zero-copy buffers, letting the application handle
+those buffers optimally.
+
+
+Example
+=======
+
+To keep the example simple and avoid requiring knowledge of third-party
+libraries, we will focus here on a bytearray object (but the issue is
+conceptually the same with more sophisticated objects such as Numpy arrays).
+Like most objects, the bytearray object isn't immediately understood by
+the pickle module and must therefore specify its decomposition scheme.
+
+Here is how a bytearray object currently decomposes for pickling::
+
+   >>> b.__reduce_ex__(4)
+   (<class 'bytearray'>, (b'abc',), None)
+
+This is because the ``bytearray.__reduce_ex__`` implementation reads
+morally as follows::
+
+   class bytearray:
+
+      def __reduce_ex__(self, protocol):
+         if protocol == 4:
+            return type(self), bytes(self), None
+         # Legacy code for earlier protocols omitted
+
+In turn it produces the following pickle code::
+
+   >>> pickletools.dis(pickletools.optimize(pickle.dumps(b, protocol=4)))
+       0: \x80 PROTO      4
+       2: \x95 FRAME      30
+      11: \x8c SHORT_BINUNICODE 'builtins'
+      21: \x8c SHORT_BINUNICODE 'bytearray'
+      32: \x93 STACK_GLOBAL
+      33: C    SHORT_BINBYTES b'abc'
+      38: \x85 TUPLE1
+      39: R    REDUCE
+      40: .    STOP
+
+(the call to ``pickletools.optimize`` above is only meant to make the
+pickle stream more readable by removing the MEMOIZE opcodes)
+
+We can notice several things about the bytearray's payload (the sequence
+of bytes ``b'abc'``):
+
+* ``bytearray.__reduce_ex__`` produces a first copy by instantiating a
+  new bytes object from the bytearray's data.
+* ``pickle.dumps`` produces a second copy when inserting the contents of
+  that bytes object into the pickle stream, after the SHORT_BINBYTES opcode.
+* Furthermore, when deserializing the pickle stream, a temporary bytes
+  object is created when the SHORT_BINBYTES opcode is encountered (inducing
+  a data copy).
+
+What we really want is something like the following:
+
+* ``bytearray.__reduce_ex__`` produces a *view* of the bytearray's data.
+* ``pickle.dumps`` doesn't try to copy that data into the pickle stream
+  but instead passes the buffer view to its caller (which can decide on the
+  most efficient handling of that buffer).
+* When deserializing, ``pickle.loads`` takes the pickle stream and the
+  buffer view separately, and passes the buffer view directly to the
+  bytearray constructor.
+
+We see that several conditions are required for the above to work:
+
+* ``__reduce__`` or ``__reduce_ex__`` must be able to return *something*
+  that indicates a serializable no-copy buffer view.
+* The pickle protocol must be able to represent references to such buffer
+  views, instructing the unpickler that it may have to get the actual buffer
+  out of band.
+* The ``pickle.Pickler`` API must provide its caller with a way
+  to receive such buffer views while serializing.
+* The ``pickle.Unpickler`` API must similarly allow its caller to provide
+  the buffer views required for deserialization.
+* For compatibility, the pickle protocol must also be able to contain direct
+  serializations of such buffer views, such that current uses of the ``pickle``
+  API don't have to be modified if they are not concerned with memory copies.
+
+
+Producer API
+============
+
+We are introducing a new type ``pickle.PickleBuffer`` which can be
+instantiated from any buffer-supporting object, and is specifically meant
+to be returned from ``__reduce__`` implementations::
+
+   class bytearray:
+
+      def __reduce_ex__(self, protocol):
+         if protocol >= 5:
+            return type(self), (PickleBuffer(self),), None
+         # Legacy code for earlier protocols omitted
+
+``PickleBuffer`` is a simple wrapper that doesn't have all the memoryview
+semantics and functionality, but is specifically recognized by the ``pickle``
+module if protocol 5 or higher is enabled.  It is an error to try to
+serialize a ``PickleBuffer`` with pickle protocol version 4 or earlier.
+
+Only the raw *data* of the ``PickleBuffer`` will be considered by the
+``pickle`` module.  Any type-specific *metadata* (such as shapes or
+datatype) must be returned separately by the type's ``__reduce__``
+implementation, as is already the case.
+
+
+PickleBuffer objects
+--------------------
+
+The ``PickleBuffer`` class supports a very simple Python API.  Its constructor
+takes a single PEP 3118-compatible object [#pep-3118]_.  ``PickleBuffer``
+objects themselves support the buffer protocol, so consumers can
+call ``memoryview(...)`` on them to get additional information
+about the underlying buffer (such as the original type, shape, etc.).
+In addition, ``PickleBuffer`` objects have the following methods:
+
+``raw()``
+
+   Return a memoryview of the raw memory bytes underlying the PickleBuffer,
+   erasing any shape, strides and format information.  This is required to
+   handle Fortran-contiguous buffers correctly in the pure Python pickle
+   implementation.
+
+``release()``
+
+   Release the PickleBuffer's underlying buffer, making it unusable.
+
+On the C side, a simple API will be provided to create and inspect
+PickleBuffer objects:
+
+``PyObject *PyPickleBuffer_FromObject(PyObject *obj)``
+
+   Create a ``PickleBuffer`` object holding a view over the PEP 3118-compatible
+   *obj*.
+
+``PyPickleBuffer_Check(PyObject *obj)``
+
+   Return whether *obj* is a ``PickleBuffer`` instance.
+
+``const Py_buffer *PyPickleBuffer_GetBuffer(PyObject *picklebuf)``
+
+   Return a pointer to the internal ``Py_buffer`` owned by the ``PickleBuffer``
+   instance.  An exception is raised if the buffer is released.
+
+``int PyPickleBuffer_Release(PyObject *picklebuf)``
+
+   Release the ``PickleBuffer`` instance's underlying buffer.
+
+
+Buffer requirements
+-------------------
+
+``PickleBuffer`` can wrap any kind of buffer, including non-contiguous
+buffers.  However, it is required that ``__reduce__`` only returns a
+contiguous ``PickleBuffer`` (*contiguity* here is meant in the PEP 3118
+sense: either C-ordered or Fortran-ordered).  Non-contiguous buffers
+will raise an error when pickled.
+
+This restriction is primarily an ease-of-implementation issue for the
+``pickle`` module but also other consumers of out-of-band buffers.
+The simplest solution on the provider side is to return a contiguous
+copy of a non-contiguous buffer; a sophisticated provider, though, may
+decide instead to return a sequence of contiguous sub-buffers.
+
+
+Consumer API
+============
+
+``pickle.Pickler.__init__`` and ``pickle.dumps`` are augmented with an additional
+``buffer_callback`` parameter::
+
+   class Pickler:
+      def __init__(self, file, protocol=None, ..., buffer_callback=None):
+         """
+         If *buffer_callback* is None (the default), buffer views are
+         serialized into *file* as part of the pickle stream.
+
+         If *buffer_callback* is not None, then it can be called any number
+         of times with a buffer view.  If the callback returns a false value
+         (such as None), the given buffer is out-of-band; otherwise the
+         buffer is serialized in-band, i.e. inside the pickle stream.
+
+         The callback should arrange to store or transmit out-of-band buffers
+         without changing their order.
+
+         It is an error if *buffer_callback* is not None and *protocol* is
+         None or smaller than 5.
+         """
+
+   def pickle.dumps(obj, protocol=None, *, ..., buffer_callback=None):
+      """
+      See above for *buffer_callback*.
+      """
+
+``pickle.Unpickler.__init__`` and ``pickle.loads`` are augmented with an
+additional ``buffers`` parameter::
+
+   class Unpickler:
+      def __init__(file, *, ..., buffers=None):
+         """
+         If *buffers* is not None, it should be an iterable of buffer-enabled
+         objects that is consumed each time the pickle stream references
+         an out-of-band buffer view.  Such buffers have been given in order
+         to the *buffer_callback* of a Pickler object.
+
+         If *buffers* is None (the default), then the buffers are taken
+         from the pickle stream, assuming they are serialized there.
+         It is an error for *buffers* to be None if the pickle stream
+         was produced with a non-None *buffer_callback*.
+         """
+
+   def pickle.loads(data, *, ..., buffers=None):
+      """
+      See above for *buffers*.
+      """
+
+
+Protocol changes
+================
+
+Three new opcodes are introduced:
+
+* ``BYTEARRAY8`` creates a bytearray from the data following it in the pickle
+  stream and pushes it on the stack (just like ``BINBYTES8`` does for bytes
+  objects);
+* ``NEXT_BUFFER`` fetches a buffer from the ``buffers`` iterable and pushes
+  it on the stack.
+* ``READONLY_BUFFER`` makes a readonly view of the top of the stack.
+
+When pickling encounters a ``PickleBuffer``, that buffer can be considered
+in-band or out-of-band depending on the following conditions:
+
+* if no ``buffer_callback`` is given, the buffer is in-band;
+* if a ``buffer_callback`` is given, it is called with the buffer.  If the
+  callback returns a true value, the buffer is in-band; if the callback
+  returns a false value, the buffer is out-of-band.
+
+An in-band buffer is serialized as follows:
+
+* If the buffer is writable, it is serialized into the pickle stream as if
+  it were a ``bytearray`` object.
+* If the buffer is readonly, it is serialized into the pickle stream as if
+  it were a ``bytes`` object.
+
+An out-of-band buffer is serialized as follows:
+
+* If the buffer is writable, a ``NEXT_BUFFER`` opcode is appended to the
+  pickle stream.
+* If the buffer is readonly, a ``NEXT_BUFFER`` opcode is appended to the
+  pickle stream, followed by a ``READONLY_BUFFER`` opcode.
+
+The distinction between readonly and writable buffers is motivated below
+(see "Mutability").
+
+
+Side effects
+============
+
+Improved in-band performance
+----------------------------
+
+Even in-band pickling can be improved by returning a ``PickleBuffer``
+instance from ``__reduce_ex__``, as one copy is avoided on the serialization
+path [#arrow-pickle5-benchmark]_ [#numpy-pickle5-benchmark]_.
+
+
+Caveats
+=======
+
+Mutability
+----------
+
+PEP 3118 buffers [#pep-3118]_ can be readonly or writable.  Some objects,
+such as Numpy arrays, need to be backed by a mutable buffer for full
+operation.  Pickle consumers that use the ``buffer_callback`` and ``buffers``
+arguments will have to be careful to recreate mutable buffers.  When doing
+I/O, this implies using buffer-passing API variants such as ``readinto``
+(which are also often preferable for performance).
+
+Data sharing
+------------
+
+If you pickle and then unpickle an object in the same process, passing
+out-of-band buffer views, then the unpickled object may be backed by the
+same buffer as the original pickled object.
+
+For example, it might be reasonable to implement reduction of a Numpy array
+as follows (crucial metadata such as shapes is omitted for simplicity)::
+
+   class ndarray:
+
+      def __reduce_ex__(self, protocol):
+         if protocol == 5:
+            return numpy.frombuffer, (PickleBuffer(self), self.dtype)
+         # Legacy code for earlier protocols omitted
+
+Then simply passing the PickleBuffer around from ``dumps`` to ``loads``
+will produce a new Numpy array sharing the same underlying memory as the
+original Numpy object (and, incidentally, keeping it alive)::
+
+   >>> import numpy as np
+   >>> a = np.zeros(10)
+   >>> a[0]
+   0.0
+   >>> buffers = []
+   >>> data = pickle.dumps(a, protocol=5, buffer_callback=buffers.append)
+   >>> b = pickle.loads(data, buffers=buffers)
+   >>> b[0] = 42
+   >>> a[0]
+   42.0
+
+This won't happen with the traditional ``pickle`` API (i.e. without passing
+``buffers`` and ``buffer_callback`` parameters), because then the buffer view
+is serialized inside the pickle stream with a copy.
+
+
+Rejected alternatives
+=====================
+
+Using the existing persistent load interface
+--------------------------------------------
+
+The ``pickle`` persistence interface is a way of storing references to
+designated objects in the pickle stream while handling their actual
+serialization out of band.  For example, one might consider the following
+for zero-copy serialization of bytearrays::
+
+   class MyPickle(pickle.Pickler):
+
+       def __init__(self, *args, **kwargs):
+           super().__init__(*args, **kwargs)
+           self.buffers = []
+
+       def persistent_id(self, obj):
+           if type(obj) is not bytearray:
+               return None
+           else:
+               index = len(self.buffers)
+               self.buffers.append(obj)
+               return ('bytearray', index)
+
+
+   class MyUnpickle(pickle.Unpickler):
+
+       def __init__(self, *args, buffers, **kwargs):
+           super().__init__(*args, **kwargs)
+           self.buffers = buffers
+
+       def persistent_load(self, pid):
+           type_tag, index = pid
+           if type_tag == 'bytearray':
+               return self.buffers[index]
+           else:
+               assert 0  # unexpected type
+
+This mechanism has two drawbacks:
+
+* Each ``pickle`` consumer must reimplement ``Pickler`` and ``Unpickler``
+  subclasses, with custom code for each type of interest.  Essentially,
+  N pickle consumers end up each implementing custom code for M producers.
+  This is difficult (especially for sophisticated types such as Numpy
+  arrays) and poorly scalable.
+
+* Each object encountered by the pickle module (even simple built-in objects
+  such as ints and strings) triggers a call to the user's ``persistent_id()``
+  method, leading to a possible performance drop compared to nominal.
+
+  (the Python 2 ``cPickle`` module supported an undocumented
+  ``inst_persistent_id()`` hook that was only called on non-built-in types;
+  it was added in 1997 in order to alleviate the performance issue of
+  calling ``persistent_id``, presumably at ZODB's request)
+
+Passing a sequence of buffers in ``buffer_callback``
+----------------------------------------------------
+
+By passing a sequence of buffers, rather than a single buffer, we would
+potentially save on function call overhead in case a large number
+of buffers are produced during serialization.  This would need
+additional support in the Pickler to save buffers before calling the
+callback.  However, it would also prevent the buffer callback from returning
+a boolean to indicate whether a buffer is to be serialized in-band or
+out-of-band.
+
+We consider that having a large number of buffers to serialize is an
+unlikely case, and decided to pass a single buffer to the buffer callback.
+
+Allow serializing a ``PickleBuffer`` in protocol 4 and earlier
+--------------------------------------------------------------
+
+If we were to allow serializing a ``PickleBuffer`` in protocols 4 and earlier,
+it would actually make a supplementary memory copy when the buffer is mutable.
+Indeed, a mutable ``PickleBuffer`` would serialize as a bytearray object
+in those protocols (that is a first copy), and serializing the bytearray
+object would call ``bytearray.__reduce_ex__`` which returns a bytes object
+(that is a second copy).
+
+To prevent ``__reduce__`` implementors from introducing involuntary
+performance regressions, we decided to reject ``PickleBuffer`` when
+the protocol is smaller than 5.  This forces implementors to switch to
+``__reduce_ex__`` and implement protocol-dependent serialization, taking
+advantage of the best path for each protocol (or at least treat protocol
+5 and upwards separately from protocols 4 and downwards).
+
+
+Implementation
+==============
+
+The PEP was initially implemented in the author's GitHub fork [#pickle5-git]_.
+It was later merged into Python 3.8 [#pickle5-pr]_.
+
+A backport for Python 3.6 and 3.7 is downloadable from PyPI
+[#pickle5-pypi]_.
+
+Support for pickle protocol 5 and out-of-band buffers was added to Numpy
+[#numpy-pickle5-pr]_.
+
+Support for pickle protocol 5 and out-of-band buffers was added to the Apache
+Arrow Python bindings [#arrow-pickle5-pr]_.
+
+
+Related work
+============
+
+Dask.distributed implements a custom zero-copy serialization with fallback
+to pickle [#dask-serialization]_.
+
+PyArrow implements zero-copy component-based serialization for a few
+selected types [#pyarrow-serialization]_.
+
+PEP 554 proposes hosting multiple interpreters in a single process, with
+provisions for transferring buffers between interpreters as a communication
+scheme [#pep-554]_.
+
+
+Acknowledgements
+================
+
+Thanks to the following people for early feedback: Nick Coghlan, Olivier
+Grisel, Stefan Krah, MinRK, Matt Rocklin, Eric Snow.
+
+Thanks to Pierre Glaser and Olivier Grisel for experimenting with the
+implementation.
+
+
+References
+==========
+
+.. [#dask] Dask.distributed -- A lightweight library for distributed computing
+   in Python
+   https://distributed.readthedocs.io/
+
+.. [#dask-serialization] Dask.distributed custom serialization
+   https://distributed.readthedocs.io/en/latest/serialization.html
+
+.. [#ipyparallel] IPyParallel -- Using IPython for parallel computing
+   https://ipyparallel.readthedocs.io/
+
+.. [#pyarrow] PyArrow -- A cross-language development platform for in-memory data
+   https://arrow.apache.org/docs/python/
+
+.. [#pyarrow-serialization] PyArrow IPC and component-based serialization
+   https://arrow.apache.org/docs/python/ipc.html#component-based-serialization
+
+.. [#pep-3118] PEP 3118 -- Revising the buffer protocol
+   https://www.python.org/dev/peps/pep-3118/
+
+.. [#pep-554] PEP 554 -- Multiple Interpreters in the Stdlib
+   https://www.python.org/dev/peps/pep-0554/
+
+.. [#pickle5-git] ``pickle5`` branch on GitHub
+   https://github.com/pitrou/cpython/tree/pickle5
+
+.. [#pickle5-pr] PEP 574 Pull Request on GitHub
+   https://github.com/python/cpython/pull/7076
+
+.. [#pickle5-pypi] ``pickle5`` project on PyPI
+   https://pypi.org/project/pickle5/
+
+.. [#arrow-pickle5-pr] Pull request: Experimental zero-copy pickling in Apache Arrow
+   https://github.com/apache/arrow/pull/2161
+
+.. [#arrow-pickle5-benchmark] Benchmark zero-copy pickling in Apache Arrow
+   https://github.com/apache/arrow/pull/2161#issuecomment-407859213
+
+.. [#numpy-pickle5-pr] Pull request: Support pickle protocol 5 in Numpy
+   https://github.com/numpy/numpy/pull/12011
+
+.. [#numpy-pickle5-benchmark] Benchmark pickling Numpy arrays with different pickle protocols
+   https://github.com/numpy/numpy/issues/11161#issuecomment-424035962
+
+
+Copyright
+=========
+
+This document has been placed into the public domain.
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   coding: utf-8
+   End:

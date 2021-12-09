@@ -1,0 +1,482 @@
+PEP: 630
+Title: Isolating Extension Modules
+Author: Petr Viktorin <encukou@gmail.com>
+Discussions-To: capi-sig@python.org
+Status: Active
+Type: Informational
+Content-Type: text/x-rst
+Created: 25-Aug-2020
+Post-History: 16-Jul-2020
+
+
+Isolating Extension Modules
+===========================
+
+Abstract
+--------
+
+Traditionally, state of Python extension modules was kept in C
+``static`` variables, which have process-wide scope. This document
+describes problems of such per-process state and efforts to make
+per-module state, a better default, possible and easy to use.
+
+The document also describes how to switch to per-module state where
+possible. The switch involves allocating space for that state, switching
+from static types to heap types, and—perhaps most importantly—accessing
+per-module state from code.
+
+About this document
+-------------------
+
+As an `informational PEP <https://www.python.org/dev/peps/pep-0001/#pep-types>`__,
+this document does not introduce any changes: those should be done in
+their own PEPs (or issues, if small enough). Rather, it covers the
+motivation behind an effort that spans multiple releases, and instructs
+early adopters on how to use the finished features.
+
+Once support is reasonably complete, the text can be moved to Python's
+documentation as a HOWTO. Meanwhile, in the spirit of documentation-driven
+development, gaps identified in this text can show where to focus
+the effort, and the text can be updated as new features are implemented
+
+Whenever this PEP mentions *extension modules*, the advice also
+applies to *built-in* modules, such as the C parts of the standard
+library. The standard library is expected to switch to per-module state
+early.
+
+PEPs related to this effort are:
+
+-  PEP 384 -- *Defining a Stable ABI*, which added C API for creating
+   heap types
+-  PEP 489 -- *Multi-phase extension module initialization*
+-  PEP 573 -- *Module State Access from C Extension Methods*
+
+This document is concerned with Python's public C API, which is not
+offered by all implementations of Python. However, nothing in this PEP is
+specific to CPython.
+
+As with any Informational PEP, this text does not necessarily represent
+a Python community consensus or recommendation.
+
+Motivation
+----------
+
+An *interpreter* is the context in which Python code runs. It contains
+configuration (e.g. the import path) and runtime state (e.g. the set of
+imported modules).
+
+Python supports running multiple interpreters in one process. There are
+two cases to think about—users may run interpreters:
+
+-  in sequence, with several ``Py_InitializeEx``/``Py_FinalizeEx``
+   cycles, and
+-  in parallel, managing “sub-interpreters” using
+   ``Py_NewInterpreter``/``Py_EndInterpreter``.
+
+Both cases (and combinations of them) would be most useful when
+embedding Python within a library. Libraries generally shouldn't make
+assumptions about the application that uses them, which includes
+assumptions about a process-wide “main Python interpreter”.
+
+Currently, CPython doesn't handle this use case well. Many extension
+modules (and even some stdlib modules) use *per-process* global state,
+because C ``static`` variables are extremely easy to use. Thus, data
+that should be specific to an interpreter ends up being shared between
+interpreters. Unless the extension developer is careful, it is very easy
+to introduce edge cases that lead to crashes when a module is loaded in
+more than one interpreter.
+
+Unfortunately, *per-interpreter* state is not easy to achieve: extension
+authors tend to not keep multiple interpreters in mind when developing,
+and it is currently cumbersome to test the behavior.
+
+Rationale for Per-module State
+------------------------------
+
+Instead of focusing on per-interpreter state, Python's C API is evolving
+to better support the more granular *per-module* state. By default,
+C-level data will be attached to a *module object*. Each interpreter
+will then create its own module object, keeping data separate. For
+testing the isolation, multiple module objects corresponding to a single
+extension can even be loaded in a single interpreter.
+
+Per-module state provides an easy way to think about lifetime and
+resource ownership: the extension module author will set up when a
+module object is created, and clean up when it's freed. In this regard,
+a module is just like any other ``PyObject *``; there are no “on
+interpreter shutdown” hooks to think about—or forget about.
+
+Goal: Easy-to-use Module State
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+It is currently cumbersome or impossible to do everything the C API
+offers while keeping modules isolated. Enabled by PEP 384, changes in
+PEPs 489 and 573 (and future planned ones) aim to first make it
+*possible* to build modules this way, and then to make it *easy* to
+write new modules this way and to convert old ones, so that it can
+become a natural default.
+
+Even if per-module state becomes the default, there will be use cases
+for different levels of encapsulation: per-process, per-interpreter,
+per-thread or per-task state. The goal is to treat these as exceptional
+cases: they should be possible, but extension authors will need to
+think more carefully about them.
+
+Non-goals: Speedups and the GIL
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+There is some effort to speed up CPython on multi-core CPUs by making the GIL
+per-interpreter. While isolating interpreters helps that effort,
+defaulting to per-module state will be beneficial even if no speedup is
+achieved, as it makes supporting multiple interpreters safer by default.
+
+How to make modules safe with multiple interpreters
+---------------------------------------------------
+
+There are many ways to correctly support multiple interpreters in
+extension modules. The rest of this text describes the preferred way to
+write such a module, or to convert an existing module.
+
+Note that support is a work in progress; the API for some features your
+module needs might not yet be ready.
+
+A full example module is available as
+`xxlimited <https://github.com/python/cpython/blob/master/Modules/xxlimited.c>`__.
+
+This section assumes that “*you*” are an extension module author.
+
+
+Isolated Module Objects
+~~~~~~~~~~~~~~~~~~~~~~~
+
+The key point to keep in mind when developing an extension module is
+that several module objects can be created from a single shared library.
+For example::
+
+   >>> import sys
+   >>> import binascii
+   >>> old_binascii = binascii
+   >>> del sys.modules['binascii']
+   >>> import binascii  # create a new module object
+   >>> old_binascii == binascii
+   False
+
+As a rule of thumb, the two modules should be completely independent.
+All objects and state specific to the module should be encapsulated
+within the module object, not shared with other module objects, and
+cleaned up when the module object is deallocated. Exceptions are
+possible (see “Managing global state” below), but they will need more
+thought and attention to edge cases than code that follows this rule of
+thumb.
+
+While some modules could do with less stringent restrictions, isolated
+modules make it easier to set clear expectations (and guidelines) that
+work across a variety of use cases.
+
+Surprising Edge Cases
+~~~~~~~~~~~~~~~~~~~~~
+
+Note that isolated modules do create some surprising edge cases. Most
+notably, each module object will typically not share its classes and
+exceptions with other similar modules. Continuing from the example
+above, note that ``old_binascii.Error`` and ``binascii.Error`` are
+separate objects. In the following code, the exception is *not* caught::
+
+   >>> old_binascii.Error == binascii.Error
+   False
+   >>> try:
+   ...     old_binascii.unhexlify(b'qwertyuiop')
+   ... except binascii.Error:
+   ...     print('boo')
+   ... 
+   Traceback (most recent call last):
+     File "<stdin>", line 2, in <module>
+   binascii.Error: Non-hexadecimal digit found
+
+This is expected. Notice that pure-Python modules behave the same way:
+it is a part of how Python works.
+
+The goal is to make extension modules safe at the C level, not to make
+hacks behave intuitively. Mutating ``sys.modules`` “manually” counts
+as a hack.
+
+Managing Global State
+~~~~~~~~~~~~~~~~~~~~~
+
+Sometimes, state of a Python module is not specific to that module, but
+to the entire process (or something else “more global” than a module).
+For example:
+
+-  The ``readline`` module manages *the* terminal.
+-  A module running on a circuit board wants to control *the* on-board
+   LED.
+
+In these cases, the Python module should provide *access* to the global
+state, rather than *own* it. If possible, write the module so that
+multiple copies of it can access the state independently (along with
+other libraries, whether for Python or other languages).
+
+If that is not possible, consider explicit locking.
+
+If it is necessary to use process-global state, the simplest way to
+avoid issues with multiple interpreters is to explicitly prevent a
+module from being loaded more than once per process—see “Opt-Out:
+Limiting to One Module Object per Process” below.
+
+Managing Per-Module State
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+To use per-module state, use `multi-phase extension module
+initialization <https://docs.python.org/3/c-api/module.html#multi-phase-initialization>`__
+introduced in PEP 489. This signals that your module supports multiple
+interpreters correctly.
+
+Set ``PyModuleDef.m_size`` to a positive number to request that many
+bytes of storage local to the module. Usually, this will be set to the
+size of some module-specific ``struct``, which can store all of the
+module's C-level state. In particular, it is where you should put
+pointers to classes (including exceptions) and settings (e.g. ``csv``'s 
+`field_size_limit <https://docs.python.org/3.8/library/csv.html#csv.field_size_limit>`__)
+which the C code needs to function.
+
+.. note::
+   Another option is to store state in the module's ``__dict__``,
+   but you must avoid crashing when users modify ``__dict__`` from
+   Python code. This means error- and type-checking at the C level,
+   which is easy to get wrong and hard to test sufficiently.
+
+If the module state includes ``PyObject`` pointers, the module object
+must hold references to those objects and implement module-level hooks
+``m_traverse``, ``m_clear``, ``m_free``. These work like
+``tp_traverse``, ``tp_clear``, ``tp_free`` of a class. Adding them will
+require some work and make the code longer; this is the price for
+modules which can be unloaded cleanly.
+
+An example of a module with per-module state is currently available as
+`xxlimited <https://github.com/python/cpython/blob/master/Modules/xxlimited.c>`__;
+example module initialization shown at the bottom of the file.
+
+
+Opt-Out: Limiting to One Module Object per Process
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A non-negative ``PyModuleDef.m_size`` signals that a module supports
+multiple interpreters correctly. If this is not yet the case for your
+module, you can explicitly make your module loadable only once per
+process. For example::
+
+   static int loaded = 0;
+
+   static int
+   exec_module(PyObject* module)
+   {
+       if (loaded) {
+           PyErr_SetString(PyExc_ImportError,
+                           "cannot load module more than once per process");
+           return -1;
+       }
+       loaded = 1;
+       // ... rest of initialization
+   }
+
+Module State Access from Functions
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Accessing the state from module-level functions is straightforward.
+Functions get the module object as their first argument; for extracting
+the state there is ``PyModule_GetState``::
+
+   static PyObject *
+   func(PyObject *module, PyObject *args)
+   {
+       my_struct *state = (my_struct*)PyModule_GetState(module);
+       if (state == NULL) {
+           return NULL;
+       }
+       // ... rest of logic
+   }
+
+(Note that ``PyModule_GetState`` may return NULL without setting an
+exception if there is no module state, i.e. ``PyModuleDef.m_size`` was
+zero. In your own module, you're in control of ``m_size``, so this is
+easy to prevent.)
+
+Heap types
+~~~~~~~~~~
+
+Traditionally, types defined in C code were *static*, that is,
+``static PyTypeObject`` structures defined directly in code and
+initialized using ``PyType_Ready()``.
+
+Such types are necessarily shared across the process. Sharing them
+between module objects requires paying attention to any state they own
+or access. To limit the possible issues, static types are immutable at
+the Python level: for example, you can't set ``str.myattribute = 123``.
+
+.. note::
+   Sharing truly immutable objects between interpreters is fine,
+   as long as they don't provide access to mutable objects. But, every
+   Python object has a mutable implementation detail: the reference
+   count. Changes to the refcount are guarded by the GIL. Thus, code
+   that shares any Python objects across interpreters implicitly depends
+   on CPython's current, process-wide GIL.
+
+An alternative to static types is *heap-allocated types*, or heap types
+for short. These correspond more closely to classes created by Python’s
+``class`` statement.
+
+Heap types can be created by filling a ``PyType_Spec`` structure, a
+description or “blueprint” of a class, and calling
+``PyType_FromModuleAndSpec()`` to construct a new class object.
+
+.. note::
+   Other functions, like ``PyType_FromSpec()``, can also create
+   heap types, but ``PyType_FromModuleAndSpec()`` associates the module
+   with the class, allowing access to the module state from methods.
+
+The class should generally be stored in *both* the module state (for
+safe access from C) and the module's ``__dict__`` (for access from
+Python code).
+
+Module State Access from Classes
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+If you have a type object defined with ``PyType_FromModuleAndSpec()``,
+you can call ``PyType_GetModule`` to get the associated module, then
+``PyModule_GetState`` to get the module's state.
+
+To save a some tedious error-handling boilerplate code, you can combine
+these two steps with ``PyType_GetModuleState``, resulting in::
+
+       my_struct *state = (my_struct*)PyType_GetModuleState(type);
+       if (state === NULL) {
+           return NULL;
+       }
+
+Module State Access from Regular Methods
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Accessing the module-level state from methods of a class is somewhat
+more complicated, but possible thanks to changes introduced in PEP 573.
+To get the state, you need to first get the *defining class*, and then
+get the module state from it.
+
+The largest roadblock is getting *the class a method was defined in*, or
+that method's “defining class” for short. The defining class can have a
+reference to the module it is part of.
+
+Do not confuse the defining class with ``Py_TYPE(self)``. If the method
+is called on a *subclass* of your type, ``Py_TYPE(self)`` will refer to
+that subclass, which may be defined in different module than yours.
+
+.. note::
+   The following Python code. can illustrate the concept.
+   ``Base.get_defining_class`` returns ``Base`` even
+   if ``type(self) == Sub``::
+
+      class Base:
+          def get_defining_class(self):
+              return __class__
+
+      class Sub(Base):
+          pass
+
+
+For a method to get its “defining class”, it must use the
+``METH_METHOD | METH_FASTCALL | METH_KEYWORDS`` `calling
+convention <https://docs.python.org/3.9/c-api/structures.html?highlight=meth_o#c.PyMethodDef>`__
+and the corresponding `PyCMethod
+signature <https://docs.python.org/3.9/c-api/structures.html#c.PyCMethod>`__::
+
+   PyObject *PyCMethod(
+       PyObject *self,               // object the method was called on
+       PyTypeObject *defining_class, // defining class
+       PyObject *const *args,        // C array of arguments
+       Py_ssize_t nargs,             // length of "args"
+       PyObject *kwnames)            // NULL, or dict of keyword arguments
+
+Once you have the defining class, call ``PyType_GetModuleState`` to get
+the state of its associated module.
+
+For example::
+
+   static PyObject *
+   example_method(PyObject *self,
+           PyTypeObject *defining_class,
+           PyObject *const *args,
+           Py_ssize_t nargs,
+           PyObject *kwnames)
+   {
+       my_struct *state = (my_struct*)PyType_GetModuleState(defining_class);
+       if (state === NULL) {
+           return NULL;
+       }
+       ... // rest of logic
+   }
+
+   PyDoc_STRVAR(example_method_doc, "...");
+
+   static PyMethodDef my_methods[] = {
+       {"example_method",
+         (PyCFunction)(void(*)(void))example_method,
+         METH_METHOD|METH_FASTCALL|METH_KEYWORDS,
+         example_method_doc}
+       {NULL},
+   }
+
+Open Issues
+-----------
+
+Several issues around per-module state and heap types are still open.
+
+Discussions about improving the situation are best held on the `capi-sig
+mailing list <https://mail.python.org/mailman3/lists/capi-sig.python.org/>`__.
+
+Module State Access from Slot Methods, Getters and Setters
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Currently (as of Python 3.9), there is no API to access the module state
+from:
+
+-  slot methods (meaning type slots, such as ``tp_new``, ``nb_add`` or
+   ``tp_iternext``)
+-  getters and setters defined with ``tp_getset``
+
+Type Checking
+~~~~~~~~~~~~~
+
+Currently (as of Python 3.9), heap types have no good API to write
+``Py*_Check`` functions (like ``PyUnicode_Check`` exists for ``str``, a
+static type), and so it is not easy to ensure whether instances have a
+particular C layout.
+
+Metaclasses
+~~~~~~~~~~~
+
+Currently (as of Python 3.9), there is no good API to specify the
+*metaclass* of a heap type, that is, the ``ob_type`` field of the type
+object.
+
+Per-Class scope
+~~~~~~~~~~~~~~~
+
+It is also not possible to attach state to *types*. While
+``PyHeapTypeObject`` is a variable-size object (``PyVarObject``),
+its variable-size storage is currently consumed by slots. Fixing this
+is complicated by the fact that several classes in an inheritance
+hierarchy may need to reserve some state.
+
+Copyright
+---------
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   coding: utf-8
+   End:

@@ -1,0 +1,987 @@
+PEP: 615
+Title: Support for the IANA Time Zone Database in the Standard Library
+Author: Paul Ganssle <paul at ganssle.io>
+Discussions-To: https://discuss.python.org/t/3468
+Status: Accepted
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 22-Feb-2020
+Python-Version: 3.9
+Post-History: 2020-02-25, 2020-03-29
+Replaces: 431
+
+
+Abstract
+========
+
+This proposes adding a module, ``zoneinfo``, to provide a concrete time zone
+implementation supporting the IANA time zone database.  By default,
+``zoneinfo`` will use the system's time zone data if available; if no system
+time zone data is available, the library will fall back to using the
+first-party package ``tzdata``, deployed on PyPI. [d]_
+
+Motivation
+==========
+
+The ``datetime`` library uses a flexible mechanism to handle time zones: all
+conversions and time zone information queries are delegated to an instance of a
+subclass of the abstract ``datetime.tzinfo`` base class. [#tzinfo]_ This allows
+users to implement arbitrarily complex time zone rules, but in practice the
+majority of users want support for just three types of time zone: [a]_
+
+1. UTC and fixed offsets thereof
+2. The system local time zone
+3. IANA time zones
+
+In Python 3.2, the ``datetime.timezone`` class was introduced to support the
+first class of time zone (with a special ``datetime.timezone.utc`` singleton
+for UTC).
+
+While there is still no "local" time zone, in Python 3.0 the semantics of naïve
+time zones was changed to support many "local time" operations, and it is now
+possible to get a fixed time zone offset from a local time::
+
+    >>> print(datetime(2020, 2, 22, 12, 0).astimezone())
+    2020-02-22 12:00:00-05:00
+    >>> print(datetime(2020, 2, 22, 12, 0).astimezone()
+    ...       .strftime("%Y-%m-%d %H:%M:%S %Z"))
+    2020-02-22 12:00:00 EST
+    >>> print(datetime(2020, 2, 22, 12, 0).astimezone(timezone.utc))
+    2020-02-22 17:00:00+00:00
+
+However, there is still no support for the time zones described in the IANA
+time zone database (also called the "tz" database or the Olson database
+[#tzdb-wiki]_).  The time zone database is in the public domain and is widely
+distributed — it is present by default on many Unix-like operating systems.
+Great care goes into the stability of the database: there are IETF RFCs both
+for the maintenance procedures (RFC 6557 [#rfc6557]_) and for the compiled
+binary (TZif) format (RFC 8636 [#rfc8536]_).  As such, it is likely that adding
+support for the compiled outputs of the IANA database will add great value to
+end users even with the relatively long cadence of standard library releases.
+
+
+Proposal
+========
+
+This PEP has three main concerns:
+
+1. The semantics of the ``zoneinfo.ZoneInfo`` class (zoneinfo-class_)
+2. Time zone data sources used (data-sources_)
+3. Options for configuration of the time zone search path (search-path-config_)
+
+Because of the complexity of the proposal, rather than having separate
+"specification" and "rationale" sections the design decisions and rationales
+are grouped together by subject.
+
+.. _zoneinfo-class:
+
+The ``zoneinfo.ZoneInfo`` class
+-------------------------------
+
+.. _Constructors:
+
+Constructors
+############
+
+The initial design of the ``zoneinfo.ZoneInfo`` class has several constructors.
+
+.. code-block::
+
+    ZoneInfo(key: str)
+
+The primary constructor takes a single argument, ``key``, which is a string
+indicating the name of a zone file in the system time zone database (e.g.
+``"America/New_York"``, ``"Europe/London"``), and returns a ``ZoneInfo``
+constructed from the first matching data source on search path (see the
+data-sources_ section for more details). All zone information must be eagerly
+read from the data source (usually a TZif file) upon construction, and may
+not change during the lifetime of the object (this restriction applies to all
+``ZoneInfo`` constructors).
+
+In the event that no matching file is found on the search path (either because
+the system does not supply time zone data or because the key is invalid), the
+constructor will raise a ``zoneinfo.ZoneInfoNotFoundError``, which will be a
+subclass of ``KeyError``.
+
+One somewhat unusual guarantee made by this constructor is that calls with
+identical arguments must return *identical* objects. Specifically, for all
+values of ``key``, the following assertion must always be valid [b]_::
+
+    a = ZoneInfo(key)
+    b = ZoneInfo(key)
+    assert a is b
+
+The reason for this comes from the fact that the semantics of datetime
+operations (e.g. comparison, arithmetic) depend on whether the datetimes
+involved represent the same or different zones; two datetimes are in the same
+zone only if ``dt1.tzinfo is dt2.tzinfo``. [#nontransitive_comp]_ In addition
+to the modest performance benefit from avoiding unnecessary proliferation of
+``ZoneInfo`` objects, providing this guarantee should minimize surprising
+behavior for end users.
+
+|dateutil.tz.gettz| has provided a similar guarantee since version 2.7.0
+(release March 2018). [#dateutil-tz]_
+
+.. |dateutil.tz.gettz| replace:: ``dateutil.tz.gettz``
+.. _dateutil.tz.gettz: https://dateutil.readthedocs.io/en/stable/tz.html#dateutil.tz.gettz
+
+.. note::
+
+    The implementation may decide how to implement the cache behavior, but the
+    guarantee made here only requires that as long as two references exist to
+    the result of identical constructor calls, they must be references to the
+    same object. This is consistent with a reference counted cache where
+    ``ZoneInfo`` objects are ejected when no references to them exist (for
+    example, a cache implemented with a ``weakref.WeakValueDictionary``) — it is
+    allowed but not required or recommended to implement this with a "strong"
+    cache, where all ``ZoneInfo`` objects are kept alive indefinitely.
+
+.. code-block::
+
+    ZoneInfo.no_cache(key: str)
+
+This is an alternate constructor that bypasses the constructor's cache.  It is
+identical to the primary constructor, but returns a new object on each call.
+This is likely most useful for testing purposes, or to deliberately induce
+"different zone" semantics between datetimes with the same nominal time zone.
+
+Even if an object constructed by this method would have been a cache miss, it
+must not be entered into the cache; in other words, the following assertion
+should always be true:
+
+.. code-block::
+
+    >>> a = ZoneInfo.no_cache(key)
+    >>> b = ZoneInfo(key)
+    >>> a is not b
+
+.. code-block::
+
+    ZoneInfo.from_file(fobj: IO[bytes], /, key: str = None)
+
+This is an alternate constructor that allows the construction of a ``ZoneInfo``
+object from any TZif byte stream.  This constructor takes an optional
+parameter, ``key``, which sets the name of the zone, for the purposes of
+``__str__`` and ``__repr__`` (see Representations_).
+
+Unlike the primary constructor, this always constructs a new object.  There are
+two reasons that this deviates from the primary constructor's caching behavior:
+stream objects have mutable state and so determining whether two inputs are
+identical is difficult or impossible, and it is likely that users constructing
+from a file specifically want to load from that file and not a cache.
+
+As with ``ZoneInfo.no_cache``, objects constructed by this method must not be
+added to the cache.
+
+Behavior during data updates
+############################
+
+It is important that a given ``ZoneInfo`` object's behavior not change during
+its lifetime, because a ``datetime``'s ``utcoffset()`` method is used in both
+its equality and hash calculations, and if the result were to change during the
+``datetime``'s lifetime, it could break the invariant for all hashable objects
+[#hashable_def]_ [#hashes_equality]_  that if ``x == y``, it must also be true
+that ``hash(x) == hash(y)`` [c]_ .
+
+Considering both the preservation of ``datetime``'s invariants and the
+primary constructor's contract to always return the same object when called
+with identical arguments, if a source of time zone data is updated during a run
+of the interpreter, it must not invalidate any caches or modify any
+existing ``ZoneInfo`` objects. Newly constructed ``ZoneInfo`` objects, however,
+should come from the updated data source.
+
+This means that the point at which the data source is updated for new 
+invocations of the ``ZoneInfo`` constructor depends primarily on the semantics
+of the caching behavior. The only guaranteed way to get a ``ZoneInfo`` object
+from an updated data source is to induce a cache miss, either by bypassing the
+cache and using ``ZoneInfo.no_cache`` or by clearing the cache.
+
+.. note::
+
+    The specified cache behavior does not require that the cache be lazily
+    populated — it is consistent with the specification (though not
+    recommended) to eagerly pre-populate the cache with time zones that have
+    never been constructed.
+
+Deliberate cache invalidation
+#############################
+
+In addition to ``ZoneInfo.no_cache``, which allows a user to *bypass* the
+cache, ``ZoneInfo`` also exposes a ``clear_cache`` method to deliberately
+invalidate either the entire cache or selective portions of the cache::
+
+    ZoneInfo.clear_cache(*, only_keys: Iterable[str]=None) -> None
+
+If no arguments are passed, all caches are invalidated and the first call for
+each key to the primary ``ZoneInfo`` constructor after the cache has been
+cleared will return a new instance.
+
+.. code-block::
+
+     >>> NYC0 = ZoneInfo("America/New_York")
+     >>> NYC0 is ZoneInfo("America/New_York")
+     True
+     >>> ZoneInfo.clear_cache()
+     >>> NYC1 = ZoneInfo("America/New_York")
+     >>> NYC0 is NYC1
+     False
+     >>> NYC1 is ZoneInfo("America/New_York")
+     True
+
+An optional parameter, ``only_keys``, takes an iterable of keys to clear from
+the cache, otherwise leaving the cache intact.
+
+.. code-block::
+
+    >>> NYC0 = ZoneInfo("America/New_York")
+    >>> LA0 = ZoneInfo("America/Los_Angeles")
+    >>> ZoneInfo.clear_cache(only_keys=["America/New_York"])
+    >>> NYC1 = ZoneInfo("America/New_York")
+    >>> LA0 = ZoneInfo("America/Los_Angeles")
+    >>> NYC0 is NYC1
+    False
+    >>> LA0 is LA1
+    True
+
+Manipulation of the cache behavior is expected to be a niche use case; this
+function is primarily provided to facilitate testing, and to allow users with
+unusual requirements to tune the cache invalidation behavior to their needs.
+
+.. _Representations:
+
+String representation
+#####################
+
+The ``ZoneInfo`` class's ``__str__`` representation will be drawn from the
+``key`` parameter. This is partially because the ``key`` represents a
+human-readable "name" of the string, but also because it is a useful parameter
+that users will want exposed. It is necessary to provide a mechanism to expose
+the key for serialization between languages and because it is also a primary
+key for localization projects like CLDR (the Unicode Common Locale Data
+Repository [#cldr]_).
+
+An example:
+
+.. code-block::
+
+    >>> zone = ZoneInfo("Pacific/Kwajalein")
+    >>> str(zone)
+    'Pacific/Kwajalein'
+
+    >>> dt = datetime(2020, 4, 1, 3, 15, tzinfo=zone)
+    >>> f"{dt.isoformat()} [{dt.tzinfo}]"
+    '2020-04-01T03:15:00+12:00 [Pacific/Kwajalein]'
+
+
+When a ``key`` is not specified, the ``str`` operation should not fail, but
+should return the objects's ``__repr__``::
+
+    >>> zone = ZoneInfo.from_file(f)
+    >>> str(zone)
+    'ZoneInfo.from_file(<_io.BytesIO object at ...>)'
+
+The ``__repr__`` for a ``ZoneInfo`` is implementation-defined and not
+necessarily stable between versions, but it must not be a valid ``ZoneInfo``
+key, to avoid confusion between a key-derived ``ZoneInfo`` with a valid
+``__str__`` and a file-derived ``ZoneInfo`` which has fallen through to the
+``__repr__``.
+
+Since the use of ``str()`` to access the key provides no easy way to check
+for the *presence* of a key (the only way is to try constructing a ``ZoneInfo``
+from it and detect whether it raises an exception), ``ZoneInfo`` objects will
+also expose a read-only ``key`` attribute, which will be ``None`` in the event
+that no key was supplied.
+
+Pickle serialization
+####################
+
+Rather than serializing all transition data, ``ZoneInfo`` objects will be
+serialized by key, and ``ZoneInfo`` objects constructed from raw files (even
+those with a value for ``key`` specified) cannot be pickled.
+
+The behavior of a ``ZoneInfo`` object depends on how it was constructed:
+
+1. ``ZoneInfo(key)``: When constructed with the primary constructor, a
+   ``ZoneInfo`` object will be serialized by key, and when deserialized the
+   will use the primary constructor in the deserializing process, and thus be
+   expected to be the same object as other references to the same time zone.
+   For example, if ``europe_berlin_pkl`` is a string containing a pickle
+   constructed from ``ZoneInfo("Europe/Berlin")``, one would expect the
+   following behavior:
+
+   .. code-block::
+
+       >>> a = ZoneInfo("Europe/Berlin")
+       >>> b = pickle.loads(europe_berlin_pkl)
+       >>> a is b
+       True
+
+2. ``ZoneInfo.no_cache(key)``: When constructed from the cache-bypassing
+   constructor, the ``ZoneInfo`` object will still be serialized by key, but
+   when deserialized, it will use the cache bypassing constructor. If
+   ``europe_berlin_pkl_nc`` is a string containing a pickle constructed from
+   ``ZoneInfo.no_cache("Europe/Berlin")``, one would expect the following
+   behavior:
+
+   .. code-block::
+
+       >>> a = ZoneInfo("Europe/Berlin")
+       >>> b = pickle.loads(europe_berlin_pkl_nc)
+       >>> a is b
+       False
+
+3. ``ZoneInfo.from_file(fobj, /, key=None)``: When constructed from a file, the
+   ``ZoneInfo`` object will raise an exception on pickling. If an end user
+   wants to pickle a ``ZoneInfo`` constructed from a file, it is recommended
+   that they use a wrapper type or a custom serialization function: either
+   serializing by key or storing the contents of the file object and
+   serializing that.
+
+This method of serialization requires that the time zone data for the required
+key be available on both the serializing and deserializing side, similar to the
+way that references to classes and functions are expected to exist in both the
+serializing and deserializing environments. It also means that no guarantees
+are made about the consistency of results when unpickling a ``ZoneInfo``
+pickled in an environment with a different version of the time zone data.
+
+.. _data-sources:
+
+Sources for time zone data
+--------------------------
+
+One of the hardest challenges for IANA time zone support is keeping the data up
+to date; between 1997 and 2020, there have been between 3 and 21 releases per
+year, often in response to changes in time zone rules with little to no notice
+(see [#timing-of-tz-changes]_ for more details).  In order to keep up to date,
+and to give the system administrator control over the data source, we propose
+to use system-deployed time zone data wherever possible.  However, not all
+systems ship a publicly accessible time zone database — notably Windows uses a
+different system for managing time zones — and so if available ``zoneinfo``
+falls back to an installable first-party package, ``tzdata``, available on
+PyPI. [d]_  If no system zoneinfo files are found but ``tzdata`` is installed, the
+primary ``ZoneInfo`` constructor will use ``tzdata`` as the time zone source.
+
+System time zone information
+############################
+
+Many Unix-like systems deploy time zone data by default, or provide a canonical
+time zone data package (often called ``tzdata``, as it is on Arch Linux, Fedora,
+and Debian).  Whenever possible, it would be preferable to defer to the system
+time zone information, because this allows time zone information for all
+language stacks to be updated and maintained in one place.  Python distributors
+are encouraged to ensure that time zone data is installed alongside Python
+whenever possible (e.g. by declaring ``tzdata`` as a dependency for the
+``python`` package).
+
+The ``zoneinfo`` module will use a "search path" strategy analogous to the
+``PATH`` environment variable  or the ``sys.path`` variable in Python; the
+``zoneinfo.TZPATH`` variable will be read-only (see search-path-config_ for
+more details), ordered list of time zone data locations to search.  When
+creating a ``ZoneInfo`` instance from a key, the zone file will be constructed
+from the first data source on the path in which the key exists, so for example,
+if ``TZPATH`` were::
+
+    TZPATH = (
+        "/usr/share/zoneinfo",
+        "/etc/zoneinfo"
+        )
+
+and (although this would be very unusual) ``/usr/share/zoneinfo`` contained
+only ``America/New_York`` and ``/etc/zoneinfo`` contained both
+``America/New_York`` and ``Europe/Moscow``, then
+``ZoneInfo("America/New_York")`` would be satisfied by
+``/usr/share/zoneinfo/America/New_York``, while ``ZoneInfo("Europe/Moscow")``
+would be satisfied by ``/etc/zoneinfo/Europe/Moscow``.
+
+At the moment, on Windows systems, the search path will default to empty,
+because Windows does not officially ship a copy of the time zone database.  On
+non-Windows systems, the search path will default to a list of the most
+commonly observed search paths.  Although this is subject to change in future
+versions, at launch the default search path will be::
+
+    TZPATH = (
+        "/usr/share/zoneinfo",
+        "/usr/lib/zoneinfo",
+        "/usr/share/lib/zoneinfo",
+        "/etc/zoneinfo",
+    )
+
+This may be configured both at compile time or at runtime; more information on
+configuration options at search-path-config_.
+
+The ``tzdata`` Python package
+#############################
+
+In order to ensure easy access to time zone data for all end users, this PEP
+proposes to create a data-only package ``tzdata`` as a fallback for when system
+data is not available.  The ``tzdata`` package would be distributed on PyPI as
+a "first party" package [d]_, maintained by the CPython development team.
+
+The ``tzdata`` package contains only data and metadata, with no public-facing
+functions or classes.  It will be designed to be compatible with both newer
+``importlib.resources`` [#importlib_resources]_ access patterns and older
+access patterns like ``pkgutil.get_data`` [#pkgutil_data]_ .
+
+While it is designed explicitly for the use of CPython, the ``tzdata`` package
+is intended as a public package in its own right, and it may be used as an
+"official" source of time zone data for third party Python packages.
+
+.. _search-path-config:
+
+Search path configuration
+-------------------------
+
+The time zone search path is very system-dependent, and sometimes even
+application-dependent, and as such it makes sense to provide options to
+customize it.  This PEP provides for three such avenues for customization:
+
+1. Global configuration via a compile-time option
+2. Per-run configuration via environment variables
+3. Runtime configuration change via a ``reset_tzpath`` function
+
+In all methods of configuration, the search path must consist of only absolute,
+rather than relative paths. Implementations may choose to ignore, warn or raise
+an exception if a string other than an absolute path is found (and may make
+different choices depending on the context — e.g. raising an exception when an
+invalid path is passed to ``reset_tzpath`` but warning  when one is included in
+the environment variable). If an exception is not raised, any strings other
+than an absolute path must not be included in the time zone search path.
+
+Compile-time options
+####################
+
+It is most likely that downstream distributors will know exactly where their
+system time zone data is deployed, and so a compile-time option
+``PYTHONTZPATH`` will be provided to set the default search path.
+
+The ``PYTHONTZPATH`` option should be a string delimited by ``os.pathsep``,
+listing possible locations for the time zone data to be deployed (e.g.
+``/usr/share/zoneinfo``).
+
+Environment variables
+#####################
+
+When initializing ``TZPATH`` (and whenever ``reset_tzpath`` is called with no
+arguments), the ``zoneinfo`` module will use the environment variable
+``PYTHONTZPATH``, if it exists, to set the search path.
+
+``PYTHONTZPATH`` is an ``os.pathsep``-delimited string which *replaces* (rather
+than augments) the default time zone path. Some examples of the proposed
+semantics::
+
+    $ python print_tzpath.py
+    ("/usr/share/zoneinfo",
+     "/usr/lib/zoneinfo",
+     "/usr/share/lib/zoneinfo",
+     "/etc/zoneinfo")
+
+    $ PYTHONTZPATH="/etc/zoneinfo:/usr/share/zoneinfo" python print_tzpath.py
+    ("/etc/zoneinfo",
+     "/usr/share/zoneinfo")
+
+    $ PYTHONTZPATH="" python print_tzpath.py
+    ()
+
+This provides no built-in mechanism for prepending or appending to the default
+search path, as these use cases are likely to be somewhat more niche. It should
+be possible to populate an environment variable with the default search path
+fairly easily::
+
+    $ export DEFAULT_TZPATH=$(python -c \
+        "import os, zoneinfo; print(os.pathsep.join(zoneinfo.TZPATH))")
+
+``reset_tzpath`` function
+#########################
+
+``zoneinfo`` provides a ``reset_tzpath`` function that allows for changing the
+search path at runtime.
+
+.. code-block::
+
+    def reset_tzpath(
+        to: Optional[Sequence[Union[str, os.PathLike]]] = None
+    ) -> None:
+        ...
+
+When called with a sequence of paths, this function sets ``zoneinfo.TZPATH`` to
+a tuple constructed from the desired value.  When called with no arguments or
+``None``, this function resets ``zoneinfo.TZPATH`` to the default
+configuration.
+
+This is likely to be primarily useful for (permanently or temporarily)
+disabling the use of system time zone paths and forcing the module to use the
+``tzdata`` package.  It is not likely that ``reset_tzpath`` will be a common
+operation, save perhaps in test functions sensitive to time zone configuration,
+but it seems preferable to provide an official mechanism for changing this
+rather than allowing a proliferation of hacks around the immutability of
+``TZPATH``.
+
+.. caution::
+
+    Although changing ``TZPATH`` during a run is a supported operation, users
+    should be advised that doing so may occasionally lead to unusual semantics,
+    and when making design trade-offs greater weight will be afforded to using
+    a static ``TZPATH``, which is the much more common use case.
+
+As noted in Constructors_, the primary ``ZoneInfo`` constructor employs a cache
+to ensure that two identically-constructed ``ZoneInfo`` objects always compare
+as identical (i.e. ``ZoneInfo(key) is ZoneInfo(key)``), and the nature of this
+cache is implementation-defined.  This means that the behavior of the
+``ZoneInfo`` constructor may be unpredictably inconsistent in some situations
+when used with the same ``key`` under different values of ``TZPATH``. For
+example::
+
+    >>> reset_tzpath(to=["/my/custom/tzdb"])
+    >>> a = ZoneInfo("My/Custom/Zone")
+    >>> reset_tzpath()
+    >>> b = ZoneInfo("My/Custom/Zone")
+    >>> del a
+    >>> del b
+    >>> c = ZoneInfo("My/Custom/Zone")
+
+In this example, ``My/Custom/Zone`` exists only in the ``/my/custom/tzdb`` and
+not on the default search path.  In all implementations the constructor for
+``a`` must succeed.  It is implementation-defined whether the constructor for
+``b`` succeeds, but if it does, it must be true that ``a is b``, because both
+``a`` and ``b`` are references to the same key. It is also
+implementation-defined whether the constructor for ``c`` succeeds.
+Implementations of ``zoneinfo`` *may* return the object constructed in previous
+constructor calls, or they may fail with an exception.
+
+Backwards Compatibility
+=======================
+
+This will have no backwards compatibility issues as it will create a new API.
+
+With only minor modification, a backport with support for Python 3.6+ of the
+``zoneinfo`` module could be created.
+
+The ``tzdata`` package is designed to be "data only", and should support any
+version of Python that it can be built for (including Python 2.7).
+
+
+Security Implications
+=====================
+
+This will require parsing zoneinfo data from disk, mostly from system locations
+but potentially from user-supplied data.  Errors in the implementation
+(particularly the C code) could cause potential security issues, but there is
+no special risk relative to parsing other file types.
+
+Because the time zone data keys are essentially paths relative to some time
+zone root, implementations should take care to avoid path traversal attacks.
+Requesting keys such as ``../../../path/to/something`` should not reveal
+anything about the state of the file system outside of the time zone path.
+
+Reference Implementation
+========================
+
+An initial reference implementation is available at
+https://github.com/pganssle/zoneinfo
+
+This may eventually be converted into a backport for 3.6+.
+
+Rejected Ideas
+==============
+
+Building a custom tzdb compiler
+-------------------------------
+
+One major concern with the use of the TZif format is that it does not actually
+contain enough information to always correctly determine the value to return
+for ``tzinfo.dst()``.  This is because for any given time zone offset, TZif
+only marks the UTC offset and whether or not it represents a DST offset, but
+``tzinfo.dst()`` returns the total amount of the DST shift, so that the
+"standard" offset can be reconstructed from ``datetime.utcoffset() -
+datetime.dst()``.  The value to use for ``dst()`` can be determined by finding
+the equivalent STD offset and calculating the difference, but the TZif format
+does not specify which offsets form STD/DST pairs, and so heuristics must be
+used to determine this.
+
+One common heuristic — looking at the most recent standard offset — notably
+fails in the case of the time zone changes in Portugal in 1992 and 1996, where
+the "standard" offset was shifted by 1 hour during a DST transition, leading to
+a transition from STD to DST status with no change in offset.  In fact, it is
+possible (though it has never happened) for a time zone to be created that is
+permanently DST and has no standard offsets.
+
+Although this information is missing in the compiled TZif binaries, it is
+present in the raw tzdb files, and it would be possible to parse this
+information ourselves and create a more suitable binary format.
+
+This idea was rejected for several reasons:
+
+1. It precludes the use of any system-deployed time zone information, which is
+   usually present only in TZif format.
+
+2. The raw tzdb format, while stable, is *less* stable than the TZif format;
+   some downstream tzdb parsers have already run into problems with old
+   deployments of their custom parsers becoming incompatible with recent tzdb
+   releases, leading to the creation of a "rearguard" format to ease the
+   transition. [#rearguard]_
+
+3. Heuristics currently suffice in ``dateutil`` and ``pytz`` for all known time
+   zones, historical and present, and it is not very likely that new time zones
+   will appear that cannot be captured by heuristics — though it is somewhat
+   more likely that new rules that are not captured by the *current* generation
+   of heuristics will appear; in that case, bugfixes would be required to
+   accommodate the changed situation.
+
+4. The ``dst()`` method's utility (and in fact the ``isdst`` parameter in TZif)
+   is somewhat questionable to start with, as almost all the useful information
+   is contained in the ``utcoffset()`` and ``tzname()`` methods, which are not
+   subject to the same problems.
+
+In short, maintaining a custom tzdb compiler or compiled package adds
+maintenance burdens to both the CPython dev team and system administrators, and
+its main benefit is to address a hypothetical failure that would likely have
+minimal real world effects were it to occur.
+
+.. _why-no-default-tzdata:
+
+Including ``tzdata`` in the standard library by default
+-------------------------------------------------------
+
+Although PEP 453 [#pep453-ensurepip]_, which introduced the ``ensurepip``
+mechanism to CPython, provides a convenient template for a standard library
+module maintained on PyPI, a potentially similar ``ensuretzdata`` mechanism is
+somewhat less necessary, and would be complicated enough that it is considered
+out of scope for this PEP.
+
+Because the ``zoneinfo`` module is designed to use the system time zone data
+wherever possible, the ``tzdata`` package is unnecessary (and may be
+undesirable) on systems that deploy time zone data, and so it does not seem
+critical to ship ``tzdata`` with CPython.
+
+It is also not yet clear how these hybrid standard library / PyPI modules
+should be updated, (other than ``pip``, which has a natural mechanism for
+updates and notifications) and since it is not critical to the operation of the
+module, it seems prudent to defer any such proposal.
+
+Support for leap seconds
+------------------------
+
+In addition to time zone offset and name rules, the IANA time zone database
+also provides a source of leap second data. This is deemed out of scope because
+``datetime.datetime`` currently has no support for leap seconds, and the
+question of leap second data can be deferred until leap second support is
+added.
+
+The first-party ``tzdata`` package should ship the leap second data, even if it
+is not used by the ``zoneinfo`` module.
+
+Using a ``pytz``-like interface
+-------------------------------
+
+A ``pytz``-like ([#pytz]_) interface was proposed in PEP 431 [#pep431]_, but
+was ultimately withdrawn / rejected for lack of ambiguous datetime support.
+PEP 495 [#pep495]_ added the ``fold`` attribute to address this problem, but
+``fold`` obviates the need for ``pytz``'s non-standard ``tzinfo`` classes, and
+so a ``pytz``-like interface is no longer necessary. [#fastest-footgun]_
+
+The ``zoneinfo`` approach is more closely based on ``dateutil.tz``, which
+implemented support for ``fold`` (including a backport to older versions) just
+before the release of Python 3.6.
+
+Windows support via Microsoft's ICU API
+---------------------------------------
+
+Windows does not ship the time zone database as TZif files, but as of Windows
+10's 2017 Creators Update, Microsoft has provided an API for interacting with
+the International Components for Unicode (ICU) project [#icu-project]_
+[#ms-icu-documentation]_ , which includes an API for accessing time zone data —
+sourced from the IANA time zone database. [#icu-timezone-api]_
+
+Providing bindings for this would allow us to support Windows "out of the box"
+without the need to install the ``tzdata`` package, but unfortunately the C
+headers provided by Windows do not provide any access to the underlying time
+zone data — only an API to query the system for transition and offset
+information is available. This would constrain the semantics of any ICU-based
+implementation in ways that may not be compatible with a non-ICU-based
+implementation — particularly around the behavior of the cache.
+
+Since it seems like ICU cannot be used as simply an additional data source for
+``ZoneInfo`` objects, this PEP considers the ICU support to be out of scope, and
+probably better supported by a third-party library.
+
+Alternative environment variable configurations
+-----------------------------------------------
+
+This PEP proposes to use a single environment variable: ``PYTHONTZPATH``.
+This is based on the assumption that the majority of users who would want to
+manipulate the time zone path would want to fully replace it (e.g. "I know
+exactly where my time zone data is"), and other use cases like prepending to
+the existing search path would be less common.
+
+There are several other schemes that were considered and rejected:
+
+1. Separate ``PYTHON_TZPATH`` into two environment variables:
+   ``DEFAULT_PYTHONTZPATH`` and ``PYTHONTZPATH``, where ``PYTHONTZPATH`` would
+   contain values to append (or prepend) to the default time zone path, and
+   ``DEFAULT_PYTHONTZPATH`` would *replace* the default time zone path. This
+   was rejected because it would likely lead to user confusion if the primary
+   use case is to replace rather than augment.
+
+2. Adding either ``PYTHONTZPATH_PREPEND``, ``PYTHONTZPATH_APPEND`` or both, so
+   that users can augment the search path on either end without attempting to
+   determine what the default time zone path is. This was rejected as likely to
+   be unnecessary, and because it could easily be added in a
+   backwards-compatible manner in future updates if there is much demand for
+   such a feature.
+
+3. Use only the ``PYTHONTZPATH`` variable, but provide a custom special value
+   that represents the default time zone path, e.g. ``<<DEFAULT_TZPATH>>``, so
+   users could append to the time zone path with, e.g.
+   ``PYTHONTZPATH=<<DEFAULT_TZPATH>>:/my/path`` could be used to append
+   ``/my/path`` to the end of the time zone path.
+
+   One advantage to this scheme would be that it would add a natural extension
+   point for specifying non-file-based elements on the search path, such as
+   changing the priority of ``tzdata`` if it exists, or if native support for
+   TZDIST [#rfc7808]_ were to be added to the library in the future.
+
+   This was rejected mainly because these sort of special values are not
+   usually found in ``PATH``-like variables and the only currently proposed use
+   case is a stand-in for the default ``TZPATH``, which can be acquired by
+   executing a Python program to query for the default value. An additional
+   factor in rejecting this is that because ``PYTHONTZPATH`` accepts only
+   absolute paths, any string that does not represent a valid absolute path is
+   implicitly reserved for future use, so it would be possible to introduce
+   these special values as necessary in a backwards-compatible way in future
+   versions of the library.
+
+Using the ``datetime`` module
+-----------------------------
+
+One possible idea would be to add ``ZoneInfo`` to the ``datetime`` module,
+rather than giving it its own separate module. This PEP favors the use of
+a separate ``zoneinfo`` module,though a nested ``datetime.zoneinfo`` module
+was also under consideration.
+
+Arguments against putting ``ZoneInfo`` directly into ``datetime``
+#################################################################
+
+The ``datetime`` module is already somewhat crowded, as it has many classes
+with somewhat complex behavior — ``datetime.datetime``, ``datetime.date``,
+``datetime.time``, ``datetime.timedelta``, ``datetime.timezone`` and
+``datetime.tzinfo``.  The module's implementation and documentation are already
+quite complicated, and it is probably beneficial to try to not to compound the
+problem if it can be helped.
+
+The ``ZoneInfo`` class is also in some ways different from all the other
+classes provided by ``datetime``; the other classes are all intended to be
+lean, simple data types, whereas the ``ZoneInfo`` class is more complex: it is
+a parser for a specific format (TZif), a representation for the information
+stored in that format and a mechanism to look up the information in well-known
+locations in the system.
+
+Finally, while it is true that someone who needs the ``zoneinfo`` module also
+needs the ``datetime`` module, the reverse is not necessarily true: many people
+will want to use ``datetime`` without ``zoneinfo``.  Considering that
+``zoneinfo`` will likely pull in additional, possibly more heavy-weight
+standard library modules, it would be preferable to allow the two to be
+imported separately — particularly if potential "tree shaking" distributions
+are in Python's future. [#tree-shaking]_
+
+In the final analysis, it makes sense to keep ``zoneinfo`` a separate module
+with a separate documentation page rather than to put its classes and functions
+directly into ``datetime``.
+
+Using ``datetime.zoneinfo`` instead of ``zoneinfo``
+###################################################
+
+A more palatable configuration may be to nest ``zoneinfo`` as a module under
+``datetime``, as ``datetime.zoneinfo``.
+
+Arguments in favor of this:
+
+1. It neatly namespaces ``zoneinfo`` together with ``datetime``
+
+2. The ``timezone`` class is already in ``datetime``, and it may seem strange
+   that some time zones are in ``datetime`` and others are in a top-level
+   module.
+
+3. As mentioned earlier, importing ``zoneinfo`` necessarily requires importing
+   ``datetime``, so it is no imposition to require importing the parent module.
+
+Arguments against this:
+
+1. In order to avoid forcing all ``datetime`` users to import ``zoneinfo``, the
+   ``zoneinfo`` module would need to be lazily imported, which means that
+   end-users would need to explicitly import ``datetime.zoneinfo`` (as opposed
+   to importing ``datetime`` and accessing the ``zoneinfo`` attribute on the
+   module). This is the way ``dateutil`` works (all submodules are lazily
+   imported), and it is a perennial source of confusion for end users.
+
+   This confusing requirement from end-users can be avoided using a
+   module-level ``__getattr__`` and ``__dir__`` per PEP 562, but this would
+   add some complexity to the implementation of the ``datetime`` module. This
+   sort of behavior in modules or classes tends to confuse static analysis
+   tools, which may not be desirable for a library as widely used and critical
+   as ``datetime``.
+
+2. Nesting the implementation under ``datetime`` would likely require
+   ``datetime`` to be reorganized from a single-file module (``datetime.py``)
+   to a directory with an ``__init__.py``.  This is a minor concern, but the
+   structure of the ``datetime`` module has been stable for many years, and it
+   would be preferable to avoid churn if possible.
+
+   This concern *could* be alleviated by implementing ``zoneinfo`` as
+   ``_zoneinfo.py`` and importing it as ``zoneinfo`` from within ``datetime``,
+   but this does not seem desirable from an aesthetic or code organization
+   standpoint, and it would preclude the version of nesting where end users are
+   required to explicitly import ``datetime.zoneinfo``.
+
+This PEP takes the position that on balance it would be best to use a separate
+top-level ``zoneinfo`` module because the benefits of nesting are not so great
+that it overwhelms the practical implementation concerns.
+
+Footnotes
+=========
+
+.. [a]
+    The claim that the vast majority of users only want a few types of time
+    zone is based on anecdotal impressions rather than anything remotely
+    scientific.  As one data point, ``dateutil`` provides many time zone types,
+    but user support mostly focuses on these three types.
+
+.. [b]
+    The statement that identically constructed ``ZoneInfo`` objects should be
+    identical objects may be violated if the user deliberately clears the time
+    zone cache.
+
+.. [c]
+    The hash value for a given ``datetime`` is cached on first calculation, so
+    we do not need to worry about the possibly more serious issue that a given
+    ``datetime`` object's hash would change during its lifetime.
+
+.. [d]
+    The term "first party" here is distinguished from "third party" in that,
+    although it is distributed via PyPI and is not currently included in
+    Python by default, it is to be considered an official sub-project of
+    CPython rather than a "blessed" third-party package.
+
+References
+==========
+
+.. [#rfc6557]
+    RFC 6557: Procedures for Maintaining the Time Zone Database
+    https://tools.ietf.org/html/rfc6557
+
+.. [#rfc7808]
+    RFC 7808: Time Zone Data Distribution Service
+    https://tools.ietf.org/html/rfc7808
+
+.. [#rfc8536]
+    RFC 8536: The Time Zone Information Format (TZif)
+    https://tools.ietf.org/html/rfc8536
+
+.. [#nontransitive_comp]
+    Paul Ganssle: "A curious case of non-transitive datetime comparison"
+    (Published 15 February 2018)
+    https://blog.ganssle.io/articles/2018/02/a-curious-case-datetimes.html
+
+.. [#fastest-footgun]
+    Paul Ganssle: "pytz: The Fastest Footgun in the West" (Published 19 March
+    2018) https://blog.ganssle.io/articles/2018/03/pytz-fastest-footgun.html
+
+.. [#hashable_def]
+    Python documentation: "Glossary" (Version 3.8.2)
+    https://docs.python.org/3/glossary.html#term-hashable
+
+.. [#hashes_equality]
+    Hynek Schlawack: "Python Hashes and Equality" (Published 20 November 2017)
+    https://hynek.me/articles/hashes-and-equality/
+
+.. [#cldr]
+    CLDR: Unicode Common Locale Data Repository
+    http://cldr.unicode.org/#TOC-How-to-Use-
+
+.. [#tzdb-wiki]
+    Wikipedia page for Tz database:
+    https://en.wikipedia.org/wiki/Tz_database
+
+.. [#timing-of-tz-changes]
+    Code of Matt: "On the Timing of Time Zone Changes" (Matt Johnson-Pint, 23
+    April 2016) https://codeofmatt.com/on-the-timing-of-time-zone-changes/
+
+.. [#rearguard]
+    tz mailing list: [PROPOSED] Support zi parsers that mishandle negative DST
+    offsets (Paul Eggert, 23 April 2018)
+    https://mm.icann.org/pipermail/tz/2018-April/026421.html
+
+.. [#tree-shaking]
+    "Russell Keith-Magee: Python On Other Platforms" (15 May 2019, Jesse Jiryu
+    Davis)
+    https://pyfound.blogspot.com/2019/05/russell-keith-magee-python-on-other.html
+
+.. [#pep453-ensurepip]
+    PEP 453: Explicit bootstrapping of pip in Python installations
+    https://www.python.org/dev/peps/pep-0453/
+
+.. [#pep431]
+    PEP 431: Time zone support improvements
+    https://www.python.org/dev/peps/pep-0431/
+
+.. [#pep495]
+    PEP 495: Local Time Disambiguation
+    https://www.python.org/dev/peps/pep-0495/
+
+.. [#tzinfo]
+    ``datetime.tzinfo`` documentation
+    https://docs.python.org/3/library/datetime.html#datetime.tzinfo
+
+.. [#importlib_resources]
+    ``importlib.resources`` documentation
+    https://docs.python.org/3/library/importlib.html#module-importlib.resources
+
+.. [#pkgutil_data]
+    ``pkgutil.get_data`` documentation
+    https://docs.python.org/3/library/pkgutil.html#pkgutil.get_data
+
+.. [#icu-project]
+    ICU TimeZone classes
+    http://userguide.icu-project.org/datetime/timezone
+
+.. [#ms-icu-documentation]
+    Microsoft documentation for International Components for Unicode (ICU)
+    `https://docs.microsoft.com/en-us/windows/win32/intl/international-components-for-unicode--icu- <https://docs.microsoft.com/en-us/windows/win32/intl/international-components-for-unicode--icu->`_
+
+.. [#icu-timezone-api]
+    ``icu::TimeZone`` class documentation
+    https://unicode-org.github.io/icu-docs/apidoc/released/icu4c/classicu_1_1TimeZone.html
+
+
+Other time zone implementations:
+--------------------------------
+
+.. [#dateutil-tz]
+    ``dateutil.tz``
+    https://dateutil.readthedocs.io/en/stable/tz.html
+
+.. [#dateutil-tzwin]
+    ``dateutil.tz.win``: Concrete time zone implementations wrapping Windows
+    time zones
+    https://dateutil.readthedocs.io/en/stable/tzwin.html
+
+.. [#pytz]
+    ``pytz``
+    http://pytz.sourceforge.net/
+
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
+
+
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   coding: utf-8
+   End:

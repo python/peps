@@ -1,0 +1,905 @@
+PEP: 567
+Title: Context Variables
+Version: $Revision$
+Last-Modified: $Date$
+Author: Yury Selivanov <yury@edgedb.com>
+Status: Final
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 12-Dec-2017
+Python-Version: 3.7
+Post-History: 12-Dec-2017, 28-Dec-2017, 16-Jan-2018
+
+
+Abstract
+========
+
+This PEP proposes a new ``contextvars`` module and a set of new
+CPython C APIs to support context variables.  This concept is
+similar to thread-local storage (TLS), but, unlike TLS, it also allows
+correctly keeping track of values per asynchronous task, e.g.
+``asyncio.Task``.
+
+This proposal is a simplified version of :pep:`550`.  The key
+difference is that this PEP is concerned only with solving the case
+for asynchronous tasks, not for generators.  There are no proposed
+modifications to any built-in types or to the interpreter.
+
+This proposal is not strictly related to Python Context Managers.
+Although it does provide a mechanism that can be used by Context
+Managers to store their state.
+
+
+API Design and Implementation Revisions
+=======================================
+
+In **Python 3.7.1** the signatures of all context variables
+C APIs were **changed** to use ``PyObject *`` pointers instead
+of ``PyContext *``, ``PyContextVar *``, and ``PyContextToken *``,
+e.g.::
+
+    // in 3.7.0:
+    PyContext *PyContext_New(void);
+
+    // in 3.7.1+:
+    PyObject *PyContext_New(void);
+
+See [6]_ for more details.  The `C API`_ section of this PEP was
+updated to reflect the change.
+
+
+Rationale
+=========
+
+Thread-local variables are insufficient for asynchronous tasks that
+execute concurrently in the same OS thread.  Any context manager that
+saves and restores a context value using ``threading.local()`` will
+have its context values bleed to other code unexpectedly when used
+in async/await code.
+
+A few examples where having a working context local storage for
+asynchronous code is desirable:
+
+* Context managers like ``decimal`` contexts and ``numpy.errstate``.
+
+* Request-related data, such as security tokens and request
+  data in web applications, language context for ``gettext``, etc.
+
+* Profiling, tracing, and logging in large code bases.
+
+
+Introduction
+============
+
+The PEP proposes a new mechanism for managing context variables.
+The key classes involved in this mechanism are ``contextvars.Context``
+and ``contextvars.ContextVar``.  The PEP also proposes some policies
+for using the mechanism around asynchronous tasks.
+
+The proposed mechanism for accessing context variables uses the
+``ContextVar`` class.  A module (such as ``decimal``) that wishes to
+use the new mechanism should:
+
+* declare a module-global variable holding a ``ContextVar`` to
+  serve as a key;
+
+* access the current value via the ``get()`` method on the
+  key variable;
+
+* modify the current value via the ``set()`` method on the
+  key variable.
+
+The notion of "current value" deserves special consideration:
+different asynchronous tasks that exist and execute concurrently
+may have different values for the same key.  This idea is well known
+from thread-local storage but in this case the locality of the value is
+not necessarily bound to a thread.  Instead, there is the notion of the
+"current ``Context``" which is stored in thread-local storage.
+Manipulation of the current context is the responsibility of the
+task framework, e.g. asyncio.
+
+A ``Context`` is a mapping of ``ContextVar`` objects to their values.
+The ``Context`` itself exposes the ``abc.Mapping`` interface
+(not ``abc.MutableMapping``!), so it cannot be modified directly.
+To set a new value for a context variable in a ``Context`` object,
+the user needs to:
+
+* make the ``Context`` object "current" using the ``Context.run()``
+  method;
+
+* use ``ContextVar.set()`` to set a new value for the context
+  variable.
+
+The ``ContextVar.get()`` method looks for the variable in the current
+``Context`` object using ``self`` as a key.
+
+It is not possible to get a direct reference to the current ``Context``
+object, but it is possible to obtain a shallow copy of it using the
+``contextvars.copy_context()`` function.  This ensures that the
+*caller* of ``Context.run()`` is the sole owner of its ``Context``
+object.
+
+
+Specification
+=============
+
+A new standard library module ``contextvars`` is added with the
+following APIs:
+
+1. The ``copy_context() -> Context`` function is used to get a copy of
+   the current ``Context`` object for the current OS thread.
+
+2. The ``ContextVar`` class to declare and access context variables.
+
+3. The ``Context`` class encapsulates context state.  Every OS thread
+   stores a reference to its current ``Context`` instance.
+   It is not possible to control that reference directly.
+   Instead, the ``Context.run(callable, *args, **kwargs)`` method is
+   used to run Python code in another context.
+
+
+contextvars.ContextVar
+----------------------
+
+The ``ContextVar`` class has the following constructor signature:
+``ContextVar(name, *, default=_NO_DEFAULT)``.  The ``name`` parameter
+is used for introspection and debug purposes, and is exposed
+as a read-only ``ContextVar.name`` attribute.  The ``default``
+parameter is optional.  Example::
+
+    # Declare a context variable 'var' with the default value 42.
+    var = ContextVar('var', default=42)
+
+(The ``_NO_DEFAULT`` is an internal sentinel object used to
+detect if the default value was provided.)
+
+``ContextVar.get(default=_NO_DEFAULT)`` returns a value for
+the context variable for the current ``Context``::
+
+    # Get the value of `var`.
+    var.get()
+
+If there is no value for the variable in the current context,
+``ContextVar.get()`` will:
+
+* return the value of the *default* argument of the ``get()`` method,
+  if provided; or
+
+* return the default value for the context variable, if provided; or
+
+* raise a ``LookupError``.
+
+``ContextVar.set(value) -> Token`` is used to set a new value for
+the context variable in the current ``Context``::
+
+    # Set the variable 'var' to 1 in the current context.
+    var.set(1)
+
+``ContextVar.reset(token)`` is used to reset the variable in the
+current context to the value it had before the ``set()`` operation
+that created the ``token`` (or to remove the variable if it was
+not set)::
+
+    # Assume: var.get(None) is None
+
+    # Set 'var' to 1:
+    token = var.set(1)
+    try:
+        # var.get() == 1
+    finally:
+        var.reset(token)
+
+    # After reset: var.get(None) is None,
+    # i.e. 'var' was removed from the current context.
+
+The ``ContextVar.reset()`` method raises:
+
+* a ``ValueError`` if it is called with a token object created
+  by another variable;
+
+* a ``ValueError`` if the current ``Context`` object does not match
+  the one where the token object was created;
+
+* a ``RuntimeError`` if the token object has already been used once
+  to reset the variable.
+
+
+contextvars.Token
+-----------------
+
+``contextvars.Token`` is an opaque object that should be used to
+restore the ``ContextVar`` to its previous value, or to remove it from
+the context if the variable was not set before.  It can be created
+only by calling ``ContextVar.set()``.
+
+For debug and introspection purposes it has:
+
+* a read-only attribute ``Token.var`` pointing to the variable
+  that created the token;
+
+* a read-only attribute ``Token.old_value`` set to the value the
+  variable had before the ``set()`` call, or to ``Token.MISSING``
+  if the variable wasn't set before.
+
+
+contextvars.Context
+-------------------
+
+``Context`` object is a mapping of context variables to values.
+
+``Context()`` creates an empty context.  To get a copy of the current
+``Context`` for the current OS thread, use the
+``contextvars.copy_context()`` method::
+
+    ctx = contextvars.copy_context()
+
+To run Python code in some ``Context``, use ``Context.run()``
+method::
+
+    ctx.run(function)
+
+Any changes to any context variables that ``function`` causes will
+be contained in the ``ctx`` context::
+
+    var = ContextVar('var')
+    var.set('spam')
+
+    def main():
+        # 'var' was set to 'spam' before
+        # calling 'copy_context()' and 'ctx.run(main)', so:
+        # var.get() == ctx[var] == 'spam'
+
+        var.set('ham')
+
+        # Now, after setting 'var' to 'ham':
+        # var.get() == ctx[var] == 'ham'
+
+    ctx = copy_context()
+
+    # Any changes that the 'main' function makes to 'var'
+    # will be contained in 'ctx'.
+    ctx.run(main)
+
+    # The 'main()' function was run in the 'ctx' context,
+    # so changes to 'var' are contained in it:
+    # ctx[var] == 'ham'
+
+    # However, outside of 'ctx', 'var' is still set to 'spam':
+    # var.get() == 'spam'
+
+``Context.run()`` raises a ``RuntimeError`` when called on the same
+context object from more than one OS thread, or when called
+recursively.
+
+``Context.copy()`` returns a shallow copy of the context object.
+
+``Context`` objects implement the ``collections.abc.Mapping`` ABC.
+This can be used to introspect contexts::
+
+    ctx = contextvars.copy_context()
+
+    # Print all context variables and their values in 'ctx':
+    print(ctx.items())
+
+    # Print the value of 'some_variable' in context 'ctx':
+    print(ctx[some_variable])
+
+Note that all Mapping methods, including ``Context.__getitem__`` and
+``Context.get``, ignore default values for context variables
+(i.e. ``ContextVar.default``).  This means that for a variable *var*
+that was created with a default value and was not set in the
+*context*:
+
+* ``context[var]`` raises a ``KeyError``,
+
+* ``var in context`` returns ``False``,
+
+* the variable isn't included in ``context.items()``, etc.
+
+
+asyncio
+-------
+
+``asyncio`` uses ``Loop.call_soon()``, ``Loop.call_later()``,
+and ``Loop.call_at()`` to schedule the asynchronous execution of a
+function.  ``asyncio.Task`` uses ``call_soon()`` to run the
+wrapped coroutine.
+
+We modify ``Loop.call_{at,later,soon}`` and
+``Future.add_done_callback()`` to accept the new optional *context*
+keyword-only argument, which defaults to the current context::
+
+    def call_soon(self, callback, *args, context=None):
+        if context is None:
+            context = contextvars.copy_context()
+
+        # ... some time later
+        context.run(callback, *args)
+
+Tasks in asyncio need to maintain their own context that they inherit
+from the point they were created at.  ``asyncio.Task`` is modified
+as follows::
+
+    class Task:
+        def __init__(self, coro):
+            ...
+            # Get the current context snapshot.
+            self._context = contextvars.copy_context()
+            self._loop.call_soon(self._step, context=self._context)
+
+        def _step(self, exc=None):
+            ...
+            # Every advance of the wrapped coroutine is done in
+            # the task's context.
+            self._loop.call_soon(self._step, context=self._context)
+            ...
+
+
+Implementation
+==============
+
+This section explains high-level implementation details in
+pseudo-code.  Some optimizations are omitted to keep this section
+short and clear.
+
+The ``Context`` mapping is implemented using an immutable dictionary.
+This allows for a O(1) implementation of the ``copy_context()``
+function.  The reference implementation implements the immutable
+dictionary using Hash Array Mapped Tries (HAMT); see :pep:`550`
+for analysis of HAMT performance [1]_.
+
+For the purposes of this section, we implement an immutable dictionary
+using a copy-on-write approach and the built-in dict type::
+
+    class _ContextData:
+
+        def __init__(self):
+            self._mapping = dict()
+
+        def __getitem__(self, key):
+            return self._mapping[key]
+
+        def __contains__(self, key):
+            return key in self._mapping
+
+        def __len__(self):
+            return len(self._mapping)
+
+        def __iter__(self):
+            return iter(self._mapping)
+
+        def set(self, key, value):
+            copy = _ContextData()
+            copy._mapping = self._mapping.copy()
+            copy._mapping[key] = value
+            return copy
+
+        def delete(self, key):
+            copy = _ContextData()
+            copy._mapping = self._mapping.copy()
+            del copy._mapping[key]
+            return copy
+
+Every OS thread has a reference to the current ``Context`` object::
+
+    class PyThreadState:
+        context: Context
+
+``contextvars.Context`` is a wrapper around ``_ContextData``::
+
+    class Context(collections.abc.Mapping):
+
+        _data: _ContextData
+        _prev_context: Optional[Context]
+
+        def __init__(self):
+            self._data = _ContextData()
+            self._prev_context = None
+
+        def run(self, callable, *args, **kwargs):
+            if self._prev_context is not None:
+                raise RuntimeError(
+                    f'cannot enter context: {self} is already entered')
+
+            ts: PyThreadState = PyThreadState_Get()
+            self._prev_context = ts.context
+            try:
+                ts.context = self
+                return callable(*args, **kwargs)
+            finally:
+                ts.context = self._prev_context
+                self._prev_context = None
+
+        def copy(self):
+            new = Context()
+            new._data = self._data
+            return new
+
+        # Implement abstract Mapping.__getitem__
+        def __getitem__(self, var):
+            return self._data[var]
+
+        # Implement abstract Mapping.__contains__
+        def __contains__(self, var):
+            return var in self._data
+
+        # Implement abstract Mapping.__len__
+        def __len__(self):
+            return len(self._data)
+
+        # Implement abstract Mapping.__iter__
+        def __iter__(self):
+            return iter(self._data)
+
+        # The rest of the Mapping methods are implemented
+        # by collections.abc.Mapping.
+
+
+``contextvars.copy_context()`` is implemented as follows::
+
+    def copy_context():
+        ts: PyThreadState = PyThreadState_Get()
+        return ts.context.copy()
+
+``contextvars.ContextVar`` interacts with ``PyThreadState.context``
+directly::
+
+    class ContextVar:
+
+        def __init__(self, name, *, default=_NO_DEFAULT):
+            self._name = name
+            self._default = default
+
+        @property
+        def name(self):
+            return self._name
+
+        def get(self, default=_NO_DEFAULT):
+            ts: PyThreadState = PyThreadState_Get()
+            try:
+                return ts.context[self]
+            except KeyError:
+                pass
+
+            if default is not _NO_DEFAULT:
+                return default
+
+            if self._default is not _NO_DEFAULT:
+                return self._default
+
+            raise LookupError
+
+        def set(self, value):
+            ts: PyThreadState = PyThreadState_Get()
+
+            data: _ContextData = ts.context._data
+            try:
+                old_value = data[self]
+            except KeyError:
+                old_value = Token.MISSING
+
+            updated_data = data.set(self, value)
+            ts.context._data = updated_data
+            return Token(ts.context, self, old_value)
+
+        def reset(self, token):
+            if token._used:
+                raise RuntimeError("Token has already been used once")
+
+            if token._var is not self:
+                raise ValueError(
+                    "Token was created by a different ContextVar")
+
+            ts: PyThreadState = PyThreadState_Get()
+            if token._context is not ts.context:
+                raise ValueError(
+                    "Token was created in a different Context")
+
+            if token._old_value is Token.MISSING:
+                ts.context._data = ts.context._data.delete(token._var)
+            else:
+                ts.context._data = ts.context._data.set(token._var,
+                                                        token._old_value)
+
+            token._used = True
+
+Note that the in the reference implementation, ``ContextVar.get()``
+has an internal cache for the most recent value, which allows to
+bypass a hash lookup.  This is similar to the optimization the
+``decimal`` module implements to retrieve its context from
+``PyThreadState_GetDict()``.  See :pep:`550` which explains the
+implementation of the cache in great detail.
+
+The ``Token`` class is implemented as follows::
+
+    class Token:
+
+        MISSING = object()
+
+        def __init__(self, context, var, old_value):
+            self._context = context
+            self._var = var
+            self._old_value = old_value
+            self._used = False
+
+        @property
+        def var(self):
+            return self._var
+
+        @property
+        def old_value(self):
+            return self._old_value
+
+
+Summary of the New APIs
+=======================
+
+Python API
+----------
+
+1. A new ``contextvars`` module with ``ContextVar``, ``Context``,
+   and ``Token`` classes, and a ``copy_context()`` function.
+
+2. ``asyncio.Loop.call_at()``, ``asyncio.Loop.call_later()``,
+   ``asyncio.Loop.call_soon()``, and
+   ``asyncio.Future.add_done_callback()`` run callback functions in
+   the context they were called in.  A new *context* keyword-only
+   parameter can be used to specify a custom context.
+
+3. ``asyncio.Task`` is modified internally to maintain its own
+   context.
+
+
+C API
+-----
+
+1. ``PyObject * PyContextVar_New(char *name, PyObject *default)``:
+   create a ``ContextVar`` object.  The *default* argument can be
+   ``NULL``, which means that the variable has no default value.
+
+2. ``int PyContextVar_Get(PyObject *, PyObject *default_value, PyObject **value)``:
+   return ``-1`` if an error occurs during the lookup, ``0`` otherwise.
+   If a value for the context variable is found, it will be set to the
+   ``value`` pointer.  Otherwise, ``value`` will be set to
+   ``default_value`` when it is not ``NULL``.  If ``default_value`` is
+   ``NULL``, ``value`` will be set to the default value of the
+   variable, which can be ``NULL`` too.  ``value`` is always a new
+   reference.
+
+3. ``PyObject * PyContextVar_Set(PyObject *, PyObject *)``:
+   set the value of the variable in the current context.
+
+4. ``PyContextVar_Reset(PyObject *, PyObject *)``:
+   reset the value of the context variable.
+
+5. ``PyObject * PyContext_New()``: create a new empty context.
+
+6. ``PyObject * PyContext_Copy(PyObject *)``: return a shallow
+   copy of the passed context object.
+
+7. ``PyObject * PyContext_CopyCurrent()``: get a copy of the current
+   context.
+
+8. ``int PyContext_Enter(PyObject *)`` and
+   ``int PyContext_Exit(PyObject *)`` allow to set and restore
+   the context for the current OS thread.  It is required to always
+   restore the previous context::
+
+      PyObject *old_ctx = PyContext_Copy();
+      if (old_ctx == NULL) goto error;
+
+      if (PyContext_Enter(new_ctx)) goto error;
+
+      // run some code
+
+      if (PyContext_Exit(old_ctx)) goto error;
+
+
+Rejected Ideas
+==============
+
+Replicating threading.local() interface
+---------------------------------------
+
+Please refer to :pep:`550` where this topic is covered in detail: [2]_.
+
+
+Replacing Token with ContextVar.unset()
+---------------------------------------
+
+The Token API allows to get around having a ``ContextVar.unset()``
+method, which is incompatible with chained contexts design of
+:pep:`550`.  Future compatibility with :pep:`550` is desired
+in case there is demand to support context variables in generators
+and asynchronous generators.
+
+The Token API also offers better usability: the user does not have
+to special-case absence of a value. Compare::
+
+    token = cv.set(new_value)
+    try:
+        # cv.get() is new_value
+    finally:
+        cv.reset(token)
+
+with::
+
+    _deleted = object()
+    old = cv.get(default=_deleted)
+    try:
+        cv.set(blah)
+        # code
+    finally:
+        if old is _deleted:
+            cv.unset()
+        else:
+            cv.set(old)
+
+
+Having Token.reset() instead of ContextVar.reset()
+--------------------------------------------------
+
+Nathaniel Smith suggested to implement the ``ContextVar.reset()``
+method directly on the ``Token`` class, so instead of::
+
+    token = var.set(value)
+    # ...
+    var.reset(token)
+
+we would write::
+
+    token = var.set(value)
+    # ...
+    token.reset()
+
+Having ``Token.reset()`` would make it impossible for a user to
+attempt to reset a variable with a token object created by another
+variable.
+
+This proposal was rejected for the reason of ``ContextVar.reset()``
+being clearer to the human reader of the code which variable is
+being reset.
+
+
+Making Context objects picklable
+--------------------------------
+
+Proposed by Antoine Pitrou, this could enable transparent
+cross-process use of ``Context`` objects, so the
+`Offloading execution to other threads`_ example would work with
+a ``ProcessPoolExecutor`` too.
+
+Enabling this is problematic because of the following reasons:
+
+1. ``ContextVar`` objects do not have ``__module__`` and
+   ``__qualname__`` attributes, making straightforward pickling
+   of ``Context`` objects impossible.  This is solvable by modifying
+   the API to either auto detect the module where a context variable
+   is defined, or by adding a new keyword-only "module" parameter
+   to ``ContextVar`` constructor.
+
+2. Not all context variables refer to picklable objects.  Making a
+   ``ContextVar`` picklable must be an opt-in.
+
+Given the time frame of the Python 3.7 release schedule it was decided
+to defer this proposal to Python 3.8.
+
+
+Making Context a MutableMapping
+-------------------------------
+
+Making the ``Context`` class implement the ``abc.MutableMapping``
+interface would mean that it is possible to set and unset variables
+using ``Context[var] = value`` and ``del Context[var]`` operations.
+
+This proposal was deferred to Python 3.8+ because of the following:
+
+1. If in Python 3.8 it is decided that generators should support
+   context variables (see :pep:`550` and :pep:`568`), then ``Context``
+   would be transformed into a chain-map of context variables mappings
+   (as every generator would have its own mapping).  That would make
+   mutation operations like ``Context.__delitem__`` confusing, as
+   they would operate only on the topmost mapping of the chain.
+
+2. Having a single way of mutating the context
+   (``ContextVar.set()`` and ``ContextVar.reset()`` methods) makes
+   the API more straightforward.
+
+   For example, it would be non-obvious why the below code fragment
+   does not work as expected::
+
+     var = ContextVar('var')
+
+     ctx = copy_context()
+     ctx[var] = 'value'
+     print(ctx[var])  # Prints 'value'
+
+     print(var.get())  # Raises a LookupError
+
+   While the following code would work::
+
+     ctx = copy_context()
+
+     def func():
+         ctx[var] = 'value'
+
+         # Contrary to the previous example, this would work
+         # because 'func()' is running within 'ctx'.
+         print(ctx[var])
+         print(var.get())
+
+     ctx.run(func)
+
+3. If ``Context`` was mutable it would mean that context variables
+   could be mutated separately (or concurrently) from the code that
+   runs within the context.  That would be similar to obtaining a
+   reference to a running Python frame object and modifying its
+   ``f_locals`` from another OS thread.  Having one single way to
+   assign values to context variables makes contexts conceptually
+   simpler and more predictable, while keeping the door open for
+   future performance optimizations.
+
+
+Having initial values for ContextVars
+-------------------------------------
+
+Nathaniel Smith proposed to have a required ``initial_value``
+keyword-only argument for the ``ContextVar`` constructor.
+
+The main argument against this proposal is that for some types
+there is simply no sensible "initial value" except ``None``.
+E.g. consider a web framework that stores the current HTTP
+request object in a context variable.  With the current semantics
+it is possible to create a context variable without a default value::
+
+    # Framework:
+    current_request: ContextVar[Request] = \
+        ContextVar('current_request')
+
+
+    # Later, while handling an HTTP request:
+    request: Request = current_request.get()
+
+    # Work with the 'request' object:
+    return request.method
+
+Note that in the above example there is no need to check if
+``request`` is ``None``.  It is simply expected that the framework
+always sets the ``current_request`` variable, or it is a bug (in
+which case ``current_request.get()`` would raise a ``LookupError``).
+
+If, however, we had a required initial value, we would have
+to guard against ``None`` values explicitly::
+
+    # Framework:
+    current_request: ContextVar[Optional[Request]] = \
+        ContextVar('current_request', initial_value=None)
+
+
+    # Later, while handling an HTTP request:
+    request: Optional[Request] = current_request.get()
+
+    # Check if the current request object was set:
+    if request is None:
+        raise RuntimeError
+
+    # Work with the 'request' object:
+    return request.method
+
+Moreover, we can loosely compare context variables to regular
+Python variables and to ``threading.local()`` objects.  Both
+of them raise errors on failed lookups (``NameError`` and
+``AttributeError`` respectively).
+
+
+Backwards Compatibility
+=======================
+
+This proposal preserves 100% backwards compatibility.
+
+Libraries that use ``threading.local()`` to store context-related
+values, currently work correctly only for synchronous code.  Switching
+them to use the proposed API will keep their behavior for synchronous
+code unmodified, but will automatically enable support for
+asynchronous code.
+
+
+Examples
+========
+
+Converting code that uses threading.local()
+-------------------------------------------
+
+A typical code fragment that uses ``threading.local()`` usually
+looks like the following::
+
+    class PrecisionStorage(threading.local):
+        # Subclass threading.local to specify a default value.
+        value = 0.0
+
+    precision = PrecisionStorage()
+
+    # To set a new precision:
+    precision.value = 0.5
+
+    # To read the current precision:
+    print(precision.value)
+
+
+Such code can be converted to use the ``contextvars`` module::
+
+    precision = contextvars.ContextVar('precision', default=0.0)
+
+    # To set a new precision:
+    precision.set(0.5)
+
+    # To read the current precision:
+    print(precision.get())
+
+
+Offloading execution to other threads
+-------------------------------------
+
+It is possible to run code in a separate OS thread using a copy
+of the current thread context::
+
+    executor = ThreadPoolExecutor()
+    current_context = contextvars.copy_context()
+
+    executor.submit(current_context.run, some_function)
+
+
+Reference Implementation
+========================
+
+The reference implementation can be found here: [3]_.
+See also issue 32436 [4]_.
+
+
+Acceptance
+==========
+
+PEP 567 was accepted by Guido on Monday, January 22, 2018 [5]_.
+The reference implementation was merged on the same day.
+
+
+References
+==========
+
+.. [1] https://www.python.org/dev/peps/pep-0550/#appendix-hamt-performance-analysis
+
+.. [2] https://www.python.org/dev/peps/pep-0550/#replication-of-threading-local-interface
+
+.. [3] https://github.com/python/cpython/pull/5027
+
+.. [4] https://bugs.python.org/issue32436
+
+.. [5] https://mail.python.org/pipermail/python-dev/2018-January/151878.html
+
+.. [6] https://bugs.python.org/issue34762
+
+
+Acknowledgments
+===============
+
+I thank Guido van Rossum, Nathaniel Smith, Victor Stinner,
+Elvis Pranskevichus, Nick Coghlan, Antoine Pitrou, INADA Naoki,
+Paul Moore, Eric Snow, Greg Ewing, and many others for their feedback,
+ideas, edits, criticism, code reviews, and discussions around
+this PEP.
+
+
+Copyright
+=========
+
+This document has been placed in the public domain.
+
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   coding: utf-8
+   End:

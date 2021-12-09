@@ -1,0 +1,433 @@
+PEP: 579
+Title: Refactoring C functions and methods
+Author: Jeroen Demeyer <J.Demeyer@UGent.be>
+BDFL-Delegate: Petr Viktorin
+Status: Final
+Type: Informational
+Content-Type: text/x-rst
+Created: 04-Jun-2018
+Post-History: 20-Jun-2018
+
+
+Approval Notice
+===============
+
+This PEP describes design issues addressed in PEP 575, PEP 580, PEP 590
+(and possibly later proposals).
+
+As noted in `PEP 1 <https://www.python.org/dev/peps/pep-0001/#pep-types>`_:
+
+   Informational PEPs do not necessarily represent a Python community
+   consensus or recommendation, so users and implementers are free to
+   ignore Informational PEPs or follow their advice.
+
+While there is no consensus on whether the issues or the solutions in
+this PEP are valid, the list is still useful to guide further design.
+
+
+Abstract
+========
+
+This meta-PEP collects various issues with CPython's existing implementation
+of built-in functions (functions implemented in C) and methods.
+
+Fixing all these issues is too much for one PEP,
+so that will be delegated to other standards track PEPs.
+However, this PEP does give some brief ideas of possible fixes.
+This is mainly meant to coordinate an overall strategy.
+For example, a proposed solution may sound too complicated
+for fixing any one single issue, but it may be the best overall
+solution for multiple issues.
+
+This PEP is purely informational:
+it does not imply that all issues will eventually
+be fixed, nor that they will be fixed using the solution proposed here.
+
+It also serves as a check-list of possible requested features
+to verify that a given fix does not make those
+other features harder to implement.
+
+The major proposed change is replacing ``PyMethodDef``
+by a new structure ``PyCCallDef``
+which collects everything needed for calling the function/method.
+In the ``PyTypeObject`` structure, a new field ``tp_ccalloffset``
+is added giving an offset to a ``PyCCallDef *`` in the object structure.
+
+**NOTE**: This PEP deals only with CPython implementation details,
+it does not affect the Python language or standard library.
+
+
+Issues
+======
+
+This lists various issues with built-in functions and methods,
+together with a plan for a solution and (if applicable)
+pointers to standards track PEPs discussing the details.
+
+
+1. Naming
+---------
+
+The word "built-in" is overused in Python.
+From a quick skim of the Python documentation, it mostly refers
+to things from the ``builtins`` module.
+In other words: things which are available in the global namespace
+without a need for importing them.
+This conflicts with the use of the word "built-in" to mean "implemented in C".
+
+**Solution**: since the C structure for built-in functions and methods is already
+called ``PyCFunctionObject``,
+let's use the name "cfunction" and "cmethod" instead of "built-in function"
+and "built-in method".
+
+
+2. Not extendable
+-----------------
+
+The various classes involved (such as ``builtin_function_or_method``)
+cannot be subclassed::
+
+    >>> from types import BuiltinFunctionType
+    >>> class X(BuiltinFunctionType):
+    ...     pass
+    Traceback (most recent call last):
+      File "<stdin>", line 1, in <module>
+    TypeError: type 'builtin_function_or_method' is not an acceptable base type
+
+This is a problem because it makes it impossible to add features
+such as introspection support to these classes.
+
+If one wants to implement a function in C with additional functionality,
+an entirely new class must be implemented from scratch.
+The problem with this is that the existing classes like
+``builtin_function_or_method`` are special-cased in the Python interpreter
+to allow faster calling (for example, by using ``METH_FASTCALL``).
+It is currently impossible to have a custom class with the same optimizations.
+
+**Solution**: make the existing optimizations available to arbitrary classes.
+This is done by adding a new ``PyTypeObject`` field ``tp_ccalloffset``
+(or can we re-use ``tp_print`` for that?)
+specifying the offset of a ``PyCCallDef`` pointer.
+This is a new structure holding all information needed to call
+a cfunction and it would be used instead of ``PyMethodDef``.
+This implements the new "C call" protocol.
+
+For constructing cfunctions and cmethods, ``PyMethodDef`` arrays
+will still be used (for example, in ``tp_methods``) but that will
+be the *only* remaining purpose of the ``PyMethodDef`` structure.
+
+Additionally, we can also make some function classes subclassable.
+However, this seems less important once we have ``tp_ccalloffset``.
+
+**Reference**: PEP 580
+
+
+3. cfunctions do not become methods
+-----------------------------------
+
+A cfunction like ``repr`` does not implement ``__get__`` to bind
+as a method::
+
+    >>> class X:
+    ...     meth = repr
+    >>> x = X()
+    >>> x.meth()
+    Traceback (most recent call last):
+      File "<stdin>", line 1, in <module>
+    TypeError: repr() takes exactly one argument (0 given)
+
+In this example, one would have expected that ``x.meth()`` returns
+``repr(x)`` by applying the normal rules of methods.
+
+This is surprising and a needless difference
+between cfunctions and Python functions.
+For the standard built-in functions, this is not really a problem
+since those are not meant to used as methods.
+But it does become a problem when one wants to implement a
+new cfunction with the goal of being usable as method.
+
+Again, a solution could be to create a new class behaving just
+like cfunctions but which bind as methods.
+However, that would lose some existing optimizations for methods,
+such as the ``LOAD_METHOD``/``CALL_METHOD`` opcodes.
+
+**Solution**: the same as the previous issue.
+It just shows that handling ``self`` and ``__get__``
+should be part of the new C call protocol.
+
+For backwards compatibility, we would keep the existing non-binding
+behavior of cfunctions. We would just allow it in custom classes.
+
+**Reference**: PEP 580
+
+
+4. Semantics of inspect.isfunction
+----------------------------------
+
+Currently, ``inspect.isfunction`` returns ``True`` only for instances
+of ``types.FunctionType``.
+That is, true Python functions.
+
+A common use case for ``inspect.isfunction`` is checking for introspection:
+it guarantees for example that ``inspect.getfile()`` will work.
+Ideally, it should be possible for other classes to be treated as
+functions too.
+
+**Solution**: introduce a new ``InspectFunction`` abstract base class
+and use that to implement ``inspect.isfunction``.
+Alternatively, use duck typing for ``inspect.isfunction``
+(as proposed in [#bpo30071]_)::
+
+    def isfunction(obj):
+        return hasattr(type(obj), "__code__")
+
+
+5. C functions should have access to the function object
+--------------------------------------------------------
+
+The underlying C function of a cfunction currently
+takes a ``self`` argument (for bound methods)
+and then possibly a number of arguments.
+There is no way for the C function to actually access the Python
+cfunction object (the ``self`` in ``__call__`` or ``tp_call``).
+This would for example allow implementing the
+C call protocol for Python functions (``types.FunctionType``):
+the C function which implements calling Python functions
+needs access to the ``__code__`` attribute of the function.
+
+This is also needed for PEP 573
+where all cfunctions require access to their "parent"
+(the module for functions of a module or the defining class
+for methods).
+
+**Solution**: add a new ``PyMethodDef`` flag to specify
+that the C function takes an additional argument (as first argument),
+namely the function object.
+
+**References**: PEP 580, PEP 573
+
+
+6. METH_FASTCALL is private and undocumented
+--------------------------------------------
+
+The ``METH_FASTCALL`` mechanism allows calling cfunctions and cmethods
+using a C array of Python objects instead of a ``tuple``.
+This was introduced in Python 3.6 for positional arguments only
+and extended in Python 3.7 with support for keyword arguments.
+
+However, given that it is undocumented,
+it is presumably only supposed to be used by CPython itself.
+
+**Solution**: since this is an important optimization,
+everybody should be encouraged to use it.
+Now that the implementation of ``METH_FASTCALL`` is stable, document it!
+
+As part of the C call protocol, we should also add a C API function ::
+
+    PyObject *PyCCall_FastCall(PyObject *func, PyObject *const *args, Py_ssize_t nargs, PyObject *keywords)
+
+**Reference**: PEP 580
+
+
+7. Allowing native C arguments
+------------------------------
+
+A cfunction always takes its arguments as Python objects
+(say, an array of ``PyObject`` pointers).
+In cases where the cfunction is really wrapping a native C function
+(for example, coming from ``ctypes`` or some compiler like Cython),
+this is inefficient: calls from C code to C code are forced to use
+Python objects to pass arguments.
+
+Analogous to the buffer protocol which allows access to C data,
+we should also allow access to the underlying C callable.
+
+**Solution**: when wrapping a C function with native arguments
+(for example, a C ``long``) inside a cfunction,
+we should also store a function pointer to the underlying C function,
+together with its C signature.
+
+Argument Clinic could automatically do this by storing
+a pointer to the "impl" function.
+
+
+8. Complexity
+-------------
+
+There are a huge number of classes involved to implement
+all variations of methods.
+This is not a problem by itself, but a compounding issue.
+
+For ordinary Python classes, the table below gives the classes
+for various kinds of methods.
+The columns refer to the class in the class ``__dict__``,
+the class for unbound methods (bound to the class)
+and the class for bound methods (bound to the instance):
+
+=============  ================ ============ ============
+kind           __dict__         unbound      bound
+=============  ================ ============ ============
+Normal method  ``function``     ``function`` ``method``
+Static method  ``staticmethod`` ``function`` ``function``
+Class method   ``classmethod``  ``method``   ``method``
+Slot method    ``function``     ``function`` ``method``
+=============  ================ ============ ============
+
+This is the analogous table for extension types (C classes):
+
+=============  ========================== ============================== ==============================
+kind           __dict__                   unbound                        bound
+=============  ========================== ============================== ==============================
+Normal method  ``method_descriptor``      ``method_descriptor``          ``builtin_function_or_method``
+Static method  ``staticmethod``           ``builtin_function_or_method`` ``builtin_function_or_method``
+Class method   ``classmethod_descriptor`` ``builtin_function_or_method`` ``builtin_function_or_method``
+Slot method    ``wrapper_descriptor``     ``wrapper_descriptor``         ``method-wrapper``
+=============  ========================== ============================== ==============================
+
+There are a lot of classes involved
+and these two tables look very different.
+There is no good reason why Python methods should be
+treated fundamentally different from C methods.
+Also the features are slightly different:
+for example, ``method`` supports ``__func__``
+but ``builtin_function_or_method`` does not.
+
+Since CPython has optimizations for calls to most of these objects,
+the code for dealing with them can also become complex.
+A good example of this is the ``call_function`` function in ``Python/ceval.c``.
+
+**Solution**: all these classes should implement the C call protocol.
+Then the complexity in the code can mostly be fixed by
+checking for the C call protocol (``tp_ccalloffset != 0``)
+instead of doing type checks.
+
+Furthermore, it should be investigated whether some of these classes can be merged
+and whether ``method`` can be re-used also for bound methods of extension types
+(see PEP 576 for the latter,
+keeping in mind that this may have some minor backwards compatibility issues).
+This is not a goal by itself but just something to keep in mind
+when working on these classes.
+
+
+9. PyMethodDef is too limited
+-----------------------------
+
+The typical way to create a cfunction or cmethod in an extension module
+is by using a ``PyMethodDef`` to define it.
+These are then stored in an array ``PyModuleDef.m_methods``
+(for cfunctions) or ``PyTypeObject.tp_methods`` (for cmethods).
+However, because of the stable ABI (PEP 384),
+we cannot change the ``PyMethodDef`` structure.
+
+So, this means that we cannot add new fields for creating cfunctions/cmethods
+this way.
+This is probably the reason for the hack that
+``__doc__`` and ``__text_signature__`` are stored in the same C string
+(with the ``__doc__`` and ``__text_signature__`` descriptors extracting
+the relevant part).
+
+**Solution**: stop assuming that a single ``PyMethodDef`` entry
+is sufficient to describe a cfunction/cmethod.
+Instead, we could add some flag which means that one of the ``PyMethodDef``
+fields is instead a pointer to an additional structure.
+Or, we could add a flag to use two or more consecutive ``PyMethodDef``
+entries in the array to store more data.
+Then the ``PyMethodDef`` array would be used only to construct
+cfunctions/cmethods but it would no longer be used after that.
+
+
+10. Slot wrappers have no custom documentation
+----------------------------------------------
+
+Right now, slot wrappers like ``__init__`` or ``__lt__`` only have very
+generic documentation, not at all specific to the class::
+
+    >>> list.__init__.__doc__
+    'Initialize self.  See help(type(self)) for accurate signature.'
+    >>> list.__lt__.__doc__
+    'Return self<value.'
+
+The same happens for the signature::
+
+    >>> list.__init__.__text_signature__
+    '($self, /, *args, **kwargs)'
+
+As you can see, slot wrappers do support ``__doc__``
+and ``__text_signature__``.
+The problem is that these are stored in ``struct wrapperbase``,
+which is common for all wrappers of a specific slot
+(for example, the same ``wrapperbase`` is used for ``str.__eq__`` and ``int.__eq__``).
+
+**Solution**: rethink the slot wrapper class to allow docstrings
+(and text signatures) for each instance separately.
+
+This still leaves the question of how extension modules
+should specify the documentation.
+The ``PyTypeObject`` entries like ``tp_init`` are just function pointers,
+we cannot do anything with those.
+One solution would be to add entries to the ``tp_methods`` array
+just for adding docstrings.
+Such an entry could look like ::
+
+    {"__init__", NULL, METH_SLOTDOC, "pointer to __init__ doc goes here"}
+
+
+11. Static methods and class methods should be callable
+-------------------------------------------------------
+
+Instances of ``staticmethod`` and ``classmethod`` should be callable.
+Admittedly, there is no strong use case for this,
+but it has occasionally been requested (see for example [#bpo20309]_).
+
+Making static/class methods callable would increase consistency.
+First of all, function decorators typically add functionality or modify
+a function, but the result remains callable. This is not true for
+``@staticmethod`` and ``@classmethod``.
+
+Second, class methods of extension types are already callable::
+
+    >>> fromhex = float.__dict__["fromhex"]
+    >>> type(fromhex)
+    <class 'classmethod_descriptor'>
+    >>> fromhex(float, "0xff")
+    255.0
+
+Third, one can see ``function``, ``staticmethod`` and ``classmethod``
+as different kinds of unbound methods:
+they all become ``method`` when bound, but the implementation of ``__get__``
+is slightly different.
+From this point of view, it looks strange that ``function`` is callable
+but the others are not.
+
+**Solution**:
+when changing the implementation of ``staticmethod``, ``classmethod``,
+we should consider making instances callable.
+Even if this is not a goal by itself, it may happen naturally
+because of the implementation.
+
+
+References
+==========
+
+.. [#bpo20309] Not all method descriptors are callable
+   (https://bugs.python.org/issue20309)
+
+.. [#bpo30071] Duck-typing inspect.isfunction()
+   (https://bugs.python.org/issue30071)
+
+
+Copyright
+=========
+
+This document has been placed in the public domain.
+
+
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   coding: utf-8
+   End:
