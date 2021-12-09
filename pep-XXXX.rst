@@ -289,7 +289,7 @@ Advantages of this syntax include:
 We decided against proposing it for the following reasons:
 - The implementation would have been more difficult, and usage stats demonstrate that fewer than 3% of use cases would benefit from any of the added features.
 - The group that debated these proposals was split down the middle about whether these changes are even desirable:
-  - On the one hand they make callable types more expressive, but on the other hand they could easily confuse users who haven’t read the full specification of callable type syntax.
+  - On the one hand they make callable types more expressive. On the other hand, they could easily confuse users who haven’t read the full specification of callable type syntax.
   - We believe the simpler syntax proposed in this PEP, which introduces no new semantics and closely mimics syntax in other popular languages like Kotlin, Scala, and TypesScript, are much less likely to confuse users.
 - We intend to implement the current proposal in a way that is forward-compatible with the more complicated extended syntax. If the community decides after more experience and discussion that we want the additional features, they should be straightforward to propose in the future.
 - We realized that because of overloads, it is not possible to replace all need for Callback Protocols even with an extended syntax. This makes us prefer proposing a simple solution that handles most use cases well.
