@@ -33,13 +33,13 @@ There are four major problems with the existing ``Callable`` type:
 - it relies on two levels of nested square brackets. This can be quite hard to read,
   especially when the function arguments themselves have square brackets.
 
-It is common for library authors to make use of untyped or partially-typed callables (e.g. ``Callable[..., Any]`) which we believe is partially a result of the existing types being hard to use. Libraries with less precise types reduce the ability of static analyzers running on downstream projects (including type checkers and security analysis tools) to find problems.
+It is common for library authors to make use of untyped or partially-typed callables (e.g. ``Callable[..., Any]``) which we believe is partially a result of the existing types being hard to use. Libraries with less precise types reduce the ability of static analyzers running on downstream projects (including type checkers and security analysis tools) to find problems.
 
 With a succinct, easy-to-use syntax, developers may be less likely to reach for poorly-typed options. Callable types may also be beginner-friendly if we make them look more like function headers, and like the arrow type syntax used by several other popular languages.
 
 A simplified real-world example from a web server illustrates how the types can be verbose and require many levels of nested square brackets::
 
-    from typing import Callable
+    from typing import Awaitable, Callable
     from app_logic import Response, UserSetting
 
 
@@ -87,7 +87,7 @@ So a type checker should treat the following pairs exactly the same::
    from typing import Awaitable, Callable, Concatenate, ParamSpec, TypeVarTuple
 
     P = ParamSpec("P")
-    Ts = = TypeVarTuple('Ts')
+    Ts = TypeVarTuple('Ts')
 
     f0: (int, str) -> bool
     f0: Callable[[int, str], bool]
@@ -239,12 +239,12 @@ Since ``...`` is meaningless as a type and there are usability concerns, our gra
 
     (int, ...) -> bool
 
-Incompatibility with other possible uses of ``*` and ``**``
+Incompatibility with other possible uses of ``*`` and ``**``
 ‘’’’’’’‘’’’’’’‘’’’’’’‘’’’’’’‘‘’’’’’’‘’’’’’’‘’‘’’’’’’‘’’‘’’’’
 
 The use of ``**P`` for supporting PEP 612 ``ParamSpec`` rules out any future proposal using a bare ``**<some_type>`` to type ``kwargs``. This seems acceptable because:
 - If we ever do want such a syntax, it would be clearer and to require an argument name anyway so that the type looks more similar to a function signature. In other words, if we ever support typing ``kwargs`` in callable types, we would prefer ``(int, **kwargs: str)`` rather than ``(int, **str)``.
-- PEP 646 unpack syntax would rule out using ``*<some_type>`` for ``args``, and the ``kwargs`` case is similar enough that this rules out a bare ``**<some_type>` anyway.
+- PEP 646 unpack syntax would rule out using ``*<some_type>`` for ``args``, and the ``kwargs`` case is similar enough that this rules out a bare ``**<some_type>`` anyway.
 
 Runtime Behavior
 ----------------
@@ -254,7 +254,7 @@ The precise details of runtime behavior are still under discussion.
 We have a separate doc [#runtime-behavior-specification]_ with a very detailed tentative plan, which we can also use for discussion.
 
 In short, the plan is that:
-- The `__repr__` will show an arrow syntax literal.
+- The ``__repr__`` will show an arrow syntax literal.
 - We will provide a new API where the runtime data structure can be accessed in the same manner as the AST data structure.
 - We will ensure that we provide an API that is backward-compatible with ``typing.Callable`` and ``typing.Concatenate``, specifically the behavior of ``__args__`` and ``__parameters__``.
 
@@ -269,7 +269,7 @@ We decided on a simple proposal focused just on improving syntax for the existin
 - ParamSpec and Concatenate: The next most important feature is good support for PEP 612 ``ParamSpec`` and ``Concatenate`` types like ``(**P) -> bool`` and ``(int, **P) -> bool``. These are common primarily because of the heavy use of decorator patterns in python code.
 - TypeVarTuples: The next most important feature, assuming PEP 646 is accepted, is for unpacked types which are common because of cases where a wrapper passes along `*args` to some other function.
 
-Features that other, more complicated proposals would support account for fewer than 2% of the use cases we found. These are already expressibleusing `Callback Protocols <https://www.python.org/dev/peps/pep-0544/#callback-protocols>`_, and since they aren’t common we decided that it made more sense to move forward with a simpler syntax.
+Features that other, more complicated proposals would support account for fewer than 2% of the use cases we found. These are already expressible using `Callback Protocols <https://www.python.org/dev/peps/pep-0544/#callback-protocols>`_, and since they aren’t common we decided that it made more sense to move forward with a simpler syntax.
 
 Extended Syntax Supporting Named and Optional Arguments
 -------------------------------------------------------
@@ -311,7 +311,7 @@ In this proposal, the following types would have been equivalent::
     Function = (x: int, /, y: float, *, z: bool = ..., **kwargs: str) -> bool
 
 
-The benefits of this proposal would have included
+The benefits of this proposal would have included:
 - Perfect syntactic consistency between signatures and callable types.
 - Support for more features of function signatures (named, optional, variadic args) that this PEP does not support.
 
@@ -358,7 +358,7 @@ We have a working implementation of the AST and Grammar [#callable-type-syntax--
 
 There is no runtime implementation yet. At a high level we are committed to the following by backward compatibility:
 - We will need new object types for both the callable type and concatenation type, tentatively defined in C and exposed as ``types.CallableType`` and ``types.CallableConcatenateType`` in a manner similar to ``types.UnionType``.
-- The new types must support existing ``typing.Callable`` and ``typing.Concatenate`` runtime apis almost exactly
+- The new types must support existing ``typing.Callable`` and ``typing.Concatenate`` runtime APIs almost exactly:
   - The ``__repr__`` methods will differ and display the new builtin syntax
   - But the ``__args__`` and ``__parameters__`` fields must behave the same
   - And the indexing operation - which returns a new type object with concrete types substituted for various entries in ``__parameters__``, must also be the same.
