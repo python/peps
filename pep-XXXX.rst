@@ -27,10 +27,10 @@ The ``Callable`` type, defined as part of PEP 484, is one of the most commonly u
 
 There are four major problems with the existing ``Callable`` type:
 - it is verbose, particularly for more complex function signatures.
-- it requires an explicit import, something we no longer require for most of the other
+- It requires an explicit import, something we no longer require for most of the other
   very common types after PEP 604 (``|`` for ``Union`` types) and PEP 585 (generic collections)
-- it does not visually represent the way function headers are written.
-- it relies on two levels of nested square brackets. This can be quite hard to read,
+- It does not visually represent the way function headers are written.
+- It relies on two levels of nested square brackets. This can be quite hard to read,
   especially when the function arguments themselves have square brackets.
 
 It is common for library authors to make use of untyped or partially-typed callables (e.g. ``Callable[..., Any]``) which we believe is partially a result of the existing types being hard to use. Libraries with less precise types reduce the ability of static analyzers running on downstream projects (including type checkers and security analysis tools) to find problems.
