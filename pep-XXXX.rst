@@ -26,7 +26,7 @@ The ``Callable`` type, defined as part of PEP 484, is one of the most commonly u
 
 
 There are four major problems with the existing ``Callable`` type:
-- it is verbose, particularly for more complex function signatures.
+- It is verbose, particularly for more complex function signatures.
 - It requires an explicit import, something we no longer require for most of the other
   very common types after PEP 604 (``|`` for ``Union`` types) and PEP 585 (generic collections)
 - It does not visually represent the way function headers are written.
