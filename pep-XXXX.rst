@@ -66,7 +66,7 @@ Rationale
 
 The ``Callable`` type is widely used. For example, in typeshed [#typeshed-stats]_ it is the fifth most common complex type, after ``Optional``, ``Tuple``, ``Union``, and ``List``.
 
-Most of the other commonly used types have gotten improved syntax either via PEP 604 or PEP 525.``Callable`` is used heavily enough to similarly justify a more usable syntax.
+Most of the other commonly used types have had their syntax improved via either PEP 604 or PEP 525. ``Callable`` is used heavily enough to similarly justify a more usable syntax.
 
 Why did we choose to support all the existing semantics of ``typing.Callable``, without adding support for new features? We looked at how frequently each feature would be useful in existing typed and untyped open-source code and determined that the vast majority of use cases are covered.
 
