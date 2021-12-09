@@ -424,7 +424,7 @@ Acknowledgments
 
 Thanks to the following people for their feedback on the PEP and help planning the reference implementation:
 
-Guido Van Rossum, Eric Traut, James Hilton-Balfe, Maggie Moss, Shannon Zhu
+Alex Waygood, Guido Van Rossum, Eric Traut, James Hilton-Balfe, Maggie Moss, Shannon Zhu
 
 TODO: MAKE SURE THE THANKS STAYS UP TO DATE
 
