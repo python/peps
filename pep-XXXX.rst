@@ -68,9 +68,9 @@ The ``Callable`` type is widely used. For example, as of October 2021 it is the 
 
 Most of the other commonly used types have had their syntax improved via either PEP 604 or PEP 585. ``Callable`` is used heavily enough to similarly justify a more usable syntax.
 
-Why did we choose to support all the existing semantics of ``typing.Callable``, without adding support for new features? We looked at how frequently each feature would be useful in existing typed and untyped open-source code and determined that the vast majority of use cases are covered.
+We chose to support all the existing semantics of ``typing.Callable``, without adding support for new features. We took this decision after examining how frequently each feature might be used in existing typed and untyped open-source code. We determined that the vast majority of use cases are covered.
 
-We considered adding support for named, optional, and variadic arguments but decided against including that because our analysis showed they are infrequently used. And when they are really needed, it is possible to type these using Callback Protocols [#callback-protocols]_.
+We considered adding support for named, optional, and variadic arguments. However, we decided against including these features, as our analysis showed they are infrequently used. When they are really needed, it is possible to type these using Callback Protocols [#callback-protocols]_.
 
 See the Rejected Alternatives section for more detailed discussion about omitted features.
 
@@ -243,8 +243,8 @@ Incompatibility with other possible uses of ``*`` and ``**``
 ‘’’’’’’‘’’’’’’‘’’’’’’‘’’’’’’‘‘’’’’’’‘’’’’’’‘’‘’’’’’’‘’’‘’’’’
 
 The use of ``**P`` for supporting PEP 612 ``ParamSpec`` rules out any future proposal using a bare ``**<some_type>`` to type ``kwargs``. This seems acceptable because:
-- If we ever do want such a syntax, it would be clearer and to require an argument name anyway so that the type looks more similar to a function signature. In other words, if we ever support typing ``kwargs`` in callable types, we would prefer ``(int, **kwargs: str)`` rather than ``(int, **str)``.
-- PEP 646 unpack syntax would rule out using ``*<some_type>`` for ``args``, and the ``kwargs`` case is similar enough that this rules out a bare ``**<some_type>`` anyway.
+- If we ever do want such a syntax, it would be clearer to require an argument name anyway. This would also make the type look more similar to a function signature. In other words, if we ever support typing ``kwargs`` in callable types, we would prefer ``(int, **kwargs: str)`` rather than ``(int, **str)``.
+- PEP 646 unpacking syntax would rule out using ``*<some_type>`` for ``args``. The ``kwargs`` case is similar enough that this rules out a bare ``**<some_type>`` anyway.
 
 Runtime Behavior
 ----------------
@@ -291,7 +291,7 @@ We decided against proposing it for the following reasons:
 - The group that debated these proposals was split down the middle about whether these changes are even desirable:
   - On the one hand they make callable types more expressive, but on the other hand they could easily confuse users who haven’t read the full specification of callable type syntax.
   - We believe the simpler syntax proposed in this PEP, which introduces no new semantics and closely mimics syntax in other popular languages like Kotlin, Scala, and TypesScript, are much less likely to confuse users.
-- We intend to implement the current proposal in a way that is forward-compatible with the more complicated extended syntax. So if the community decides after more experience and discussion that we want the additional features they should be straightforward to propose in the future.
+- We intend to implement the current proposal in a way that is forward-compatible with the more complicated extended syntax. If the community decides after more experience and discussion that we want the additional features, they should be straightforward to propose in the future.
 - We realized that because of overloads, it is not possible to replace all need for Callback Protocols even with an extended syntax. This makes us prefer proposing a simple solution that handles most use cases well.
 
 We confirmed that the current proposal is forward-compatible with extended syntax by implementing a quick-and-dirty grammar and AST on top of the grammar and AST for the current proposal [#callable-type-syntax--extended]_.
@@ -346,7 +346,7 @@ This PEP proposes a major syntax improvement over ``typing.Callable``, but the s
 
 As such, the only thing we need for backward compatibility is to ensure that types specified via the new syntax behave the same as equivalent ``typing.Callable`` and ``typing.Concatenate`` values they intend to replace.
 
-There’s no particular interaction between this proposal and ``from __future__ import annotations`` - just like any other type annotation it will be unparsed to a string at module import, and ``typing.get_type_hints`` should correctly evaluate the resulting strings in cases where that is possible.
+There is no particular interaction between this proposal and ``from __future__ import annotations`` - just like any other type annotation it will be unparsed to a string at module import, and ``typing.get_type_hints`` should correctly evaluate the resulting strings in cases where that is possible.
 
 This is discussed in more detail in the Runtime Behavior section.
 
@@ -359,8 +359,8 @@ We have a working implementation of the AST and Grammar [#callable-type-syntax--
 There is no runtime implementation yet. At a high level we are committed to the following by backward compatibility:
 - We will need new object types for both the callable type and concatenation type, tentatively defined in C and exposed as ``types.CallableType`` and ``types.CallableConcatenateType`` in a manner similar to ``types.UnionType``.
 - The new types must support existing ``typing.Callable`` and ``typing.Concatenate`` runtime APIs almost exactly:
-  - The ``__repr__`` methods will differ and display the new builtin syntax
-  - But the ``__args__`` and ``__parameters__`` fields must behave the same
+  - The ``__repr__`` methods will differ and display the new builtin syntax;
+  - But the ``__args__`` and ``__parameters__`` fields must behave the same;
   - And the indexing operation - which returns a new type object with concrete types substituted for various entries in ``__parameters__``, must also be the same.
 
 We will return to more details of the runtime behavior, which remain open to discussion other than backward compatibility, in the Open Issues section below.
@@ -375,7 +375,7 @@ Details of the Runtime API
 The new runtime objects to which this syntax evaluates will remain backward-compatible with the ``typing.Callable`` and ``typing.Concatenate`` types they replace, other than details like ``__repr__`` where some behavior change makes sense.
 
 But we also believe that we should have a new runtime API with more structured data access, since:
-- Callable types have a more complicated shape than other generics, especially given the behavior when using ``...`` and ``typing.Concatenate``
+- Callable types have a more complicated shape than other generics, especially given the behavior when using ``...`` and ``typing.Concatenate``.
 - In the future we might want to add more features, such as support for named and optional arguments, that would be even more difficult to describe well using only ``__args__`` and ``__parameters___``.
 
 Our tentative plan is to define enough new builtins for the runtime data to mirror the shape of the AST, but other options are also possible. See [#runtime-behavior-specification]_ for a detailed description of the current plan and a place to discuss other ideas.
@@ -389,7 +389,7 @@ The current reference implementation has a fully-functional parser and all edge 
 
 But there are some known cases where the errors are not as informative as we would like. For example, because ``(int, ...) -> bool`` is illegal but ``(int, ...)`` is a valid tuple, we currently produce a syntax error flagging the ``->`` as the problem even though the real cause of the error is using ``...`` as an argument type.
 
-This is not part of the specification per se but is an important detail to add  ress in our implementation. The solution will likely involve adding ``invalid_.*`` rules to ``python.gram`` and customizing error messages.
+This is not part of the specification *per se* but is an important detail to address in our implementation. The solution will likely involve adding ``invalid_.*`` rules to ``python.gram`` and customizing error messages.
 
 Resources
 =========
@@ -397,13 +397,13 @@ Resources
 Background and History
 ----------------------
 
-PEP 484 [#pep-484-function-type-hints]_ specifies a very similar syntax for function type hint *comments* for use in code that needs to work on Python 2.7, for example::
+PEP 484 [#pep-484-function-type-hints]_ specifies a very similar syntax for function type hint *comments* for use in code that needs to work on Python 2.7. For example::
 
     def f(x, y):
         # type: (int, str) -> bool
         ...
 
-At that time we used indexing operations to specify generic types like ``typing.Callable`` because we decided not to add syntax for types, but we have since begun to do so, e.g. with PEP 604
+At that time we used indexing operations to specify generic types like ``typing.Callable`` because we decided not to add syntax for types. However, we have since begun to do so, e.g. with PEP 604.
 
 **Maggie** proposed better callable type syntax at the PyCon Typing Summit 2021: [#type-syntax-simplification]_ ([#type-variables-for-all-slides]_).
 
