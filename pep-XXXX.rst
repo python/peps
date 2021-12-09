@@ -15,7 +15,7 @@ Abstract
 
 This PEP introduces a concise and friendly syntax for callable types, supporting the same functionality as ``typing.Callable`` but with an arrow syntax inspired by the syntax for typed function signatures. This allows types like ``Callable[[int, str], bool]`` to be written ``(int, str) -> bool``.
 
-The proposed syntax supports all the functionality provided by ``typing.Callable`` and ``typing.Concatenate`` and could eventually replace them entirely.
+The proposed syntax supports all the functionality provided by ``typing.Callable`` and ``typing.Concatenate``, and is intended to work as a drop-in replacement.
 
 
 Motivation
@@ -91,19 +91,19 @@ So a type checker should treat the following pairs exactly the same::
 
     f0: (int, str) -> bool
     f0: Callable[[int, str], bool]
-    
+
     f1: (...) -> bool
     f1: Callable[..., bool]
 
     f2: async (str) -> str
     f2: Callable[[str], Awaitable[str]]
- 
+
     f3: (**P) -> bool
     f3: Callable[P, bool]
 
     f4: (int, **P) -> bool
     f4: Callable[Concatenate[int, P], bool]
-    
+
     f5: (*Ts) -> bool
     f5: Callable[[*Ts], bool]
 
@@ -118,7 +118,7 @@ The new syntax we’re proposing can be described by these AST changes ::
     expr = <prexisting_expr_kinds>
          | AsyncCallableType(callable_type_arguments args, expr returns)
          | CallableType(callable_type_arguments args, expr returns)
-                                                                                
+
     callable_type_arguments = AnyArguments
                             | ArgumentsList(expr* posonlyargs)
                             | Concatenation(expr* posonlyargs, expr param_spec)
@@ -222,7 +222,7 @@ Trailing Commas
     ((int,) -> bool == (int) -> bool
     ((int, **P,) -> bool == (int, **P) -> bool
     ((...,) -> bool) == ((...) -> bool)
- 
+
 Allowing trailing commas also gives autoformatters more flexibility when splitting callable types across lines, which is always legal following standard python whitespace rules.
 
 
@@ -490,5 +490,3 @@ CC0-1.0-Universal license, whichever is more permissive.
    fill-column: 70
    coding: utf-8
    End:
-
-
