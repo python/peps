@@ -426,10 +426,15 @@ Key downsides that led us to reject the idea include the following:
 Other Proposals Considered
 --------------------------
 
-An idea we looked at very early on was to allow using functions as types. This may be a great idea, but we consider less an alternative to better callable types than a major improvement in the usability of Callable Protocols:
+Functions-as-Types
+''''''''''''''''''
+
+An idea we looked at very early on was to `allow using functions as types<https://docs.google.com/document/d/1rv6CCDnmLIeDrYlXe-QcyT0xNPSYAuO1EBYjU3imU5s/edit?usp=sharing>`. The idea is allowing a function to stand in for its own call signature, with roughly the same semantics as the ``__call__`` method of Callback Protocols. Think this may be a great idea and worth its own PEP, but that it is not a good alternative to improving the usability of callable types:
 - Using functions as types would not give us a new way of describing function types as first class values. Instead, they would require a function definition statement that effectively defines a type alias (much as a Callable Protocol class statement does).
 - Functions-as-types would support almost exactly the same features that Callable Protocols do today: named, optional, and variadic args as well as the ability to define overloads.
-Therefore, we think that is an idea for a related PEP, but not a direct substitute for improved Callable syntax.
+
+Parenthesis-Free Syntax
+'''''''''''''''''''''''
 
 We considered a parentheses-free syntax that would have been even more concise::
 
@@ -437,8 +442,10 @@ We considered a parentheses-free syntax that would have been even more concise::
 
 We decided against it because this is not visually as similar to existing function header syntax. Moreover, it is visually similar to lambdas, which bind names with no parentheses: ``lambda x, y: x == y``.
 
-Another idea was a new “special string” syntax an puting the type inside of it, for example ``t”(int, str) -> bool”``. We rejected this because it is not as readable, and seems out of step with guidance from the Steering Council on ensuring that type expressions do not diverge from the rest of Python's syntax. [#python-types-and-runtime-guidance]_
+Introducing type-strings
+''''''''''''''''''''''''
 
+Another idea was a new “special string” syntax an puting the type inside of it, for example ``t”(int, str) -> bool”``. We rejected this because it is not as readable, and seems out of step with guidance from the Steering Council on ensuring that type expressions do not diverge from the rest of Python's syntax. [#python-types-and-runtime-guidance]_
 
 
 Backwards Compatibility
