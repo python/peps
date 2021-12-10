@@ -22,22 +22,93 @@ Motivation
 ==========
 
 
-The ``Callable`` type, defined as part of PEP 484, is one of the most commonly used complex types in ``typing`` alongside ``Union`` and collection types like ``Dict`` and ``List``.
+Describing Callable Signatures with ``typing.Callable``
+------------------------------------------------------
+
+One way to make code safer and easier to analyze is by making sure
+that functions and classes are well-typed. In Python we have type
+annotations defined by PEP 484 to provide type hints that can find
+bugs as well as helping with editor tooling like tab completion,
+static analysis tooling, and code review.
+
+One of the types defined by PEP 484 in the ``typing`` module is
+``typing.Callable``, which describes a callable value such as a
+function or a method. It takes two parameters as inputs but with the
+first parameter being either a placeholder like ``...`` or a list of
+types. For example: - ``Callable[..., int]`` indicates a funciton with
+arbitrary parameters returning an integer.  - ``Callable[[str, int],
+bool]`` indicates a function taking two positional parameters of types
+``str`` and ``int`` and returning a ``bool``.
+
+Of the types defined by PEP 484, ``typing.Callable`` is the most
+complex because it is the only one that requires two levels of
+brackets in the same type. PEP 612 added ``typing.ParamSpec`` and
+``typing.Concatenate`` to help describe functions that pass ``*args``
+and ``**kwargs`` to callbacks, which is very common with
+decorators. This made ``typing.Callable`` more powerful but also more
+complicated.
+
+Problems with ``typing.Callable``
+---------------------------------
+
+Empirically `we have
+found<https://github.com/pradeep90/annotation_collector#typed-projects---callable-type>`
+that it is common for library authors to make use of untyped or
+partially-typed callables (e.g. ``Callable[..., Any]`` or a bare
+``Callable``) which we believe is partially a result of the existing
+types being hard to use. But using this kind of partially-typed
+callable can negate the benefits of static typing. For example,
+consider the following code::
+
+    from typing import Any, Callable
+
+    def decorator(f: Callable[..., Any]) -> Callable[..., Any]:
+        def wrapper(*args, **kwargs):
+            return f(*args, **kwargs)
+        return wrapper
 
 
-There are four major problems with the existing ``Callable`` type:
+    @decorator
+    def f(x: int) -> int:
+        return x
+
+
+    f(z=15)
+
+The decorator here isn't intended to modify the type of the function
+it wraps, but because it uses ``Callable[..., Any]`` it actually
+eliminates the annotations on ``f``, and type checkers will accept the
+code above even though it is sure to crash at runtime.
+
+Four usability problems with the way ``typing.Callable`` is
+represented may explain why library authors often do not use its full
+power:
 - It is verbose, particularly for more complex function signatures.
-- It requires an explicit import, something we no longer require for most of the other
-  very common types after PEP 604 (``|`` for ``Union`` types) and PEP 585 (generic collections)
-- It does not visually represent the way function headers are written.
-- It relies on two levels of nested square brackets. This can be quite hard to read,
-  especially when the function arguments themselves have square brackets.
+- It does not visually represent the way function headers are written,
+  which can make it harder to learn and use.
+- It requires an explicit import, something we no longer require for
+  most of the other very common types after PEP 604 (``|`` for
+  ``Union`` types) and PEP 585 (generic collections)
+- It relies on two levels of nested square brackets. This can be quite
+  hard to read, especially when the function arguments themselves have
+  square brackets.
 
-It is common for library authors to make use of untyped or partially-typed callables (e.g. ``Callable[..., Any]``) which we believe is partially a result of the existing types being hard to use. Libraries with less precise types reduce the ability of static analyzers running on downstream projects (including type checkers and security analysis tools) to find problems.
+An Arrow Syntax for Callable Types
+----------------------------------
 
-With a succinct, easy-to-use syntax, developers may be less likely to reach for poorly-typed options. Callable types may also be beginner-friendly if we make them look more like function headers, and like the arrow type syntax used by several other popular languages.
+We are proposing a succinct, easy-to-use syntax for
+``typing.Callable`` that looks similar to function headers in Python,
+as well as the arrow syntax used by several other popular languages.
 
-A simplified real-world example from a web server illustrates how the types can be verbose and require many levels of nested square brackets::
+Our goal is that
+- Callable types using this syntax will be easier to learn and use,
+  particularly for developers with experience in other languages.
+- Library authors will be more likely to use expressive types for
+  callables that enable type checkers to better understand code and
+  find bugs, as in the ``decorator`` example above.
+
+Consider this simplified real-world example from a web server, written
+using the existing ``typing.Callable``::
 
     from typing import Awaitable, Callable
     from app_logic import Response, UserSetting
@@ -59,7 +130,9 @@ With our proposal, this code can be abbreviated to::
     ) -> Response:
         ...
 
-This is shorter and requires fewer imports. It also has far less nesting of square brackets - only one level, as opposed to three in the original code.
+This is shorter and requires fewer imports. It also has far less
+nesting of square brackets - only one level, as opposed to three in
+the original code.
 
 Rationale
 =========
