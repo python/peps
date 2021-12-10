@@ -62,23 +62,41 @@ consider the following code::
 
     from typing import Any, Callable
 
-    def decorator(f: Callable[..., Any]) -> Callable[..., Any]:
-        def wrapper(*args, **kwargs):
+    def with_retries(f: Callable[..., Any]) -> Callable[..., Any]:
+        def wrapper(retry_once, *args, **kwargs):
+            if retry_once:
+                try: return f(*args, **kwargs)
+                except Exception: pass
             return f(*args, **kwargs)
         return wrapper
 
-
-    @decorator
+    @with_retries
     def f(x: int) -> int:
         return x
 
 
-    f(z=15)
+    f(True, z=15)
 
 The decorator here isn't intended to modify the type of the function
 it wraps, but because it uses ``Callable[..., Any]`` it actually
 eliminates the annotations on ``f``, and type checkers will accept the
-code above even though it is sure to crash at runtime.
+code above even though it is sure to crash at runtime. A correct version
+of this code would look like this::
+
+    from typing import Any, Callable, Concatenate, ParamSpec, TypeVar
+
+    V = TypeVar("R")
+    P = ParamSpec("P")
+
+    def with_retries(f: Callable[P, R]) -> Callable[Concatenate[bool, P] R]:
+        def wrapper(retry_once: bool, *args: P.args, **kwargs: P.kwargs):
+            ...
+        return wrapper
+
+    ...
+
+With these changes, the incorrect attempt to pass ``z`` to ``f``
+produces a typecheck error as we would like.
 
 Four usability problems with the way ``typing.Callable`` is
 represented may explain why library authors often do not use its full
@@ -92,6 +110,17 @@ power:
 - It relies on two levels of nested square brackets. This can be quite
   hard to read, especially when the function arguments themselves have
   square brackets.
+
+With our proposed syntax, the decorator example looks like this::
+
+    from typing import Any, ParamSpec, TypeVar
+
+    V = TypeVar("R")
+    P = ParamSpec("P")
+
+    def with_retries(f: (**P) -> R) -> (bool, **P) -> R:
+        ...
+
 
 An Arrow Syntax for Callable Types
 ----------------------------------
