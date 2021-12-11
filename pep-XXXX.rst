@@ -83,11 +83,11 @@ consider the following code::
 
     f(True, z=15)
 
-The decorator here isn't intended to modify the type of the function
+The decorator here is not intended to modify the type of the function
 it wraps, but because it uses ``Callable[..., Any]`` it actually
 eliminates the annotations on ``f``, and type checkers will accept the
-code above even though it is sure to crash at runtime. A correct version
-of this code would look like this::
+code above even though it is sure to crash at runtime. A correct
+version of this code would look like this::
 
     from typing import Any, Callable, Concatenate, ParamSpec, TypeVar
 
@@ -266,8 +266,8 @@ Here are our proposed changes to the [#python-grammar]_::
         | '(' callable_type_positional_argument* callable_type_param_spec ')'
 
     callable_type_positional_argument:
-        | !’...’ expression ','
-        | !’...’ expression &')'
+        | !'...' expression ','
+        | !'...' expression &')'
 
     callable_type_param_spec:
         | '**' expression ','
@@ -291,7 +291,7 @@ Implications of the Grammar
 
 
 Precedence of ->
-‘’’’’’’’’’’’’’’’
+~~~~~~~~~~~~~~~~
 
 
 ``->`` binds less tightly than other operators, both inside types and in function signatures::
@@ -334,7 +334,7 @@ We discussed each of these behaviors and believe they are desirable:
   substitutable when possible.
 
 ``async`` Keyword
-‘’’’’’’’’’’’’’’’’
+~~~~~~~~~~~~~~~~~
 
 All of the binding rules still work for async callable types::
 
@@ -349,7 +349,7 @@ All of the binding rules still work for async callable types::
 
 
 Trailing Commas
-‘’’’’’’’’’’’’’’
+~~~~~~~~~~~~~~~
 
 - Following the precedent of function signatures, putting a comma in
   an empty arguments list is illegal, ``(,) -> bool`` is a syntax
@@ -368,12 +368,12 @@ following standard python whitespace rules.
 
 
 Disallowing ``...`` as an Argument Type
-‘’’’’’’’’’’’’’’‘’’’’’’’’’’’’’’‘’’’’’’’’
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Under normal circumstances, any valid expression is permitted where we
 want a type annotation and ``...`` is a valid expression. This is
 never semantically valid and all type checkers would reject it, but
-the grammar would allow it if we didn’t explicitly prevent this.
+the grammar would allow it if we did not explicitly prevent this.
 
 We decided that there were compelling reasons to prevent it: - The
 semantics of ``(...) -> bool`` are different from ``(T) -> bool`` for
@@ -391,7 +391,7 @@ error::
     (int, ...) -> bool
 
 Incompatibility with other possible uses of ``*`` and ``**``
-‘’’’’’’‘’’’’’’‘’’’’’’‘’’’’’’‘‘’’’’’’‘’’’’’’‘’‘’’’’’’‘’’‘’’’’
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The use of ``**P`` for supporting PEP 612 ``ParamSpec`` rules out any
 future proposal using a bare ``**<some_type>`` to type
@@ -527,7 +527,7 @@ Key downsides that led us to reject the idea include the following:
   example ``(int, /) -> bool`` where our proposal allows ``(int) ->
   bool``
 - The requirement for explicit ``/`` for positional-only arguments has
-  a high risk of causing frequent bugs - which often wouldn’t be
+  a high risk of causing frequent bugs - which often would not be
   detected by unit tests - where library authors would accidentally
   use types with named arguments.
 - Our analysis suggests that support for ``ParamSpec`` is key, but the
@@ -538,7 +538,7 @@ Other Proposals Considered
 --------------------------
 
 Functions-as-Types
-''''''''''''''''''
+~~~~~~~~~~~~~~~~~~
 
 An idea we looked at very early on was to `allow using functions as
 types<https://docs.google.com/document/d/1rv6CCDnmLIeDrYlXe-QcyT0xNPSYAuO1EBYjU3imU5s/edit?usp=sharing>`. The
@@ -556,7 +556,7 @@ callable types:
   as well as the ability to define overloads.
 
 Parenthesis-Free Syntax
-'''''''''''''''''''''''
+~~~~~~~~~~~~~~~~~~~~~~~
 
 We considered a parentheses-free syntax that would have been even more
 concise::
@@ -569,7 +569,7 @@ lambdas, which bind names with no parentheses: ``lambda x, y: x ==
 y``.
 
 Introducing type-strings
-''''''''''''''''''''''''
+~~~~~~~~~~~~~~~~~~~~~~~~
 
 Another idea was a new “special string” syntax an puting the type
 inside of it, for example ``t”(int, str) -> bool”``. We rejected this
