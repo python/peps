@@ -108,6 +108,7 @@ produces a typecheck error as we would like.
 Four usability problems with the way ``typing.Callable`` is
 represented may explain why library authors often do not use its full
 power:
+
 - It is verbose, particularly for more complex function signatures.
 - It does not visually represent the way function headers are written,
   which can make it harder to learn and use.
@@ -141,6 +142,7 @@ such as `Typescript
 <https://docs.scala-lang.org/tour/higher-order-functions.html>`_.
 
 Our goals are that:
+
 - Callable types using this syntax will be easier to learn and use,
   particularly for developers with experience in other languages.
 - Library authors will be more likely to use expressive types for
@@ -328,6 +330,7 @@ to an operator like ``|``::
 
 
 We discussed each of these behaviors and believe they are desirable:
+
 - Union types (represented by ``A | B`` according to PEP 604) are
   valid in function signature returns, so we need to allow operators
   in the return position for consistency.
@@ -403,6 +406,7 @@ Incompatibility with other possible uses of ``*`` and ``**``
 The use of ``**P`` for supporting PEP 612 ``ParamSpec`` rules out any
 future proposal using a bare ``**<some_type>`` to type
 ``kwargs``. This seems acceptable because:
+
 - If we ever do want such a syntax, it would be clearer to require an
   argument name anyway. This would also make the type look more
   similar to a function signature. In other words, if we ever support
@@ -416,6 +420,7 @@ Runtime Behavior
 ----------------
 
 Our tentative plan is that:
+
 - The ``__repr__`` will show an arrow syntax literal.
 - We will provide a new API where the runtime data structure can be
   accessed in the same manner as the AST data structure.
@@ -442,6 +447,7 @@ signatures that include named, optional, and variadic arguments.
 
 To determine which features we most needed to support with a callable
 type syntax, we did an extensive analysis of existing projects:
+
 - `stats on use of the ``Callable`` type
 <https://github.com/pradeep90/annotation_collector#typed-projects---callable-type>`_;
 - `stats on how untyped and partially-typed callbacks are actually called
@@ -450,6 +456,7 @@ type syntax, we did an extensive analysis of existing projects:
 We decided on a simple proposal with improved syntax for the existing
 ``Callable`` type because the vast majority of callbacks can be correctly
 described by the existing ``typing.Callable`` semantics:
+
 - Positional parameters: By far the most important case to handle well
   is simple callable types with positional parameters, such as
   ``(int, str) -> bool`
@@ -489,6 +496,7 @@ Furthermore, the ability to handle named, optional, and variadic
 arguments
 
 We decided against proposing it for the following reasons:
+
 - The implementation would have been more difficult, and usage stats
   demonstrate that fewer than 3% of use cases would benefit from any
   of the added features.
@@ -534,6 +542,7 @@ In this proposal, the following types would have been equivalent::
 
 
 The benefits of this proposal would have included:
+
 - Perfect syntactic consistency between signatures and callable types.
 - Support for more features of function signatures (named, optional,
   variadic args) that this PEP does not support.
@@ -566,6 +575,7 @@ signature, with roughly the same semantics as the ``__call__`` method
 of Callback Protocols. Think this may be a great idea and worth its
 own PEP, but that it is not a good alternative to improving the
 usability of callable types:
+
 - Using functions as types would not give us a new way of describing
   function types as first class values. Instead, they would require a
   function definition statement that effectively defines a type alias
@@ -713,6 +723,7 @@ we don't have to click through just to see a simple example of each
 language.)
 
 Other languages use a similar arrow syntax to express callable types:
+
 - `Typescript <https://basarat.gitbook.io/typescript/type-system/callable#arrow-syntax>`_ uses ``=>``.
 - `Kotlin <https://kotlinlang.org/docs/lambdas.html>`_ uses ``->``.
 - `Scala <https://docs.scala-lang.org/tour/higher-order-functions.html>`_ uses ``=>``.
