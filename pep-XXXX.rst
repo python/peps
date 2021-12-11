@@ -13,9 +13,15 @@ Post-History:
 Abstract
 ========
 
-This PEP introduces a concise and friendly syntax for callable types, supporting the same functionality as ``typing.Callable`` but with an arrow syntax inspired by the syntax for typed function signatures. This allows types like ``Callable[[int, str], bool]`` to be written ``(int, str) -> bool``.
+This PEP introduces a concise and friendly syntax for callable types,
+supporting the same functionality as ``typing.Callable`` but with an
+arrow syntax inspired by the syntax for typed function
+signatures. This allows types like ``Callable[[int, str], bool]`` to
+be written ``(int, str) -> bool``.
 
-The proposed syntax supports all the functionality provided by ``typing.Callable`` and ``typing.Concatenate``, and is intended to work as a drop-in replacement.
+The proposed syntax supports all the functionality provided by
+``typing.Callable`` and ``typing.Concatenate``, and is intended to
+work as a drop-in replacement.
 
 
 Motivation
@@ -51,8 +57,8 @@ complicated.
 Problems with ``typing.Callable``
 ---------------------------------
 
-Empirically `we have
-found<https://github.com/pradeep90/annotation_collector#typed-projects---callable-type>`
+Empirically `we have found
+<https://github.com/pradeep90/annotation_collector#typed-projects---callable-type>`
 that it is common for library authors to make use of untyped or
 partially-typed callables (e.g. ``Callable[..., Any]`` or a bare
 ``Callable``) which we believe is partially a result of the existing
@@ -166,15 +172,29 @@ the original code.
 Rationale
 =========
 
-The ``Callable`` type is widely used. For example, as of October 2021 it was the fifth most common complex type in typeshed [#typeshed-stats]_, after ``Optional``, ``Tuple``, ``Union``, and ``List``.
+The ``Callable`` type is widely used. For example, as of October 2021
+it was the fifth most common complex type in typeshed
+[#typeshed-stats]_, after ``Optional``, ``Tuple``, ``Union``, and
+``List``.
 
-Most of the other commonly used types have had their syntax improved via either PEP 604 or PEP 585. ``Callable`` is used heavily enough to similarly justify a more usable syntax.
+Most of the other commonly used types have had their syntax improved
+via either PEP 604 or PEP 585. ``Callable`` is used heavily enough to
+similarly justify a more usable syntax.
 
-In this proposal, we chose to support all the existing semantics of ``typing.Callable``, without adding support for new features. We took this decision after examining how frequently each feature might be used in existing typed and untyped open-source code. We determined that the vast majority of use cases are covered.
+In this proposal, we chose to support all the existing semantics of
+``typing.Callable``, without adding support for new features. We took
+this decision after examining how frequently each feature might be
+used in existing typed and untyped open-source code. We determined
+that the vast majority of use cases are covered.
 
-We considered adding support for named, optional, and variadic arguments. However, we decided against including these features, as our analysis showed they are infrequently used. When they are really needed, it is possible to type these using Callback Protocols [#callback-protocols]_.
+We considered adding support for named, optional, and variadic
+arguments. However, we decided against including these features, as
+our analysis showed they are infrequently used. When they are really
+needed, it is possible to type these using Callback Protocols
+[#callback-protocols]_.
 
-See the Rejected Alternatives section for more detailed discussion about omitted features.
+See the Rejected Alternatives section for more detailed discussion
+about omitted features.
 
 Specification
 =============
@@ -182,9 +202,11 @@ Specification
 Typing Behavior
 ---------------
 
-Type checkers should treat the new syntax with exactly the same semantics as ``typing.Callable``.
+Type checkers should treat the new syntax with exactly the same
+semantics as ``typing.Callable``.
 
-As such, a type checker should treat the following pairs exactly the same::
+As such, a type checker should treat the following pairs exactly the
+same::
 
    from typing import Awaitable, Callable, Concatenate, ParamSpec, TypeVarTuple
 
@@ -253,7 +275,9 @@ Here are our proposed changes to the [#python-grammar]_::
 
 
 
-If PEP 646 is accepted, we intend to include support for unpacked types by modifying the grammar for ``callable_type_positional_argument`` as follows::
+If PEP 646 is accepted, we intend to include support for unpacked
+types by modifying the grammar for
+``callable_type_positional_argument`` as follows::
 
     callable_type_positional_argument:
         | expression ','
@@ -288,16 +312,26 @@ Precedence of ->
     def f() -> ((int) -> ((str) -> bool)): pass
 
 
-Because operators bind more tightly than ``->``, parentheses are required whenever an arrow type is intended to be inside an argument to an operator like ``|``::
+Because operators bind more tightly than ``->``, parentheses are
+required whenever an arrow type is intended to be inside an argument
+to an operator like ``|``::
 
     (int) -> bool | () -> bool    # syntax error!
     (int) -> bool | (() -> bool)  # okay
 
 
 We discussed each of these behaviors and believe they are desirable:
-- Union types (represented by ``A | B`` according to PEP 604) are valid in function signature returns, so we need to allow operators in the return position for consistency.
-- Given that operators bind more tightly than ``->`` it is correct that a type like ```bool | () -> bool`` must be a syntax error. We should be sure the error message is clear because this may be a common mistake.
-- Associating ``->`` to the right, rather than requiring explicit parentheses, is consistent with other languages like TypeScript and respects the principle that valid expressions should normally be substitutable when possible.
+- Union types (represented by ``A | B`` according to PEP 604) are
+  valid in function signature returns, so we need to allow operators
+  in the return position for consistency.
+- Given that operators bind more tightly than ``->`` it is correct
+  that a type like ```bool | () -> bool`` must be a syntax error. We
+  should be sure the error message is clear because this may be a
+  common mistake.
+- Associating ``->`` to the right, rather than requiring explicit
+  parentheses, is consistent with other languages like TypeScript and
+  respects the principle that valid expressions should normally be
+  substitutable when possible.
 
 ``async`` Keyword
 ‘’’’’’’’’’’’’’’’’
@@ -317,66 +351,114 @@ All of the binding rules still work for async callable types::
 Trailing Commas
 ‘’’’’’’’’’’’’’’
 
-- Following the precedent of function signatures, putting a comma in an empty arguments list is illegal, ``(,) -> bool`` is a syntax error.
-- Again following precedent, trailing commas are otherwise always permitted::
+- Following the precedent of function signatures, putting a comma in
+  an empty arguments list is illegal, ``(,) -> bool`` is a syntax
+  error.
+- Again following precedent, trailing commas are otherwise always
+  permitted::
 
 
     ((int,) -> bool == (int) -> bool
     ((int, **P,) -> bool == (int, **P) -> bool
     ((...,) -> bool) == ((...) -> bool)
 
-Allowing trailing commas also gives autoformatters more flexibility when splitting callable types across lines, which is always legal following standard python whitespace rules.
+Allowing trailing commas also gives autoformatters more flexibility
+when splitting callable types across lines, which is always legal
+following standard python whitespace rules.
 
 
 Disallowing ``...`` as an Argument Type
 ‘’’’’’’’’’’’’’’‘’’’’’’’’’’’’’’‘’’’’’’’’
 
-Under normal circumstances, any valid expression is permitted where we want a type annotation and ``...`` is a valid expression. This is never semantically valid and all type checkers would reject it, but the grammar would allow it if we didn’t explicitly prevent this.
+Under normal circumstances, any valid expression is permitted where we
+want a type annotation and ``...`` is a valid expression. This is
+never semantically valid and all type checkers would reject it, but
+the grammar would allow it if we didn’t explicitly prevent this.
 
-We decided that there were compelling reasons to prevent it:
-- The semantics of ``(...) -> bool`` are different from ``(T) -> bool`` for any valid type T: ``(...)`` is a special form indicating ``AnyArguments`` whereas ``T`` is a type parameter in the arguments list.
-- ``...`` is used as a placeholder default value to indicate an optional argument in stubs and Callback Protocols. Allowing it in the position of a type could easily lead to confusion and possibly bugs due to typos.
+We decided that there were compelling reasons to prevent it: - The
+semantics of ``(...) -> bool`` are different from ``(T) -> bool`` for
+any valid type T: ``(...)`` is a special form indicating
+``AnyArguments`` whereas ``T`` is a type parameter in the arguments
+list.  - ``...`` is used as a placeholder default value to indicate an
+optional argument in stubs and Callback Protocols. Allowing it in the
+position of a type could easily lead to confusion and possibly bugs
+due to typos.
 
-Since ``...`` is meaningless as a type and there are usability concerns, our grammar rules it out and the following is a syntax error::
+Since ``...`` is meaningless as a type and there are usability
+concerns, our grammar rules it out and the following is a syntax
+error::
 
     (int, ...) -> bool
 
 Incompatibility with other possible uses of ``*`` and ``**``
 ‘’’’’’’‘’’’’’’‘’’’’’’‘’’’’’’‘‘’’’’’’‘’’’’’’‘’‘’’’’’’‘’’‘’’’’
 
-The use of ``**P`` for supporting PEP 612 ``ParamSpec`` rules out any future proposal using a bare ``**<some_type>`` to type ``kwargs``. This seems acceptable because:
-- If we ever do want such a syntax, it would be clearer to require an argument name anyway. This would also make the type look more similar to a function signature. In other words, if we ever support typing ``kwargs`` in callable types, we would prefer ``(int, **kwargs: str)`` rather than ``(int, **str)``.
-- PEP 646 unpacking syntax would rule out using ``*<some_type>`` for ``args``. The ``kwargs`` case is similar enough that this rules out a bare ``**<some_type>`` anyway.
+The use of ``**P`` for supporting PEP 612 ``ParamSpec`` rules out any
+future proposal using a bare ``**<some_type>`` to type
+``kwargs``. This seems acceptable because:
+- If we ever do want such a syntax, it would be clearer to require an
+  argument name anyway. This would also make the type look more
+  similar to a function signature. In other words, if we ever support
+  typing ``kwargs`` in callable types, we would prefer ``(int,
+  **kwargs: str)`` rather than ``(int, **str)``.
+- PEP 646 unpacking syntax would rule out using ``*<some_type>`` for
+  ``args``. The ``kwargs`` case is similar enough that this rules out
+  a bare ``**<some_type>`` anyway.
 
 Runtime Behavior
 ----------------
 
 The precise details of runtime behavior are still under discussion.
 
-We have a separate doc [#runtime-behavior-specification]_ with a very detailed tentative plan, which we can also use for discussion.
+We have a separate doc [#runtime-behavior-specification]_ with a very
+detailed tentative plan, which we can also use for discussion.
 
 In short, the plan is that:
 - The ``__repr__`` will show an arrow syntax literal.
-- We will provide a new API where the runtime data structure can be accessed in the same manner as the AST data structure.
-- We will ensure that we provide an API that is backward-compatible with ``typing.Callable`` and ``typing.Concatenate``, specifically the behavior of ``__args__`` and ``__parameters__``.
+- We will provide a new API where the runtime data structure can be
+  accessed in the same manner as the AST data structure.
+- We will ensure that we provide an API that is backward-compatible
+  with ``typing.Callable`` and ``typing.Concatenate``, specifically
+  the behavior of ``__args__`` and ``__parameters__``.
 
 
 Rejected Alternatives
 =====================
 
-Many of the alternatives we considered would have been more expressive than ``typing.Callable``, for example adding support for describing signatures that include named, optional, and variadic arguments.
+Many of the alternatives we considered would have been more expressive
+than ``typing.Callable``, for example adding support for describing
+signatures that include named, optional, and variadic arguments.
 
-We decided on a simple proposal focused just on improving syntax for the existing ``Callable`` type based on an extensive analysis of existing projects (see [#callable-type-usage-stats]_, [#callback-usage-stats-typed]_, [#callback-usage-stats]_). We determined that the vast majority of callbacks can be correctly described by the existing ``typing.Callable`` semantics:
-- Positional parameters: By far the most important case to handle well is simple callable types with positional parameters, such as ``(int, str) -> bool``
-- ParamSpec and Concatenate: The next most important feature is good support for PEP 612 ``ParamSpec`` and ``Concatenate`` types like ``(**P) -> bool`` and ``(int, **P) -> bool``. These are common primarily because of the heavy use of decorator patterns in python code.
-- TypeVarTuples: The next most important feature, assuming PEP 646 is accepted, is for unpacked types which are common because of cases where a wrapper passes along ``*args`` to some other function.
+We decided on a simple proposal focused just on improving syntax for
+the existing ``Callable`` type based on an extensive analysis of
+existing projects (see [#callable-type-usage-stats]_,
+[#callback-usage-stats-typed]_, [#callback-usage-stats]_). We
+determined that the vast majority of callbacks can be correctly
+described by the existing ``typing.Callable`` semantics: - Positional
+parameters: By far the most important case to handle well is simple
+callable types with positional parameters, such as ``(int, str) ->
+bool`` - ParamSpec and Concatenate: The next most important feature is
+good support for PEP 612 ``ParamSpec`` and ``Concatenate`` types like
+``(**P) -> bool`` and ``(int, **P) -> bool``. These are common
+primarily because of the heavy use of decorator patterns in python
+code.  - TypeVarTuples: The next most important feature, assuming PEP
+646 is accepted, is for unpacked types which are common because of
+cases where a wrapper passes along ``*args`` to some other function.
 
-Features that other, more complicated proposals would support account for fewer than 2% of the use cases we found. These are already expressible using `Callback Protocols <https://www.python.org/dev/peps/pep-0544/#callback-protocols>`_, and since they are uncommon we decided that it made more sense to move forward with a simpler syntax.
+Features that other, more complicated proposals would support account
+for fewer than 2% of the use cases we found. These are already
+expressible using `Callback Protocols
+<https://www.python.org/dev/peps/pep-0544/#callback-protocols>`_, and
+since they are uncommon we decided that it made more sense to move
+forward with a simpler syntax.
 
 Extended Syntax Supporting Named and Optional Arguments
 -------------------------------------------------------
 
-Another alternative was for a compatible but more complex syntax that could express everything in this PEP but also named, optional, and variadic arguments. In this “extended” syntax proposal the following types would have been equivalent::
+Another alternative was for a compatible but more complex syntax that
+could express everything in this PEP but also named, optional, and
+variadic arguments. In this “extended” syntax proposal the following
+types would have been equivalent::
 
     class Function(typing.Protocol):
         def f(self, x: int, /, y: float, *, z: bool = ..., **kwargs: str) -> bool:
@@ -384,25 +466,45 @@ Another alternative was for a compatible but more complex syntax that could expr
 
     Function = (int, y: float, *, z: bool = ..., **kwargs: str) -> bool
 
-Advantages of this syntax include:
-- Most of the advantages of the proposal in this PEP (conciseness, PEP 612 support, etc)
-- Furthermore, the ability to handle named, optional, and variadic arguments
+Advantages of this syntax include: - Most of the advantages of the
+proposal in this PEP (conciseness, PEP 612 support, etc) -
+Furthermore, the ability to handle named, optional, and variadic
+arguments
 
 We decided against proposing it for the following reasons:
-- The implementation would have been more difficult, and usage stats demonstrate that fewer than 3% of use cases would benefit from any of the added features.
-- The group that debated these proposals was split down the middle about whether these changes are even desirable:
-  - On the one hand, they make callable types more expressive. On the other hand, they could easily confuse users who have not read the full specification of callable type syntax.
-  - We believe the simpler syntax proposed in this PEP, which introduces no new semantics and closely mimics syntax in other popular languages like Kotlin, Scala, and TypesScript, is much less likely to confuse users.
-- We intend to implement the current proposal in a way that is forward-compatible with the more complicated extended syntax. If the community decides after more experience and discussion that we want the additional features, they should be straightforward to propose in the future.
-- We realized that because of overloads, it is not possible to replace all need for Callback Protocols even with an extended syntax. This makes us prefer proposing a simple solution that handles most use cases well.
+- The implementation would have been more difficult, and usage stats
+  demonstrate that fewer than 3% of use cases would benefit from any
+  of the added features.
+- The group that debated these proposals was split down the middle
+  about whether these changes are even desirable:
+  - On the one hand, they make callable types more expressive. On the
+    other hand, they could easily confuse users who have not read the
+    full specification of callable type syntax.
+  - We believe the simpler syntax proposed in this PEP, which
+    introduces no new semantics and closely mimics syntax in other
+    popular languages like Kotlin, Scala, and TypesScript, is much
+    less likely to confuse users.
+- We intend to implement the current proposal in a way that is
+  forward-compatible with the more complicated extended syntax. If the
+  community decides after more experience and discussion that we want
+  the additional features, they should be straightforward to propose
+  in the future.
+- We realized that because of overloads, it is not possible to replace
+  all need for Callback Protocols even with an extended syntax. This
+  makes us prefer proposing a simple solution that handles most use
+  cases well.
 
-We confirmed that the current proposal is forward-compatible with extended syntax by implementing a quick-and-dirty grammar and AST on top of the grammar and AST for the current proposal [#callable-type-syntax--extended]_.
+We confirmed that the current proposal is forward-compatible with
+extended syntax by implementing a quick-and-dirty grammar and AST on
+top of the grammar and AST for the current proposal
+[#callable-type-syntax--extended]_.
 
 
 Syntax Closer to Function Signatures
 ------------------------------------
 
-One alternative we had floated was a syntax much more similar to function signatures.
+One alternative we had floated was a syntax much more similar to
+function signatures.
 
 In this proposal, the following types would have been equivalent::
 
@@ -415,12 +517,21 @@ In this proposal, the following types would have been equivalent::
 
 The benefits of this proposal would have included:
 - Perfect syntactic consistency between signatures and callable types.
-- Support for more features of function signatures (named, optional, variadic args) that this PEP does not support.
+- Support for more features of function signatures (named, optional,
+  variadic args) that this PEP does not support.
 
 Key downsides that led us to reject the idea include the following:
-- A large majority of use cases only use positional-only arguments, and this syntax would be more verbose for that use case, both because of requiring argument names and an explicit ``/``, for example ``(int, /) -> bool`` where our proposal allows ``(int) -> bool``
-- The requirement for explicit ``/`` for positional-only arguments has a high risk of causing frequent bugs - which often wouldn’t be detected by unit tests - where library authors would accidentally use types with named arguments.
-- Our analysis suggests that support for ``ParamSpec`` is key, but the scoping rules laid out in PEP 612 would have made this difficult.
+- A large majority of use cases only use positional-only arguments,
+  and this syntax would be more verbose for that use case, both
+  because of requiring argument names and an explicit ``/``, for
+  example ``(int, /) -> bool`` where our proposal allows ``(int) ->
+  bool``
+- The requirement for explicit ``/`` for positional-only arguments has
+  a high risk of causing frequent bugs - which often wouldn’t be
+  detected by unit tests - where library authors would accidentally
+  use types with named arguments.
+- Our analysis suggests that support for ``ParamSpec`` is key, but the
+  scoping rules laid out in PEP 612 would have made this difficult.
 
 
 Other Proposals Considered
@@ -429,33 +540,61 @@ Other Proposals Considered
 Functions-as-Types
 ''''''''''''''''''
 
-An idea we looked at very early on was to `allow using functions as types<https://docs.google.com/document/d/1rv6CCDnmLIeDrYlXe-QcyT0xNPSYAuO1EBYjU3imU5s/edit?usp=sharing>`. The idea is allowing a function to stand in for its own call signature, with roughly the same semantics as the ``__call__`` method of Callback Protocols. Think this may be a great idea and worth its own PEP, but that it is not a good alternative to improving the usability of callable types:
-- Using functions as types would not give us a new way of describing function types as first class values. Instead, they would require a function definition statement that effectively defines a type alias (much as a Callable Protocol class statement does).
-- Functions-as-types would support almost exactly the same features that Callable Protocols do today: named, optional, and variadic args as well as the ability to define overloads.
+An idea we looked at very early on was to `allow using functions as
+types<https://docs.google.com/document/d/1rv6CCDnmLIeDrYlXe-QcyT0xNPSYAuO1EBYjU3imU5s/edit?usp=sharing>`. The
+idea is allowing a function to stand in for its own call signature,
+with roughly the same semantics as the ``__call__`` method of Callback
+Protocols. Think this may be a great idea and worth its own PEP, but
+that it is not a good alternative to improving the usability of
+callable types:
+- Using functions as types would not give us a new way of describing
+  function types as first class values. Instead, they would require a
+  function definition statement that effectively defines a type alias
+  (much as a Callable Protocol class statement does).
+- Functions-as-types would support almost exactly the same features
+  that Callable Protocols do today: named, optional, and variadic args
+  as well as the ability to define overloads.
 
 Parenthesis-Free Syntax
 '''''''''''''''''''''''
 
-We considered a parentheses-free syntax that would have been even more concise::
+We considered a parentheses-free syntax that would have been even more
+concise::
 
     int, str -> bool
 
-We decided against it because this is not visually as similar to existing function header syntax. Moreover, it is visually similar to lambdas, which bind names with no parentheses: ``lambda x, y: x == y``.
+We decided against it because this is not visually as similar to
+existing function header syntax. Moreover, it is visually similar to
+lambdas, which bind names with no parentheses: ``lambda x, y: x ==
+y``.
 
 Introducing type-strings
 ''''''''''''''''''''''''
 
-Another idea was a new “special string” syntax an puting the type inside of it, for example ``t”(int, str) -> bool”``. We rejected this because it is not as readable, and seems out of step with guidance from the Steering Council on ensuring that type expressions do not diverge from the rest of Python's syntax. [#python-types-and-runtime-guidance]_
+Another idea was a new “special string” syntax an puting the type
+inside of it, for example ``t”(int, str) -> bool”``. We rejected this
+because it is not as readable, and seems out of step with guidance
+from the Steering Council on ensuring that type expressions do not
+diverge from the rest of Python's
+syntax. [#python-types-and-runtime-guidance]_
 
 
 Backwards Compatibility
 =======================
 
-This PEP proposes a major syntax improvement over ``typing.Callable``, but the static semantics are the same.
+This PEP proposes a major syntax improvement over ``typing.Callable``,
+but the static semantics are the same.
 
-As such, the only thing we need for backward compatibility is to ensure that types specified via the new syntax behave the same as equivalent ``typing.Callable`` and ``typing.Concatenate`` values they intend to replace.
+As such, the only thing we need for backward compatibility is to
+ensure that types specified via the new syntax behave the same as
+equivalent ``typing.Callable`` and ``typing.Concatenate`` values they
+intend to replace.
 
-There is no particular interaction between this proposal and ``from __future__ import annotations`` - just like any other type annotation it will be unparsed to a string at module import, and ``typing.get_type_hints`` should correctly evaluate the resulting strings in cases where that is possible.
+There is no particular interaction between this proposal and ``from
+__future__ import annotations`` - just like any other type annotation
+it will be unparsed to a string at module import, and
+``typing.get_type_hints`` should correctly evaluate the resulting
+strings in cases where that is possible.
 
 This is discussed in more detail in the Runtime Behavior section.
 
@@ -463,16 +602,29 @@ This is discussed in more detail in the Runtime Behavior section.
 Reference Implementation
 ========================
 
-We have a working implementation of the AST and Grammar [#callable-type-syntax--shorthand]_ with tests verifying that the grammar proposed here has the desired behaviors.
+We have a working implementation of the AST and Grammar
+[#callable-type-syntax--shorthand]_ with tests verifying that the
+grammar proposed here has the desired behaviors.
 
-There is no runtime implementation yet. At a high level we are committed to the following by backward compatibility:
-- We will need new object types for both the callable type and concatenation type, tentatively defined in C and exposed as ``types.CallableType`` and ``types.CallableConcatenateType`` in a manner similar to ``types.UnionType``.
-- The new types must support existing ``typing.Callable`` and ``typing.Concatenate`` runtime APIs almost exactly:
-  - The ``__repr__`` methods will differ and display the new builtin syntax;
-  - But the ``__args__`` and ``__parameters__`` fields must behave the same;
-  - And the indexing operation - which returns a new type object with concrete types substituted for various entries in ``__parameters__``, must also be the same.
+There is no runtime implementation yet. At a high level we are
+committed to the following by backward compatibility:
+- We will need new object types for both the callable type and
+  concatenation type, tentatively defined in C and exposed as
+  ``types.CallableType`` and ``types.CallableConcatenateType`` in a
+  manner similar to ``types.UnionType``.
+- The new types must support existing ``typing.Callable`` and
+  ``typing.Concatenate`` runtime APIs almost exactly:
+  - The ``__repr__`` methods will differ and display the new builtin
+    syntax;
+  - But the ``__args__`` and ``__parameters__`` fields must behave the
+    same;
+  - And the indexing operation - which returns a new type object with
+    concrete types substituted for various entries in
+    ``__parameters__``, must also be the same.
 
-We will return to more details of the runtime behavior, which remain open to discussion other than backward compatibility, in the Open Issues section below.
+We will return to more details of the runtime behavior, which remain
+open to discussion other than backward compatibility, in the Open
+Issues section below.
 
 
 Open Issues
@@ -481,24 +633,43 @@ Open Issues
 Details of the Runtime API
 --------------------------
 
-The new runtime objects to which this syntax evaluates will remain backward-compatible with the ``typing.Callable`` and ``typing.Concatenate`` types they replace, other than details like ``__repr__`` where some behavior change makes sense.
+The new runtime objects to which this syntax evaluates will remain
+backward-compatible with the ``typing.Callable`` and
+``typing.Concatenate`` types they replace, other than details like
+``__repr__`` where some behavior change makes sense.
 
-But we also believe that we should have a new runtime API with more structured data access, since:
-- Callable types have a more complicated shape than other generics, especially given the behavior when using ``...`` and ``typing.Concatenate``.
-- In the future we might want to add more features, such as support for named and optional arguments, that would be even more difficult to describe well using only ``__args__`` and ``__parameters___``.
+But we also believe that we should have a new runtime API with more
+structured data access, since: - Callable types have a more
+complicated shape than other generics, especially given the behavior
+when using ``...`` and ``typing.Concatenate``.  - In the future we
+might want to add more features, such as support for named and
+optional arguments, that would be even more difficult to describe well
+using only ``__args__`` and ``__parameters___``.
 
-Our tentative plan is to define enough new builtins for the runtime data to mirror the shape of the AST, but other options are also possible. See [#runtime-behavior-specification]_ for a detailed description of the current plan and a place to discuss other ideas.
+Our tentative plan is to define enough new builtins for the runtime
+data to mirror the shape of the AST, but other options are also
+possible. See [#runtime-behavior-specification]_ for a detailed
+description of the current plan and a place to discuss other ideas.
 
-Once the runtime behavior is fully defined we will add a complete evaluation model and description of behavior to this PEP.
+Once the runtime behavior is fully defined we will add a complete
+evaluation model and description of behavior to this PEP.
 
 Optimizing ``SyntaxError`` messages
 -----------------------------------
 
-The current reference implementation has a fully-functional parser and all edge cases presented here have been tested.
+The current reference implementation has a fully-functional parser and
+all edge cases presented here have been tested.
 
-But there are some known cases where the errors are not as informative as we would like. For example, because ``(int, ...) -> bool`` is illegal but ``(int, ...)`` is a valid tuple, we currently produce a syntax error flagging the ``->`` as the problem even though the real cause of the error is using ``...`` as an argument type.
+But there are some known cases where the errors are not as informative
+as we would like. For example, because ``(int, ...) -> bool`` is
+illegal but ``(int, ...)`` is a valid tuple, we currently produce a
+syntax error flagging the ``->`` as the problem even though the real
+cause of the error is using ``...`` as an argument type.
 
-This is not part of the specification *per se* but is an important detail to address in our implementation. The solution will likely involve adding ``invalid_.*`` rules to ``python.gram`` and customizing error messages.
+This is not part of the specification *per se* but is an important
+detail to address in our implementation. The solution will likely
+involve adding ``invalid_.*`` rules to ``python.gram`` and customizing
+error messages.
 
 Resources
 =========
@@ -506,34 +677,44 @@ Resources
 Background and History
 ----------------------
 
-PEP 484 [#pep-484-function-type-hints]_ specifies a very similar syntax for function type hint *comments* for use in code that needs to work on Python 2.7. For example::
+PEP 484 [#pep-484-function-type-hints]_ specifies a very similar
+syntax for function type hint *comments* for use in code that needs to
+work on Python 2.7. For example::
 
     def f(x, y):
         # type: (int, str) -> bool
         ...
 
-At that time we used indexing operations to specify generic types like ``typing.Callable`` because we decided not to add syntax for types. However, we have since begun to do so, e.g. with PEP 604.
+At that time we used indexing operations to specify generic types like
+``typing.Callable`` because we decided not to add syntax for
+types. However, we have since begun to do so, e.g. with PEP 604.
 
-**Maggie** proposed better callable type syntax at the PyCon Typing Summit 2021: [#type-syntax-simplification]_ ([#type-variables-for-all-slides]_).
+**Maggie** proposed better callable type syntax at the PyCon Typing
+Summit 2021: [#type-syntax-simplification]_
+([#type-variables-for-all-slides]_).
 
-**Steven** brought up this proposal on typing-sig: [#typing-sig-thread]_.
+**Steven** brought up this proposal on typing-sig:
+[#typing-sig-thread]_.
 
-**Pradeep** brought this proposal to python-dev for feedback: [#python-dev-thread]_.
+**Pradeep** brought this proposal to python-dev for feedback:
+[#python-dev-thread]_.
 
 Other Languages
 ---------------
 
 Other languages use a similar arrow syntax to express callable types:
-Kotlin uses ``->`` [#kotlin]_
-Typescript uses ``=>`` [#typescript]_
-Flow uses ``=>`` [#flow]_
+- Kotlin uses ``->`` [#kotlin]_
+- Typescript uses ``=>`` [#typescript]_
+- Flow uses ``=>`` [#flow]_
 
 Acknowledgments
 ---------------
 
-Thanks to the following people for their feedback on the PEP and help planning the reference implementation:
+Thanks to the following people for their feedback on the PEP and help
+planning the reference implementation:
 
-Alex Waygood, Guido Van Rossum, Eric Traut, James Hilton-Balfe, Maggie Moss, Shannon Zhu
+Alex Waygood, Guido Van Rossum, Eric Traut, James Hilton-Balfe, Maggie
+Moss, Shannon Zhu
 
 TODO: MAKE SURE THE THANKS STAYS UP TO DATE
 
