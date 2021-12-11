@@ -58,7 +58,7 @@ Problems with ``typing.Callable``
 ---------------------------------
 
 Empirically `we have found
-<https://github.com/pradeep90/annotation_collector#typed-projects---callable-type>`
+<https://github.com/pradeep90/annotation_collector#typed-projects---callable-type>`_
 that it is common for library authors to make use of untyped or
 partially-typed callables (e.g. ``Callable[..., Any]`` or a bare
 ``Callable``) which we believe is partially a result of the existing
