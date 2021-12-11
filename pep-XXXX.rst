@@ -37,7 +37,8 @@ annotations defined by PEP 484 to provide type hints that can find
 bugs as well as helping with editor tooling like tab completion,
 static analysis tooling, and code review.
 
-One of the types defined by PEP 484 in the ``typing`` module is
+One of the types `defined by PEP 484
+<https://www.python.org/dev/peps/pep-0484/#callable>`_ in the is
 ``typing.Callable``, which describes a callable value such as a
 function or a method. It takes two parameters as inputs but with the
 first parameter being either a placeholder like ``...`` or a list of
@@ -83,11 +84,11 @@ consider the following code::
 
     f(True, z=15)
 
-The decorator here is not intended to modify the type of the function
-it wraps, but because it uses ``Callable[..., Any]`` it actually
-eliminates the annotations on ``f``, and type checkers will accept the
-code above even though it is sure to crash at runtime. A correct
-version of this code would look like this::
+The decorator above is clearly not intended to modify the type of the
+function it wraps, but because it uses ``Callable[..., Any]`` it
+accidentally eliminates the annotations on ``f``, and type checkers
+will accept the code above even though it is sure to crash at
+runtime. A correct version of this code would look like this::
 
     from typing import Any, Callable, Concatenate, ParamSpec, TypeVar
 
@@ -117,7 +118,8 @@ power:
   hard to read, especially when the function arguments themselves have
   square brackets.
 
-With our proposed syntax, the decorator example looks like this::
+With our proposed syntax, the properly-typed decorator example becomes
+concise and the type representations are visually descriptive::
 
     from typing import Any, ParamSpec, TypeVar
 
@@ -127,15 +129,18 @@ With our proposed syntax, the decorator example looks like this::
     def with_retries(f: (**P) -> R) -> (bool, **P) -> R:
         ...
 
-
 An Arrow Syntax for Callable Types
 ----------------------------------
 
 We are proposing a succinct, easy-to-use syntax for
-``typing.Callable`` that looks similar to function headers in Python,
-as well as the arrow syntax used by several other popular languages.
+``typing.Callable`` that looks similar to function headers in Python.
+Our proposal closely follows syntax used by several popular languages
+such as `Typescript
+<https://basarat.gitbook.io/typescript/type-system/callable#arrow-syntax>`_,
+`Kotlin <https://kotlinlang.org/docs/lambdas.html>`_, and `Scala
+<https://docs.scala-lang.org/tour/higher-order-functions.html>`_.
 
-Our goal is that
+Our goals are that:
 - Callable types using this syntax will be easier to learn and use,
   particularly for developers with experience in other languages.
 - Library authors will be more likely to use expressive types for
@@ -172,10 +177,11 @@ the original code.
 Rationale
 =========
 
-The ``Callable`` type is widely used. For example, as of October 2021
-it was the fifth most common complex type in typeshed
-[#typeshed-stats]_, after ``Optional``, ``Tuple``, ``Union``, and
-``List``.
+The ``Callable`` type is widely used. For example, `as of October 2021
+it was
+<https://github.com/pradeep90/annotation_collector#overall-stats-in-typeshed>`_
+the fifth most common complex type in typeshed, after ``Optional``,
+``Tuple``, ``Union``, and ``List``.
 
 Most of the other commonly used types have had their syntax improved
 via either PEP 604 or PEP 585. ``Callable`` is used heavily enough to
@@ -190,8 +196,8 @@ that the vast majority of use cases are covered.
 We considered adding support for named, optional, and variadic
 arguments. However, we decided against including these features, as
 our analysis showed they are infrequently used. When they are really
-needed, it is possible to type these using Callback Protocols
-[#callback-protocols]_.
+needed, it is possible to type these using `Callback Protocols
+<https://mypy.readthedocs.io/en/stable/protocols.html#callback-protocols>`_.
 
 See the Rejected Alternatives section for more detailed discussion
 about omitted features.
@@ -248,7 +254,8 @@ The proposed new syntax can be described by these AST changes ::
                             | Concatenation(expr* posonlyargs, expr param_spec)
 
 
-Here are our proposed changes to the [#python-grammar]_::
+Here are our proposed changes to the `Python Grammar
+<https://docs.python.org/3/reference/grammar.htm>`::
 
     expression:
         | disjunction disjunction 'else' expression
@@ -408,12 +415,7 @@ future proposal using a bare ``**<some_type>`` to type
 Runtime Behavior
 ----------------
 
-The precise details of runtime behavior are still under discussion.
-
-We have a separate doc [#runtime-behavior-specification]_ with a very
-detailed tentative plan, which we can also use for discussion.
-
-In short, the plan is that:
+Our tentative plan is that:
 - The ``__repr__`` will show an arrow syntax literal.
 - We will provide a new API where the runtime data structure can be
   accessed in the same manner as the AST data structure.
@@ -421,6 +423,15 @@ In short, the plan is that:
   with ``typing.Callable`` and ``typing.Concatenate``, specifically
   the behavior of ``__args__`` and ``__parameters__``.
 
+Because these details are still under debate we are currently
+maintaining `a separate doc
+<https://docs.google.com/document/d/15nmTDA_39Lo-EULQQwdwYx_Q1IYX4dD5WPnHbFG71Lk/edit>`_
+with details about the new builtins, the evaluation model, how to
+provide both a backward-compatible and more structured API, and
+possible alternatives to the current plan.
+
+Once the plan is finalized we will include a full specification of
+runtime behavior in this section of the PEP.
 
 Rejected Alternatives
 =====================
@@ -429,21 +440,27 @@ Many of the alternatives we considered would have been more expressive
 than ``typing.Callable``, for example adding support for describing
 signatures that include named, optional, and variadic arguments.
 
-We decided on a simple proposal focused just on improving syntax for
-the existing ``Callable`` type based on an extensive analysis of
-existing projects (see [#callable-type-usage-stats]_,
-[#callback-usage-stats-typed]_, [#callback-usage-stats]_). We
-determined that the vast majority of callbacks can be correctly
-described by the existing ``typing.Callable`` semantics: - Positional
-parameters: By far the most important case to handle well is simple
-callable types with positional parameters, such as ``(int, str) ->
-bool`` - ParamSpec and Concatenate: The next most important feature is
-good support for PEP 612 ``ParamSpec`` and ``Concatenate`` types like
-``(**P) -> bool`` and ``(int, **P) -> bool``. These are common
-primarily because of the heavy use of decorator patterns in python
-code.  - TypeVarTuples: The next most important feature, assuming PEP
-646 is accepted, is for unpacked types which are common because of
-cases where a wrapper passes along ``*args`` to some other function.
+To determine which features we most needed to support with a callable
+type syntax, we did an extensive analysis of existing projects:
+- `stats on use of the ``Callable`` type
+<https://github.com/pradeep90/annotation_collector#typed-projects---callable-type>`_;
+- `stats on how untyped and partially-typed callbacks are actually called
+<https://github.com/pradeep90/annotation_collector#typed-projects---callback-usage>`_.
+
+We decided on a simple proposal with improved syntax for the existing
+``Callable`` type because the vast majority of callbacks can be correctly
+described by the existing ``typing.Callable`` semantics:
+- Positional parameters: By far the most important case to handle well
+  is simple callable types with positional parameters, such as
+  ``(int, str) -> bool`
+- ParamSpec and Concatenate: The next most important feature is good
+  support for PEP 612 ``ParamSpec`` and ``Concatenate`` types like
+  ``(**P) -> bool`` and ``(int, **P) -> bool``. These are common
+  primarily because of the heavy use of decorator patterns in python
+  code.
+- TypeVarTuples: The next most important feature, assuming PEP 646 is
+  accepted, is for unpacked types which are common because of cases
+  where a wrapper passes along ``*args`` to some other function.
 
 Features that other, more complicated proposals would support account
 for fewer than 2% of the use cases we found. These are already
@@ -495,9 +512,10 @@ We decided against proposing it for the following reasons:
   cases well.
 
 We confirmed that the current proposal is forward-compatible with
-extended syntax by implementing a quick-and-dirty grammar and AST on
-top of the grammar and AST for the current proposal
-[#callable-type-syntax--extended]_.
+extended syntax by
+`implementing<https://github.com/stroxler/cpython/tree/callable-type-syntax--extended>`_
+a quick-and-dirty grammar and AST on top of the grammar and AST for
+the current proposal.
 
 
 Syntax Closer to Function Signatures
@@ -541,12 +559,13 @@ Functions-as-Types
 ~~~~~~~~~~~~~~~~~~
 
 An idea we looked at very early on was to `allow using functions as
-types<https://docs.google.com/document/d/1rv6CCDnmLIeDrYlXe-QcyT0xNPSYAuO1EBYjU3imU5s/edit?usp=sharing>`. The
-idea is allowing a function to stand in for its own call signature,
-with roughly the same semantics as the ``__call__`` method of Callback
-Protocols. Think this may be a great idea and worth its own PEP, but
-that it is not a good alternative to improving the usability of
-callable types:
+types
+<https://docs.google.com/document/d/1rv6CCDnmLIeDrYlXe-QcyT0xNPSYAuO1EBYjU3imU5s/edit?usp=sharing>`_.
+The idea is allowing a function to stand in for its own call
+signature, with roughly the same semantics as the ``__call__`` method
+of Callback Protocols. Think this may be a great idea and worth its
+own PEP, but that it is not a good alternative to improving the
+usability of callable types:
 - Using functions as types would not give us a new way of describing
   function types as first class values. Instead, they would require a
   function definition statement that effectively defines a type alias
@@ -573,14 +592,14 @@ Introducing type-strings
 
 Another idea was a new “special string” syntax an puting the type
 inside of it, for example ``t”(int, str) -> bool”``. We rejected this
-because it is not as readable, and seems out of step with guidance
+because it is not as readable, and seems out of step with `guidance
+<https://mail.python.org/archives/list/python-dev@python.org/message/SZLWVYV2HPLU6AH7DOUD7DWFUGBJGQAY/>`_
 from the Steering Council on ensuring that type expressions do not
-diverge from the rest of Python's
-syntax. [#python-types-and-runtime-guidance]_
+diverge from the rest of Python's syntax.
 
 
-Backwards Compatibility
-=======================
+Backward Compatibility
+======================
 
 This PEP proposes a major syntax improvement over ``typing.Callable``,
 but the static semantics are the same.
@@ -602,29 +621,17 @@ This is discussed in more detail in the Runtime Behavior section.
 Reference Implementation
 ========================
 
-We have a working implementation of the AST and Grammar
-[#callable-type-syntax--shorthand]_ with tests verifying that the
-grammar proposed here has the desired behaviors.
+We have a working `implementation
+<https://github.com/stroxler/cpython/tree/callable-type-syntax--shorthand>`_
+of the AST and Grammar with tests verifying that the grammar proposed
+here has the desired behaviors.
 
-There is no runtime implementation yet. At a high level we are
-committed to the following by backward compatibility:
-- We will need new object types for both the callable type and
-  concatenation type, tentatively defined in C and exposed as
-  ``types.CallableType`` and ``types.CallableConcatenateType`` in a
-  manner similar to ``types.UnionType``.
-- The new types must support existing ``typing.Callable`` and
-  ``typing.Concatenate`` runtime APIs almost exactly:
-  - The ``__repr__`` methods will differ and display the new builtin
-    syntax;
-  - But the ``__args__`` and ``__parameters__`` fields must behave the
-    same;
-  - And the indexing operation - which returns a new type object with
-    concrete types substituted for various entries in
-    ``__parameters__``, must also be the same.
-
-We will return to more details of the runtime behavior, which remain
-open to discussion other than backward compatibility, in the Open
-Issues section below.
+The runtime behavior is not yet implemented. As discussed in the
+`Runtime Behavior`_ portion of the spec we have a detailed plan for
+both a backward-compatible API and a more structured API in
+ `a separate doc
+<https://docs.google.com/document/d/15nmTDA_39Lo-EULQQwdwYx_Q1IYX4dD5WPnHbFG71Lk/edit>`_
+where we are also open to discussion and alternative ideas.
 
 
 Open Issues
@@ -633,26 +640,10 @@ Open Issues
 Details of the Runtime API
 --------------------------
 
-The new runtime objects to which this syntax evaluates will remain
-backward-compatible with the ``typing.Callable`` and
-``typing.Concatenate`` types they replace, other than details like
-``__repr__`` where some behavior change makes sense.
-
-But we also believe that we should have a new runtime API with more
-structured data access, since: - Callable types have a more
-complicated shape than other generics, especially given the behavior
-when using ``...`` and ``typing.Concatenate``.  - In the future we
-might want to add more features, such as support for named and
-optional arguments, that would be even more difficult to describe well
-using only ``__args__`` and ``__parameters___``.
-
-Our tentative plan is to define enough new builtins for the runtime
-data to mirror the shape of the AST, but other options are also
-possible. See [#runtime-behavior-specification]_ for a detailed
-description of the current plan and a place to discuss other ideas.
-
-Once the runtime behavior is fully defined we will add a complete
-evaluation model and description of behavior to this PEP.
+Once we have finalized all details of the runtime behavior, we
+will need to add a full specification of the behavior to the
+`Runtime Behavior`_ section of this PEP as well as include that
+behavior in our reference implementation.
 
 Optimizing ``SyntaxError`` messages
 -----------------------------------
@@ -677,9 +668,10 @@ Resources
 Background and History
 ----------------------
 
-PEP 484 [#pep-484-function-type-hints]_ specifies a very similar
-syntax for function type hint *comments* for use in code that needs to
-work on Python 2.7. For example::
+`PEP 484 specifies
+<https://www.python.org/dev/peps/pep-0484/#suggested-syntax-for-python-2-7-and-straddling-code>`_
+a very similar syntax for function type hint *comments* for use in
+code that needs to work on Python 2.7. For example::
 
     def f(x, y):
         # type: (int, str) -> bool
@@ -689,23 +681,42 @@ At that time we used indexing operations to specify generic types like
 ``typing.Callable`` because we decided not to add syntax for
 types. However, we have since begun to do so, e.g. with PEP 604.
 
-**Maggie** proposed better callable type syntax at the PyCon Typing
-Summit 2021: [#type-syntax-simplification]_
-([#type-variables-for-all-slides]_).
+**Maggie** proposed better callable type syntax as part of a larger
+`presentation on typing simplifications
+<https://drive.google.com/file/d/1XhqTKoO6RHtz7zXqW5Wgq9nzaEz9TXjI/view>`_
+at the PyCon Typing Summit 2021.
 
-**Steven** brought up this proposal on typing-sig:
-[#typing-sig-thread]_.
+**Steven** `brought up this proposal on typing-sig
+<https://mail.python.org/archives/list/typing-sig@python.org/thread/3JNXLYH5VFPBNIVKT6FFBVVFCZO4GFR2>`. We
+had several meetings to discuss alternatives, and `this presentation
+<https://www.dropbox.com/s/sshgtr4p30cs0vc/Python%20Callable%20Syntax%20Proposals.pdf?dl=0>`_
+led us to the current proposal.
 
-**Pradeep** brought this proposal to python-dev for feedback:
-[#python-dev-thread]_.
+**Pradeep** `brought this proposal to python-dev
+<https://mail.python.org/archives/list/python-dev@python.org/thread/VBHJOS3LOXGVU6I4FABM6DKHH65GGCUB>`_
+for feedback.
+
+The proposed AST and runtime behavior is explicitly designed to be
+forward-compatible with possible extensions of callable type literals
+to support named, optional, and variadic parameters. We do not
+currently plan to propose this extension but we consider it important
+that our proposal does not rule it out. `This doc
+<https://docs.google.com/document/d/1AJ0R7lgcKY0gpZbkBZRxXTvgV-OqxMYDj_JOPYMQFP8/edit>`_
+has a detailed discussion of how each detail of our proposal relates
+to forward compatibility.
 
 Other Languages
 ---------------
 
+(TODO: expand this discussion. At a minimum, inline some code so that
+we don't have to click through just to see a simple example of each
+language.)
+
 Other languages use a similar arrow syntax to express callable types:
-- Kotlin uses ``->`` [#kotlin]_
-- Typescript uses ``=>`` [#typescript]_
-- Flow uses ``=>`` [#flow]_
+- `Typescript <https://basarat.gitbook.io/typescript/type-system/callable#arrow-syntax>`_ uses ``=>``.
+- `Kotlin <https://kotlinlang.org/docs/lambdas.html>`_ uses ``->``.
+- `Scala <https://docs.scala-lang.org/tour/higher-order-functions.html>`_ uses ``=>``.
+- `Flow <https://flow.org/en/docs/types/functions/#toc-function-types>`_ uses ``=>``.
 
 Acknowledgments
 ---------------
@@ -718,52 +729,6 @@ Moss, Shannon Zhu
 
 TODO: MAKE SURE THE THANKS STAYS UP TO DATE
 
-
-References
-==========
-
-.. [#callable-type-syntax--shorthand] Reference implementation of proposed syntax: https://github.com/stroxler/cpython/tree/callable-type-syntax--shorthand
-
-.. [#runtime-behavior-specification] Doc specifying runtime behavior of callable type builtins in detail: https://docs.google.com/document/d/15nmTDA_39Lo-EULQQwdwYx_Q1IYX4dD5WPnHbFG71Lk/edit
-
-.. [#callable-type-syntax--extended] Bare-bones implementation of extended syntax, to demonstrate that shorthand is forward-compatible: https://github.com/stroxler/cpython/tree/callable-type-syntax--extended
-
-.. [#ast-and-runtime-design-discussion] Detailed discussion of our reasoning around the proposed AST and runtime data structures: https://docs.google.com/document/d/1AJ0R7lgcKY0gpZbkBZRxXTvgV-OqxMYDj_JOPYMQFP8/edit
-
-.. [#typeshed-stats] Overall type usage for typeshed: https://github.com/pradeep90/annotation_collector#overall-stats-in-typeshed
-
-.. [#callable-type-usage-stats] Callable type usage stats: https://github.com/pradeep90/annotation_collector#typed-projects---callable-type
-
-.. [#callback-usage-stats] Callback usage stats in open-source projects: https://github.com/pradeep90/annotation_collector#typed-projects---callback-usage
-
-.. [#pep-484-callable] Callable type as specified in PEP 484: https://www.python.org/dev/peps/pep-0484/#callable
-
-.. [#pep-484-function-type-hints] Function type hint comments, as outlined by PEP 484 for Python 2.7 code: https://www.python.org/dev/peps/pep-0484/#suggested-syntax-for-python-2-7-and-straddling-code
-
-.. [#callback-protocols] Callback protocols: https://mypy.readthedocs.io/en/stable/protocols.html#callback-protocols
-
-.. [#typing-sig-thread] Discussion of Callable syntax in the typing-sig mailing list: https://mail.python.org/archives/list/typing-sig@python.org/thread/3JNXLYH5VFPBNIVKT6FFBVVFCZO4GFR2/
-
-.. [#callable-syntax-proposals-slides] Slides discussing potential Callable syntaxes (from 2021-09-20): https://www.dropbox.com/s/sshgtr4p30cs0vc/Python%20Callable%20Syntax%20Proposals.pdf?dl=0
-
-.. [#python-dev-thread] Discussion of new syntax on the python-dev mailing list: https://mail.python.org/archives/list/python-dev@python.org/thread/VBHJOS3LOXGVU6I4FABM6DKHH65GGCUB/
-
-.. [#callback-protocols] Callback protocols, as described in MyPy docs: https://mypy.readthedocs.io/en/stable/protocols.html#callback-protocols
-
-
-.. [#type-syntax-simplification] Presentation on type syntax simplification from PyCon 2021: https://drive.google.com/file/d/1XhqTKoO6RHtz7zXqW5Wgq9nzaEz9TXjI/view
-
-.. [#python-grammar] Python's PEG grammar: https://docs.python.org/3/reference/grammar.html
-
-.. [#python-types-and-runtime-guidance] Guidance from the Steering Council on ensuring that type expressions remain consistent with the rest of the Python language: https://mail.python.org/archives/list/python-dev@python.org/message/SZLWVYV2HPLU6AH7DOUD7DWFUGBJGQAY/
-
-.. [#callable-syntax-grammar-doc] Google doc with BNF and PEG grammar for callable type syntax: https://docs.google.com/document/d/12201yww1dBIyS6s0FwdljM-EdYr6d1YdKplWjPSt1SE/edit
-
-.. [#kotlin] Lambdas and Callable types in Kotlin: https://kotlinlang.org/docs/lambdas.html
-
-.. [#typescript] Callable types in TypeScript: https://basarat.gitbook.io/typescript/type-system/callable#arrow-syntax
-
-.. [#flow] Callable types in Flow: https://flow.org/en/docs/types/functions/#toc-function-types
 
 Copyright
 =========
