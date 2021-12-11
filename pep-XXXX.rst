@@ -416,6 +416,30 @@ future proposal using a bare ``**<some_type>`` to type
   ``args``. The ``kwargs`` case is similar enough that this rules out
   a bare ``**<some_type>`` anyway.
 
+
+
+Compatibility with Arrow-Based Lambda Syntax
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+To the best of our knowledge there is no active discussion of
+arrow-style lambda syntax that we are aware of, but it is nonetheless
+worth considering what possibilities would be ruled out by adopting
+this proposal.
+
+It would be incompatible with this proposal to adopt the same a
+parenthesized ``->``-based arrow syntax for lambdas, e.g.  ``(x, y) ->
+x + y`` for ``lambda x, y: x + y``.
+
+
+Our view is that if we want arrow syntax for lambdas in the future, it
+would be a better choice to use ``=>``, e.g. ``(x, y) => x + y``.
+Many languages use the same arrow token for both lambdas and callable
+types, but Python is unique in that types are expressions and have to
+evaluate to runtime values. Our view is that this merits using
+separate tokens, and given the existing use of ``->`` for return types
+in function signatures it would be more coherent to use ``->`` for
+callable types and ``=>`` for lambdas.
+
 Runtime Behavior
 ----------------
 
