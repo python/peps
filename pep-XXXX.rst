@@ -742,16 +742,79 @@ to forward compatibility.
 Other Languages
 ---------------
 
-(TODO: expand this discussion. At a minimum, inline some code so that
-we don't have to click through just to see a simple example of each
-language.)
+Many popular programming languages use an arrow syntax similar
+to the one we are proposing here
 
-Other languages use a similar arrow syntax to express callable types:
+the same ``->`` arrow token we are proposing here.
+almost identical to the ones we are proposing here
 
-- `Typescript <https://basarat.gitbook.io/typescript/type-system/callable#arrow-syntax>`_ uses ``=>``.
-- `Kotlin <https://kotlinlang.org/docs/lambdas.html>`_ uses ``->``.
-- `Scala <https://docs.scala-lang.org/tour/higher-order-functions.html>`_ uses ``=>``.
-- `Flow <https://flow.org/en/docs/types/functions/#toc-function-types>`_ uses ``=>``.
+TypeScript
+~~~~~~~~~~
+
+In `TypeScript
+<https://basarat.gitbook.io/typescript/type-system/callable#arrow-syntax>`_,
+function types are expressed in a syntax almost the same as the one we
+are proposing, but the arrow token is `=>` and arguments have names::
+
+    (x: int, y: str) => bool
+
+The names of the arguments are not actually relevant to the type. So,
+for example, this is the same callable type::
+
+    (a: int, b: str) => bool
+
+Kotlin
+~~~~~~
+
+Function types in `Kotlin <https://kotlinlang.org/docs/lambdas.html>`_ permits
+an identical syntax to the one we are proposing, for example::
+
+    (Int, String) -> Bool
+
+It also optionally allows adding names to the arguments, for example::
+
+    (x: Int, y: String) -> Bool
+
+As in TypeScript, the argument names if provided are just there for documentation
+and are not part of the type itself.
+
+Scala
+~~~~~
+
+`Scala <https://docs.scala-lang.org/tour/higher-order-functions.html>`_
+uses the ``=>`` arrow for function types. Other than that, their syntax is
+the same as the one we are proposing, for example::
+
+    (Int, String) => Bool
+
+Scala, like Python, has the ability to provide function arguments by name.
+Funciton types can optionally include names, for example::
+
+    (x: Int, y: String) => Bool
+
+Unlike in TypeScript and Kotlin, these names are part of the type if
+provided - any function implementing the type must use the same names.
+This is similar to the extended syntax proposal we described in our
+`Rejected Alternatives`_ section.
+
+The ML Language Family
+~~~~~~~~~~~~~~~~~~~~~~
+
+Languages in the ML family, including `F#
+<https://docs.microsoft.com/en-us/dotnet/fsharp/language-reference/fsharp-types#syntax-for-types>`_,
+`OCaml
+<https://www2.ocaml.org/learn/tutorials/basics.html#Defining-a-function>`_,
+and ``Haskell <https://wiki.haskell.org/Type_signature>`_, all use
+``->`` to represent function types. All of them use a parentheses-free
+syntax with multiple arrows, for example in Haskell::
+
+    Integer -> String -> Bool
+
+The use of multiple arrows, which differs from our proposal, makes
+sense for languages in this family because they use automatic
+`currying <https://en.wikipedia.org/wiki/Currying>` of function arguments,
+which means that a multi-argument function behaves like a single-argument
+function returning a function.
 
 Acknowledgments
 ---------------
