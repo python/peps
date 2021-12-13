@@ -69,7 +69,9 @@ consider the following code::
 
     from typing import Any, Callable
 
-    def with_retries(f: Callable[..., Any]) -> Callable[..., Any]:
+    def with_retries(
+        f: Callable[..., Any]
+    ) -> Callable[..., Any]:
         def wrapper(retry_once, *args, **kwargs):
             if retry_once:
                 try: return f(*args, **kwargs)
@@ -95,7 +97,9 @@ runtime. A correct version of this code would look like this::
     R = TypeVar("R")
     P = ParamSpec("P")
 
-    def with_retries(f: Callable[P, R]) -> Callable[Concatenate[bool, P] R]:
+    def with_retries(
+        f: Callable[P, R]
+    ) -> Callable[Concatenate[bool, P] R]:
         def wrapper(retry_once: bool, *args: P.args, **kwargs: P.kwargs):
             ...
         return wrapper
@@ -127,7 +131,9 @@ concise and the type representations are visually descriptive::
     R = TypeVar("R")
     P = ParamSpec("P")
 
-    def with_retries(f: (**P) -> R) -> (bool, **P) -> R:
+    def with_retries(
+        f: (**P) -> R
+    ) -> (bool, **P) -> R:
         ...
 
 An Arrow Syntax for Callable Types
