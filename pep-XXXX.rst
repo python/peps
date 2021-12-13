@@ -92,7 +92,7 @@ runtime. A correct version of this code would look like this::
 
     from typing import Any, Callable, Concatenate, ParamSpec, TypeVar
 
-    V = TypeVar("R")
+    R = TypeVar("R")
     P = ParamSpec("P")
 
     def with_retries(f: Callable[P, R]) -> Callable[Concatenate[bool, P] R]:
@@ -124,7 +124,7 @@ concise and the type representations are visually descriptive::
 
     from typing import Any, ParamSpec, TypeVar
 
-    V = TypeVar("R")
+    R = TypeVar("R")
     P = ParamSpec("P")
 
     def with_retries(f: (**P) -> R) -> (bool, **P) -> R:
