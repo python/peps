@@ -5,8 +5,6 @@ import subprocess
 from docutils import nodes
 from docutils import transforms
 
-from pep_sphinx_extensions import config
-
 
 class PEPFooter(transforms.Transform):
     """Footer transforms for PEPs.
@@ -49,7 +47,7 @@ class PEPFooter(transforms.Transform):
 
 def _add_source_link(pep_source_path: Path) -> nodes.paragraph:
     """Add link to source text on VCS (GitHub)"""
-    source_link = config.pep_vcs_url + pep_source_path.name
+    source_link = f"https://github.com/python/peps/blob/main/{pep_source_path.name}"
     link_node = nodes.reference("", source_link, refuri=source_link)
     return nodes.paragraph("", "Source: ", link_node)
 
@@ -64,6 +62,6 @@ def _add_commit_history_info(pep_source_path: Path) -> nodes.paragraph:
     except (subprocess.CalledProcessError, ValueError):
         return nodes.paragraph()
 
-    commit_link = config.pep_commits_url + pep_source_path.name
+    commit_link = f"https://github.com/python/peps/commits/main/{pep_source_path.name}"
     link_node = nodes.reference("", f"{dt.isoformat(sep=' ')} GMT", refuri=commit_link)
     return nodes.paragraph("", "Last modified: ", link_node)
