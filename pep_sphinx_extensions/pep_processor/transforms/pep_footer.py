@@ -4,8 +4,6 @@ import subprocess
 
 from docutils import nodes
 from docutils import transforms
-from docutils.transforms import misc
-from docutils.transforms import references
 
 from pep_sphinx_extensions import config
 
@@ -13,13 +11,8 @@ from pep_sphinx_extensions import config
 class PEPFooter(transforms.Transform):
     """Footer transforms for PEPs.
 
-     - Appends external links to footnotes.
+     - Removes the References section if it is empty when rendered.
      - Creates a link to the (GitHub) source text.
-
-    TargetNotes:
-        Locate the `References` section, insert a placeholder at the end
-        for an external target footnote insertion transform, and schedule
-        the transform to run immediately.
 
     Source Link:
         Create the link to the source file from the document source path,
@@ -35,58 +28,23 @@ class PEPFooter(transforms.Transform):
         if not pep_source_path.match("pep-*"):
             return  # not a PEP file, exit early
 
-        doc = self.document[0]
-        reference_section = copyright_section = None
-
         # Iterate through sections from the end of the document
-        num_sections = len(doc)
-        for i, section in enumerate(reversed(doc)):
+        for section in reversed(self.document[0]):
             if not isinstance(section, nodes.section):
                 continue
             title_words = section[0].astext().lower().split()
             if "references" in title_words:
-                reference_section = section
+                # Remove references section if there are no displayed
+                # footnotes (it only has title & link target nodes)
+                if all(isinstance(ref_node, (nodes.title, nodes.target))
+                       for ref_node in section):
+                    section.parent.remove(section)
                 break
-            elif "copyright" in title_words:
-                copyright_section = num_sections - i - 1
-
-        # Add a references section if we didn't find one
-        if not reference_section:
-            reference_section = nodes.section()
-            reference_section += nodes.title("", "References")
-            self.document.set_id(reference_section)
-            if copyright_section:
-                # Put the new "References" section before "Copyright":
-                doc.insert(copyright_section, reference_section)
-            else:
-                # Put the new "References" section at end of doc:
-                doc.append(reference_section)
-
-        # Add and schedule execution of the TargetNotes transform
-        pending = nodes.pending(references.TargetNotes)
-        reference_section.append(pending)
-        self.document.note_pending(pending, priority=0)
-
-        # If there are no references after TargetNotes has finished, remove the
-        # references section
-        pending = nodes.pending(misc.CallBack, details={"callback": _cleanup_callback})
-        reference_section.append(pending)
-        self.document.note_pending(pending, priority=1)
 
         # Add link to source text and last modified date
         if pep_source_path.stem != "pep-0000":
             self.document += _add_source_link(pep_source_path)
             self.document += _add_commit_history_info(pep_source_path)
-
-
-def _cleanup_callback(pending: nodes.pending) -> None:
-    """Remove an empty "References" section.
-
-    Called after the `references.TargetNotes` transform is complete.
-
-    """
-    if len(pending.parent) == 2:  # <title> and <pending>
-        pending.parent.parent.remove(pending.parent)
 
 
 def _add_source_link(pep_source_path: Path) -> nodes.paragraph:
