@@ -63,5 +63,5 @@ def _add_commit_history_info(pep_source_path: Path) -> nodes.paragraph:
         return nodes.paragraph()
 
     commit_link = f"https://github.com/python/peps/commits/main/{pep_source_path.name}"
-    link_node = nodes.reference("", f"{dt.isoformat(sep=' ')} GMT", refuri=commit_link)
+    link_node = nodes.reference("", dt.isoformat(sep=" ") + " GMT", refuri=commit_link)
     return nodes.paragraph("", "Last modified: ", link_node)
