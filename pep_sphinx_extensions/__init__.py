@@ -7,9 +7,8 @@ from typing import TYPE_CHECKING
 from docutils import nodes
 from docutils.parsers.rst import states
 from docutils.writers.html5_polyglot import HTMLTranslator
-from sphinx.environment import default_settings
+from sphinx import environment
 
-from pep_sphinx_extensions import config
 from pep_sphinx_extensions.pep_processor.html import pep_html_builder
 from pep_sphinx_extensions.pep_processor.html import pep_html_translator
 from pep_sphinx_extensions.pep_processor.parsing import pep_parser
@@ -22,7 +21,7 @@ if TYPE_CHECKING:
 # Monkeypatch sphinx.environment.default_settings as Sphinx doesn't allow custom settings or Readers
 # These settings should go in docutils.conf, but are overridden here for now so as not to affect
 # pep2html.py
-default_settings |= {
+environment.default_settings |= {
     "pep_references": True,
     "rfc_references": True,
     "pep_base_url": "",
@@ -31,7 +30,7 @@ default_settings |= {
 }
 
 # TODO replace all inlined PEP and RFC strings with marked-up roles, disable pep_references and rfc_references and remove this monkey-patch
-states.Inliner.pep_reference = lambda _s, m, _l: [nodes.reference("", m.group(0), refuri=config.pep_url.format(int(m.group("pepnum2"))))]
+states.Inliner.pep_reference = lambda s, m, _l: [nodes.reference("", m.group(0), refuri=s.document.settings.pep_url.format(int(m.group("pepnum2"))))]
 
 
 def _depart_maths():
@@ -40,11 +39,13 @@ def _depart_maths():
 
 def _update_config_for_builder(app: Sphinx):
     if app.builder.name == "dirhtml":
-        config.pep_url = "../pep-{:0>4}"
+        environment.default_settings["pep_url"] = "../pep-{:0>4}"
 
 
 def setup(app: Sphinx) -> dict[str, bool]:
     """Initialize Sphinx extension."""
+
+    environment.default_settings["pep_url"] = "pep-{:0>4}.html"
 
     # Register plugin logic
     app.add_builder(pep_html_builder.FileBuilder, override=True)
