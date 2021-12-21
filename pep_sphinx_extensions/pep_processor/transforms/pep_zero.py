@@ -1,6 +1,7 @@
+from __future__ import annotations
+
 from docutils import nodes
 from docutils import transforms
-from docutils.transforms import peps
 
 
 class PEPZero(transforms.Transform):
@@ -36,7 +37,7 @@ class PEPZeroSpecial(nodes.SparseNodeVisitor):
     @staticmethod
     def visit_reference(node: nodes.reference) -> None:
         """Mask email addresses if present."""
-        node.replace_self(peps.mask_email(node))
+        node.replace_self(_mask_email(node))
 
     @staticmethod
     def visit_field_list(node: nodes.field_list) -> None:
@@ -71,3 +72,25 @@ class PEPZeroSpecial(nodes.SparseNodeVisitor):
                     return
                 ref = self.document.settings.pep_url.format(pep_num)
                 para[0] = nodes.reference("", pep_str, refuri=ref)
+
+
+def _mask_email(ref: nodes.reference, pep_num: int | None = None) -> nodes.reference:
+    """Mask the email address in `ref` and return a replacement node.
+
+    `ref` is returned unchanged if it contains no email address.
+
+    If given an email not explicitly whitelisted, process it such that
+    `user@host` -> `user at host`.
+
+    If given a PEP number `pep_num`, add a default email subject.
+
+    """
+    if "refuri" not in ref or not ref["refuri"].startswith("mailto:"):
+        return ref
+    non_masked_addresses = {"peps@python.org", "python-list@python.org", "python-dev@python.org"}
+    if ref["refuri"].removeprefix("mailto:").strip() not in non_masked_addresses:
+        ref[0] = nodes.raw("", ref[0].replace("@", "&#32;&#97;t&#32;"), format="html")
+    if pep_num is None:
+        return ref[0]  # return email text without mailto link
+    ref["refuri"] += f"?subject=PEP%20{pep_num}"
+    return ref
