@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from docutils.writers.html5_polyglot import HTMLTranslator
-from sphinx.environment import BuildEnvironment
 from sphinx.environment import default_settings
 
 from pep_sphinx_extensions import config
+from pep_sphinx_extensions.pep_processor.html import pep_html_builder
 from pep_sphinx_extensions.pep_processor.html import pep_html_translator
 from pep_sphinx_extensions.pep_processor.parsing import pep_parser
 from pep_sphinx_extensions.pep_processor.parsing import pep_role
@@ -28,10 +28,6 @@ default_settings |= {
     "_disable_config": True,  # disable using docutils.conf whilst running both PEP generators
 }
 
-# Monkeypatch sphinx.environment.BuildEnvironment.collect_relations, as it takes a long time
-# and we don't use the parent/next/prev functionality
-BuildEnvironment.collect_relations = lambda self: {}
-
 
 def _depart_maths():
     pass  # No-op callable for the type checker
@@ -47,6 +43,8 @@ def setup(app: Sphinx) -> dict[str, bool]:
     """Initialize Sphinx extension."""
 
     # Register plugin logic
+    app.add_builder(pep_html_builder.FileBuilder, override=True)
+    app.add_builder(pep_html_builder.DirectoryBuilder, override=True)
     app.add_source_parser(pep_parser.PEPParser)  # Add PEP transforms
     app.add_role("pep", pep_role.PEPRole(), override=True)  # Transform PEP references to links
     app.set_translator("html", pep_html_translator.PEPTranslator)  # Docutils Node Visitor overrides (html builder)

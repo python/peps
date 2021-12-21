@@ -43,15 +43,12 @@ exclude_patterns = [
 
 # HTML output settings
 html_math_renderer = "maths_to_html"  # Maths rendering
-html_show_copyright = False  # Turn off miscellany
-html_show_sphinx = False
 html_title = "peps.python.org"  # Set <title/>
 
 # Theme settings
 html_theme_path = ["pep_sphinx_extensions"]
 html_theme = "pep_theme"  # The actual theme directory (child of html_theme_path)
 html_use_index = False  # Disable index (we use PEP 0)
-html_sourcelink_suffix = ""  # Fix links to GitHub (don't append .txt)
 html_style = ""  # must be defined here or in theme.conf, but is unused
 html_permalinks = False  # handled in the PEPContents transform
 
