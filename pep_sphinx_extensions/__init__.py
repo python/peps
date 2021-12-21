@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from docutils import nodes
+from docutils.parsers.rst import states
 from docutils.writers.html5_polyglot import HTMLTranslator
 from sphinx.environment import default_settings
 
@@ -24,9 +26,12 @@ default_settings |= {
     "pep_references": True,
     "rfc_references": True,
     "pep_base_url": "",
-    "pep_file_url_template": "pep-%04d.html",
+    "pep_file_url_template": "",
     "_disable_config": True,  # disable using docutils.conf whilst running both PEP generators
 }
+
+# TODO replace all inlined PEP and RFC strings with marked-up roles, disable pep_references and rfc_references and remove this monkey-patch
+states.Inliner.pep_reference = lambda _s, m, _l: [nodes.reference("", m.group(0), refuri=config.pep_url.format(int(m.group("pepnum2"))))]
 
 
 def _depart_maths():
@@ -35,8 +40,7 @@ def _depart_maths():
 
 def _update_config_for_builder(app: Sphinx):
     if app.builder.name == "dirhtml":
-        config.pep_url = f"../{config.pep_stem}"
-        app.env.settings["pep_file_url_template"] = "../pep-%04d"
+        config.pep_url = "../pep-{:0>4}"
 
 
 def setup(app: Sphinx) -> dict[str, bool]:
