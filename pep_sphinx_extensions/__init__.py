@@ -19,18 +19,8 @@ if TYPE_CHECKING:
     from sphinx.application import Sphinx
 
 # Monkeypatch sphinx.environment.default_settings as Sphinx doesn't allow custom settings or Readers
-# These settings should go in docutils.conf, but are overridden here for now so as not to affect
-# pep2html.py
-environment.default_settings |= {
-    "pep_references": True,
-    "rfc_references": True,
-    "pep_base_url": "",
-    "pep_file_url_template": "",
-    "_disable_config": True,  # disable using docutils.conf whilst running both PEP generators
-}
-
-# TODO replace all inlined PEP and RFC strings with marked-up roles, disable pep_references and rfc_references and remove this monkey-patch
-states.Inliner.pep_reference = lambda s, m, _l: [nodes.reference("", m.group(0), refuri=s.document.settings.pep_url.format(int(m.group("pepnum2"))))]
+# This disables reading configuration from docutils.conf so as not to affect pep2html.py
+environment.default_settings["_disable_config"] = True
 
 
 def _depart_maths():
