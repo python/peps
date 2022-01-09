@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from docutils import nodes
+from docutils.parsers.rst import states
 from docutils.writers.html5_polyglot import HTMLTranslator
-from sphinx.environment import BuildEnvironment
-from sphinx.environment import default_settings
+from sphinx import environment
 
-from pep_sphinx_extensions import config
+from pep_sphinx_extensions.pep_processor.html import pep_html_builder
 from pep_sphinx_extensions.pep_processor.html import pep_html_translator
 from pep_sphinx_extensions.pep_processor.parsing import pep_parser
 from pep_sphinx_extensions.pep_processor.parsing import pep_role
@@ -20,17 +21,16 @@ if TYPE_CHECKING:
 # Monkeypatch sphinx.environment.default_settings as Sphinx doesn't allow custom settings or Readers
 # These settings should go in docutils.conf, but are overridden here for now so as not to affect
 # pep2html.py
-default_settings |= {
+environment.default_settings |= {
     "pep_references": True,
     "rfc_references": True,
     "pep_base_url": "",
-    "pep_file_url_template": "pep-%04d.html",
+    "pep_file_url_template": "",
     "_disable_config": True,  # disable using docutils.conf whilst running both PEP generators
 }
 
-# Monkeypatch sphinx.environment.BuildEnvironment.collect_relations, as it takes a long time
-# and we don't use the parent/next/prev functionality
-BuildEnvironment.collect_relations = lambda self: {}
+# TODO replace all inlined PEP and RFC strings with marked-up roles, disable pep_references and rfc_references and remove this monkey-patch
+states.Inliner.pep_reference = lambda s, m, _l: [nodes.reference("", m.group(0), refuri=s.document.settings.pep_url.format(int(m.group("pepnum2"))))]
 
 
 def _depart_maths():
@@ -39,14 +39,17 @@ def _depart_maths():
 
 def _update_config_for_builder(app: Sphinx):
     if app.builder.name == "dirhtml":
-        config.pep_url = f"../{config.pep_stem}"
-        app.env.settings["pep_file_url_template"] = "../pep-%04d"
+        environment.default_settings["pep_url"] = "../pep-{:0>4}"
 
 
 def setup(app: Sphinx) -> dict[str, bool]:
     """Initialize Sphinx extension."""
 
+    environment.default_settings["pep_url"] = "pep-{:0>4}.html"
+
     # Register plugin logic
+    app.add_builder(pep_html_builder.FileBuilder, override=True)
+    app.add_builder(pep_html_builder.DirectoryBuilder, override=True)
     app.add_source_parser(pep_parser.PEPParser)  # Add PEP transforms
     app.add_role("pep", pep_role.PEPRole(), override=True)  # Transform PEP references to links
     app.set_translator("html", pep_html_translator.PEPTranslator)  # Docutils Node Visitor overrides (html builder)

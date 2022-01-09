@@ -62,7 +62,7 @@ SPHINX_BUILD=$(PYTHON) build.py -j $(SPHINX_JOBS)
 
 # TODO replace `rss:` with this when merged & tested
 pep_rss:
-	$(PYTHON) pep_rss_gen.py
+	$(PYTHON) generate_rss.py
 
 pages: pep_rss
 	$(SPHINX_BUILD) --index-file
