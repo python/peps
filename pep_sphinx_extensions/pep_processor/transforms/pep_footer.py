@@ -18,8 +18,8 @@ class PEPFooter(transforms.Transform):
 
     """
 
-    # Uses same priority as docutils.transforms.TargetNotes
-    default_priority = 520
+    # Set low priority so ref targets aren't removed before they are needed
+    default_priority = 999
 
     def apply(self) -> None:
         pep_source_path = Path(self.document["source"])
