@@ -18,8 +18,8 @@ class PEPFooter(transforms.Transform):
 
     """
 
-    # Set low priority so ref targets aren't removed before they are needed
-    default_priority = 999
+    # Uses same priority as docutils.transforms.TargetNotes
+    default_priority = 520
 
     def apply(self) -> None:
         pep_source_path = Path(self.document["source"])
@@ -34,13 +34,21 @@ class PEPFooter(transforms.Transform):
             if "references" in title_words:
                 # Remove references section if there are no displayed
                 # footnotes (it only has title & link target nodes)
-                if all(isinstance(ref_node, (nodes.title, nodes.target))
-                       for ref_node in section):
+                to_hoist = []
+                types = set()
+                for node in section:
+                    types.add(type(node))
+                    if isinstance(node, nodes.target):
+                        to_hoist.append(node)
+                if types <= {nodes.title, nodes.target}:
+                    section.parent.extend(to_hoist)
                     section.parent.remove(section)
                 break
 
         # Add link to source text and last modified date
         if pep_source_path.stem != "pep-0000":
+            if pep_source_path.stem != "pep-0210":  # 210 is entirely empty, skip
+                self.document += nodes.transition()
             self.document += _add_source_link(pep_source_path)
             self.document += _add_commit_history_info(pep_source_path)
 
