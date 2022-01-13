@@ -53,7 +53,7 @@ if __name__ == "__main__":
         sphinx_builder = "linkcheck"
     else:
         # default builder
-        sphinx_builder = "dirhtml"
+        sphinx_builder = "html"
 
     # other configuration
     config_overrides = {}
