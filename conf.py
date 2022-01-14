@@ -43,7 +43,6 @@ exclude_patterns = [
 
 # HTML output settings
 html_math_renderer = "maths_to_html"  # Maths rendering
-html_title = "peps.python.org"  # Set <title/>
 
 # Theme settings
 html_theme_path = ["pep_sphinx_extensions"]

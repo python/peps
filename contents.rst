@@ -3,7 +3,7 @@ Python Enhancement Proposals (PEPs)
 ***********************************
 
 
-This is an internal Sphinx page, please go to the :doc:`PEP Index<pep-0000>`.
+This is an internal Sphinx page, please go to the :doc:`PEP Index <pep-0000>`.
 
 
 .. toctree::
