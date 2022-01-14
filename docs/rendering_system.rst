@@ -1,9 +1,9 @@
 ..
    Author: Adam Turner
 
-   We can't use :pep:`X` references in this document, as they are relative from
+   We can't use :pep:`N` references in this document, as they are relative from
    the content root.
-   We use :doc:`PEP X <../pep-xxxx>` instead.
+   We use :doc:`PEP N <../pep-nnnn>` instead.
 
 
 An Overview of the PEP Rendering System
@@ -16,10 +16,10 @@ to :doc:`PEP 676 <../pep-0676>`.
 1. Configuration
 ----------------
 
-Configuration is held in three files:
+Configuration is stored in three files:
 
-- ``conf.py`` contains the majority of the configuration
-- ``contents.rst`` contains the table of contents directives for Sphinx
+- ``conf.py`` contains the majority of the Sphinx configuration
+- ``contents.rst`` creates the Sphinx-mandated table of contents directive
 - ``pep_sphinx_extensions/pep_theme/theme.conf`` sets the Pygments themes
 
 The configuration:
@@ -35,7 +35,7 @@ The configuration:
 2. Orchestration
 ----------------
 
-``build.py`` acts to manage the rendering process.
+``build.py`` manages the rendering process.
 Usage is covered in :doc:`build`.
 
 
@@ -54,13 +54,13 @@ and how the extension functions at each point.
 The extension registers several objects:
 
 - ``FileBuilder`` and ``DirectoryBuilder`` run the build process for file- and
-  directory- based building
+  directory-based building, respectively.
 - ``PEPParser`` registers the custom document transforms and parses PEPs to
   a Docutils document.
-- ``PEPTranslator`` converts a Docutils document into HTML
-- ``PEPRole`` handles ``:pep:`` roles in the reStructuredText source
+- ``PEPTranslator`` converts a Docutils document into HTML.
+- ``PEPRole`` handles ``:pep:`` roles in the reStructuredText source.
 
-It also patches default behaviour:
+The extension also patches default behaviour:
 
 - updating the default settings
 - updating the Docutils inliner
@@ -80,18 +80,18 @@ See ``_update_config_for_builder`` in ``pep_sphinx_extensions/__init__.py``.
 3.3 Before documents are read
 '''''''''''''''''''''''''''''
 
-``create_pep_zero`` hook is called. See `5. PEP 0`_.
+The ``create_pep_zero`` hook is called. See `5. PEP 0`_.
 
 
 3.4 Read document
 '''''''''''''''''
 
 Parsing the document is handled by ``PEPParser``
-(``pep_sphinx_extensions.pep_processor.parsing.pep_parser.PEPParser``), a light
-wrapper over ``sphinx.parsers.RSTParser``.
+(``pep_sphinx_extensions.pep_processor.parsing.pep_parser.PEPParser``), a
+lightweight wrapper over ``sphinx.parsers.RSTParser``.
 
-``PEPParser`` serves two purposes, firstly to mark the document as containing
-:rfc:`2822` headers, and secondly to register the transforms we want to apply.
+``PEPParser`` reads the document with leading :rfc:`2822` headers and registers
+the transforms we want to apply.
 These are:
 
 - ``PEPHeaders``
@@ -129,22 +129,22 @@ titles, such as :doc:`PEP 604 <../pep-0604>`.
 3.4.4 ``PEPContents`` transform
 *******************************
 
-The automatic table of contents (TOC) is inserted in this transform in a two
-part process.
+The automatic table of contents (TOC) is inserted in this transform in a
+two-part process.
 
-Firstly the transform inserts a placeholder for the TOC and a horizontal rule
+First, the transform inserts a placeholder for the TOC and a horizontal rule
 after the document title and PEP headers.
-Secondly, a callback transform recursively walks the document to create the TOC,
+A callback transform then recursively walks the document to create the TOC,
 starting from after the placeholder node.
-Whilst walking the document all reference nodes in the titles are removed, and
+Whilst walking the document, all reference nodes in the titles are removed, and
 titles are given a self-link.
 
 
 3.4.5 ``PEPFooter`` transform
 *****************************
 
-This firstly builds a map of file modification times from a single git call, as
-a speed-up. This will return incorrect results on a shallow check-out of the
+This first builds a map of file modification times from a single git call, as
+a speed-up. This will return incorrect results on a shallow checkout of the
 repository, as is the default on continuous integration systems.
 
 We then attempt to remove any empty references sections, and append metadata in
@@ -156,17 +156,17 @@ the footer (source link and last modified timestamp).
 
 ``pep_html_builder.FileBuilder.prepare_writing`` initialises the bare miniumum
 of the Docutils writer and the settings for writing documents.
-This provides a significant speed-up over the base Sphinx implementation as most
-of the data automatically initialised was unused.
+This provides a significant speed-up over the base Sphinx implementation, as
+most of the data automatically initialised was unused.
 
 
 3.6 Translate Docutils to HTML
 '''''''''''''''''''''''''''''''
 
 ``PEPTranslator`` overrides paragraph and reference logic to replicate
-processing from the previous ``docutils.writers.pep`` based system.
-Paragraphs are to be made compact where possible by omitting <p> tags, and
-footnote references should be enclosed in square brackets.
+processing from the previous ``docutils.writers.pep``-based system.
+Paragraphs are made compact where possible by omitting ``<p>`` tags, and
+footnote references are be enclosed in square brackets.
 
 
 3.7 Prepare for export to Jinja
@@ -189,33 +189,35 @@ The theme is comprised of the HTML template in
 The template is entirely self-contained, not relying on any default behaviour
 from Sphinx.
 It specifies the CSS files to include, the favicon, and basic semantic
-information for document structure.
+information for the document structure.
 
-The stylesheets are in two parts, with ``style.css`` defining the meat of the
-layout, and ``mq.css`` defining media-queries for a responsive layout.
+The styles are defined in two parts:
+
+- ``style.css`` does the meat of the layout
+- ``mq.css`` adds media queries for a responsive design
 
 
 5. \PEP 0
 ---------
 
-PEP 0 generation happens in three phases.
-Firstly, the text file itself is generated, it is added to Sphinx, and the data
-is post processed.
+The generation of the index, PEP 0, happens in three phases.
+The reStructuredText source file is generated, it is then added to Sphinx, and
+finally the data is post processed.
 
 
 5.1 File creation
 '''''''''''''''''
 
-``pep-0000.rst`` is created during a callback before documents are loaded by
+``pep-0000.rst`` is created during a callback, before documents are loaded by
 Sphinx.
 
-Firstly, we parse the individual PEP files, getting the
-RFC2822 header, and parsing and then validating that metadata.
+We first parse the individual PEP files to get the :rfc:`2822` header, and then
+parse and validate that metadata.
 
-After collecting and validating all the PEP data, the creation of the index
-itself is in three steps:
+After collecting and validating all the PEP data, the index itself is created in
+three steps:
 
-    1. Output header text.
+    1. Output the header text
     2. Output the category and numerical indices
     3. Output the author index
 
@@ -223,15 +225,15 @@ The ``AUTHOR_OVERRIDES.csv`` file can be used to override an author's name in
 the PEP 0 output.
 
 We then add the newly created PEP 0 file to two Sphinx variables so that it will
-be processed as a normal file.
+be processed as a normal source document.
 
 
 5.2 Post processing
 '''''''''''''''''''
 
 The ``PEPHeaders`` transform schedules the \PEP 0 post-processing code.
-This serves two functions, masking email addresses and linking numeric
-references to PEPs to the actual documents.
+This serves two functions: masking email addresses and linking numeric
+PEP references to the actual documents.
 
 
 6. RSS Feed

@@ -5,8 +5,8 @@
 Building PEPs Locally
 =====================
 
-Whilst editing a PEP, it is useful to review the rendered output locally. This
-can also be used to check that the PEP is valid reStructuredText before
+Whilst editing a PEP, it is useful to review the rendered output locally.
+This can also be used to check that the PEP is valid reStructuredText before
 submission to the PEP editors.
 
 The rest of this document assumes you are working from a local clone of the
@@ -17,7 +17,7 @@ installed.
 Render PEPs locally
 -------------------
 
-1. Install requirements
+1. Create a virtual environment and install requirements
 
    .. code-block:: console
 
@@ -26,8 +26,8 @@ Render PEPs locally
       (venv) $ python -m pip install --upgrade pip
       (venv) $ python -m pip install -r requirements.txt
 
-2. **(Optional)** Delete prior build files. Generally only needed when changing the
-   rendering system itself.
+2. **(Optional)** Delete prior build files.
+   Generally only needed when making changes to the rendering system itself.
 
    .. code-block:: console
 
@@ -45,10 +45,10 @@ Render PEPs locally
 
       (venv) PS> python build.py -j 8
 
-   .. caution::
+   .. note::
 
-      There may be a series of warnings about unreferenced citations or labels
-      -- whilst these are valid warnings they do not impact the build process.
+      There may be a series of warnings about unreferenced citations or labels.
+      Whilst these are valid warnings, they do not impact the build process.
 
 4. Navigate to the ``build`` directory of your PEPs repo to find the HTML pages.
    PEP 0 provides a formatted index, and may be a useful reference.
@@ -63,7 +63,8 @@ Several additional tools can be run through ``build.py``, or the Makefile.
 Check links
 '''''''''''
 
-Check the validity of links within PEP sources (runs the Sphinx linkchecker)
+Check the validity of links within PEP sources (runs the `Sphinx linkchecker
+<https://www.sphinx-doc.org/en/master/usage/builders/index.html#sphinx.builders.linkcheck.CheckExternalLinksBuilder>`__).
 
 .. code-block:: console
 
@@ -75,14 +76,15 @@ Stricter rendering
 ''''''''''''''''''
 
 Run in `nit-picky <https://www.sphinx-doc.org/en/master/usage/configuration.html#confval-nitpicky>`__
-mode. This generates warnings for all missing references.
+mode.
+This generates warnings for all missing references.
 
 .. code-block:: console
 
     (venv) $ python build.py --nitpicky
 
-Fail the build on any warning. As of January 2022 there are around 250 warnings
-when building the PEPs.
+Fail the build on any warning.
+As of January 2022, there are around 250 warnings when building the PEPs.
 
 .. code-block:: console
 
@@ -90,33 +92,11 @@ when building the PEPs.
     (venv) $ make fail-warning
 
 
-
 All arguments to ``build.py``
 -----------------------------
 
-Renderers:
+For details on options to ``build.py``, run:
 
-``-f`` or ``--build-files``
-    Renders PEPs to ``pep-XXXX.html`` files (Default)
+.. code-block:: console
 
-``-d`` or ``--build-dirs``
-    Renders PEPs to ``index.html`` files within ``pep-XXXX`` directories
-
-Options:
-
-``-i`` or ``--index-file``
-    Copies PEP 0 to a base index file
-
-``-j`` or ``--jobs``
-    How many parallel jobs to run (if supported). Integer, default 1
-
-``-n`` or ``--nitpicky``
-    Runs Sphinx in `nitpicky` mode
-
-``-w`` or ``--fail-on-warning``
-    Fails Sphinx on warnings
-
-Tools:
-
-``-l`` or ``--check-links``
-    Checks validity of links within PEP sources
+    (venv) $ python build.py --help
