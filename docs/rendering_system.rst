@@ -49,7 +49,7 @@ and how the extension functions at each point.
 
 
 3.1 Extension setup
-~~~~~~~~~~~~~~~~~~~
+'''''''''''''''''''
 
 The extension registers several objects:
 
@@ -68,7 +68,7 @@ It also patches default behaviour:
 
 
 3.2 Builder initialised
-~~~~~~~~~~~~~~~~~~~~~~~
+'''''''''''''''''''''''
 
 After the Sphinx builder object is created and initialised, we ensure the
 configuration is correct for the builder chosen.
@@ -78,13 +78,13 @@ See ``_update_config_for_builder`` in ``pep_sphinx_extensions/__init__.py``.
 
 
 3.3 Before documents are read
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+'''''''''''''''''''''''''''''
 
 ``create_pep_zero`` hook is called. See `4. PEP 0 generation`_.
 
 
 3.4 Read document
-~~~~~~~~~~~~~~~~~
+'''''''''''''''''
 
 Parsing the document is handled by ``PEPParser``
 (``pep_sphinx_extensions.pep_processor.parsing.pep_parser.PEPParser``), a light
@@ -152,7 +152,7 @@ the footer (source link and last modified timestamp).
 
 
 3.5 Prepare for writing
-~~~~~~~~~~~~~~~~~~~~~~~~
+''''''''''''''''''''''''
 
 ``pep_html_builder.FileBuilder.prepare_writing`` initialises the bare miniumum
 of the Docutils writer and the settings for writing documents.
@@ -161,7 +161,7 @@ of the data automatically initialised was unused.
 
 
 3.6 Translate Docutils to HTML
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+'''''''''''''''''''''''''''''''
 
 ``PEPTranslator`` overrides paragraph and reference logic to replicate
 processing from the previous ``docutils.writers.pep`` based system.
@@ -170,7 +170,7 @@ footnote references should be enclosed in square brackets.
 
 
 3.7 Prepare for export to Jinja2
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+''''''''''''''''''''''''''''''''
 
 Finally in ``pep_html_builder``, we gather all the parts to be passed to the
 Jinja2 template.
@@ -204,7 +204,7 @@ is post processed.
 
 
 5.1 File creation
-~~~~~~~~~~~~~~~~~
+'''''''''''''''''
 
 ``pep-0000.rst`` is created during a callback before documents are loaded by
 Sphinx.
@@ -227,7 +227,7 @@ be processed as a normal file.
 
 
 5.2 Post processing
-~~~~~~~~~~~~~~~~~~~
+'''''''''''''''''''
 
 The ``PEPHeaders`` transform schedules the \PEP 0 post-processing code.
 This serves two functions, masking email addresses and linking numeric

@@ -61,7 +61,7 @@ Several additional tools can be run through ``build.py``, or the Makefile.
 
 
 Check links
-~~~~~~~~~~~
+'''''''''''
 
 Check the validity of links within PEP sources (runs the Sphinx linkchecker)
 
@@ -72,7 +72,7 @@ Check the validity of links within PEP sources (runs the Sphinx linkchecker)
 
 
 Stricter rendering
-~~~~~~~~~~~~~~~~~~
+''''''''''''''''''
 
 Run in `nit-picky <https://www.sphinx-doc.org/en/master/usage/configuration.html#confval-nitpicky>`__
 mode. This generates warnings for all missing references.
