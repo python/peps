@@ -80,7 +80,7 @@ See ``_update_config_for_builder`` in ``pep_sphinx_extensions/__init__.py``.
 3.3 Before documents are read
 '''''''''''''''''''''''''''''
 
-``create_pep_zero`` hook is called. See `4. PEP 0 generation`_.
+``create_pep_zero`` hook is called. See `5. PEP 0`_.
 
 
 3.4 Read document
@@ -179,7 +179,7 @@ This is also where we create the sidebar table of contents.
 The HTML files are then written out to the build directory.
 
 
-3. Theme
+4. Theme
 --------
 
 The theme is comprised of the HTML template in
