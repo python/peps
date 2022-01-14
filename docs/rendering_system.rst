@@ -169,11 +169,11 @@ Paragraphs are to be made compact where possible by omitting <p> tags, and
 footnote references should be enclosed in square brackets.
 
 
-3.7 Prepare for export to Jinja2
-''''''''''''''''''''''''''''''''
+3.7 Prepare for export to Jinja
+'''''''''''''''''''''''''''''''
 
 Finally in ``pep_html_builder``, we gather all the parts to be passed to the
-Jinja2 template.
+Jinja template.
 This is also where we create the sidebar table of contents.
 
 The HTML files are then written out to the build directory.
