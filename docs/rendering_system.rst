@@ -29,7 +29,7 @@ The configuration:
 - tells Sphinx which source files to use
 - registers the PEP theme, maths renderer, and template
 - disables some default settings that are covered in the extension
-- sets the default and 'dark mode' code formatter styles
+- sets the default and "dark mode" code formatter styles
 
 
 2. Orchestration
