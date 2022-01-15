@@ -1,23 +1,33 @@
-const sheet = document.getElementById("css-dark");
+const dark = document.getElementById("css-dark");
+const pygmentsNormal = document.getElementById("pyg");
+const pygmentsDark = document.getElementById("pyg-dark");
+
+const makeLight = () => {
+    dark.media = pygmentsNormal.media = pygmentsDark.media = ""
+    dark.disabled = pygmentsDark.disabled = true
+    pygmentsNormal.disabled = false
+
+}
+
+const makeDark = () => {
+    dark.media = pygmentsNormal.media = pygmentsDark.media = ""
+    dark.disabled = pygmentsDark.disabled = false
+    pygmentsNormal.disabled = true
+}
+
 
 const toggleColourScheme = () => {
-    sheet.media = ""
     if (localStorage.getItem("colour_scheme") === "dark") {
-        sheet.disabled = true
+        makeLight()
         localStorage.setItem("colour_scheme", "light")
     } else {
-        sheet.disabled = false
+        makeDark()
         localStorage.setItem("colour_scheme", "dark")
     }
 }
 
 /* set colour scheme from local storage */
 document.addEventListener("DOMContentLoaded", () => {
-    if (localStorage.getItem("colour_scheme") === "light") {
-        sheet.media = ""
-        sheet.disabled = true
-    } else if (localStorage.getItem("colour_scheme") === "dark") {
-        sheet.media = ""
-        sheet.disabled = false
-    }
+    if (localStorage.getItem("colour_scheme") === "light") makeLight()
+    if (localStorage.getItem("colour_scheme") === "dark") makeDark()
 })
