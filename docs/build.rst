@@ -17,12 +17,16 @@ installed.
 Render PEPs locally
 -------------------
 
-1. Create a virtual environment and install requirements
+1. Create a virtual environment and install requirements.
+
+   The rest of these instructions assume an active virtual environment named
+   ``venv``.
+   The Python Packaging User Guide contains
+   `instructions on creating a virtual environment <https://packaging.python.org/en/latest/guides/installing-using-pip-and-virtual-environments/#creating-a-virtual-environment>`__
+   for reference.
 
    .. code-block:: console
 
-      $ python -m venv venv
-      $ . venv/bin/activate
       (venv) $ python -m pip install --upgrade pip
       (venv) $ python -m pip install -r requirements.txt
 
