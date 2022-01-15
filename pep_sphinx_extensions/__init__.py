@@ -39,7 +39,7 @@ def _depart_maths():
 
 def _update_config_for_builder(app: Sphinx):
     if app.builder.name == "dirhtml":
-        environment.default_settings["pep_url"] = "../pep-{:0>4}"
+        app.env.settings["pep_url"] = "../pep-{:0>4}"
 
 
 def setup(app: Sphinx) -> dict[str, bool]:
