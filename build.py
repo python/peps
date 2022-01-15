@@ -9,15 +9,19 @@ from sphinx.application import Sphinx
 def create_parser():
     parser = argparse.ArgumentParser(description="Build PEP documents")
     # alternative builders:
-    parser.add_argument("-l", "--check-links", action="store_true",
-                        help='Check validity of links within PEP sources. '
-                             'Cannot be used with "-f" or "-d".')
-    parser.add_argument("-f", "--build-files", action="store_true",
-                        help='Render PEPs to "pep-NNNN.html" files (default). '
-                             'Cannot be used with "-d" or "-l".')
-    parser.add_argument("-d", "--build-dirs", action="store_true",
-                        help='Render PEPs to "index.html" files within "pep-NNNN" directories. '
-                             'Cannot be used with "-f" or "-l".')
+    builders = parser.add_mutually_exclusive_group()
+    builders.add_argument("-l", "--check-links", action="store_const",
+                          dest="builder", const="linkcheck",
+                          help='Check validity of links within PEP sources. '
+                               'Cannot be used with "-f" or "-d".')
+    builders.add_argument("-f", "--build-files", action="store_const",
+                          dest="builder", const="html",
+                          help='Render PEPs to "pep-NNNN.html" files (default). '
+                               'Cannot be used with "-d" or "-l".')
+    builders.add_argument("-d", "--build-dirs", action="store_const",
+                          dest="builder", const="dirhtml",
+                          help='Render PEPs to "index.html" files within "pep-NNNN" directories. '
+                               'Cannot be used with "-f" or "-l".')
 
     # flags / options
     parser.add_argument("-w", "--fail-on-warning", action="store_true",
@@ -53,12 +57,8 @@ if __name__ == "__main__":
     doctree_directory = build_directory / ".doctrees"
 
     # builder configuration
-    if args.build_files:
-        sphinx_builder = "html"
-    elif args.build_dirs:
-        sphinx_builder = "dirhtml"
-    elif args.check_links:
-        sphinx_builder = "linkcheck"
+    if args.builder is not None:
+        sphinx_builder = args.builder
     else:
         # default builder
         sphinx_builder = "html"
