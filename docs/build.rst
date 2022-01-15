@@ -47,7 +47,7 @@ Render PEPs locally
 
    .. code-block:: ps1con
 
-      (venv) PS> python build.py -j 8
+      (venv) PS> python build.py
 
    .. note::
 
