@@ -65,7 +65,7 @@ pep_rss:
 	$(PYTHON) generate_rss.py
 
 pages: pep_rss
-	$(SPHINX_BUILD) --build-dirs --index-file
+	$(SPHINX_BUILD) --build-dirs
 
 sphinx:
 	$(SPHINX_BUILD)

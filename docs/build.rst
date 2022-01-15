@@ -96,10 +96,10 @@ As of January 2022, there are around 250 warnings when building the PEPs.
     (venv) $ make fail-warning
 
 
-All arguments to ``build.py``
------------------------------
+``build.py`` usage
+------------------
 
-For details on options to ``build.py``, run:
+For details on the command-line options to the ``build.py`` script, run:
 
 .. code-block:: console
 

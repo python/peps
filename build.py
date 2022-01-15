@@ -10,28 +10,24 @@ def create_parser():
     parser = argparse.ArgumentParser(description="Build PEP documents")
     # alternative builders:
     parser.add_argument("-l", "--check-links", action="store_true",
-                        help='Checks validity of links within PEP sources. '
+                        help='Check validity of links within PEP sources. '
                              'Cannot be used with "-f" or "-d".')
     parser.add_argument("-f", "--build-files", action="store_true",
-                        help='Renders PEPs to "pep-XXXX.html" files (Default). '
+                        help='Render PEPs to "pep-NNNN.html" files (default). '
                              'Cannot be used with "-d" or "-l".')
     parser.add_argument("-d", "--build-dirs", action="store_true",
-                        help='Renders PEPs to "index.html" files within "pep-XXXX" directories. '
+                        help='Render PEPs to "index.html" files within "pep-NNNN" directories. '
                              'Cannot be used with "-f" or "-l".')
 
     # flags / options
     parser.add_argument("-w", "--fail-on-warning", action="store_true",
-                        help="Fails Sphinx on warnings.")
+                        help="Fail the Sphinx build on any warning.")
     parser.add_argument("-n", "--nitpicky", action="store_true",
-                        help="Runs Sphinx in 'nitpicky' mode, "
+                        help="Run Sphinx in 'nitpicky' mode, "
                              "warning on every missing reference target.")
     parser.add_argument("-j", "--jobs", type=int, default=1,
                         help="How many parallel jobs to run (if supported). "
                              "Integer, default 1.")
-
-    # extra build steps
-    parser.add_argument("-i", "--index-file", action="store_true",  # for PEP 0
-                        help="Copies PEP 0 to a base index file.")
 
     return parser.parse_args()
 
@@ -83,6 +79,5 @@ if __name__ == "__main__":
         parallel=args.jobs,
     )
     app.build()
-    
-    if args.index_file:
-        create_index_file(build_directory, sphinx_builder)
+
+    create_index_file(build_directory, sphinx_builder)
