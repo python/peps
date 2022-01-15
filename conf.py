@@ -1,3 +1,6 @@
+# This file is placed in the public domain or under the
+# CC0-1.0-Universal license, whichever is more permissive.
+
 """Configuration for building PEPs using Sphinx."""
 
 from pathlib import Path
