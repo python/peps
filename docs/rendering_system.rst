@@ -1,9 +1,8 @@
 ..
    Author: Adam Turner
 
-   We can't use :pep:`N` references in this document, as they are relative from
-   the content root.
-   We use :doc:`PEP N <../pep-nnnn>` instead.
+   We can't use :pep:`N` references in this document, as they use links relative
+   to the current file, which doesn't work in a subdirectory like this one.
 
 
 An Overview of the PEP Rendering System
@@ -193,7 +192,7 @@ information for the document structure.
 
 The styles are defined in two parts:
 
-- ``style.css`` does the meat of the layout
+- ``style.css`` handles the meat of the layout
 - ``mq.css`` adds media queries for a responsive design
 
 
