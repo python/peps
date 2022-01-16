@@ -40,6 +40,7 @@ exclude_patterns = [
     "pep-0012",
     "README.rst",
     "CONTRIBUTING.rst",
+    "pep_sphinx_extensions/LICENCE.rst",
 ]
 
 # -- Options for HTML output -------------------------------------------------
