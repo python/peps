@@ -39,7 +39,7 @@ def _depart_maths():
 
 def _update_config_for_builder(app: Sphinx):
     if app.builder.name == "dirhtml":
-        environment.default_settings["pep_url"] = "../pep-{:0>4}"
+        app.env.settings["pep_url"] = "../pep-{:0>4}"
 
 
 def setup(app: Sphinx) -> dict[str, bool]:
@@ -50,12 +50,17 @@ def setup(app: Sphinx) -> dict[str, bool]:
     # Register plugin logic
     app.add_builder(pep_html_builder.FileBuilder, override=True)
     app.add_builder(pep_html_builder.DirectoryBuilder, override=True)
+
     app.add_source_parser(pep_parser.PEPParser)  # Add PEP transforms
-    app.add_role("pep", pep_role.PEPRole(), override=True)  # Transform PEP references to links
+
     app.set_translator("html", pep_html_translator.PEPTranslator)  # Docutils Node Visitor overrides (html builder)
     app.set_translator("dirhtml", pep_html_translator.PEPTranslator)  # Docutils Node Visitor overrides (dirhtml builder)
-    app.connect("env-before-read-docs", create_pep_zero)  # PEP 0 hook
+
+    app.add_role("pep", pep_role.PEPRole(), override=True)  # Transform PEP references to links
+
+    # Register event callbacks
     app.connect("builder-inited", _update_config_for_builder)  # Update configuration values for builder used
+    app.connect("env-before-read-docs", create_pep_zero)  # PEP 0 hook
 
     # Mathematics rendering
     inline_maths = HTMLTranslator.visit_math, _depart_maths

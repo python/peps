@@ -65,14 +65,10 @@ pep_rss:
 	$(PYTHON) generate_rss.py
 
 pages: pep_rss
-	$(SPHINX_BUILD) --index-file
+	$(SPHINX_BUILD) --build-dirs
 
 sphinx:
 	$(SPHINX_BUILD)
-
-# for building Sphinx without a web-server
-sphinx-local:
-	$(SPHINX_BUILD) --build-files
 
 fail-warning:
 	$(SPHINX_BUILD) --fail-on-warning

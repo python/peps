@@ -1,3 +1,6 @@
+# This file is placed in the public domain or under the
+# CC0-1.0-Universal license, whichever is more permissive.
+
 """Configuration for building PEPs using Sphinx."""
 
 from pathlib import Path
@@ -43,7 +46,6 @@ exclude_patterns = [
 
 # HTML output settings
 html_math_renderer = "maths_to_html"  # Maths rendering
-html_title = "peps.python.org"  # Set <title/>
 
 # Theme settings
 html_theme_path = ["pep_sphinx_extensions"]

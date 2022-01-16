@@ -1,3 +1,7 @@
+#!/usr/bin/env python3
+# This file is placed in the public domain or under the
+# CC0-1.0-Universal license, whichever is more permissive.
+
 """Build script for Sphinx documentation"""
 
 import argparse
@@ -9,17 +13,29 @@ from sphinx.application import Sphinx
 def create_parser():
     parser = argparse.ArgumentParser(description="Build PEP documents")
     # alternative builders:
-    parser.add_argument("-l", "--check-links", action="store_true")
-    parser.add_argument("-f", "--build-files", action="store_true")
-    parser.add_argument("-d", "--build-dirs", action="store_true")
+    builders = parser.add_mutually_exclusive_group()
+    builders.add_argument("-l", "--check-links", action="store_const",
+                          dest="builder", const="linkcheck",
+                          help='Check validity of links within PEP sources. '
+                               'Cannot be used with "-f" or "-d".')
+    builders.add_argument("-f", "--build-files", action="store_const",
+                          dest="builder", const="html",
+                          help='Render PEPs to "pep-NNNN.html" files (default). '
+                               'Cannot be used with "-d" or "-l".')
+    builders.add_argument("-d", "--build-dirs", action="store_const",
+                          dest="builder", const="dirhtml",
+                          help='Render PEPs to "index.html" files within "pep-NNNN" directories. '
+                               'Cannot be used with "-f" or "-l".')
 
     # flags / options
-    parser.add_argument("-w", "--fail-on-warning", action="store_true")
-    parser.add_argument("-n", "--nitpicky", action="store_true")
-    parser.add_argument("-j", "--jobs", type=int, default=1)
-
-    # extra build steps
-    parser.add_argument("-i", "--index-file", action="store_true")  # for PEP 0
+    parser.add_argument("-w", "--fail-on-warning", action="store_true",
+                        help="Fail the Sphinx build on any warning.")
+    parser.add_argument("-n", "--nitpicky", action="store_true",
+                        help="Run Sphinx in 'nitpicky' mode, "
+                             "warning on every missing reference target.")
+    parser.add_argument("-j", "--jobs", type=int, default=1,
+                        help="How many parallel jobs to run (if supported). "
+                             "Integer, default 1.")
 
     return parser.parse_args()
 
@@ -45,15 +61,11 @@ if __name__ == "__main__":
     doctree_directory = build_directory / ".doctrees"
 
     # builder configuration
-    if args.build_files:
-        sphinx_builder = "html"
-    elif args.build_dirs:
-        sphinx_builder = "dirhtml"
-    elif args.check_links:
-        sphinx_builder = "linkcheck"
+    if args.builder is not None:
+        sphinx_builder = args.builder
     else:
         # default builder
-        sphinx_builder = "dirhtml"
+        sphinx_builder = "html"
 
     # other configuration
     config_overrides = {}
@@ -71,6 +83,5 @@ if __name__ == "__main__":
         parallel=args.jobs,
     )
     app.build()
-    
-    if args.index_file:
-        create_index_file(build_directory, sphinx_builder)
+
+    create_index_file(build_directory, sphinx_builder)
