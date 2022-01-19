@@ -55,6 +55,7 @@ from docutils import core, nodes, utils
 from docutils.readers import standalone
 from docutils.transforms import frontmatter, peps, Transform
 from docutils.parsers import rst
+from docutils.parsers.rst import roles
 
 class DataError(Exception):
     pass
@@ -321,6 +322,65 @@ def fixfile(inpath, input_lines, outfile):
     print('</html>', file=outfile)
 
 
+EXPLICIT_TITLE_RE = re.compile(r'^(.+?)\s*(?<!\x00)<(.*?)>$', re.DOTALL)
+
+def _pep_reference_role(role, rawtext, text, lineno, inliner,
+                        options={}, content=[]):
+    matched = EXPLICIT_TITLE_RE.match(text)
+    if matched:
+        title = utils.unescape(matched.group(1))
+        target = utils.unescape(matched.group(2))
+    else:
+        target = utils.unescape(text)
+        title = "PEP " + utils.unescape(text)
+    pep_str, _, fragment = target.partition("#")
+    try:
+        pepnum = int(pep_str)
+        if pepnum < 0 or pepnum > 9999:
+            raise ValueError
+    except ValueError:
+        msg = inliner.reporter.error(
+            'PEP number must be a number from 0 to 9999; "%s" is invalid.'
+            % pep_str, line=lineno)
+        prb = inliner.problematic(rawtext, rawtext, msg)
+        return [prb], [msg]
+    # Base URL mainly used by inliner.pep_reference; so this is correct:
+    ref = (inliner.document.settings.pep_base_url
+           + inliner.document.settings.pep_file_url_template % pepnum)
+    if fragment:
+        ref += "#" + fragment
+    roles.set_classes(options)
+    return [nodes.reference(rawtext, title, refuri=ref, **options)], []
+def _rfc_reference_role(role, rawtext, text, lineno, inliner,
+                        options={}, content=[]):
+    matched = EXPLICIT_TITLE_RE.match(text)
+    if matched:
+        title = utils.unescape(matched.group(1))
+        target = utils.unescape(matched.group(2))
+    else:
+        target = utils.unescape(text)
+        title = "RFC " + utils.unescape(text)
+    pep_str, _, fragment = target.partition("#")
+    try:
+        rfcnum = int(pep_str)
+        if rfcnum < 0 or rfcnum > 9999:
+            raise ValueError
+    except ValueError:
+        msg = inliner.reporter.error(
+            'RFC number must be a number from 0 to 9999; "%s" is invalid.'
+            % pep_str, line=lineno)
+        prb = inliner.problematic(rawtext, rawtext, msg)
+        return [prb], [msg]
+    # Base URL mainly used by inliner.pep_reference; so this is correct:
+    ref = (inliner.document.settings.rfc_base_url + inliner.rfc_url % rfcnum)
+    if fragment:
+        ref += "#" + fragment
+    roles.set_classes(options)
+    return [nodes.reference(rawtext, title, refuri=ref, **options)], []
+
+roles.register_canonical_role("pep-reference", _pep_reference_role)
+roles.register_canonical_role("rfc-reference", _rfc_reference_role)
+
 docutils_settings = None
 """Runtime settings object used by Docutils.  Can be set by the client
 application when this module is imported."""
