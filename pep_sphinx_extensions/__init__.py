@@ -36,6 +36,7 @@ def setup(app: Sphinx) -> dict[str, bool]:
     """Initialize Sphinx extension."""
 
     environment.default_settings["pep_url"] = "pep-{:0>4}.html"
+    environment.default_settings["halt_level"] = 2  # Fail on Docutils warning
 
     # Register plugin logic
     app.add_builder(pep_html_builder.FileBuilder, override=True)
