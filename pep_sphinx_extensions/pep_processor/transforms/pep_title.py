@@ -46,6 +46,9 @@ class PEPTitle(transforms.Transform):
         pep_title_node.extend(document_children)
         self.document.note_implicit_target(pep_title_node, pep_title_node)
 
+        # Add a horizontal rule after title and PEP headers
+        self.document[0].insert(2, nodes.transition())
+
 
 def _line_to_nodes(text: str) -> list[nodes.Node]:
     """Parse RST string to nodes."""
