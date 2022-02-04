@@ -78,7 +78,7 @@ Open Issues
 References
 ==========
 
-[A collection of URLs used as references through the PEP.]
+[A collection of footnotes referenced in the PEP, and a central place to list non-inline hyperlink targets.]
 
 
 Copyright
