@@ -9,8 +9,8 @@ from docutils import transforms
 class PEPFooter(transforms.Transform):
     """Footer transforms for PEPs.
 
-     - Removes the References section if it is empty when rendered.
-     - Creates a link to the (GitHub) source text.
+     - Remove the References/Footnotes section if it is empty when rendered.
+     - Create a link to the (GitHub) source text.
 
     Source Link:
         Create the link to the source file from the document source path,
@@ -31,8 +31,8 @@ class PEPFooter(transforms.Transform):
             if not isinstance(section, nodes.section):
                 continue
             title_words = section[0].astext().lower().split()
-            if "references" in title_words:
-                # Remove references section if there are no displayed
+            if "references" in title_words or "footnotes" in title_words:
+                # Remove references/footnotes section if there are no displayed
                 # footnotes (it only has title & link target nodes)
                 to_hoist = []
                 types = set()

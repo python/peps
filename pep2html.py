@@ -496,7 +496,7 @@ class PEPHeaders(Transform):
 
 
 class PEPFooter(Transform):
-    """Remove the References section if it is empty when rendered."""
+    """Remove the References/Footnotes section if it is empty when rendered."""
 
     # Set low priority so ref targets aren't removed before they are needed
     default_priority = 999
@@ -511,8 +511,8 @@ class PEPFooter(Transform):
             if not isinstance(section, nodes.section):
                 continue
             title_words = section[0].astext().lower().split()
-            if 'references' in title_words:
-                # Remove references section if there are no displayed
+            if 'references' in title_words or 'footnotes' in title_words:
+                # Remove references/footnotes section if there are no displayed
                 # footnotes (it only has title & link target nodes)
                 if all(isinstance(ref_node, (nodes.title, nodes.target))
                        for ref_node in section):

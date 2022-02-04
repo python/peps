@@ -75,8 +75,8 @@ Open Issues
 [Any points that are still being decided/discussed.]
 
 
-References
-==========
+Footnotes
+=========
 
 [A collection of footnotes referenced in the PEP, and a central place to list non-inline hyperlink targets.]
 
