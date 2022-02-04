@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# http://legacy.python.org/dev/peps/pep-0465/
+# https://www.python.org/dev/peps/pep-0465/
 # https://gist.github.com/njsmith/9157645
 
 # usage:
