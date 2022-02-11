@@ -232,6 +232,10 @@ The approach involves these fundamental changes:
 Then setting any object's refcount to ``_Py_IMMORTAL_REFCNT``
 makes it immortal.
 
+To be clear, we will likely use the most-significant bit of
+``_Py_IMMORTAL_REFCNT`` to tell if an object is immortal, rather
+than comparing with ``_Py_IMMORTAL_REFCNT`` directly.
+
 (There are other minor, internal changes which are not described here.)
 
 This is not meant to be a public feature but rather an internal one.
