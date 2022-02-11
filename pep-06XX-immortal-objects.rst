@@ -213,6 +213,17 @@ API that exposes refcounts (unchanged but may now return large values):
 * (public) ``sys.getrefcount()``
 * (public) ``sys.gettotalrefcount()``
 
+Immortal Global Objects
+-----------------------
+
+The following objects will be made immortal:
+
+* singletons (``None``, ``True``, ``False``, ``Ellipsis``, ``NotImplemented``)
+* all static types (e.g. ``PyLong_Type``, ``PyExc_Exception``)
+* all static objects in ``_PyRuntimeState.global_objects``
+
+There will likely be others we have not enumerated here.
+
 Documentation
 -------------
 
