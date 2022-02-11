@@ -235,22 +235,10 @@ How to Teach This
 This is not a user-facing change.
 
 
-Deferred Functionality
-======================
-
-TBD
-
-
 Reference Implementation
 ========================
 
 A PR has been posted. [elizondo]_
-
-
-Rejected Ideas
-==============
-
-TBD
 
 
 Open Issues
