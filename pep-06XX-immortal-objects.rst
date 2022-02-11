@@ -38,7 +38,7 @@ This approach involves these fundamental changes:
 * add ``_Py_IMMORTAL_REFCNT`` (the magic value) to the internal C-API
 * update ``Py_INCREF()`` and ``Py_DECREF()`` to no-op for objects with
   the magic refcount (or its most significant bit)
-* update ``Py_SETREF()`` to do nothing to immortal objects
+* update ``Py_SET_REFCNT()`` to do nothing to immortal objects
 * ensure that all immortal objects are cleaned up during
   runtine finalization
 
@@ -155,7 +155,7 @@ No user-facing behavior changes, with the following exceptions:
 * code that inspects the refcount (e.g. ``sys.getrefcount()``
   or directly via ``ob_refcnt``) will see a really, really large
   value
-* ``Py_SETREF()`` will be a noop for immortal objects
+* ``Py_SET_REFCNT()`` will be a noop for immortal objects
 
 Neither should cause a problem.
 
@@ -208,7 +208,7 @@ There isn't much more to say than what's in `Proposal`_ above.
 Documentation
 -------------
 
-The feature will not be added to the documentation.  If ``Py_SETREF()``
+The feature will not be added to the documentation.  If ``Py_SET_REFCNT()``
 were documented we would definitely add a note there.  At most we may
 add a note to entries where it could be helpful for users to know
 why they are seeing such a crazy-big refcount.  Currently there
