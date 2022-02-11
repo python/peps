@@ -100,18 +100,14 @@ types, as well as objects exposed by the public C-API.
 Performance
 -----------
 
-The bare-minimum implementation shows a 4% slowdown. [benchmarks]_
+A naive implementation shows a 4% slowdown. [benchmarks]_
+Several promising mitigation strategies will be pursued in the effort
+to bring it closer to performance-neutral.
 
-Several mitigation strategies will be pursued in the effort to bring
-it to performance-neutral.  This includes:
-
-* mark all objects as immortal after runtime initialization but before
-  running any user code
-* specialize in the eval loop for immortal objects
-  (especially the most commonly used objects like ``None``)
-
-Also note that, when used with a pre-fork model, immortal objects
-save a significant amount of memory.
+On the positive side, immortal objects save a significant amount of
+memory when used with a pre-fork model.  Also, immortal objects provide
+opportunities for specialization in the eval loop that would improve
+performance.
 
 Backward Compatibility
 -----------------------
