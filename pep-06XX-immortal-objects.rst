@@ -1,13 +1,13 @@
 PEP: 6XX
 Title: Immortal Objects, Using a Fixed Refcount
-Author: Eric Snow <ericsnowcurrently@gmail.com>
+Author: Eric Snow <ericsnowcurrently@gmail.com>, Eddie Elizondo <eelizondo@fb.com>
 PEP-Delegate: <TBD>
 Discussions-To: python-dev@python.org
 Status: Draft
 Type: Informational
 Created: 10-02-2022
 Python-Version: 3.11
-Post-History: 10-02-2022
+Post-History:
 Resolution: <TBD>
 
 
