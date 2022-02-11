@@ -208,12 +208,19 @@ There isn't much more to say than what's in `Proposal`_ above.
 Documentation
 -------------
 
-The feature will not be added to the documentation.  If ``Py_SET_REFCNT()``
-were documented we would definitely add a note there.  At most we may
-add a note to entries where it could be helpful for users to know
-why they are seeing such a crazy-big refcount.  Currently there
-is only one: ``sys.getrefcount()`` (and no affected
-docs for the C-API).
+The feature itself is internal and will not be added to the documentation.
+
+We *may* add a note about immortal objects to the following,
+to help reduce any surprise users may have with the change:
+
+* ``Py_SET_REFCNT()`` (a noop for immortal objects)
+* ``Py_REFCNT()`` (value may be surprisingly large)
+* ``sys.getrefcount()`` (value may be surprisingly large)
+
+Other API that might benefit from such notes are currently undocumented.
+
+We wouldn't add a note anywhere else (including for ``Py_INCREF()`` and
+``Py_DECREF()``) since the feature is otherwise transparent to users.
 
 
 How to Teach This
