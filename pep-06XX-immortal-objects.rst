@@ -44,8 +44,8 @@ None of that would happen for objects that are truly immutable.
 This has a concrete impact on some active projects
 in the Python community.
 
-For exmple, some large (enterprise) projects apply a pre-fork model,
-where they get their applicationto the proper starting state and
+For example, some large (enterprise) projects apply a pre-fork model,
+where they get their application to the proper starting state and
 then fork the process for each worker.  Their performance has
 been affected and led to sub-optimal workarounds.
 
@@ -70,7 +70,7 @@ Alternatives include:
 
 * use a high bit to mark "immortal" but do not change ``Py_INCREF()``
 * add an explicit flag to objects
-* implement via the type (``tp_dealloc()`` is a noop)
+* implement via the type (``tp_dealloc()`` is a no-op)
 * track via the object's type object
 * track with a separate table
 
@@ -91,7 +91,7 @@ Impact
 Benefits
 --------
 
-Most notably, the cases desribed in the two examples above stand
+Most notably, the cases described in the two examples above stand
 to benefit greatly from immortal objects.  Projects using pre-fork
 can drop their workarounds.  For the per-interpreter GIL project,
 immortal objects greatly simplifies the solution for existing static
@@ -126,7 +126,7 @@ No user-facing behavior changes, with the following exceptions:
 * code that inspects the refcount (e.g. ``sys.getrefcount()``
   or directly via ``ob_refcnt``) will see a really, really large
   value
-* ``Py_SET_REFCNT()`` will be a noop for immortal objects
+* ``Py_SET_REFCNT()`` will be a no-op for immortal objects
 
 Neither should cause a problem.
 
@@ -145,7 +145,7 @@ Maintainability
 
 This is not a complex feature so it should not cause much mental
 overhead for maintainers.  The basic implementation doesn't touch
-much code so it should have much impact on maintainabbility.  There
+much code so it should have much impact on maintainability.  There
 may be some extra complexity due to performance penalty mitigation.
 However, that should be limited to where we immortalize all
 objects post-init and that code will be in one place.
@@ -158,8 +158,10 @@ Non-Obvious Consequences
   (e.g. ``PyTypeObject.tp_subclasses``)
 * an immortal object's type is effectively immortal
 * though extremely unlikely (and technically hard), any object could
-  be incref'd enough to reach ``_Py_IMMORTAL_REFCNT`` and then
+  be incref'ed enough to reach ``_Py_IMMORTAL_REFCNT`` and then
   be treated as immortal
+
+??? immortal != immutable
 
 
 Concerns
@@ -177,11 +179,11 @@ Specification
 The approach involves these fundamental changes:
 
 * add ``_Py_IMMORTAL_REFCNT`` (the magic value) to the internal C-API
-* update ``Py_INCREF()`` and ``Py_DECREF()`` to noop for objects with
+* update ``Py_INCREF()`` and ``Py_DECREF()`` to no-op for objects with
   the magic refcount (or its most significant bit)
 * do the same for any other API that modifies the refcount
 * ensure that all immortal objects are cleaned up during
-  runtine finalization
+  runtime finalization
 
 Then setting any object's refcount to ``_Py_IMMORTAL_REFCNT``
 makes it immortal.
@@ -189,7 +191,7 @@ makes it immortal.
 (There are other minor, internal changes which are not described here.)
 
 This is not meant to be a public feature but rather an internal one.
-So the propsal does *not* including adding any new public C-API,
+So the proposal does *not* including adding any new public C-API,
 nor any Python API.  However, this does not prevent us from
 adding (publicly accessible) private API to do things
 like immortalize an object or tell if one
@@ -219,7 +221,7 @@ The feature itself is internal and will not be added to the documentation.
 We *may* add a note about immortal objects to the following,
 to help reduce any surprise users may have with the change:
 
-* ``Py_SET_REFCNT()`` (a noop for immortal objects)
+* ``Py_SET_REFCNT()`` (a no-op for immortal objects)
 * ``Py_REFCNT()`` (value may be surprisingly large)
 * ``sys.getrefcount()`` (value may be surprisingly large)
 
