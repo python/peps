@@ -38,24 +38,68 @@ includes "immutable" objects like ``None`` and ``str`` instances.
 This is because every object's refcount is frequently modified
 as it is used during execution.
 
-Consequently, CPU caches get invalidated for threads that share objects.
-Similarly, copy-on-write gets triggered, e.g. in forked processes.
-None of that would happen for objects that are truly immutable.
-This has a concrete impact on some active projects
-in the Python community.
+This has a concrete impact on active projects in the Python community.
+Below we describe several ways in which refcount modification has
+a real negative effect on those projects.  None of that would
+happen for objects that are truly immutable.
 
-For example, some large (enterprise) projects apply a pre-fork model,
-where they get their application to the proper starting state and
-then fork the process for each worker.  Their performance has
-been affected and led to sub-optimal workarounds.
+Reducing Cache Invalidation
+---------------------------
 
-Another example is the effort to enable true multi-core Python execution
-in CPython through a per-interpreter GIL.  Threads running code for
-different interpreters cannot safely share any objects without
-at least some sort of locking around refcount operations.
-That means every interpreter would need its own
-copy of *every* object, including the
-singletons and builtin types.
+Every modification of a refcount causes the corresponding cache
+line to be invalidated.  This has a number of effects.
+
+For one, the write must be propagated to other cache levels
+and to main memory.  This has small effect on all Python programs.
+Immortal objects would provide a slight relief in that regard.
+
+On top of that, multi-core applications pay a price.  If two threads
+are interacting with the same object (e.g. ``None``)  then they will
+end up invalidating each other's caches with each incref and decref.
+This is true even for otherwise immutable objects like ``True``,
+``0``, and ``str`` instances.  This is also true even with
+the GIL, though the impact is smaller.
+
+Avoiding Data Races
+-------------------
+
+Speaking of multi-core, we are considering making the GIL
+a per-interpreter lock, which would enable true multi-core parallelism.
+Among other things, the GIL currently protects against races between
+multiple threads that concurrently incref or decref.  Without a shared
+GIL, two running interpreters could not safely share any objects,
+even otherwise immutable ones like ``None``.
+
+This means that, to have a per-interpreter GIL, each interpreter must
+have its own copy of *every* object, including the singletons and
+static types.  We have a viable strategy for that but it will
+require a meaningful amount of extra effort and extra
+complexity.
+
+The alternative is to ensure that all shared objects are truly immutable.
+There would be no races because there would be no modification.  This
+is something that the immortality proposed here would enable for
+otherwise immutable objects.  With immortal objects,
+support for a per-interpreter GIL
+becomes much simpler.
+
+(We also looked into just setting the refcount really high and not
+worrying about races, but the issue of cache invalidation described
+above becomes more pronounced without the GIL to smooth things out.)
+
+Avoiding Copy-on-Write
+----------------------
+
+For some applications it makes sense to get the application into
+a desired initial state and then fork the process for each worker.
+This can result in a large performance improvement, especially
+memory usage.  Several enterprise Python users (e.g. Instagram,
+YouTube) have taken advantage of this.  However, the above
+refcount semantics drastically reduce the benefits and
+has led to some sub-optimal workarounds.
+
+Also note that "fork" isn't the only operating system mechanism
+that uses copy-on-write semantics.
 
 
 Rationale
