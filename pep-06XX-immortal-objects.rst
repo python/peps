@@ -268,7 +268,8 @@ The following objects will be made immortal:
 
 * singletons (``None``, ``True``, ``False``, ``Ellipsis``, ``NotImplemented``)
 * all static types (e.g. ``PyLong_Type``, ``PyExc_Exception``)
-* all static objects in ``_PyRuntimeState.global_objects``
+* all static objects in ``_PyRuntimeState.global_objects`` (e.g. identifiers,
+  small ints)
 
 There will likely be others we have not enumerated here.
 
