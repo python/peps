@@ -29,8 +29,6 @@ would otherwise be prohibitive.
 This proposal is CPython-specific and, effectively, describes
 internal implementation details.
 
-(This topic has been discussed previously on python-dev. [python-dev_])
-
 
 Proposal
 ========
@@ -195,6 +193,8 @@ Non-Obvious Consequences
 
 Concerns
 ========
+
+(This topic has been discussed previously on python-dev. [python-dev_])
 
 Concerns have centered around the performance penalty.
 Mitigation is discussed above.
