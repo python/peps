@@ -243,7 +243,8 @@ TBD
 Open Issues
 ===========
 
-TBD
+* how do we ensure all immortal objects get cleaned up during runtime finalization?
+* how do we adjust ``sys.gettotalrefcount()`` to reflect things properly (for the sake of buildbots)?
 
 
 References
