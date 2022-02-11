@@ -17,7 +17,7 @@ Abstract
 Under this proposal, any object may be marked as immortal.
 "Immortal" means the object will never be cleaned up (at least until
 runtime finalization).  Specifically, the refcount for an immortal
-object is set to a specific value, and that refcount is never
+object is set to a sentinel value, and that refcount is never
 changed by ``Py_INCREF()`` or ``Py_DECREF()``.
 
 Avoiding changes to the refcount is an essential part of this
@@ -28,31 +28,6 @@ would otherwise be prohibitive.
 
 This proposal is CPython-specific and, effectively, describes
 internal implementation details.
-
-
-Proposal
-========
-
-This approach involves these fundamental changes:
-
-* add ``_Py_IMMORTAL_REFCNT`` (the magic value) to the internal C-API
-* update ``Py_INCREF()`` and ``Py_DECREF()`` to no-op for objects with
-  the magic refcount (or its most significant bit)
-* update ``Py_SET_REFCNT()`` to do nothing to immortal objects
-* ensure that all immortal objects are cleaned up during
-  runtine finalization
-
-Then setting any object's refcount to ``_Py_IMMORTAL_REFCNT``
-makes it immortal.
-
-(There are other minor, internal changes which are not described here.)
-
-This is not meant to be a public feature but rather an internal one.
-So the propsal does *not* including adding any new public C-API,
-nor any Python API.  However, this does not prevent us from
-adding (publicly accessible) private API to do things
-like immortalize an object or tell if one
-is immortal.
 
 
 Motivation
@@ -203,7 +178,42 @@ Mitigation is discussed above.
 Specification
 =============
 
-There isn't much more to say than what's in `Proposal`_ above.
+The approach involves these fundamental changes:
+
+* add ``_Py_IMMORTAL_REFCNT`` (the magic value) to the internal C-API
+* update ``Py_INCREF()`` and ``Py_DECREF()`` to noop for objects with
+  the magic refcount (or its most significant bit)
+* do the same for any other API that modifies the refcount
+* ensure that all immortal objects are cleaned up during
+  runtine finalization
+
+Then setting any object's refcount to ``_Py_IMMORTAL_REFCNT``
+makes it immortal.
+
+(There are other minor, internal changes which are not described here.)
+
+This is not meant to be a public feature but rather an internal one.
+So the propsal does *not* including adding any new public C-API,
+nor any Python API.  However, this does not prevent us from
+adding (publicly accessible) private API to do things
+like immortalize an object or tell if one
+is immortal.
+
+Affected API
+------------
+
+API that will now ignore immortal objects:
+
+* (public) ``Py_INCREF()``
+* (public) ``Py_DECREF()``
+* (public) ``Py_SET_REFCNT()``
+* (private) ``_Py_NewReference()``
+
+API that exposes refcounts (unchanged but may now return large values):
+
+* (public) ``Py_REFCNT()``
+* (public) ``sys.getrefcount()``
+* (public) ``sys.gettotalrefcount()``
 
 Documentation
 -------------
