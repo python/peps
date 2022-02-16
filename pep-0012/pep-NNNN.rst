@@ -78,7 +78,7 @@ Open Issues
 Footnotes
 =========
 
-[A collection of footnotes referenced in the PEP, and a central place to list non-inline hyperlink targets.]
+[A collection of footnotes cited in the PEP, and a place to list non-inline hyperlink targets.]
 
 
 Copyright

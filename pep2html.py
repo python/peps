@@ -510,14 +510,13 @@ class PEPFooter(Transform):
         for section in reversed(self.document):
             if not isinstance(section, nodes.section):
                 continue
-            title_words = section[0].astext().lower().split()
-            if 'references' in title_words or 'footnotes' in title_words:
-                # Remove references/footnotes section if there are no displayed
-                # footnotes (it only has title & link target nodes)
+            title_words = {*section[0].astext().lower().split()}
+            if {"references", "footnotes"} & title_words:
+                # Remove references/footnotes sections if there is no displayed
+                # content (i.e. they only have title & link target nodes)
                 if all(isinstance(ref_node, (nodes.title, nodes.target))
                        for ref_node in section):
                     section.parent.remove(section)
-                break
 
 
 class PEPReader(standalone.Reader):
