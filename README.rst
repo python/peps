@@ -65,6 +65,10 @@ which will show the PEP exactly as it will appear on the preview
 of the new rendering system proposed in :pep:`676`;
 see `Rendering PEPs with Sphinx`_ for details.
 
+Finally, you can check for and fix common linting and spelling issues,
+either on-demand or automatically as you commit, with our pre-commit suite.
+See the `Contributing Guide <./CONTRIBUTING.rst>`_ for details.
+
 
 Generating HTML for python.org
 ==============================
