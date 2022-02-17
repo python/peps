@@ -75,10 +75,10 @@ Open Issues
 [Any points that are still being decided/discussed.]
 
 
-References
-==========
+Footnotes
+=========
 
-[A collection of URLs used as references through the PEP.]
+[A collection of footnotes cited in the PEP, and a place to list non-inline hyperlink targets.]
 
 
 Copyright
