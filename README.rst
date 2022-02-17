@@ -43,13 +43,27 @@ libraries in the ``pep0`` directory.
 Checking PEP formatting and rendering
 =====================================
 
-Do not commit changes with bad formatting.  To check the formatting of
-a PEP, use the Makefile.  In particular, to generate HTML for PEP 9999,
-your source code should be in ``pep-9999.rst`` and the HTML will be
-generated to ``pep-9999.html`` by the command ``make pep-9999.html``.
-The default Make target generates HTML for all PEPs.
+Avoid committing changes with reStructuredText syntax errors that cause PEP
+generation to fail, or result in major rendering defects relative to what
+you intend. To build the HTML output for your PEP (for example, PEP 12)
+using the current default docutils-based system, run the ``pep2html.py`` script
+with your PEP source file as its argument, e.g. for PEP 12,
+``python -X dev pep2html.py pep-0012.rst``,
+If you're on a system with ``make``, you can instead simply execute, e.g.,
+``make pep-0012.rst``.
+To generate HTML for all the PEPs, run the script/``make`` without a PEP
+file argument.
 
-If you don't have Make, use the ``pep2html.py`` script directly.
+By default, this will output a file (e.g. ``pep-0012.html``) in the root
+directory, which you can view to see the HTML output of your PEP.
+Note that the custom CSS stylesheet is not used by default, so
+the PEP will look rather plain, but all the basic formatting produced by the
+reStructuredText syntax in your source file should be visible.
+
+You can also view your PEP locally with the Sphinx-based builder,
+which will show the PEP exactly as it will appear on the preview
+of the new rendering system proposed in :pep:`676`;
+see `Rendering PEPs with Sphinx`_ for details.
 
 
 Generating HTML for python.org
