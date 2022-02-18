@@ -74,13 +74,32 @@ install pre-commit in the current virtual environment if it isn't already,
 so make sure you've activated the environment you want it to use
 before running this command.
 
-Otherwise, you can install pre-commit by running ``python -m pip install pre-commit``
+Otherwise, you can install pre-commit with
+
+.. code-block:: console
+
+    python -m pip install pre-commit
+
 (or your choice of installer), and then run the hooks on all the files
-in the repo with ``pre-commit run --all-files``, or only on any files that
-have been modified but not yet committed with ``pre-commit run``.
+in the repo with
+
+.. code-block:: console
+
+    pre-commit run --all-files
+
+or only on any files that have been modified but not yet committed with
+
+.. code-block:: console
+
+    pre-commit run
 
 If you would like pre-commit to run automatically against any modified files
-every time you commit, install the hooks with ``pre-commit install``.
+every time you commit, install the hooks with
+
+.. code-block:: console
+
+    pre-commit install
+
 Then, whenever you ``git commit``, pre-commit will run and report any issues
 it finds or changes it makes, and abort the commit to allow you to check,
 and if necessary correct them before committing again.
@@ -96,11 +115,19 @@ Like the linters, on a system with ``make`` available, it can be installed
 (in the currently-activated environment) and run on all files in the
 repository with a single command, ``make spellcheck``.
 
-For finer control or on other systems, after installing pre-commit as above
-(e.g. ``python -m pip install pre-commit``), you can run it against only the files
+For finer control or on other systems, after installing pre-commit as in
+the previous section, you can run it against only the files
 you've modified and not yet committed with
-``pre-commit run --hook-stage manual codespell``, or against all files with
-``pre-commit run --all-files --hook-stage manual codespell``.
+
+.. code-block:: console
+
+    pre-commit run --hook-stage manual codespell
+
+or against all files with
+
+.. code-block:: console
+
+    pre-commit run --all-files --hook-stage manual codespell
 
 **Note**: While fixing spelling mistakes as part of more substantive
 copyediting and proofreading of draft and active PEPs is okay,
