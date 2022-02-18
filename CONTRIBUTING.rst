@@ -84,3 +84,28 @@ every time you commit, install the hooks with ``pre-commit install``.
 Then, whenever you ``git commit``, pre-commit will run and report any issues
 it finds or changes it makes, and abort the commit to allow you to check,
 and if necessary correct them before committing again.
+
+
+Check and fix PEP spelling
+--------------------------
+
+To check for common spelling mistakes in your PEP and automatically suggest
+corrections, you can run the codespell tool through pre-commit as well.
+
+Like the linters, on a system with ``make`` available, it can be installed
+(in the currently-activated environment) and run on all files in the
+repository with a single command, ``make spellcheck``.
+
+For finer control or on other systems, after installing pre-commit as above
+(e.g. ``pip install pre-commit``), you can run it against only the files
+you've modified and not yet committed with
+``pre-commit run --hook-stage manual codespell``, or against all files with
+``pre-commit run --all-files --hook-stage manual codespell``.
+
+**Note**: While fixing spelling mistakes as part of more substantive
+copyediting and proofreading of draft and active PEPs is okay,
+we generally advise against PRs that simply mass-correct minor typos on
+older PEPs that don't significantly impair meaning and understanding,
+as these tend to create a fairly high level of noise and churn for
+PEP readers, authors and editors relative to the amount of practical value
+they provide.
