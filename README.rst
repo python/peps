@@ -43,13 +43,13 @@ libraries in the ``pep0`` directory.
 Checking PEP formatting and rendering
 =====================================
 
-Avoid committing changes with reStructuredText syntax errors that cause PEP
-generation to fail, or result in major rendering defects relative to what
-you intend. To build the HTML output for your PEP (for example, PEP 12)
+Please don't commit changes with reStructuredText syntax errors that cause PEP
+generation to fail, or result in major rendering defects relative to what you
+intend. To check building the HTML output for your PEP (for example, PEP 12)
 using the current default docutils-based system, run the ``pep2html.py`` script
-with your PEP source file as its argument, e.g. for PEP 12,
-``python -X dev pep2html.py pep-0012.rst``,
-If you're on a system with ``make``, you can instead simply execute, e.g.,
+with your PEP source file as its argument (e.g. for PEP 12,
+``python pep2html.py pep-0012.rst``).
+If you're on a system with ``make``, you can instead execute, e.g.,
 ``make pep-0012.rst``.
 To generate HTML for all the PEPs, run the script/``make`` without a PEP
 file argument.

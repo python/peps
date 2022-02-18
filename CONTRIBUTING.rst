@@ -56,8 +56,8 @@ position within the project.
 Run pre-commit linting locally
 ------------------------------
 
-If you'd like, you can run the project's basic linting suite locally,
-either on-demand when you choose, or automatically against modified files
+You can run this repo's basic linting suite locally,
+either on-demand, or automatically against modified files
 whenever you commit your changes.
 
 They are also run in CI, so you don't have to run them locally, though doing
@@ -69,12 +69,12 @@ install, configure and update a suite of hooks that check for
 common problems and issues, and fix many of them automatically.
 
 If your system has ``make`` installed, you can run the pre-commit checkers
-on the full repo by simply running ``make lint``. Note that this will
+on the full repo by running ``make lint``. This will
 install pre-commit in the current virtual environment if it isn't already,
 so make sure you've activated the environment you want it to use
 before running this command.
 
-Otherwise, you can install pre-commit by running ``pip install pre-commit``
+Otherwise, you can install pre-commit by running ``python -m pip install pre-commit``
 (or your choice of installer), and then run the hooks on all the files
 in the repo with ``pre-commit run --all-files``, or only on any files that
 have been modified but not yet committed with ``pre-commit run``.
@@ -97,7 +97,7 @@ Like the linters, on a system with ``make`` available, it can be installed
 repository with a single command, ``make spellcheck``.
 
 For finer control or on other systems, after installing pre-commit as above
-(e.g. ``pip install pre-commit``), you can run it against only the files
+(e.g. ``python -m pip install pre-commit``), you can run it against only the files
 you've modified and not yet committed with
 ``pre-commit run --hook-stage manual codespell``, or against all files with
 ``pre-commit run --all-files --hook-stage manual codespell``.
