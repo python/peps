@@ -3,13 +3,13 @@ Title: <REQUIRED: pep title>
 Author: <REQUIRED: list of authors' real names and optionally, email addrs>
 Sponsor: <real name of sponsor>
 PEP-Delegate: <PEP delegate's real name>
-Discussions-To: <email address or URL>
+Discussions-To: <REQUIRED: URL of current canonical discussion thread>
 Status: <REQUIRED: Draft | Active | Accepted | Provisional | Deferred | Rejected | Withdrawn | Final | Superseded>
 Type: <REQUIRED: Standards Track | Informational | Process>
 Requires: <pep numbers>
 Created: <date created on, in dd-mmm-yyyy format>
 Python-Version: <version number>
-Post-History: <REQUIRED: dates of postings to python-ideas and/or python-dev, in dd-mmm-yyyy format>
+Post-History: <REQUIRED: dates of postings to Python-Dev and/or the Discussions-To thread, in dd-mmm-yyyy format>
 Replaces: <pep number>
 Superseded-By: <pep number>
 Resolution: <url>
