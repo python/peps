@@ -74,7 +74,7 @@ class PEPZeroSpecial(nodes.SparseNodeVisitor):
                 para[0] = nodes.reference("", pep_str, refuri=ref)
 
 
-def _mask_email(ref: nodes.reference, pep_num: int | None = None) -> nodes.reference:
+def _mask_email(ref: nodes.reference) -> nodes.reference:
     """Mask the email address in `ref` and return a replacement node.
 
     `ref` is returned unchanged if it contains no email address.
@@ -82,15 +82,12 @@ def _mask_email(ref: nodes.reference, pep_num: int | None = None) -> nodes.refer
     If given an email not explicitly whitelisted, process it such that
     `user@host` -> `user at host`.
 
-    If given a PEP number `pep_num`, add a default email subject.
+    The returned node has no refuri link attribute.
 
     """
     if "refuri" not in ref or not ref["refuri"].startswith("mailto:"):
         return ref
-    non_masked_addresses = {"peps@python.org", "python-list@python.org", "python-dev@python.org"}
-    if ref["refuri"].removeprefix("mailto:").strip() not in non_masked_addresses:
-        ref[0] = nodes.raw("", ref[0].replace("@", "&#32;&#97;t&#32;"), format="html")
-    if pep_num is None:
-        return ref[0]  # return email text without mailto link
-    ref["refuri"] += f"?subject=PEP%20{pep_num}"
-    return ref
+    list_name = ref["refuri"].removeprefix("mailto:").strip()
+    if list_name in {"peps@python.org", "python-list@python.org", "python-dev@python.org"}:
+        return ref[0]
+    return nodes.raw("", ref[0].replace("@", "&#32;&#97;t&#32;"), format="html")

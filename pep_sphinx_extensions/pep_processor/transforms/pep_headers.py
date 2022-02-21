@@ -39,12 +39,12 @@ class PEPHeaders(transforms.Transform):
         # Extract PEP number
         value = pep_field[1].astext()
         try:
-            pep = int(value)
+            pep_num = int(value)
         except ValueError:
             raise PEPParsingError(f"'PEP' header must contain an integer. '{value}' is invalid!")
 
         # Special processing for PEP 0.
-        if pep == 0:
+        if pep_num == 0:
             pending = nodes.pending(pep_zero.PEPZero)
             self.document.insert(1, pending)
             self.document.note_pending(pending)
@@ -71,9 +71,16 @@ class PEPHeaders(transforms.Transform):
             if name in {"author", "bdfl-delegate", "pep-delegate", "discussions-to", "sponsor"}:
                 # mask emails
                 for node in para:
-                    if isinstance(node, nodes.reference):
-                        pep_num = pep if name == "discussions-to" else None
-                        node.replace_self(_mask_email(node, pep_num))
+                    if not isinstance(node, nodes.reference):
+                        continue
+                    if name == "discussions-to":
+                        if node["refuri"].startswith("http"):
+                            node[0] = _list_name_from_thread(node)
+                        else:
+                            node[0] = _mask_email(node)
+                            node["refuri"] += f"?subject=PEP%20{pep_num}"
+                    else:
+                        node.replace_self(_mask_email(node))
             elif name in {"replaces", "superseded-by", "requires"}:
                 # replace PEP numbers with normalised list of links to PEPs
                 new_body = []
@@ -88,3 +95,22 @@ class PEPHeaders(transforms.Transform):
         # Remove unneeded fields
         for field in fields_to_remove:
             field.parent.remove(field)
+
+
+def _list_name_from_thread(node: nodes.reference) -> nodes.raw:
+    # mailman structure is
+    # https://mail.python.org/archives/list/<list name>/thread/<id>
+    # pipermail structure is
+    # https://mail.python.org/pipermail/<list name>/<month-year>/<id>
+    parts = node[0].split("/")
+    try:
+        list_name = parts[parts.index("archives") + 2]
+        masked_name = list_name.replace("@", "&#32;&#97;t&#32;")
+    except ValueError:
+        try:
+            list_name = parts[parts.index("pipermail") + 1]
+            masked_name = list_name + "&#32;&#97;t&#32;python.org"
+        except ValueError:
+            # archives and pipermail not in list, e.g. PEP 245
+            return node[0]
+    return nodes.raw("", masked_name, format="html")
