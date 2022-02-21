@@ -11,16 +11,11 @@ Thanks again for your contributions, and we look forward to reviewing them!
 Before writing a new PEP
 ------------------------
 
-Has this idea been proposed on `python-ideas <https://mail.python.org/mailman/listinfo/python-ideas>`_
-and received general acceptance as being an idea worth pursuing? (if not then
-please start a discussion there before submitting a pull request).
-
-More details about it in `PEP 1 <https://www.python.org/dev/peps/pep-0001/#start-with-an-idea-for-python>`_.
-
-Do you have an implementation of your idea? (this is important for when you
-propose this PEP to `python-dev <https://mail.python.org/mailman/listinfo/python-dev>`_
-as code maintenance is a critical aspect of all PEP proposals prior to a
-final decision; in special circumstances an implementation can be deferred)
+Prior to submitting a pull request here with your draft PEP, see `PEP 1
+<https://www.python.org/dev/peps/pep-0001/#start-with-an-idea-for-python>`_
+for some important steps to consider, including proposing and discussing it
+first in an appropriate venue, drafting a PEP and gathering feedback, and
+developing at least a prototype reference implementation of your idea.
 
 
 Commit messages and PR titles
