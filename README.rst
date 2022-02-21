@@ -6,8 +6,9 @@ Python Enhancement Proposals
 
 The PEPs in this repo are published automatically on the web at
 https://www.python.org/dev/peps/.  To learn more about the purpose of
-PEPs and how to go about writing a PEP, please start reading at PEP 1
-(``pep-0001.txt`` in this repo).  Note that PEP 0, the index PEP, is
+PEPs and how to go about writing one, please start reading at `PEP 1
+<https://www.python.org/dev/peps/pep-0001/>`_.
+Note that PEP 0, the index PEP, is
 now automatically generated, and not committed to the repo.
 
 
@@ -22,14 +23,19 @@ reStructuredText for PEPs
 
 Original PEP source should be written in reStructuredText format,
 which is a constrained version of plaintext, and is described in
-PEP 12.  Older PEPs were often written in a more mildly restricted
-plaintext format, as described in PEP 9.  The ``pep2html.py``
-processing and installation script knows how to produce the HTML
-for either PEP format.
+`PEP 12 <https://www.python.org/dev/peps/pep-0012/>`_.
+Older PEPs were often written in a more mildly restricted
+plaintext format, as described in `PEP 9
+<https://www.python.org/dev/peps/pep-0009/>`_.
+The ``pep2html.py`` processing and installation script knows
+how to produce the HTML for either PEP format.
 
-For processing reStructuredText format PEPs, you need the docutils
-package, which is available from `PyPI <https://pypi.org/>`_.
-If you have pip, ``pip install docutils`` should install it.
+To render the PEPs, you'll first need to install the requirements,
+(preferably in a fresh virtual environment):
+
+.. code-block:: console
+
+    python -m pip install -r requirements.txt
 
 
 Generating the PEP Index
