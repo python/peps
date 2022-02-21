@@ -84,24 +84,25 @@ either on-demand or automatically as you commit, with our pre-commit suite.
 See the `Contributing Guide <./CONTRIBUTING.rst>`_ for details.
 
 
-Generating HTML for python.org
+Generating HTML for Python.org
 ==============================
 
-python.org includes its own helper modules to render PEPs as HTML, with
+Python.org includes its own helper modules to render PEPs as HTML, with
 suitable links back to the source pages in the version control repository.
 
-These can be found at https://github.com/python/pythondotorg/tree/main/peps
+These can be found `in the python.org repository
+<https://github.com/python/pythondotorg/tree/main/peps>`__.
 
 When making changes to the PEP management process that may impact python.org's
 rendering pipeline:
 
-* Clone the python.org repository from https://github.com/python/pythondotorg/
-* Get set up for local python.org development as per
-  https://pythondotorg.readthedocs.io/install.html#manual-setup
+* Clone the `python.org repository <https://github.com/python/pythondotorg/>`_.
+* Get `set up for local python.org development
+  <https://pythondotorg.readthedocs.io/install.html#manual-setup>`_.
 * Adjust ``PEP_REPO_PATH`` in ``pydotorg/settings/local.py`` to refer to your
-  local clone of the PEP repository
-* Run ``./manage.py generate_pep_pages`` as described in
-  https://pythondotorg.readthedocs.io/pep_generation.html
+  local clone of the PEP repository.
+* Run ``./manage.py generate_pep_pages`` as described the `python.org docs
+  <https://pythondotorg.readthedocs.io/pep_generation.html>`__.
 
 
 Rendering PEPs with Sphinx
