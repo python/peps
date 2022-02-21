@@ -1,9 +1,12 @@
 Contributing Guidelines
 =======================
 
-To learn more about the purpose of PEPs and how to go about writing a PEP, please
-start reading at PEP 1 (`pep-0001.txt <./pep-0001.txt>`_ in this repo). Note that
-PEP 0, the index PEP, is now automatically generated, and not committed to the repo.
+To learn more about the purpose of PEPs and how to go about writing one, please
+start reading at `PEP 1 <https://www.python.org/dev/peps/pep-0001/>`_.
+Also, make sure to check the `README <./README.rst>`_ for information
+on how to render the PEPs in this repository.
+Thanks again for your contributions, and we look forward to reviewing them!
+
 
 Before writing a new PEP
 ------------------------
@@ -20,11 +23,12 @@ as code maintenance is a critical aspect of all PEP proposals prior to a
 final decision; in special circumstances an implementation can be deferred)
 
 
-Commit messages
----------------
+Commit messages and PR titles
+-----------------------------
 
-When committing to a PEP, please always include the PEP number in the subject
-title. For example, ``PEP NNN: <summary of changes>``.
+When adding or modifying a PEP, please always include the PEP number in the
+commit summary and pull request title.
+For example, ``PEP NNN: <summary of changes>``.
 
 
 Sign the CLA
@@ -32,16 +36,11 @@ Sign the CLA
 
 Before you hit "Create pull request", please take a moment to ensure that this
 project can legally accept your contribution by verifying you have signed the
-PSF Contributor Agreement:
+`PSF Contributor Agreement <https://www.python.org/psf/contrib/contrib-form/>`_.
 
-    https://www.python.org/psf/contrib/contrib-form/
-
-If you haven't signed the CLA before, please follow the steps outlined in the
-CPython devguide to do so:
-
-    https://devguide.python.org/pullrequest/#licensing
-
-Thanks again to your contribution and we look forward to looking at it!
+If you haven't signed the CLA before, please follow the
+`steps outlined in the CPython devguide
+<https://devguide.python.org/pullrequest/#licensing>`_ to do so.
 
 
 Code of Conduct
@@ -49,7 +48,7 @@ Code of Conduct
 
 All interactions for this project are covered by the
 `PSF Code of Conduct <https://www.python.org/psf/codeofconduct/>`_. Everyone is
-expected to be open, considerate, and respectful of others no matter their
+expected to be open, considerate, and respectful of others, no matter their
 position within the project.
 
 
