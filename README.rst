@@ -9,7 +9,7 @@ https://www.python.org/dev/peps/.  To learn more about the purpose of
 PEPs and how to go about writing one, please start reading at `PEP 1
 <https://www.python.org/dev/peps/pep-0001/>`_.
 Note that PEP 0, the index PEP, is
-now automatically generated, and not committed to the repo.
+automatically generated and not committed to the repo.
 
 
 Contributing to PEPs
@@ -21,14 +21,11 @@ See the `Contributing Guidelines <./CONTRIBUTING.rst>`_.
 reStructuredText for PEPs
 =========================
 
-Original PEP source should be written in reStructuredText format,
+PEP source text should be written in reStructuredText format,
 which is a constrained version of plaintext, and is described in
 `PEP 12 <https://www.python.org/dev/peps/pep-0012/>`_.
-Older PEPs were often written in a more mildly restricted
-plaintext format, as described in `PEP 9
-<https://www.python.org/dev/peps/pep-0009/>`_.
 The ``pep2html.py`` processing and installation script knows
-how to produce the HTML for either PEP format.
+how to produce the HTML for the PEP format.
 
 To render the PEPs, you'll first need to install the requirements,
 (preferably in a fresh virtual environment):
