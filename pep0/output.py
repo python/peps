@@ -284,7 +284,5 @@ def write_pep0(peps, output=sys.stdout):
     print(author_table_separator, file=output)
     print(file=output)
     print(file=output)
-    # References for introduction footnotes
-    emit_title("References", "references", output)
     print(constants.references, file=output)
     print(constants.footer, file=output)
