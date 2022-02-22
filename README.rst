@@ -105,51 +105,44 @@ There is a Sphinx-rendered version of the PEPs at https://python.github.io/peps/
 (updated on every push to ``main``).
 
 **Warning:** This version is not, and should not be taken to be, a canonical
-source for PEPs whilst it remains in preview (`please report any rendering bugs
-<https://github.com/python/peps/issues/new>`_). The canonical source for PEPs remains
-https://www.python.org/dev/peps/
+source for PEPs whilst it remains in preview (please `report any rendering bugs
+<https://github.com/python/peps/issues/new>`_).
+The canonical source for PEPs remains https://www.python.org/dev/peps/
 
-Build PEPs with Sphinx locally:
--------------------------------
 
-1. Ensure you have Python >=3.9 and Sphinx installed
-2. If you have access to ``make``, follow (i), otherwise (ii)
+Build PEPs with Sphinx locally
+------------------------------
 
-   i.  Run ``make sphinx-local``
-   ii. Run ``python build.py -j 8 --build-files``. Note that the jobs argument
-       only takes effect on unix (non-mac) systems.
-3. Wait for Sphinx to render the PEPs. There may be a series of warnings about
-   unreferenced citations or labels -- whilst these are valid warnings they do
-   not impact the build process.
-4. Navigate to the ``build`` directory of your PEPs repo to find the HTML pages.
-   PEP 0 provides a formatted index, and may be a useful reference.
+See the `build documentation <./docs/build.rst>`__ for full step by step
+instructions on how to install, build and view the rendered PEPs with Sphinx.
 
-Arguments to ``build.py``:
---------------------------
+In summary, after installing the dependencies (preferably in a virtual
+environment) with:
 
-Renderers:
+.. code-block:: console
 
-``-f`` or ``--build-files``
-    Renders PEPs to ``pep-XXXX.html`` files
+    python -m pip install -r requirements.txt
 
-``-d`` or ``--build-dirs``
-    Renders PEPs to ``index.html`` files within ``pep-XXXX`` directories
+You can build the PEPs with sphinx by running, if your system has ``make``:
 
-Options:
+.. code-block:: console
 
-``-i`` or ``--index-file``
-    Copies PEP 0 to a base index file
+    make sphinx
 
-``-j`` or ``--jobs``
-    How many parallel jobs to run (if supported). Integer, default 1
+Otherwise, execute the ``build.py`` script directly:
 
-``-n`` or ``--nitpicky``
-    Runs Sphinx in `nitpicky` mode
+.. code-block:: console
 
-``-w`` or ``--fail-on-warning``
-    Fails Sphinx on warnings
+    python build.py
 
-Tools:
+The output HTML can be found under the ``build`` directory.
 
-``-l`` or ``--check-links``
-    Checks validity of links within PEP sources
+
+``build.py`` usage
+------------------
+
+For details on the command-line options to the ``build.py`` script, run:
+
+.. code-block:: console
+
+    python build.py --help
