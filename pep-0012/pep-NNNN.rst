@@ -9,7 +9,7 @@ Type: <REQUIRED: Standards Track | Informational | Process>
 Requires: <pep numbers>
 Created: <date created on, in dd-mmm-yyyy format>
 Python-Version: <version number>
-Post-History: <REQUIRED: dates of postings to Python-Dev and/or the Discussions-To thread, in dd-mmm-yyyy format>
+Post-History: <REQUIRED: dates, in dd-mmm-yyyy format, and corresponding links to PEP discussion threads>
 Replaces: <pep number>
 Superseded-By: <pep number>
 Resolution: <url>
