@@ -70,27 +70,27 @@ before running this command.
 
 Otherwise, you can install pre-commit with
 
-.. code-block:: console
+.. code-block:: bash
 
     python -m pip install pre-commit
 
 (or your choice of installer), and then run the hooks on all the files
 in the repo with
 
-.. code-block:: console
+.. code-block:: bash
 
     pre-commit run --all-files
 
 or only on any files that have been modified but not yet committed with
 
-.. code-block:: console
+.. code-block:: bash
 
     pre-commit run
 
 If you would like pre-commit to run automatically against any modified files
 every time you commit, install the hooks with
 
-.. code-block:: console
+.. code-block:: bash
 
     pre-commit install
 
@@ -113,13 +113,13 @@ For finer control or on other systems, after installing pre-commit as in
 the previous section, you can run it against only the files
 you've modified and not yet committed with
 
-.. code-block:: console
+.. code-block:: bash
 
     pre-commit run --hook-stage manual codespell
 
 or against all files with
 
-.. code-block:: console
+.. code-block:: bash
 
     pre-commit run --all-files --hook-stage manual codespell
 

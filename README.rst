@@ -30,7 +30,7 @@ how to produce the HTML for the PEP format.
 To render the PEPs, you'll first need to install the requirements,
 (preferably in a fresh virtual environment):
 
-.. code-block:: console
+.. code-block:: bash
 
     python -m pip install -r requirements.txt
 
@@ -52,13 +52,13 @@ intend. To check building the HTML output for your PEP (for example, PEP 12)
 using the current default docutils-based system, run the ``pep2html.py`` script
 with your PEP source file as its argument; e.g. for PEP 12,
 
-.. code-block:: console
+.. code-block:: bash
 
     python pep2html.py pep-0012.rst
 
 If you're on a system with ``make``, you can instead execute, e.g.,
 
-.. code-block:: console
+.. code-block:: bash
 
     make pep-0012.rst
 
@@ -123,19 +123,19 @@ instructions on how to install, build and view the rendered PEPs with Sphinx.
 In summary, after installing the dependencies (preferably in a virtual
 environment) with:
 
-.. code-block:: console
+.. code-block:: bash
 
     python -m pip install -r requirements.txt
 
 You can build the PEPs with sphinx by running, if your system has ``make``:
 
-.. code-block:: console
+.. code-block:: bash
 
     make sphinx
 
 Otherwise, execute the ``build.py`` script directly:
 
-.. code-block:: console
+.. code-block:: bash
 
     python build.py
 
@@ -147,6 +147,6 @@ The output HTML can be found under the ``build`` directory.
 
 For details on the command-line options to the ``build.py`` script, run:
 
-.. code-block:: console
+.. code-block:: bash
 
     python build.py --help
