@@ -260,7 +260,7 @@ def fixfile(inpath, input_lines, outfile):
                     v = date
         elif k.lower() in ('content-type',):
             url = PEPURL % 9
-            pep_type = v or 'text/plain'
+            pep_type = v or 'text/x-rst'
             v = '<a href="%s">%s</a> ' % (url, escape(pep_type))
         elif k.lower() == 'version':
             if v.startswith('$' 'Revision: ') and v.endswith(' $'):
@@ -569,7 +569,7 @@ def fix_rst_pep(inpath, input_lines, outfile):
 
 def get_pep_type(input_lines):
     """
-    Return the Content-Type of the input.  "text/plain" is the default.
+    Return the Content-Type of the input.  "text/x-rst" is the default.
     Return ``None`` if the input is not a PEP.
     """
     pep_type = None
@@ -579,11 +579,11 @@ def get_pep_type(input_lines):
             # End of the RFC 2822 header (first blank line).
             break
         elif line.startswith('content-type: '):
-            pep_type = line.split()[1] or 'text/plain'
+            pep_type = line.split()[1] or 'text/x-rst'
             break
         elif line.startswith('pep: '):
             # Default PEP type, used if no explicit content-type specified:
-            pep_type = 'text/plain'
+            pep_type = 'text/x-rst'
     return pep_type
 
 
