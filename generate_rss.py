@@ -6,6 +6,7 @@ import datetime
 import email.utils
 from pathlib import Path
 
+import docutils
 from docutils import frontend
 from docutils import nodes
 from docutils import utils
@@ -17,6 +18,14 @@ from feedgen import feed
 # Monkeypatch feedgen.util.formatRFC2822
 def _format_rfc_2822(dt: datetime.datetime) -> str:
     return email.utils.format_datetime(dt, usegmt=True)
+
+
+# Monkeypatch nodes.Node.findall for forwards compatability
+if docutils.__version_info__ < (0, 18):
+    def findall(self, *args, **kwargs):
+        return iter(self.traverse(*args, **kwargs))
+
+    nodes.Node.findall = findall
 
 
 entry.formatRFC2822 = feed.formatRFC2822 = _format_rfc_2822
@@ -62,8 +71,7 @@ def parse_rst(text: str) -> nodes.document:
 def pep_abstract(full_path: Path) -> str:
     """Return the first paragraph of the PEP abstract"""
     text = full_path.read_text(encoding="utf-8")
-    # TODO replace .traverse with .findall when Sphinx updates to docutils>=0.18.1
-    for node in parse_rst(text).traverse(nodes.section):
+    for node in parse_rst(text).findall(nodes.section):
         if node.next_node(nodes.title).astext() == "Abstract":
             return node.next_node(nodes.paragraph).astext().strip().replace("\n", " ")
     return ""
