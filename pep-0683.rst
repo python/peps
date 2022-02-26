@@ -217,24 +217,31 @@ performance.
 Backward Compatibility
 ----------------------
 
-This proposal is meant to be completely compatible.  It focuses strictly
-on internal implementation details.  It does not involve changes to any
-public API, other than a few minor changes in behavior related to refcounts
-(but only for immortal objects):
+Ideally this internal-only feature would be completely compatible.
+However, it does involve a change to refcount semantics in some cases.
+Only immortal objects are affected, but this includes high-use objects
+like `None`, `True`, and `False`.
+
+Specifically, when an immortal object is involved:
 
 * code that inspects the refcount will see a really, really large value
 * the new noop behavior may break code that:
 
   * depends specifically on the refcount to always increment or decrement
     (or have a specific value from ``Py_SET_REFCNT()``)
-  * relies on any specific refcount value, other than 0
+  * relies on any specific refcount value, other than 0 or 1
   * directly manipulates the refcount to store extra information there
+
+* in 32-bit pre-3.11 `Stable ABI`_ extensions,
+  objects may leak due to `Accidental Immortality`_
+* such extensions may crash due to `Accidental De-Immortalizing`_
 
 Again, those changes in behavior only apply to immortal objects, not
 most of the objects a user will access.  Furthermore, users cannot mark
 an object as immortal so no user-created objects will ever have that
 changed behavior.  Users that rely on any of the changing behavior for
-global (builtin) objects are already in trouble.
+global (builtin) objects are already in trouble.  So the overall impact
+should be small.
 
 Also note that code which checks for refleaks should keep working fine,
 unless it checks for hard-coded small values relative to some immortal
@@ -243,33 +250,19 @@ we do not modify the refcount.
 
 See `Public Refcount Details`_ below for further discussion.
 
-Stable ABI
-----------
-
-The approach is also compatible with extensions compiled to the stable
-ABI.  Unfortunately, they will modify the refcount and invalidate all
-the performance benefits of immortal objects.  However, the high bit
-of the refcount `will still match _Py_IMMORTAL_REFCNT <_Py_IMMORTAL_REFCNT_>`_
-so we can still identify such objects as immortal.  At worst, objects
-in that situation would feel the effects described in the `Motivation`_
-section.  Even then the overall impact is unlikely to be significant.
-
-Also see `_Py_IMMORTAL_REFCNT`_ below.
-
 Accidental Immortality
-----------------------
+''''''''''''''''''''''
 
-Hypothetically, a regular object could be incref'ed so much that it
-reaches the magic value needed to be considered immortal.  That means
-it would accidentally never be cleaned up (by going back to 0).
+Hypothetically, a non-immortal object could be incref'ed so much
+that it reaches the magic value needed to be considered immortal.
+That means it would accidentally never be cleaned up
+(by going back to 0).
 
-While it isn't impossible, this accidental scenario is so unlikely
-that we need not worry.  Even if done deliberately by using
-``Py_INCREF()`` in a tight loop and each iteration only took 1 CPU
-cycle, it would take 2^61 cycles (on a 64-bit processor).  At a fast
-5 GHz that would still take nearly 500,000,000 seconds (over 5,000 days)!
-If that CPU were 32-bit then it is (technically) more possible though
-still highly unlikely.
+On 64-bit builds, this accidental scenario is so unlikely that we need
+not worry.  Even if done deliberately by using ``Py_INCREF()`` in a
+tight loop and each iteration only took 1 CPU cycle, it would take
+2^60 cycles (on a 64-bit processor).  At a fast 5 GHz that would
+still take nearly 250,000,000 seconds (over 2,500 days)!
 
 Also note that it is doubly unlikely to be a problem because it wouldn't
 matter until the refcount got back to 0 and the object was cleaned up.
@@ -280,8 +273,94 @@ would be noticed.
 Again, the only realistic way that the magic refcount would be reached
 (and then reversed) is if it were done deliberately.  (Of course, the
 same thing could be done efficiently using ``Py_SET_REFCNT()`` though
-that would be even less of an accident.) At that point we don't
+that would be even less of an accident.)  At that point we don't
 consider it a concern of this proposal.
+
+On 32-bit builds it isn't so obvious.  The magic refcount would be 2^28.
+Using the same specs as above, it would take roughly 1 second to
+accidentally immortalize an object.  Under reasonable conditions, it
+is still highly unlikely that an object be accidentally immortalized.
+It would have to meet these criteria:
+
+* targeting a non-immortal object (so not one of the high-use builtins)
+* the extension increfs without a corresponding decref
+  (e.g. returns from a function or method)
+* no other code decrefs the object in the meantime
+
+Under those conditions it would reach accidental immortality (on 32-bit)
+in, at most, a year if it averaged at least one of those increfs every
+158 seconds on that hypothetical workstation.  Of course, then it would
+have to run through the same number of (now noop-ing) decrefs before
+that one object would be effectively leaking.  This is highly unlikely,
+especially because we assume no decrefs.
+
+Furthermore, this isn't all that different from how such 32-bit extensions
+can already incref an object past 2^31 and turn the refcount negative.
+If that were an actual problem then we would have heard about it.
+
+Between all of the above cases, the proposal doesn't consider
+accidental immortality a problem.
+
+Stable ABI
+''''''''''
+
+The implementation approach described in this PEP is compatible
+with extensions compiled to the stable ABI (with the exception
+of `Accidental Immortality`_ and `Accidental De-Immortalizing`_).
+Due to the nature of the stable ABI, unfortunately, such extensions
+use versions of ``Py_INCREF()``, etc. that directly modify the object's
+``ob_refcnt`` field.  This will invalidate all the performance benefits
+of immortal objects.
+
+However, we do ensure that immortal objects (mostly) stay immortal
+in that situation.  We set the initial refcount of immortal objects to
+a value high above the magic refcount value, but one that still matches
+the high bit.  Thus we can still identify such objects as immortal.
+(See `_Py_IMMORTAL_REFCNT`_.)  At worst, objects in that situation
+would feel the effects described in the `Motivation`_ section.
+Even then the overall impact is unlikely to be significant.
+
+Accidental De-Immortalizing
+'''''''''''''''''''''''''''
+
+32-bit builds of older stable ABI extensions can take `Accidental Immortality`_
+to the next level.
+
+Hypothetically, such an extension could incref an object to value on
+the next highest bit above the magic refcount value.  For example, if
+the magic value were 2^30 and the initial immortal refcount were thus
+2^30 + 2^29 then it would take 2^29 increfs by the extension to reach
+a value of 2^31, making the object non-immortal.
+(Of course, a refcount that high would probably already cause a crash,
+regardless of immortal objects.)
+
+The more problematic case is where such a 32-bit stable ABI extension
+goes crazy decref'ing an already immortal object.  Continuing with the
+above example, it would take 2^29 asymmetric decrefs to drop below the
+magic immortal refcount value.  So an object like ``None`` could be
+made mortal and subject to decref.  That still wouldn't be a problem
+until somehow the decrefs continue on that object until it reaches 0.
+For many immortal objects, like ``None``, the extension will crash
+the process if it tries to dealloc the object.  For the other
+immortal objects, the dealloc might be okay.  However, there will
+be runtime code expecting the formerly-immortal object to be around
+forever.  That code will probably crash.
+
+Again, the likelihood of this happening is extremely small, even on
+32-bit builds.  It would require roughly a billion decrefs on that
+one object without a corresponding incref.  The most likely scenario is
+the following:
+
+A "new" reference to ``None`` is returned by many functions and methods.
+The 3.11 runtime will never incref it before giving it to the extension.
+However, the extension *will* decref it when done with it.  Each time
+that exchange happens with the one object, we get one step closer to a
+crash.  How realistic is it that some form of that exchange happen
+a billion times in the lifetime of a Python process on 32-bit?
+
+<TBD>
+
+.. My gut says it is not realistic but that's not very compelling.
 
 Alternate Python Implementations
 --------------------------------
@@ -603,6 +682,7 @@ Open Issues
 * is there any other impact on GC?
 * `are the copy-on-write benefits real? <https://mail.python.org/archives/list/python-dev@python.org/message/J53GY7XKFOI4KWHSTTA7FUL7TJLE7WG6/>`__
 * must the fate of this PEP be tied to acceptance of a per-interpreter GIL PEP?
+* how realistic is the `Accidental De-Immortalizing`_ concern?
 
 
 References
