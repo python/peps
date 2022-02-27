@@ -29,7 +29,7 @@ class PEPReferenceRoleTitleText(transforms.Transform):
 
             # Create title text string. We hijack the 'reftitle' attribute so
             # that we don't have to change things in the HTML translator
-            node["reftitle"] = env.titles[filename].astext().replace(" – ", ", ")
+            node["reftitle"] = env.titles[filename].astext()
             try:
                 node["reftitle"] += f" § {target_ids[fragment][0].astext()}"
             except KeyError:

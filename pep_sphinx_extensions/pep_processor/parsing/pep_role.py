@@ -8,7 +8,12 @@ class PEPRole(roles.ReferenceRole):
     def run(self) -> tuple[list[nodes.Node], list[nodes.system_message]]:
         # Get PEP URI from role text.
         pep_str, _, fragment = self.target.partition("#")
-        pep_num = int(pep_str)
+        try:
+            pep_num = int(pep_str)
+        except ValueError:
+            msg = self.inliner.reporter.error(f'invalid PEP number {self.target}', line=self.lineno)
+            prb = self.inliner.problematic(self.rawtext, self.rawtext, msg)
+            return [prb], [msg]
         pep_base = self.inliner.document.settings.pep_url.format(pep_num)
         if fragment:
             ref_uri = f"{pep_base}#{fragment}"
@@ -18,11 +23,13 @@ class PEPRole(roles.ReferenceRole):
             title = self.title
         else:
             title = f"PEP {pep_num}"
-        try:
-            return [nodes.reference("", title,
-                                    internal=True, refuri=ref_uri, classes=["pep"],
-                                    _title_tuple=(pep_num, fragment))], []
-        except ValueError:
-            msg = self.inliner.reporter.error(f'invalid PEP number {self.target}', line=self.lineno)
-            prb = self.inliner.problematic(self.rawtext, self.rawtext, msg)
-            return [prb], [msg]
+
+        return [
+            nodes.reference(
+                "", title,
+                internal=True,
+                refuri=ref_uri,
+                classes=["pep"],
+                _title_tuple=(pep_num, fragment)
+            )
+        ], []
