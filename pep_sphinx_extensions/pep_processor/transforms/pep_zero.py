@@ -85,9 +85,6 @@ def _mask_email(ref: nodes.reference) -> nodes.reference:
     The returned node has no refuri link attribute.
 
     """
-    if "refuri" not in ref or not ref["refuri"].startswith("mailto:"):
+    if not ref.get("refuri", "").startswith("mailto:"):
         return ref
-    list_name = ref["refuri"].removeprefix("mailto:").strip()
-    if list_name in {"peps@python.org", "python-list@python.org", "python-dev@python.org"}:
-        return ref[0]
     return nodes.raw("", ref[0].replace("@", "&#32;&#97;t&#32;"), format="html")
