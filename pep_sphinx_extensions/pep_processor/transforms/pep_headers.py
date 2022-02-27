@@ -99,27 +99,19 @@ class PEPHeaders(transforms.Transform):
 
 
 def _pretty_thread(text: nodes.Text) -> nodes.Text:
-    # we want to keep these as lowercase:
-    if "python-dev" in text:
-        return nodes.Text("python-dev")
-    if "python-committers" in text:
-        return nodes.Text("python-committers")
-
-    parts = text.split("/")
+    parts = text.title().replace("Sig", "SIG").split("/")
 
     # mailman structure is
     # https://mail.python.org/archives/list/<list name>/thread/<id>
     try:
-        list_name = parts[parts.index("archives") + 2].removesuffix("@python.org")
-        return nodes.Text(list_name.title().replace("Sig", "SIG").replace("-", " "))
+        return nodes.Text(parts[parts.index("Archives") + 2].removesuffix("@Python.Org"))
     except ValueError:
         pass
 
     # pipermail structure is
     # https://mail.python.org/pipermail/<list name>/<month-year>/<id>
     try:
-        list_name = parts[parts.index("pipermail") + 1]
-        return nodes.Text(list_name.title().replace("Sig", "SIG").replace("-", " "))
+        return nodes.Text(parts[parts.index("Pipermail") + 1])
     except ValueError:
         # archives and pipermail not in list, e.g. PEP 245
         return text
