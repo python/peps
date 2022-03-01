@@ -7,7 +7,7 @@ Type: Standards Track
 Content-Type: text/x-rst
 Created: 10-Feb-2022
 Python-Version: 3.11
-Post-History: 15-Feb-2022
+Post-History: 15-Feb-2022, 19-Feb-2022, 28-Feb-2022
 Resolution:
 
 
@@ -19,29 +19,64 @@ Currently the CPython runtime maintains a
 allocated memory of each object.  Because of this, otherwise immutable
 objects are actually mutable.  This can have a large negative impact
 on CPU and memory performance, especially for approaches to increasing
-Python's scalability.  The solution proposed here provides a way
-to mark an object as one for which that per-object
-runtime state should not change.
+Python's scalability.
 
-Specifically, if an object's refcount matches a very specific value
-(defined below) then that object is treated as "immortal".  If an object
-is immortal then its refcount will never be modified by ``Py_INCREF()``,
-etc.  Consequently, the refcount will never reach 0, so that object will
-never be cleaned up (unless explicitly done, e.g. during runtime
-finalization).  Additionally, all other per-object runtime state
-for an immortal object will be considered immutable.
+This proposal mandates that, internally, CPython will support marking
+an object as one for which that runtime state will no longer change.
+Consequently, such an object's refcount will never reach 0, and so the
+object will never be cleaned up.  We call these objects "immortal".
+(Normally, only a relatively small number of internal objects
+will ever be immortal.)  The fundamental improvement here
+is that now an object can be truly immutable.
 
-This approach has some possible negative impact, which is explained
-below, along with mitigations.  A critical requirement for this change
-is that the performance regression be no more than 2-3%.  Anything worse
-than performance-neutral requires that the other benefits are proportionally
-large.  Aside from specific applications, the fundamental improvement
-here is that now an object can be truly immutable.
+Scope
+-----
 
-(This proposal is meant to be CPython-specific and to affect only
-internal implementation details.  There are some slight exceptions
-to that which are explained below.  See `Backward Compatibility`_,
-`Public Refcount Details`_, and `scope`_.)
+Object immortality is meant to be an internal-only feature.  So this
+proposal does not include any changes to public API or behavior
+(with one exception).  As usual, we may still add some private
+(yet publicly accessible) API to do things like immortalize an object
+or tell if one is immortal.  Any effort to expose this feature to users
+would need to be proposed separately.
+
+There is one exception to "no change in behavior": refcounting semantics
+for immortal objects will differ in some cases from user expectations.
+This exception, and the solution, are discussed below.
+
+Most of this PEP focuses on an internal implementation that satisfies
+the above mandate.  However, those implementation details are not meant
+to be strictly proscriptive.  Instead, at the least they are included
+to help illustrate the technical considerations required by the mandate.
+The actual implementation may deviate somewhat as long as it satisfies
+the constraints outlined below.  Furthermore, the acceptability of any
+specific implementation detail described below does not depend on
+the status of this PEP, unless explicitly specified.
+
+For example, the particular details of:
+
+* how to mark something as immortal
+* how to recognize something as immortal
+* which subset of functionally immortal objects are marked as immortal
+* which memory-management activities are skipped or modified for immortal objects
+
+are not only CPython-specific but are also private implementation
+details that are expected to change in subsequent versions.
+
+Implementation Summary
+----------------------
+
+Here's a high-level look at the implementation:
+
+If an object's refcount matches a very specific value (defined below)
+then that object is treated as immortal.  The CPython C-API and runtime
+will not modify the refcount (or other runtime state) of an immortal
+object.
+
+Aside from the change to refcounting semantics, there is one other
+possible negative impact to consider.  A naive implementation of the
+approach described below makes CPython roughly 4% slower.  However,
+the implementation is performance-neutral once known mitigations
+are applied.
 
 
 Motivation
@@ -153,7 +188,7 @@ Impact
 Benefits
 --------
 
-Most notably, the cases described in the two examples above stand
+Most notably, the cases described in the above examples stand
 to benefit greatly from immortal objects.  Projects using pre-fork
 can drop their workarounds.  For the per-interpreter GIL project,
 immortal objects greatly simplifies the solution for existing static
@@ -167,10 +202,9 @@ usage.  This is reflected in most of the above cases.
 Performance
 -----------
 
-A naive implementation shows `a 4% slowdown`_.
-Several promising mitigation strategies will be pursued in the effort
-to bring it closer to performance-neutral.  See the `mitigation`_
-section below.
+A naive implementation shows `a 4% slowdown`_.  We have demonstrated
+a return to performance-neutral with a handful of basic mitigations
+applied.  See the `mitigation`_ section below.
 
 On the positive side, immortal objects save a significant amount of
 memory when used with a pre-fork model.  Also, immortal objects provide
@@ -182,59 +216,52 @@ performance.
 Backward Compatibility
 ----------------------
 
-This proposal is meant to be completely compatible.  It focuses strictly
-on internal implementation details.  It does not involve changes to any
-public API, other than a few minor changes in behavior related to refcounts
-(but only for immortal objects):
+Ideally this internal-only feature would be completely compatible.
+However, it does involve a change to refcount semantics in some cases.
+Only immortal objects are affected, but this includes high-use objects
+like ``None``, ``True``, and ``False``.
+
+Specifically, when an immortal object is involved:
 
 * code that inspects the refcount will see a really, really large value
 * the new noop behavior may break code that:
 
   * depends specifically on the refcount to always increment or decrement
     (or have a specific value from ``Py_SET_REFCNT()``)
-  * relies on any specific refcount value, other than 0
+  * relies on any specific refcount value, other than 0 or 1
   * directly manipulates the refcount to store extra information there
+
+* in 32-bit pre-3.11 `Stable ABI`_ extensions,
+  objects may leak due to `Accidental Immortality`_
+* such extensions may crash due to `Accidental De-Immortalizing`_
 
 Again, those changes in behavior only apply to immortal objects, not
 most of the objects a user will access.  Furthermore, users cannot mark
 an object as immortal so no user-created objects will ever have that
 changed behavior.  Users that rely on any of the changing behavior for
-global (builtin) objects are already in trouble.
+global (builtin) objects are already in trouble.  So the overall impact
+should be small.
 
 Also note that code which checks for refleaks should keep working fine,
 unless it checks for hard-coded small values relative to some immortal
 object.  The problems noticed by `Pyston`_ shouldn't apply here since
 we do not modify the refcount.
 
-See `Public Refcount Details`_ and `scope`_ below for further discussion.
-
-Stable ABI
-----------
-
-The approach is also compatible with extensions compiled to the stable
-ABI.  Unfortunately, they will modify the refcount and invalidate all
-the performance benefits of immortal objects.  However, the high bit
-of the refcount `will still match _Py_IMMORTAL_REFCNT <_Py_IMMORTAL_REFCNT_>`_
-so we can still identify such objects as immortal.  At worst, objects
-in that situation would feel the effects described in the `Motivation`_
-section.  Even then the overall impact is unlikely to be significant.
-
-Also see `_Py_IMMORTAL_REFCNT`_ below.
+See `Public Refcount Details`_ below for further discussion.
 
 Accidental Immortality
-----------------------
+''''''''''''''''''''''
 
-Hypothetically, a regular object could be incref'ed so much that it
-reaches the magic value needed to be considered immortal.  That means
-it would accidentally never be cleaned up (by going back to 0).
+Hypothetically, a non-immortal object could be incref'ed so much
+that it reaches the magic value needed to be considered immortal.
+That means it would accidentally never be cleaned up
+(by going back to 0).
 
-While it isn't impossible, this accidental scenario is so unlikely
-that we need not worry.  Even if done deliberately by using
-``Py_INCREF()`` in a tight loop and each iteration only took 1 CPU
-cycle, it would take 2^61 cycles (on a 64-bit processor).  At a fast
-5 GHz that would still take nearly 500,000,000 seconds (over 5,000 days)!
-If that CPU were 32-bit then it is (technically) more possible though
-still highly unlikely.
+On 64-bit builds, this accidental scenario is so unlikely that we need
+not worry.  Even if done deliberately by using ``Py_INCREF()`` in a
+tight loop and each iteration only took 1 CPU cycle, it would take
+2^60 cycles (if the immortal bit were 2^60).  At a fast 5 GHz that would
+still take nearly 250,000,000 seconds (over 2,500 days)!
 
 Also note that it is doubly unlikely to be a problem because it wouldn't
 matter until the refcount got back to 0 and the object was cleaned up.
@@ -245,8 +272,105 @@ would be noticed.
 Again, the only realistic way that the magic refcount would be reached
 (and then reversed) is if it were done deliberately.  (Of course, the
 same thing could be done efficiently using ``Py_SET_REFCNT()`` though
-that would be even less of an accident.) At that point we don't
+that would be even less of an accident.)  At that point we don't
 consider it a concern of this proposal.
+
+On 32-bit builds it isn't so obvious.  Let's say the magic refcount
+were 2^30.  Using the same specs as above, it would take roughly
+4 seconds to accidentally immortalize an object.  Under reasonable
+conditions, it is still highly unlikely that an object be accidentally
+immortalized.  It would have to meet these criteria:
+
+* targeting a non-immortal object (so not one of the high-use builtins)
+* the extension increfs without a corresponding decref
+  (e.g. returns from a function or method)
+* no other code decrefs the object in the meantime
+
+Even at a much less frequent rate incref it would not take long to reach
+accidental immortality (on 32-bit).  However, then it would have to run
+through the same number of (now noop-ing) decrefs before that one object
+would be effectively leaking.  This is highly unlikely, especially because
+the calculations assume no decrefs.
+
+Furthermore, this isn't all that different from how such 32-bit extensions
+can already incref an object past 2^31 and turn the refcount negative.
+If that were an actual problem then we would have heard about it.
+
+Between all of the above cases, the proposal doesn't consider
+accidental immortality a problem.
+
+Stable ABI
+''''''''''
+
+The implementation approach described in this PEP is compatible
+with extensions compiled to the stable ABI (with the exception
+of `Accidental Immortality`_ and `Accidental De-Immortalizing`_).
+Due to the nature of the stable ABI, unfortunately, such extensions
+use versions of ``Py_INCREF()``, etc. that directly modify the object's
+``ob_refcnt`` field.  This will invalidate all the performance benefits
+of immortal objects.
+
+However, we do ensure that immortal objects (mostly) stay immortal
+in that situation.  We set the initial refcount of immortal objects to
+a value high above the magic refcount value, but one that still matches
+the high bit.  Thus we can still identify such objects as immortal.
+(See `_Py_IMMORTAL_REFCNT`_.)  At worst, objects in that situation
+would feel the effects described in the `Motivation`_ section.
+Even then the overall impact is unlikely to be significant.
+
+Accidental De-Immortalizing
+'''''''''''''''''''''''''''
+
+32-bit builds of older stable ABI extensions can take `Accidental Immortality`_
+to the next level.
+
+Hypothetically, such an extension could incref an object to a value on
+the next highest bit above the magic refcount value.  For example, if
+the magic value were 2^30 and the initial immortal refcount were thus
+2^30 + 2^29 then it would take 2^29 increfs by the extension to reach
+a value of 2^31, making the object non-immortal.
+(Of course, a refcount that high would probably already cause a crash,
+regardless of immortal objects.)
+
+The more problematic case is where such a 32-bit stable ABI extension
+goes crazy decref'ing an already immortal object.  Continuing with the
+above example, it would take 2^29 asymmetric decrefs to drop below the
+magic immortal refcount value.  So an object like ``None`` could be
+made mortal and subject to decref.  That still wouldn't be a problem
+until somehow the decrefs continue on that object until it reaches 0.
+For many immortal objects, like ``None``, the extension will crash
+the process if it tries to dealloc the object.  For the other
+immortal objects, the dealloc might be okay.  However, there will
+be runtime code expecting the formerly-immortal object to be around
+forever.  That code will probably crash.
+
+Again, the likelihood of this happening is extremely small, even on
+32-bit builds.  It would require roughly a billion decrefs on that
+one object without a corresponding incref.  The most likely scenario is
+the following:
+
+A "new" reference to ``None`` is returned by many functions and methods.
+Unlike with non-immortal objects, the 3.11 runtime will almost never
+incref ``None`` before giving it to the extension.  However, the
+extension *will* decref it when done with it (unless it returns it).
+Each time that exchange happens with the one object, we get one step
+closer to a crash.
+
+How realistic is it that some form of that exchange (with a single
+object) will happen a billion times in the lifetime of a Python process
+on 32-bit?  If it is a problem, how could it be addressed?
+
+As to how realistic, the answer isn't clear currently.  However, the
+mitigation is simple enough that we can safely proceed under the
+assumption that it would be a problem.
+
+Here are some possible solutions (only needed on 32-bit):
+
+* periodically reset the refcount for immortal objects
+  (only enable this if a stable ABI extension is imported?)
+* special-case immortal objects in tp_dealloc() for the relevant types
+  (but not int, due to frequency?)
+* provide a runtime flag for disabling immortality
 
 Alternate Python Implementations
 --------------------------------
@@ -318,8 +442,10 @@ to the following questions:
 As part of this proposal, we must make sure that users can clearly
 understand on which parts of the refcount behavior they can rely and
 which are considered implementation details.  Specifically, they should
-use the existing public refcount-related API and the only refcount value
-with any meaning is 0.  All other values are considered "not 0".
+use the existing public refcount-related API and the only refcount
+values with any meaning are 0 and 1.  (Some code relies on 1 as an
+indicator that the object can be safely modified.)  All other values
+are considered "not 0 or 1".
 
 This information will be clarified in the `documentation <Documentation_>`_.
 
@@ -343,27 +469,15 @@ Constraints
 * be careful when immortalizing objects that we don't actually expect
   to persist until runtime finalization.
 * be careful when immortalizing objects that are not otherwise immutable
+* ``__del__`` and weakrefs must continue working properly
 
-.. _scope:
-
-Scope of Changes
-----------------
-
-Object immortality is not meant to be a public feature but rather an
-internal one.  So the proposal does *not* include adding any new
-public C-API, nor any Python API.  However, this does not prevent
-us from adding (publicly accessible) private API to do things
-like immortalize an object or tell if one is immortal.
-
-The particular details of:
-    
-* how to mark something as immortal
-* how to recognize something as immortal
-* which subset of functionally immortal objects are marked as immortal
-* which memory-management activities are skipped or modified for immortal objects
-    
-are not only Cpython-specific but are also private implementation
-details that are expected to change in subsequent versions.
+Regarding "truly" immutable objects, this PEP doesn't impact the
+effective immutability of any objects, other than the per-object
+runtime state (e.g. refcount).  So whether or not some immortal object
+is truly (or even effectively) immutable can only be settled separately
+from this proposal.  For example, str objects are generally considered
+immutable, but ``PyUnicodeObject`` holds some lazily cached data.  This
+PEP has no influence on how that state affects str immutability.
 
 Immortal Mutable Objects
 ------------------------
@@ -389,9 +503,6 @@ get freed until the corresponding interpreter is finalized.  By making
 it immortal, we no longer incur the extra overhead during incref/decref.
 
 We explore this idea further in the `mitigation`_ section below.
-
-(Note that we are still investigating the impact on GC
-of immortalizing containers.)
 
 Implicitly Immortal Objects
 ---------------------------
@@ -437,14 +548,18 @@ _Py_IMMORTAL_REFCNT
 
 We will add two internal constants::
 
-    #define _Py_IMMORTAL_BIT (1LL << (8 * sizeof(Py_ssize_t) - 4))
-    #define _Py_IMMORTAL_REFCNT (_Py_IMMORTAL_BIT + (_Py_IMMORTAL_BIT / 2))
+    _Py_IMMORTAL_BIT - has the top-most available bit set (e.g. 2^62)
+    _Py_IMMORTAL_REFCNT - has the two top-most available bits set
 
-The refcount for immortal objects will be set to ``_Py_IMMORTAL_REFCNT``.
-However, to check if an object is immortal we will compare its refcount
-against just the bit::
+The actual top-most bit depends on existing uses for refcount bits,
+e.g. the sign bit or some GC uses.  We will use the highest bit possible
+after consideration of existing uses.
 
-    (op->ob_refcnt & _Py_IMMORTAL_BIT) != 0
+The refcount for immortal objects will be set to ``_Py_IMMORTAL_REFCNT``
+(meaning the value will be halfway between ``_Py_IMMORTAL_BIT`` and the
+value at the next highest bit).  However, to check if an object is
+immortal we will compare (bitwise-and) its refcount against just
+``_Py_IMMORTAL_BIT``.
 
 The difference means that an immortal object will still be considered
 immortal, even if somehow its refcount were modified (e.g. by an older
@@ -471,24 +586,21 @@ API that exposes refcounts (unchanged but may now return large values):
 (Note that ``_Py_RefTotal`` and ``sys.gettotalrefcount()``
 will not be affected.)
 
+Also, immortal objects will not participate in GC.
+
 Immortal Global Objects
 -----------------------
 
-All objects that we expect to be shared globally (between interpreters)
-will be made immortal.  That includes the following:
+All runtime-global (builtin) objects will be made immortal.
+That includes the following:
 
 * singletons (``None``, ``True``, ``False``, ``Ellipsis``, ``NotImplemented``)
 * all static types (e.g. ``PyLong_Type``, ``PyExc_Exception``)
 * all static objects in ``_PyRuntimeState.global_objects`` (e.g. identifiers,
   small ints)
 
-All such objects will be immutable.  In the case of the static types,
-they will only be effectively immutable.  ``PyTypeObject`` has some mutable
-state (``tp_dict`` and ``tp_subclasses``), but we can work around this
-by storing that state on ``PyInterpreterState`` instead of on the
-respective static type object.  Then the ``__dict__``, etc. getter
-will do a lookup on the current interpreter, if appropriate, instead
-of using ``tp_dict``.
+The question of making them actually immutable (e.g. for
+per-interpreter GIL) is not in the scope of this PEP.
 
 Object Cleanup
 --------------
@@ -514,6 +626,8 @@ case-by-case basis.  In nearly every case, each such object is directly
 accessible on the runtime state, e.g. in a ``_PyRuntimeState`` or
 ``PyInterpreterState`` field.  We may need to add a tracking mechanism
 to the runtime state for a small number of objects.
+
+None of the cleanup will have a significant effect on performance.
 
 .. _mitigation:
 
@@ -557,11 +671,18 @@ However, we will update the documentation to make public guarantees
 about refcount behavior more clear.  That includes, specifically:
 
 * ``Py_INCREF()`` - change "Increment the reference count for object o."
-  to "Acquire a new reference to object o."
+  to "Indicate taking a new reference to object o."
 * ``Py_DECREF()`` - change "Decrement the reference count for object o."
-  to "Release a reference to object o."
+  to "Indicate no longer using a previously taken reference to object o."
 * similar for ``Py_XINCREF()``, ``Py_XDECREF()``, ``Py_NewRef()``,
-  ``Py_XNewRef()``, ``Py_Clear()``, ``Py_REFCNT()``, and ``Py_SET_REFCNT()``
+  ``Py_XNewRef()``, ``Py_Clear()``
+* ``Py_REFCNT()`` - add "The refcounts 0 and 1 have specific meanings
+  and all others only mean code somewhere is using the object,
+  regardless of the value.
+  0 means the object is not used and will be cleaned up.
+  1 means code holds exactly a single reference."
+* ``Py_SET_REFCNT()`` - refer to ``Py_REFCNT()`` about how values over 1
+  may be substituted with some over value
 
 We *may* also add a note about immortal objects to the following,
 to help reduce any surprise users may have with the change:
@@ -586,9 +707,7 @@ https://github.com/python/cpython/pull/19474
 Open Issues
 ===========
 
-* is there any other impact on GC?
-* `are the copy-on-write benefits real? <https://mail.python.org/archives/list/python-dev@python.org/message/J53GY7XKFOI4KWHSTTA7FUL7TJLE7WG6/>`__
-* must the fate of this PEP be tied to acceptance of a per-interpreter GIL PEP?
+* how realistic is the `Accidental De-Immortalizing`_ concern?
 
 
 References
