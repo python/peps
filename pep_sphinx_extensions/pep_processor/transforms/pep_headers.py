@@ -92,6 +92,8 @@ class PEPHeaders(transforms.Transform):
             elif name in {"last-modified", "content-type", "version"}:
                 # Mark unneeded fields
                 fields_to_remove.append(field)
+            elif name in {"post-history"}:
+                body[0][:] = _process_post_history(body)
 
         # Remove unneeded fields
         for field in fields_to_remove:
@@ -115,3 +117,24 @@ def _pretty_thread(text: nodes.Text) -> nodes.Text:
     except ValueError:
         # archives and pipermail not in list, e.g. PEP 245
         return text
+
+
+def _process_post_history(body: nodes.field_body) -> list[nodes.Text | nodes.reference]:
+    new_nodes = []
+    for pair in body.astext().split(","):
+        pair = pair.strip()
+        try:
+            # if Post-History has no links, ``pair.split(maxsplit=1)``
+            # will raise ValueError
+            date, uri = pair.split(maxsplit=1)
+            node = nodes.reference("",
+               date.strip(),
+               refuri=uri.strip(" \f\n\r\t><"),
+               internal=False
+           )
+        except ValueError:
+            node = nodes.Text(pair)
+
+        new_nodes += [node, nodes.Text(", ")]
+
+    return new_nodes[:-1]  # remove final ', '
