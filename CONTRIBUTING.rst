@@ -29,22 +29,17 @@ depending on the PEP's status:
 
 * **Rejected**, **Deferred**, **Withdrawn** and **Superceded** PEPs should
   usually only be modified when necessary to correct technical issues with
-  header processing or that prevent content from rendering as originally
-  intended. Occasionally, a Deferred or even Withdrawn PEP may be resurrected
+  the syntax. Occasionally, a Deferred or even Withdrawn PEP may be resurrected
   with major updates, but it is often better to just propose a new one.
 
-* **Final** PEPs are considered complete; while small fixes to clearly
-  unintentional errors in the document that meaningfully impair understanding
-  may be considered, substantive changes to the content generally will not.
+* **Final** PEPs are considered complete, though small fixes to unintentional
+  errors in the document that impair understanding may be accepted.
 
 * **Accepted** PEPs may be updated to reflect minor details of the final
-  implementation, but significant changes to the normative specification
-  should be avoided.
+  implementation, but changes to the specification should be avoided.
 
-* **Provisional** PEPs can be incrementally modified if needed, though
-  major rewrites and compatibility breakage are discouraged unless absolutely
-  necessary and any changes should be preceded by discussion and general
-  consensus among the authors and the relevant community.
+* **Provisional** PEPs can be incrementally modified if needed, though rewrites
+  and compatibility breakage are discouraged unless absolutely necessary.
 
 * **Active** PEPs can and should be updated whenever the information described
   changes. Substantive changes to governance PEPs should be reviewed by the
@@ -53,8 +48,7 @@ depending on the PEP's status:
   and are subject to any further conditions stated in the PEP itself.
 
 * **Draft** PEPs are freely open for discussion and proposed modification
-  (though once submitted to the Steering Council or PEP-Delegate for final
-  review and resolution, significant alterations should be avoided).
+  until submitted to the Steering Council or PEP-Delegate.
   Copyediting, formatting and proofreading can be opened here as pull requests,
   while more substantive content changes should generally be first proposed
   on the PEP's discussion thread listed in its ``Discussions-To`` header.
@@ -64,8 +58,7 @@ copyediting and proofreading of draft and active PEPs is encouraged,
 we generally advise against PRs that simply mass-correct minor typos
 that don't significantly impair meaning and understanding.
 
-If you're unsure, in addition to the general guidance above,
-we encourage you to reach out first before opening a PR here.
+If you're unsure, we encourage you to reach out first before opening a PR here.
 For example, you could contact the PEP author(s),
 propose your idea in a discussion venue appropriate to the PEP (e.g.
 `Typing-SIG <https://mail.python.org/archives/list/typing-sig@python.org/>`__
