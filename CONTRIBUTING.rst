@@ -79,6 +79,10 @@ Commit messages and PR titles
 When adding or modifying a PEP, please always include the PEP number in the
 commit summary and pull request title.
 For example, ``PEP NNN: <summary of changes>``.
+Likewise, prefix rendering infrastructure changes with ``Infra:``,
+linting-related alterations with ``Lint:`` and other non-PEP meta changes,
+such as updates to the Readme/Contributing Guide, issue/PR template, etc.,
+with ``Meta:``.
 
 
 Sign the CLA
