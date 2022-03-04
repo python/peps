@@ -21,20 +21,20 @@ developing at least a prototype reference implementation of your idea.
 Contributing changes to existing PEPs
 -------------------------------------
 
-In general, PEPs that are not marked as Draft or Active are usually considered
-to be historical documents rather than documentation or living specifications.
-To propose a substantially revised version of the original ideas,
-you should generally consider opening a new PEP instead.
-As such, make sure to consider the type and status of the PEP(s)
-in question before proposing changes:
+In general, PEPs that are not marked as Draft, Active or Provisional are
+considered to be historical documents rather than living specifications
+or documentation. Major changes to their core content usually require
+a new PEP, while smaller modifications may or may not be appropriate,
+depending on the PEP's status:
 
 * **Rejected**, **Deferred**, **Withdrawn** and **Superceded** PEPs should
   usually only be modified when necessary to correct technical issues with
   header processing or that prevent content from rendering as originally
-  intended.
+  intended. Occasionally, a Deferred or even Withdrawn PEP may be resurrected
+  with major updates, but it is often better to just propose a new one.
 
 * **Final** PEPs are considered complete; while small fixes to clearly
-  unintentional errata in the document that meaningfully impair understanding
+  unintentional errors in the document that meaningfully impair understanding
   may be considered, substantive changes to the content generally will not.
 
 * **Accepted** PEPs may be updated to reflect minor details of the final
@@ -52,11 +52,12 @@ in question before proposing changes:
   `issue <https://github.com/python/steering-council/issues>`__ in the SC repo)
   and are subject to any further conditions stated in the PEP itself.
 
-* **Draft** PEPs are freely open for discussion and proposed modification,
-  at the discretion of the author. Copyediting, formatting and proofreading
-  can be opened here as pull requests, while more substantive content
-  changes should generally be first proposed on the PEP's discussion thread
-  listed in its ``Discussions-To`` header.
+* **Draft** PEPs are freely open for discussion and proposed modification
+  (though once submitted to the Steering Council or PEP-Delegate for final
+  review and resolution, significant alterations should be avoided).
+  Copyediting, formatting and proofreading can be opened here as pull requests,
+  while more substantive content changes should generally be first proposed
+  on the PEP's discussion thread listed in its ``Discussions-To`` header.
 
 Also, while fixing spelling and formatting issues as part of more substantive
 copyediting and proofreading of draft and active PEPs is encouraged,
