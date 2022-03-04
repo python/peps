@@ -18,6 +18,61 @@ first in an appropriate venue, drafting a PEP and gathering feedback, and
 developing at least a prototype reference implementation of your idea.
 
 
+Contributing changes to existing PEPs
+-------------------------------------
+
+In general, PEPs that are not marked as Draft or Active are usually considered
+to be historical documents rather than documentation or living specifications.
+To propose a substantially revised version of the original ideas,
+you should generally consider opening a new PEP instead.
+As such, make sure to consider the type and status of the PEP(s)
+in question before proposing changes:
+
+* **Rejected**, **Deferred**, **Withdrawn** and **Superceded** PEPs should
+  usually only be modified when necessary to correct technical issues with
+  header processing or that prevent content from rendering as originally
+  intended.
+
+* **Final** PEPs are considered complete; while small fixes to clearly
+  unintentional errata in the document that meaningfully impair understanding
+  may be considered, substantive changes to the content generally will not.
+
+* **Accepted** PEPs may be updated to reflect minor details of the final
+  implementation, but significant changes to the normative specification
+  should be avoided.
+
+* **Provisional** PEPs can be incrementally modified if needed, though
+  major rewrites and compatibility breakage are discouraged unless absolutely
+  necessary and any changes should be preceded by discussion and general
+  consensus among the authors and the relevant community.
+
+* **Active** PEPs can and should be updated whenever the information described
+  changes. Substantive changes to governance PEPs should be reviewed by the
+  Steering Council (by opening an
+  `issue <https://github.com/python/steering-council/issues>`__ in the SC repo)
+  and are subject to any further conditions stated in the PEP itself.
+
+* **Draft** PEPs are freely open for discussion and proposed modification,
+  at the discretion of the author. Copyediting, formatting and proofreading
+  can be opened here as pull requests, while more substantive content
+  changes should generally be first proposed on the PEP's discussion thread
+  listed in its ``Discussions-To`` header.
+
+Also, while fixing spelling and formatting issues as part of more substantive
+copyediting and proofreading of draft and active PEPs is encouraged,
+we generally advise against PRs that simply mass-correct minor typos
+that don't significantly impair meaning and understanding.
+
+If you're unsure, in addition to the general guidance above,
+we encourage you to reach out first before opening a PR here.
+For example, you could contact the PEP author(s),
+propose your idea in a discussion venue appropriate to the PEP (e.g.
+`Typing-SIG <https://mail.python.org/archives/list/typing-sig@python.org/>`__
+for static typing, or the `Packaging Discourse
+<https://discuss.python.org/c/packaging/>`__ for packaging), and/or
+open an `issue on this repo <https://github.com/python/peps/issues>`__.
+
+
 Commit messages and PR titles
 -----------------------------
 
@@ -122,11 +177,3 @@ or against all files with
 .. code-block:: bash
 
     pre-commit run --all-files --hook-stage manual codespell
-
-**Note**: While fixing spelling mistakes as part of more substantive
-copyediting and proofreading of draft and active PEPs is okay,
-we generally advise against PRs that simply mass-correct minor typos on
-older PEPs that don't significantly impair meaning and understanding,
-as these tend to create a fairly high level of noise and churn for
-PEP readers, authors and editors relative to the amount of practical value
-they provide.
