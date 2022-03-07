@@ -222,7 +222,7 @@ def _classify_peps(peps: list[PEP]) -> tuple[list[PEP], ...]:
         elif pep.status == STATUS_DEFERRED:
             deferred.append(pep)
         elif pep.pep_type == TYPE_PROCESS:
-            if pep.status == STATUS_ACTIVE:
+            if pep.status in {STATUS_ACCEPTED, STATUS_ACTIVE}:
                 meta.append(pep)
             elif pep.status in {STATUS_WITHDRAWN, STATUS_REJECTED}:
                 dead.append(pep)
