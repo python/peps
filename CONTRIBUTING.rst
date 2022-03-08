@@ -21,62 +21,34 @@ developing at least a prototype reference implementation of your idea.
 Contributing changes to existing PEPs
 -------------------------------------
 
-In general, PEPs that are not marked as Draft, Active or Provisional are
-considered to be historical documents rather than living specifications
-or documentation. Major changes to their core content usually require
-a new PEP, while smaller modifications may or may not be appropriate,
-depending on the PEP's status:
+In general, most non-Draft/Active PEPs are considered to be historical
+documents rather than living specifications or documentation. Major changes to
+their core content usually require a new PEP, while smaller modifications may
+or may not be appropriate, depending on the PEP's status. See `PEP 1
+<https://www.python.org/dev/peps/pep-0001/#pep-maintenance>`__ for more.
 
-* **Rejected**, **Deferred**, **Withdrawn** and **Superceded** PEPs should
-  usually only be modified when necessary to correct technical issues with
-  the syntax. Occasionally, a Deferred or even Withdrawn PEP may be resurrected
-  with major updates, but it is often better to just propose a new one.
+Copyediting and proofreading Draft and Active PEPs (including fixing spelling
+and formatting issues) is welcomed, and can be done via pull request to this
+repo, though we generally advise against PRs that simply mass-correct minor
+typos on older PEPs which don't significantly impair meaning and understanding.
+Substantive content changes should first be proposed on PEP discussion threads.
 
-* **Final** PEPs are considered complete, though small fixes to unintentional
-  errors in the document that impair understanding may be accepted.
-
-* **Accepted** PEPs may be updated to reflect minor details of the final
-  implementation, but changes to the specification should be avoided.
-
-* **Provisional** PEPs can be incrementally modified if needed, though rewrites
-  and compatibility breakage are discouraged unless absolutely necessary.
-
-* **Active** PEPs can and should be updated whenever the information described
-  changes. Substantive changes to governance PEPs should be reviewed by the
-  Steering Council (by opening an
-  `issue <https://github.com/python/steering-council/issues>`__ in the SC repo)
-  and are subject to any further conditions stated in the PEP itself.
-
-* **Draft** PEPs are freely open for discussion and proposed modification
-  until submitted to the Steering Council or PEP-Delegate.
-  Copyediting, formatting and proofreading can be opened here as pull requests,
-  while more substantive content changes should generally be first proposed
-  on the PEP's discussion thread listed in its ``Discussions-To`` header.
-
-Also, while fixing spelling and formatting issues as part of more substantive
-copyediting and proofreading of draft and active PEPs is encouraged,
-we generally advise against PRs that simply mass-correct minor typos
-that don't significantly impair meaning and understanding.
-
-If you're unsure, we encourage you to reach out first before opening a PR here.
-For example, you could contact the PEP author(s),
-propose your idea in a discussion venue appropriate to the PEP (e.g.
-`Typing-SIG <https://mail.python.org/archives/list/typing-sig@python.org/>`__
-for static typing, or the `Packaging Discourse
-<https://discuss.python.org/c/packaging/>`__ for packaging), and/or
-open an `issue on this repo <https://github.com/python/peps/issues>`__.
+If you're still unsure, we encourage you to reach out first before opening a
+PR here. For example, you could contact the PEP author(s), propose your idea in
+a discussion venue appropriate to the PEP (such as `Typing-SIG
+<https://mail.python.org/archives/list/typing-sig@python.org/>`__ for static
+typing, or `Packaging Discourse <https://discuss.python.org/c/packaging/>`__
+for packaging), or `open an issue <https://github.com/python/peps/issues>`__.
 
 
 Commit messages and PR titles
 -----------------------------
 
-When adding or modifying a PEP, please always include the PEP number in the
-commit summary and pull request title.
-For example, ``PEP NNN: <summary of changes>``.
-Likewise, prefix rendering infrastructure changes with ``Infra:``,
-linting-related alterations with ``Lint:`` and other non-PEP meta changes,
-such as updates to the Readme/Contributing Guide, issue/PR template, etc.,
-with ``Meta:``.
+When adding or modifying a PEP, please include the PEP number in the commit
+summary and pull request title. For example, ``PEP NNN: <summary of changes>``.
+Likewise, prefix rendering infrastructure changes with ``Infra:``, linting
+alterations with ``Lint:`` and other non-PEP meta changes, such as updates to
+the Readme/Contributing Guide, issue/PR template, etc., with ``Meta:``.
 
 
 Sign the CLA
