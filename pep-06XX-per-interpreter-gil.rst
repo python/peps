@@ -1,4 +1,4 @@
-PEP: 6XX
+PEP: 684
 Title: A Per-Interpreter GIL
 Author: Eric Snow <ericsnowcurrently@gmail.com>
 Discussions-To: python-dev@python.org
