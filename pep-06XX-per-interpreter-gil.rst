@@ -5,9 +5,9 @@ Discussions-To: python-dev@python.org
 Status: Draft
 Type: Standards Track
 Content-Type: text/x-rst
-Created: 03-08-2022
+Created: 08-Mar-2022
 Python-Version: 3.11
-Post-History: 03-08-2022
+Post-History: 08-Mar-2022
 Resolution:
 
 .. XXX Split out an informational PEP with all the relevant info,
