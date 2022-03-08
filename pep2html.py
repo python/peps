@@ -493,25 +493,6 @@ class PEPHeaders(Transform):
                 para[:] = [nodes.reference('', pep_type, refuri=uri)]
             elif name == 'version' and len(body):
                 utils.clean_rcs_keywords(para, self.rcs_keyword_substitutions)
-            elif name == 'post-history':
-                new_nodes = []
-                for pair in body.astext().split(","):
-                    pair = pair.strip()
-                    try:
-                        # if Post-History has no links, ``pair.split(maxsplit=1)``
-                        # will raise ValueError
-                        date, uri = pair.split(maxsplit=1)
-                        node = nodes.reference("",
-                                               date.strip(),
-                                               refuri=uri.strip(" \n\r\t><"),
-                                               internal=False,
-                                               )
-                    except ValueError:
-                        node = nodes.Text(pair)
-
-                    new_nodes += [node, nodes.Text(", ")]
-
-                body[0][:] = new_nodes[:-1]  # remove final ', '
 
 
 class PEPFooter(Transform):
