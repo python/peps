@@ -28,9 +28,10 @@ or may not be appropriate, depending on the PEP's status. See `PEP 1
 <https://www.python.org/dev/peps/pep-0001/#pep-maintenance>`__ for more.
 
 Copyediting and proofreading Draft and Active PEPs (including fixing spelling
-and formatting issues) is welcomed, and can be done via pull request to this
-repo, though we generally advise against PRs that simply mass-correct minor
-typos on older PEPs which don't significantly impair meaning and understanding.
+and formatting issues) is welcomed (subject to review by the PEP authors),
+and can be done via pull request to this repo, though we generally advise
+against PRs that simply mass-correct minor typos on older PEPs which don't
+significantly impair meaning and understanding.
 Substantive content changes should first be proposed on PEP discussion threads.
 
 If you're still unsure, we encourage you to reach out first before opening a
