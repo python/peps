@@ -32,7 +32,7 @@ As a high level, this proposal changes CPython in the following ways:
 
 * stops sharing the GIL between interpreters, given sufficient isolation
 * adds several new interpreter config options for isolation settings
-* adds public C-API for fine-grain control when creating interpreters
+* adds public C-API for fine-grained control when creating interpreters
 * keeps incompatible extensions from causing problems
 
 The GIL
@@ -82,7 +82,7 @@ plans to change this.
 Second, some isolation is faulty due to bugs or implementations that
 did not take multiple interpreters into account.  This includes
 CPython's runtime and the stdlib, as well as extension modules that
-rely on globals variables.  In these cases bugs should be opened.
+rely on global variables.  In these cases bugs should be opened.
 (Some are already.)
 
 Depending on Immortal Objects
@@ -121,7 +121,7 @@ Most of the effort needed for a per-interpreter GIL has benefits that
 make those tasks worth doing anyway:
 
 * makes multiple-interpreter behavior more reliable
-* has lead to fixes for long-standing runtime bugs that otherwise
+* has led to fixes for long-standing runtime bugs that otherwise
   hadn't been prioritized
 * has been exposing (and inspiring fixes for) previously unknown runtime bugs
 * has driven cleaner runtime initialization (:pep:`432`, :pep:`587`)
@@ -136,8 +136,8 @@ Furthermore, much of that work benefits other CPython-related projects:
 * extension module isolation (see :pep:`630`, etc.)
 * embedding CPython
 
-Existing Use of Multiple Iinterpreters
---------------------------------------
+Existing Use of Multiple Interpreters
+-------------------------------------
 
 The C-API for multiple interpreters has been used for many years.
 However, until relatively recently the feature wasn't widely known,
@@ -203,7 +203,7 @@ Backwards Compatibility
 No behavior or APIs are intended to change due to this proposal,
 with one exception noted in `the next section <Extension Modules_>`_.
 The existing C-API for managing interpreters will preserve its current
-behavior, with new behavior exposed through new API.  No other APIs
+behavior, with new behavior exposed through new API.  No other API
 or runtime behavior is meant to change, including compatibility with
 the stable ABI.
 
@@ -281,7 +281,7 @@ On the one hand, this proposal has already motivated a number of
 improvements that make CPython *more* maintainable.  That is expected
 to continue.  On the other hand, the underlying work has already
 exposed various pre-existing defects in the runtime that have had
-to be fixed.  That is also expected continue as multiple interpreters
+to be fixed.  That is also expected to continue as multiple interpreters
 receive more use.  Otherwise there shouldn't be a significant impact
 on maintainability.  The effect should be net positive.
 
@@ -555,7 +555,7 @@ globals and reason about them.
 * Tools/c-analyzer/table-file.py - summarize the known globals
 
 As well, the check for unsupported globals is incorporated into CI so that
-not new globals are accidentally added.
+no new globals are accidentally added.
 
 Global Objects
 --------------
