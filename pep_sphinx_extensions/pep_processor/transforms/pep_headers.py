@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from pathlib import Path
 import re
 
@@ -94,7 +92,7 @@ class PEPHeaders(transforms.Transform):
             elif name in {"last-modified", "content-type", "version"}:
                 # Mark unneeded fields
                 fields_to_remove.append(field)
-            elif name == "post-history":
+            elif name in {"post-history"}:
                 body[0][:] = _process_post_history(body)
 
         # Remove unneeded fields
@@ -131,8 +129,8 @@ def _process_post_history(body: nodes.field_body) -> list[nodes.Text | nodes.ref
             date, uri = pair.split(maxsplit=1)
             node = nodes.reference("",
                date.strip(),
-               refuri=uri.strip(" \n\r\t><"),
-               internal=False,
+               refuri=uri.strip(" \f\n\r\t><"),
+               internal=False
            )
         except ValueError:
             node = nodes.Text(pair)
