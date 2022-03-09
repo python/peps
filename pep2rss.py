@@ -5,14 +5,14 @@
 import datetime
 import glob
 import os
-import re
 import sys
-import time
 import PyRSS2Gen as rssgen
 import docutils.frontend
 import docutils.nodes
 import docutils.parsers.rst
 import docutils.utils
+
+from pep_parsing_helpers import pep_creation_dt, first_line_starting_with, parse_authors
 
 RSS_PATH = os.path.join(sys.argv[1], 'peps.rss')
 
@@ -53,36 +53,10 @@ def pep_abstract(full_path: str) -> str:
     return abstract
 
 
-def firstline_startingwith(full_path, text):
-    for line in open(full_path, encoding="utf-8"):
-        if line.startswith(text):
-            return line[len(text):].strip()
-    return None
-
-
 # get list of peps with creation time
 # (from "Created:" string in pep .rst or .txt)
 peps = glob.glob('pep-*.txt')
 peps.extend(glob.glob('pep-*.rst'))
-
-
-def pep_creation_dt(full_path):
-    created_str = firstline_startingwith(full_path, 'Created:')
-    # bleh, I was hoping to avoid re but some PEPs editorialize
-    # on the Created line
-    m = re.search(r'''(\d+-\w+-\d{4})''', created_str)
-    if not m:
-        # some older ones have an empty line, that's okay, if it's old
-        # we ipso facto don't care about it.
-        # "return None" would make the most sense but datetime objects
-        # refuse to compare with that. :-|
-        return datetime.datetime(*time.localtime(0)[:6])
-    created_str = m.group(1)
-    try:
-        t = time.strptime(created_str, '%d-%b-%Y')
-    except ValueError:
-        t = time.strptime(created_str, '%d-%B-%Y')
-    return datetime.datetime(*t[:6])
 
 
 peps_with_dt = [(pep_creation_dt(full_path), full_path) for full_path in peps]
@@ -96,8 +70,9 @@ for dt, full_path in peps_with_dt[:10]:
         n = int(full_path.split('-')[-1].split('.')[0])
     except ValueError:
         pass
-    title = firstline_startingwith(full_path, 'Title:')
-    author = firstline_startingwith(full_path, 'Author:')
+    title = first_line_starting_with(full_path, 'Title:')
+    authors = first_line_starting_with(full_path, 'Author:')
+    author = parse_authors(authors)[0] # RSS only supports one author
     abstract = pep_abstract(full_path)
     url = 'https://www.python.org/dev/peps/pep-%0.4d/' % n
     item = rssgen.RSSItem(
