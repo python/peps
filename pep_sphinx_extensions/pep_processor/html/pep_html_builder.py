@@ -30,13 +30,9 @@ class FileBuilder(StandaloneHTMLBuilder):
         except KeyError:
             title = ""
 
-        # source link
-        if docname == "pep-0000":
-            source_link = "https://github.com/python/peps/"
-        else:
-            file_is_rst = Path(self.env.srcdir, docname + ".rst").exists()
-            source_name = f"{docname}.rst" if file_is_rst else f"{docname}.txt"
-            source_link = f"https://github.com/python/peps/blob/main/{source_name}"
+        # source filename
+        file_is_rst = Path(self.env.srcdir, docname + ".rst").exists()
+        source_name = f"{docname}.rst" if file_is_rst else f"{docname}.txt"
 
         # local table of contents
         toc_tree = self.env.tocs[docname].deepcopy()
@@ -48,7 +44,7 @@ class FileBuilder(StandaloneHTMLBuilder):
         else:
             toc = ""  # PEPs with no sections -- 9, 210
 
-        return {"title": title, "source_link": source_link, "toc": toc, "body": body}
+        return {"title": title, "sourcename": source_name, "toc": toc, "body": body}
 
 
 class DirectoryBuilder(FileBuilder):
