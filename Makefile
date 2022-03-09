@@ -20,6 +20,9 @@ check-links:
 rss:
 	$(PYTHON) generate_rss.py
 
+clean:
+	-rm -rf build
+
 venv:
 	$(PYTHON) -m venv $(VENV_DIR)
 	./$(VENV_DIR)/bin/python -m pip install -r requirements.txt
