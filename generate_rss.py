@@ -79,10 +79,10 @@ def pep_abstract(full_path: Path) -> str:
 
 def main():
     # get the directory with the PEP sources
-    pep_dir = Path(__file__).parent
+    out_dir = Path(__file__).parent / "build"
 
     # get list of peps with creation time (from "Created:" string in pep source)
-    peps_with_dt = sorted((pep_creation(path), path) for path in pep_dir.glob("pep-????.*"))
+    peps_with_dt = sorted((pep_creation(path), path) for path in out_dir.glob("pep-????.*"))
 
     # generate rss items for 10 most recent peps
     items = []
@@ -137,7 +137,8 @@ def main():
     for item in items:
         fg.add_entry(item)
 
-    pep_dir.joinpath("peps.rss").write_bytes(fg.rss_str(pretty=True))
+    out_dir.mkdir(exist_ok=True)
+    out_dir.joinpath("peps.rss").write_bytes(fg.rss_str(pretty=True))
 
 
 if __name__ == "__main__":
