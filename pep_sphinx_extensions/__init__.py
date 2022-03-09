@@ -13,6 +13,7 @@ from pep_sphinx_extensions.pep_processor.html import pep_html_builder
 from pep_sphinx_extensions.pep_processor.html import pep_html_translator
 from pep_sphinx_extensions.pep_processor.parsing import pep_parser
 from pep_sphinx_extensions.pep_processor.parsing import pep_role
+from pep_sphinx_extensions.pep_processor.transforms import pep_references
 from pep_sphinx_extensions.pep_zero_generator.pep_index_generator import create_pep_zero
 
 if TYPE_CHECKING:
@@ -28,6 +29,7 @@ def _depart_maths():
 
 
 def _update_config_for_builder(app: Sphinx):
+    app.env.document_ids = {}  # For PEPReferenceRoleTitleText
     if app.builder.name == "dirhtml":
         app.env.settings["pep_url"] = "../pep-{:0>4}"
 
@@ -48,6 +50,8 @@ def setup(app: Sphinx) -> dict[str, bool]:
     app.set_translator("dirhtml", pep_html_translator.PEPTranslator)  # Docutils Node Visitor overrides (dirhtml builder)
 
     app.add_role("pep", pep_role.PEPRole(), override=True)  # Transform PEP references to links
+
+    app.add_post_transform(pep_references.PEPReferenceRoleTitleText)
 
     # Register event callbacks
     app.connect("builder-inited", _update_config_for_builder)  # Update configuration values for builder used

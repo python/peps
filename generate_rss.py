@@ -21,7 +21,7 @@ def _format_rfc_2822(dt: datetime.datetime) -> str:
 
 
 # Monkeypatch nodes.Node.findall for forwards compatability
-if docutils.__version_info__ < (0, 18):
+if docutils.__version_info__ < (0, 18, 1):
     def findall(self, *args, **kwargs):
         return iter(self.traverse(*args, **kwargs))
 

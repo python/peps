@@ -6,9 +6,10 @@ Python Enhancement Proposals
 
 The PEPs in this repo are published automatically on the web at
 https://www.python.org/dev/peps/.  To learn more about the purpose of
-PEPs and how to go about writing a PEP, please start reading at PEP 1
-(``pep-0001.txt`` in this repo).  Note that PEP 0, the index PEP, is
-now automatically generated, and not committed to the repo.
+PEPs and how to go about writing one, please start reading at `PEP 1
+<https://www.python.org/dev/peps/pep-0001/>`_.
+Note that PEP 0, the index PEP, is
+automatically generated and not committed to the repo.
 
 
 Contributing to PEPs
@@ -20,16 +21,18 @@ See the `Contributing Guidelines <./CONTRIBUTING.rst>`_.
 reStructuredText for PEPs
 =========================
 
-Original PEP source should be written in reStructuredText format,
+PEP source text should be written in reStructuredText format,
 which is a constrained version of plaintext, and is described in
-PEP 12.  Older PEPs were often written in a more mildly restricted
-plaintext format, as described in PEP 9.  The ``pep2html.py``
-processing and installation script knows how to produce the HTML
-for either PEP format.
+`PEP 12 <https://www.python.org/dev/peps/pep-0012/>`_.
+The ``pep2html.py`` processing and installation script knows
+how to produce the HTML for the PEP format.
 
-For processing reStructuredText format PEPs, you need the docutils
-package, which is available from `PyPI <https://pypi.org/>`_.
-If you have pip, ``pip install docutils`` should install it.
+To render the PEPs, you'll first need to install the requirements,
+(preferably in a fresh virtual environment):
+
+.. code-block:: bash
+
+    python -m pip install -r requirements.txt
 
 
 Generating the PEP Index
@@ -49,13 +52,13 @@ intend. To check building the HTML output for your PEP (for example, PEP 12)
 using the current default docutils-based system, run the ``pep2html.py`` script
 with your PEP source file as its argument; e.g. for PEP 12,
 
-.. code-block:: console
+.. code-block:: bash
 
     python pep2html.py pep-0012.rst
 
 If you're on a system with ``make``, you can instead execute, e.g.,
 
-.. code-block:: console
+.. code-block:: bash
 
     make pep-0012.rst
 
@@ -78,24 +81,25 @@ either on-demand or automatically as you commit, with our pre-commit suite.
 See the `Contributing Guide <./CONTRIBUTING.rst>`_ for details.
 
 
-Generating HTML for python.org
+Generating HTML for Python.org
 ==============================
 
-python.org includes its own helper modules to render PEPs as HTML, with
+Python.org includes its own helper modules to render PEPs as HTML, with
 suitable links back to the source pages in the version control repository.
 
-These can be found at https://github.com/python/pythondotorg/tree/main/peps
+These can be found `in the python.org repository
+<https://github.com/python/pythondotorg/tree/main/peps>`__.
 
 When making changes to the PEP management process that may impact python.org's
 rendering pipeline:
 
-* Clone the python.org repository from https://github.com/python/pythondotorg/
-* Get set up for local python.org development as per
-  https://pythondotorg.readthedocs.io/install.html#manual-setup
+* Clone the `python.org repository <https://github.com/python/pythondotorg/>`_.
+* Get `set up for local python.org development
+  <https://pythondotorg.readthedocs.io/install.html#manual-setup>`_.
 * Adjust ``PEP_REPO_PATH`` in ``pydotorg/settings/local.py`` to refer to your
-  local clone of the PEP repository
-* Run ``./manage.py generate_pep_pages`` as described in
-  https://pythondotorg.readthedocs.io/pep_generation.html
+  local clone of the PEP repository.
+* Run ``./manage.py generate_pep_pages`` as described the `python.org docs
+  <https://pythondotorg.readthedocs.io/pep_generation.html>`__.
 
 
 Rendering PEPs with Sphinx
@@ -119,19 +123,19 @@ instructions on how to install, build and view the rendered PEPs with Sphinx.
 In summary, after installing the dependencies (preferably in a virtual
 environment) with:
 
-.. code-block:: console
+.. code-block:: bash
 
     python -m pip install -r requirements.txt
 
 You can build the PEPs with sphinx by running, if your system has ``make``:
 
-.. code-block:: console
+.. code-block:: bash
 
     make sphinx
 
 Otherwise, execute the ``build.py`` script directly:
 
-.. code-block:: console
+.. code-block:: bash
 
     python build.py
 
@@ -143,6 +147,6 @@ The output HTML can be found under the ``build`` directory.
 
 For details on the command-line options to the ``build.py`` script, run:
 
-.. code-block:: console
+.. code-block:: bash
 
     python build.py --help

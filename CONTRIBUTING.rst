@@ -1,30 +1,29 @@
 Contributing Guidelines
 =======================
 
-To learn more about the purpose of PEPs and how to go about writing a PEP, please
-start reading at PEP 1 (`pep-0001.txt <./pep-0001.txt>`_ in this repo). Note that
-PEP 0, the index PEP, is now automatically generated, and not committed to the repo.
+To learn more about the purpose of PEPs and how to go about writing one, please
+start reading at `PEP 1 <https://www.python.org/dev/peps/pep-0001/>`_.
+Also, make sure to check the `README <./README.rst>`_ for information
+on how to render the PEPs in this repository.
+Thanks again for your contributions, and we look forward to reviewing them!
+
 
 Before writing a new PEP
 ------------------------
 
-Has this idea been proposed on `python-ideas <https://mail.python.org/mailman/listinfo/python-ideas>`_
-and received general acceptance as being an idea worth pursuing? (if not then
-please start a discussion there before submitting a pull request).
-
-More details about it in `PEP 1 <https://www.python.org/dev/peps/pep-0001/#start-with-an-idea-for-python>`_.
-
-Do you have an implementation of your idea? (this is important for when you
-propose this PEP to `python-dev <https://mail.python.org/mailman/listinfo/python-dev>`_
-as code maintenance is a critical aspect of all PEP proposals prior to a
-final decision; in special circumstances an implementation can be deferred)
+Prior to submitting a pull request here with your draft PEP, see `PEP 1
+<https://www.python.org/dev/peps/pep-0001/#start-with-an-idea-for-python>`_
+for some important steps to consider, including proposing and discussing it
+first in an appropriate venue, drafting a PEP and gathering feedback, and
+developing at least a prototype reference implementation of your idea.
 
 
-Commit messages
----------------
+Commit messages and PR titles
+-----------------------------
 
-When committing to a PEP, please always include the PEP number in the subject
-title. For example, ``PEP NNN: <summary of changes>``.
+When adding or modifying a PEP, please always include the PEP number in the
+commit summary and pull request title.
+For example, ``PEP NNN: <summary of changes>``.
 
 
 Sign the CLA
@@ -32,16 +31,11 @@ Sign the CLA
 
 Before you hit "Create pull request", please take a moment to ensure that this
 project can legally accept your contribution by verifying you have signed the
-PSF Contributor Agreement:
+`PSF Contributor Agreement <https://www.python.org/psf/contrib/contrib-form/>`_.
 
-    https://www.python.org/psf/contrib/contrib-form/
-
-If you haven't signed the CLA before, please follow the steps outlined in the
-CPython devguide to do so:
-
-    https://devguide.python.org/pullrequest/#licensing
-
-Thanks again to your contribution and we look forward to looking at it!
+If you haven't signed the CLA before, please follow the
+`steps outlined in the CPython devguide
+<https://devguide.python.org/pullrequest/#licensing>`_ to do so.
 
 
 Code of Conduct
@@ -49,7 +43,7 @@ Code of Conduct
 
 All interactions for this project are covered by the
 `PSF Code of Conduct <https://www.python.org/psf/codeofconduct/>`_. Everyone is
-expected to be open, considerate, and respectful of others no matter their
+expected to be open, considerate, and respectful of others, no matter their
 position within the project.
 
 
@@ -76,27 +70,27 @@ before running this command.
 
 Otherwise, you can install pre-commit with
 
-.. code-block:: console
+.. code-block:: bash
 
     python -m pip install pre-commit
 
 (or your choice of installer), and then run the hooks on all the files
 in the repo with
 
-.. code-block:: console
+.. code-block:: bash
 
     pre-commit run --all-files
 
 or only on any files that have been modified but not yet committed with
 
-.. code-block:: console
+.. code-block:: bash
 
     pre-commit run
 
 If you would like pre-commit to run automatically against any modified files
 every time you commit, install the hooks with
 
-.. code-block:: console
+.. code-block:: bash
 
     pre-commit install
 
@@ -119,13 +113,13 @@ For finer control or on other systems, after installing pre-commit as in
 the previous section, you can run it against only the files
 you've modified and not yet committed with
 
-.. code-block:: console
+.. code-block:: bash
 
     pre-commit run --hook-stage manual codespell
 
 or against all files with
 
-.. code-block:: console
+.. code-block:: bash
 
     pre-commit run --all-files --hook-stage manual codespell
 

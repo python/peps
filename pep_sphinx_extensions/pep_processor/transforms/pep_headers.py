@@ -68,19 +68,20 @@ class PEPHeaders(transforms.Transform):
                 raise PEPParsingError(msg)
 
             para = body[0]
-            if name in {"author", "bdfl-delegate", "pep-delegate", "discussions-to", "sponsor"}:
+            if name in {"author", "bdfl-delegate", "pep-delegate", "sponsor"}:
                 # mask emails
                 for node in para:
                     if not isinstance(node, nodes.reference):
                         continue
-                    if name == "discussions-to":
-                        if node["refuri"].startswith("http"):
-                            node[0] = _list_name_from_thread(node)
-                        else:
-                            node[0] = _mask_email(node)
-                            node["refuri"] += f"?subject=PEP%20{pep_num}"
-                    else:
-                        node.replace_self(_mask_email(node))
+                    node.replace_self(_mask_email(node))
+            elif name in {"discussions-to", "resolution"}:
+                # only handle threads, email addresses in Discussions-To aren't
+                # masked.
+                for node in para:
+                    if not isinstance(node, nodes.reference):
+                        continue
+                    if node["refuri"].startswith("https://mail.python.org"):
+                        node[0] = _pretty_thread(node[0])
             elif name in {"replaces", "superseded-by", "requires"}:
                 # replace PEP numbers with normalised list of links to PEPs
                 new_body = []
@@ -97,20 +98,20 @@ class PEPHeaders(transforms.Transform):
             field.parent.remove(field)
 
 
-def _list_name_from_thread(node: nodes.reference) -> nodes.raw:
+def _pretty_thread(text: nodes.Text) -> nodes.Text:
+    parts = text.title().replace("Sig", "SIG").split("/")
+
     # mailman structure is
     # https://mail.python.org/archives/list/<list name>/thread/<id>
+    try:
+        return nodes.Text(parts[parts.index("Archives") + 2].removesuffix("@Python.Org"))
+    except ValueError:
+        pass
+
     # pipermail structure is
     # https://mail.python.org/pipermail/<list name>/<month-year>/<id>
-    parts = node[0].split("/")
     try:
-        list_name = parts[parts.index("archives") + 2]
-        masked_name = list_name.replace("@", "&#32;&#97;t&#32;")
+        return nodes.Text(parts[parts.index("Pipermail") + 1])
     except ValueError:
-        try:
-            list_name = parts[parts.index("pipermail") + 1]
-            masked_name = list_name + "&#32;&#97;t&#32;python.org"
-        except ValueError:
-            # archives and pipermail not in list, e.g. PEP 245
-            return node[0]
-    return nodes.raw("", masked_name, format="html")
+        # archives and pipermail not in list, e.g. PEP 245
+        return text
