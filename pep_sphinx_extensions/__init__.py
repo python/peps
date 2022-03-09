@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from docutils import nodes
-from docutils.parsers.rst import states
 from docutils.writers.html5_polyglot import HTMLTranslator
 from sphinx import environment
 
@@ -18,10 +16,6 @@ from pep_sphinx_extensions.pep_zero_generator.pep_index_generator import create_
 
 if TYPE_CHECKING:
     from sphinx.application import Sphinx
-
-# Monkeypatch sphinx.environment.default_settings as Sphinx doesn't allow custom settings or Readers
-# This disables reading configuration from docutils.conf so as not to affect pep2html.py
-environment.default_settings["_disable_config"] = True
 
 
 def _depart_maths():

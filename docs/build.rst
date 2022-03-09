@@ -41,7 +41,7 @@ Render PEPs locally
 
    .. code-block:: console
 
-      (venv) $ make sphinx
+      (venv) $ make render
 
    If you don't have access to ``make``, run:
 

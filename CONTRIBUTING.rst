@@ -2,7 +2,7 @@ Contributing Guidelines
 =======================
 
 To learn more about the purpose of PEPs and how to go about writing one, please
-start reading at `PEP 1 <https://www.python.org/dev/peps/pep-0001/>`_.
+start reading at `PEP 1 <https://peps.python.org/pep-0001/>`_.
 Also, make sure to check the `README <./README.rst>`_ for information
 on how to render the PEPs in this repository.
 Thanks again for your contributions, and we look forward to reviewing them!
@@ -12,7 +12,7 @@ Before writing a new PEP
 ------------------------
 
 Prior to submitting a pull request here with your draft PEP, see `PEP 1
-<https://www.python.org/dev/peps/pep-0001/#start-with-an-idea-for-python>`_
+<https://peps.python.org/pep-0001/#start-with-an-idea-for-python>`_
 for some important steps to consider, including proposing and discussing it
 first in an appropriate venue, drafting a PEP and gathering feedback, and
 developing at least a prototype reference implementation of your idea.

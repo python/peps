@@ -102,7 +102,7 @@ def main():
             joined_authors = ", ".join(f"{name} ({email_address})" for name, email_address in parsed_authors)
         else:
             joined_authors = author
-        url = f"https://www.python.org/dev/peps/pep-{pep_num:0>4}"
+        url = f"https://peps.python.org/pep-{pep_num:0>4}"
 
         item = entry.FeedEntry()
         item.title(f"PEP {pep_num}: {title}")
@@ -128,8 +128,8 @@ def main():
 
     # Add metadata
     fg.title("Newest Python PEPs")
-    fg.link(href="https://www.python.org/dev/peps")
-    fg.link(href="https://www.python.org/dev/peps/peps.rss", rel="self")
+    fg.link(href="https://peps.python.org")
+    fg.link(href="https://peps.python.org/peps.rss", rel="self")
     fg.description(" ".join(desc.split()))
     fg.lastBuildDate(datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc))
 
