@@ -1,7 +1,7 @@
 # Builds PEP files to HTML using sphinx
 
 PYTHON=python3
-VENVDIR=venv
+VENVDIR=.venv
 JOBS=8
 RENDER_COMMAND=$(VENVDIR)/bin/python3 build.py -j $(JOBS)
 
@@ -32,7 +32,6 @@ venv:
 		echo "To recreate it, remove it first with \`make clean-venv'."; \
 	else \
 		$(PYTHON) -m venv $(VENVDIR); \
-		$(VENVDIR)/bin/python3 -m pip install -U pip setuptools; \
 		$(VENVDIR)/bin/python3 -m pip install -r requirements.txt; \
 		echo "The venv has been created in the $(VENVDIR) directory"; \
 	fi
