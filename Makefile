@@ -28,9 +28,9 @@ venv:
 	./$(VENV_DIR)/bin/python -m pip install -r requirements.txt
 
 lint:
-	pre-commit --version > /dev/null || $(PYTHON) -m pip install pre-commit
-	pre-commit run --all-files
+	$(PYTHON) -m pre_commit --version > /dev/null || $(PYTHON) -m pip install pre-commit
+	$(PYTHON) -m pre_commit run --all-files
 
 spellcheck:
-	pre-commit --version > /dev/null || $(PYTHON) -m pip install pre-commit
-	pre-commit run --all-files --hook-stage manual codespell
+	$(PYTHON) -m pre_commit --version > /dev/null || $(PYTHON) -m pip install pre-commit
+	$(PYTHON) -m pre_commit run --all-files --hook-stage manual codespell
