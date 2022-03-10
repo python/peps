@@ -79,10 +79,17 @@ def pep_abstract(full_path: Path) -> str:
 
 def main():
     # get the directory with the PEP sources
+    in_dir = Path(__file__).parent
+
+    # get the output directory for target HTML files
     out_dir = Path(__file__).parent / "build"
 
-    # get list of peps with creation time (from "Created:" string in pep source)
-    peps_with_dt = sorted((pep_creation(path), path) for path in out_dir.glob("pep-????.*"))
+    # get list of source peps
+    peps = list(in_dir.glob('pep-*.txt'))
+    peps.extend(in_dir.glob('pep-*.rst'))
+
+    # sort peps by creation time (from "Created:" string in pep source)
+    peps_with_dt = sorted((pep_creation(path), path) for path in peps)
 
     # generate rss items for 10 most recent peps
     items = []
