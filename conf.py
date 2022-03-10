@@ -26,6 +26,16 @@ source_suffix = {
 
 # List of patterns (relative to source dir) to ignore when looking for source files.
 exclude_patterns = [
+    # .txt files in subdirs
+    "**/*.txt",
+    # .txt files in the root not matching PEP pattern
+    "*[!0-9].txt",
+    "*[!0-9]?.txt",
+    "*[!0-9]??.txt",
+    "*[!0-9]???.txt",
+    "*[!p]?????.txt",
+    "*[!e]??????.txt",
+    "*[!p]???????.txt",
     # Windows:
     "Thumbs.db",
     ".DS_Store",
