@@ -123,17 +123,17 @@ def pep_creation(full_path: Path) -> datetime.datetime:
     return datetime.datetime.strptime(created_str, "%d-%b-%Y")
 
 
-def parse_rst(text: str) -> nodes.document:
+def parse_rst(full_path: Path) -> nodes.document:
+    text = full_path.read_text(encoding="utf-8")
     settings = frontend.OptionParser((rst.Parser,)).get_default_values()
-    document = utils.new_document('<rst-doc>', settings=settings)
-    rst.Parser().parse(text, document)
+    document = utils.new_document(f'<{full_path}>', settings=settings)
+    rst.Parser(rfc2822=True).parse(text, document)
     return document
 
 
 def pep_abstract(full_path: Path) -> str:
     """Return the first paragraph of the PEP abstract"""
-    text = full_path.read_text(encoding="utf-8")
-    for node in parse_rst(text).findall(nodes.section):
+    for node in parse_rst(full_path).findall(nodes.section):
         if node.next_node(nodes.title).astext() == "Abstract":
             return node.next_node(nodes.paragraph).astext().strip().replace("\n", " ")
     return ""
