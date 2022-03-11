@@ -22,10 +22,24 @@ def _depart_maths():
     pass  # No-op callable for the type checker
 
 
-def _update_config_for_builder(app: Sphinx):
+def _update_config_for_builder(app: Sphinx) -> None:
     app.env.document_ids = {}  # For PEPReferenceRoleTitleText
     if app.builder.name == "dirhtml":
         app.env.settings["pep_url"] = "../pep-{:0>4}"
+
+    # internal_builder exists if Sphinx is run by build.py
+    if "internal_builder" not in app.tags:
+        app.connect("build-finished", _post_build)  # Post-build tasks
+
+
+def _post_build(app: Sphinx, exception: Exception | None) -> None:
+    from pathlib import Path
+
+    from build import create_index_file
+
+    if exception is not None:
+        return
+    create_index_file(Path(app.outdir), app.builder.name)
 
 
 def setup(app: Sphinx) -> dict[str, bool]:
