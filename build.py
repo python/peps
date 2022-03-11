@@ -81,6 +81,7 @@ if __name__ == "__main__":
         confoverrides=config_overrides,
         warningiserror=args.fail_on_warning,
         parallel=args.jobs,
+        tags=["internal_builder"],
     )
     app.build()
 
