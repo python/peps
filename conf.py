@@ -40,19 +40,14 @@ exclude_patterns = [
     "Thumbs.db",
     ".DS_Store",
     # Python:
-    ".venv",
-    "venv",
-    "requirements.txt",
+    "*env*",
     # Sphinx:
     "build",
-    "output.txt",  # Link-check output
     # PEPs:
-    "pep-0012",
+    "pep-0012/*",
     "README.rst",
     "CONTRIBUTING.rst",
     "pep_sphinx_extensions/LICENCE.rst",
-    # Miscellaneous
-    ".codespell",
 ]
 
 # -- Options for HTML output -------------------------------------------------
