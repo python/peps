@@ -45,8 +45,8 @@ instructions on how to render PEPs locally. In summary:
 The output HTML is found under the ``build`` directory.
 
 
-PEP draughting aids
--------------------
+Tools to lint PEPs
+------------------
 
 You can check for and fix common linting and spelling issues,
 either on-demand or automatically as you commit, with our pre-commit suite.
