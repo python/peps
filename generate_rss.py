@@ -85,8 +85,8 @@ def main():
     out_dir = Path(__file__).parent / "build"
 
     # get list of source peps
-    peps = list(in_dir.glob('pep-*.txt'))
-    peps.extend(in_dir.glob('pep-*.rst'))
+    peps = list(in_dir.glob('pep-[0-9][0-9][0-9][0-9].txt'))
+    peps.extend(in_dir.glob('pep-[0-9][0-9][0-9][0-9].rst'))
 
     # sort peps by creation time (from "Created:" string in pep source)
     peps_with_dt = sorted((pep_creation(path), path) for path in peps)
