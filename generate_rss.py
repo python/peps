@@ -38,6 +38,8 @@ line_cache: dict[Path, dict[str, str]] = {}
 
 # Monkeypatch PEP and RFC reference roles to match Sphinx behaviour
 EXPLICIT_TITLE_RE = re.compile(r'^(.+?)\s*(?<!\x00)<(.*?)>$', re.DOTALL)
+
+
 def _pep_reference_role(role, rawtext, text, lineno, inliner,
                         options={}, content=[]):
     matched = EXPLICIT_TITLE_RE.match(text)
@@ -65,6 +67,8 @@ def _pep_reference_role(role, rawtext, text, lineno, inliner,
         ref += "#" + fragment
     roles.set_classes(options)
     return [nodes.reference(rawtext, title, refuri=ref, **options)], []
+
+
 def _rfc_reference_role(role, rawtext, text, lineno, inliner,
                         options={}, content=[]):
     matched = EXPLICIT_TITLE_RE.match(text)
@@ -90,6 +94,8 @@ def _rfc_reference_role(role, rawtext, text, lineno, inliner,
         ref += "#" + fragment
     roles.set_classes(options)
     return [nodes.reference(rawtext, title, refuri=ref, **options)], []
+
+
 roles.register_canonical_role("pep-reference", _pep_reference_role)
 roles.register_canonical_role("rfc-reference", _rfc_reference_role)
 
