@@ -1,36 +1,45 @@
 # Builds PEP files to HTML using sphinx
 
 PYTHON=python3
-VENV_DIR=venv
+VENVDIR=.venv
 JOBS=8
-RENDER_COMMAND=$(PYTHON) build.py -j $(JOBS)
+RENDER_COMMAND=$(VENVDIR)/bin/python3 build.py -j $(JOBS)
 
-render:
+render: venv
 	$(RENDER_COMMAND)
 
-pages: rss
+pages: venv rss
 	$(RENDER_COMMAND) --build-dirs
 
-fail-warning:
+fail-warning: venv
 	$(RENDER_COMMAND) --fail-on-warning
 
-check-links:
+check-links: venv
 	$(RENDER_COMMAND) --check-links
 
-rss:
-	$(PYTHON) generate_rss.py
+rss: venv
+	$(VENVDIR)/bin/python3 generate_rss.py
 
-clean:
+clean: clean-venv
 	-rm -rf build
 
+clean-venv:
+	rm -rf $(VENVDIR)
+
 venv:
-	$(PYTHON) -m venv $(VENV_DIR)
-	./$(VENV_DIR)/bin/python -m pip install -r requirements.txt
+	@if [ -d $(VENVDIR) ] ; then \
+		echo "venv already exists."; \
+		echo "To recreate it, remove it first with \`make clean-venv'."; \
+	else \
+		$(PYTHON) -m venv $(VENVDIR); \
+		$(VENVDIR)/bin/python3 -m pip install -r requirements.txt; \
+		echo "The venv has been created in the $(VENVDIR) directory"; \
+	fi
 
-lint:
-	pre-commit --version > /dev/null || $(PYTHON) -m pip install pre-commit
-	pre-commit run --all-files
+lint: venv
+	$(VENVDIR)/bin/python3 -m pre_commit --version > /dev/null || $(VENVDIR)/bin/python3 -m pip install pre-commit
+	$(VENVDIR)/bin/python3 -m pre_commit run --all-files
 
-spellcheck:
-	pre-commit --version > /dev/null || $(PYTHON) -m pip install pre-commit
-	pre-commit run --all-files --hook-stage manual codespell
+spellcheck: venv
+	$(VENVDIR)/bin/python3 -m pre_commit --version > /dev/null || $(VENVDIR)/bin/python3 -m pip install pre-commit
+	$(VENVDIR)/bin/python3 -m pre_commit run --all-files --hook-stage manual codespell
