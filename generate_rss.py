@@ -5,14 +5,19 @@
 import datetime
 import email.utils
 from pathlib import Path
+import re
 
 import docutils
 from docutils import frontend
 from docutils import nodes
 from docutils import utils
 from docutils.parsers import rst
+from docutils.parsers.rst import roles
 from feedgen import entry
 from feedgen import feed
+
+# get the directory with the PEP sources
+PEP_ROOT = Path(__file__).parent
 
 
 # Monkeypatch feedgen.util.formatRFC2822
@@ -30,6 +35,69 @@ if docutils.__version_info__ < (0, 18, 1):
 
 entry.formatRFC2822 = feed.formatRFC2822 = _format_rfc_2822
 line_cache: dict[Path, dict[str, str]] = {}
+
+# Monkeypatch PEP and RFC reference roles to match Sphinx behaviour
+EXPLICIT_TITLE_RE = re.compile(r'^(.+?)\s*(?<!\x00)<(.*?)>$', re.DOTALL)
+
+
+def _pep_reference_role(role, rawtext, text, lineno, inliner,
+                        options={}, content=[]):
+    matched = EXPLICIT_TITLE_RE.match(text)
+    if matched:
+        title = utils.unescape(matched.group(1))
+        target = utils.unescape(matched.group(2))
+    else:
+        target = utils.unescape(text)
+        title = "PEP " + utils.unescape(text)
+    pep_str, _, fragment = target.partition("#")
+    try:
+        pepnum = int(pep_str)
+        if pepnum < 0 or pepnum > 9999:
+            raise ValueError
+    except ValueError:
+        msg = inliner.reporter.error(
+            f'PEP number must be a number from 0 to 9999; "{pep_str}" is invalid.',
+            line=lineno)
+        prb = inliner.problematic(rawtext, rawtext, msg)
+        return [prb], [msg]
+    # Base URL mainly used by inliner.pep_reference; so this is correct:
+    ref = (inliner.document.settings.pep_base_url
+           + inliner.document.settings.pep_file_url_template % pepnum)
+    if fragment:
+        ref += "#" + fragment
+    roles.set_classes(options)
+    return [nodes.reference(rawtext, title, refuri=ref, **options)], []
+
+
+def _rfc_reference_role(role, rawtext, text, lineno, inliner,
+                        options={}, content=[]):
+    matched = EXPLICIT_TITLE_RE.match(text)
+    if matched:
+        title = utils.unescape(matched.group(1))
+        target = utils.unescape(matched.group(2))
+    else:
+        target = utils.unescape(text)
+        title = "RFC " + utils.unescape(text)
+    pep_str, _, fragment = target.partition("#")
+    try:
+        rfcnum = int(pep_str)
+        if rfcnum < 0 or rfcnum > 9999:
+            raise ValueError
+    except ValueError:
+        msg = inliner.reporter.error(
+            f'RFC number must be a number from 0 to 9999; "{pep_str}" is invalid.',
+            line=lineno)
+        prb = inliner.problematic(rawtext, rawtext, msg)
+        return [prb], [msg]
+    ref = (inliner.document.settings.rfc_base_url + inliner.rfc_url % rfcnum)
+    if fragment:
+        ref += "#" + fragment
+    roles.set_classes(options)
+    return [nodes.reference(rawtext, title, refuri=ref, **options)], []
+
+
+roles.register_canonical_role("pep-reference", _pep_reference_role)
+roles.register_canonical_role("rfc-reference", _rfc_reference_role)
 
 
 def first_line_starting_with(full_path: Path, text: str) -> str:
@@ -61,28 +129,25 @@ def pep_creation(full_path: Path) -> datetime.datetime:
     return datetime.datetime.strptime(created_str, "%d-%b-%Y")
 
 
-def parse_rst(text: str) -> nodes.document:
+def parse_rst(full_path: Path) -> nodes.document:
+    text = full_path.read_text(encoding="utf-8")
     settings = frontend.OptionParser((rst.Parser,)).get_default_values()
-    document = utils.new_document('<rst-doc>', settings=settings)
-    rst.Parser().parse(text, document)
+    document = utils.new_document(f'<{full_path}>', settings=settings)
+    rst.Parser(rfc2822=True).parse(text, document)
     return document
 
 
 def pep_abstract(full_path: Path) -> str:
     """Return the first paragraph of the PEP abstract"""
-    text = full_path.read_text(encoding="utf-8")
-    for node in parse_rst(text).findall(nodes.section):
+    for node in parse_rst(full_path).findall(nodes.section):
         if node.next_node(nodes.title).astext() == "Abstract":
             return node.next_node(nodes.paragraph).astext().strip().replace("\n", " ")
     return ""
 
 
 def main():
-    # get the directory with the PEP sources
-    out_dir = Path(__file__).parent / "build"
-
     # get list of peps with creation time (from "Created:" string in pep source)
-    peps_with_dt = sorted((pep_creation(path), path) for path in out_dir.glob("pep-????.*"))
+    peps_with_dt = sorted((pep_creation(path), path) for path in PEP_ROOT.glob("pep-????.???"))
 
     # generate rss items for 10 most recent peps
     items = []
@@ -137,6 +202,8 @@ def main():
     for item in items:
         fg.add_entry(item)
 
+    # output directory for target HTML files
+    out_dir = PEP_ROOT / "build"
     out_dir.mkdir(exist_ok=True)
     out_dir.joinpath("peps.rss").write_bytes(fg.rss_str(pretty=True))
 
