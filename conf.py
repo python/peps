@@ -41,8 +41,9 @@ exclude_patterns = [
     "README.rst",
     "CONTRIBUTING.rst",
     "pep_sphinx_extensions/LICENCE.rst",
-    # Miscellaneous
+    # Miscellaneous:
     ".codespell",
+    ".git",
 ]
 
 # -- Options for HTML output -------------------------------------------------
