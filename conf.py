@@ -39,8 +39,8 @@ exclude_patterns = [
     # Windows:
     "Thumbs.db",
     ".DS_Store",
-    # Python:
-    "*env*",
+    # Git
+    ".git",
     # Sphinx:
     "build",
     # PEPs:
