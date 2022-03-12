@@ -58,6 +58,5 @@ html_style = ""  # must be defined here or in theme.conf, but is unused
 html_permalinks = False  # handled in the PEPContents transform
 html_baseurl = "https://peps.python.org"  # to create the CNAME file
 gettext_auto_build = False  # speed-ups
-html_additional_pages = {"404": "not_found.html"}
 
 templates_path = ['pep_sphinx_extensions/pep_theme/templates']  # Theme template relative paths from `confdir`
