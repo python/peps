@@ -9,6 +9,7 @@ from sphinx import environment
 
 from pep_sphinx_extensions.pep_processor.html import pep_html_builder
 from pep_sphinx_extensions.pep_processor.html import pep_html_translator
+from pep_sphinx_extensions.pep_processor.html.pep_html_redirects import prepare_redirect_pages
 from pep_sphinx_extensions.pep_processor.parsing import pep_parser
 from pep_sphinx_extensions.pep_processor.parsing import pep_role
 from pep_sphinx_extensions.pep_processor.transforms import pep_references
@@ -64,6 +65,7 @@ def setup(app: Sphinx) -> dict[str, bool]:
     # Register event callbacks
     app.connect("builder-inited", _update_config_for_builder)  # Update configuration values for builder used
     app.connect("env-before-read-docs", create_pep_zero)  # PEP 0 hook
+    app.connect("html-collect-pages", prepare_redirect_pages)  # Create redirects
 
     # Mathematics rendering
     inline_maths = HTMLTranslator.visit_math, _depart_maths
