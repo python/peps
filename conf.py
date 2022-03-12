@@ -34,7 +34,8 @@ include_patterns = [
     # Required for Sphinx
     "contents.rst",
     # PEP files
-    "pep-????.???",
+    "pep-????.rst",
+    "pep-????.txt",
     # PEP ancillary files
     "pep-????/*.rst",
     # Documentation
