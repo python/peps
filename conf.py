@@ -26,9 +26,9 @@ source_suffix = {
 
 # List of patterns (relative to source dir) to ignore when looking for source files.
 exclude_patterns = [
-    # .txt files in subdirs
+    # Any .txt files in subdirectories:
     "**/*.txt",
-    # .txt files in the root not matching PEP pattern
+    # Non-PEP .txt files in the root (i.e. not "pep-[0-9][0-9][0-9][0-9].txt"):
     "*[!0-9].txt",
     "*[!0-9]?.txt",
     "*[!0-9]??.txt",
@@ -36,18 +36,18 @@ exclude_patterns = [
     "*[!p]?????.txt",
     "*[!e]??????.txt",
     "*[!p]???????.txt",
-    # Windows:
-    "Thumbs.db",
-    ".DS_Store",
     # Git
     ".git",
+    # Python
+    "*env*",
     # Sphinx:
     "build",
-    # PEPs:
-    "pep-0012/*",
+    # Meta files:
     "README.rst",
     "CONTRIBUTING.rst",
     "pep_sphinx_extensions/LICENCE.rst",
+    # Non-built files:
+    "pep-0012/pep-NNNN.rst",
 ]
 
 # -- Options for HTML output -------------------------------------------------
