@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 from sphinx import parsers
 
-from pep_sphinx_extensions.pep_processor.transforms import pep_section_linker
+from pep_sphinx_extensions.pep_processor.transforms import pep_contents
 from pep_sphinx_extensions.pep_processor.transforms import pep_footer
 from pep_sphinx_extensions.pep_processor.transforms import pep_headers
 from pep_sphinx_extensions.pep_processor.transforms import pep_title
@@ -27,6 +27,6 @@ class PEPParser(parsers.RSTParser):
         return [
             pep_headers.PEPHeaders,
             pep_title.PEPTitle,
-            pep_section_linker.PEPSectionLinker,
+            pep_contents.PEPContents,
             pep_footer.PEPFooter,
         ]
