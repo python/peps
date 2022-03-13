@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 
 
 def prepare_redirect_pages(app: Sphinx) -> Iterator[tuple[str, dict, str]]:
-    for path in Path(app.srcdir).glob("pep-????.???"):
+    for path in Path(app.srcdir).glob("pep-[0-9][0-9][0-9][0-9].???"):
         if path.suffix not in {".txt", ".rst"}:
             continue
 
