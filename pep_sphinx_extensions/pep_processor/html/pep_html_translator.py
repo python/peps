@@ -89,6 +89,17 @@ class PEPTranslator(html5.HTML5Translator):
         # Close the def tags
         self.body.append("</dt>\n<dd>")
 
+    def visit_bullet_list(self, node):
+        if isinstance(node.parent, nodes.section) and "contents" in node.parent["names"]:
+            self.body.append("<details><summary>Contents</summary>")
+            self.context.append("</details>")
+        super().visit_bullet_list(node)
+
+    def depart_bullet_list(self, node):
+        super().depart_bullet_list(node)
+        if isinstance(node.parent, nodes.section) and "contents" in node.parent["names"]:
+            self.body.append(self.context.pop())
+
     def unknown_visit(self, node: nodes.Node) -> None:
         """No processing for unknown node types."""
         pass
