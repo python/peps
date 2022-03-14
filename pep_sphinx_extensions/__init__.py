@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from docutils.writers.html5_polyglot import HTMLTranslator
 from sphinx import environment
+from sphinx import project
 
 from pep_sphinx_extensions.pep_processor.html import pep_html_builder
 from pep_sphinx_extensions.pep_processor.html import pep_html_translator
@@ -16,6 +17,37 @@ from pep_sphinx_extensions.pep_zero_generator.pep_index_generator import create_
 
 if TYPE_CHECKING:
     from sphinx.application import Sphinx
+    from sphinx.config import Config
+
+
+def find_files(self: environment.BuildEnvironment, config: Config, _b) -> None:
+    """Find all pep source files."""
+    import fnmatch
+    from pathlib import Path
+
+    root = Path(self.project.srcdir).absolute()
+    self.project.docnames = set()
+    for pattern in config.include_patterns:
+        for path in root.glob(pattern):
+            filename = str(path.relative_to(root))
+            if any(fnmatch.fnmatch(filename, pattern) for pattern in config.exclude_patterns):
+                continue
+
+            doc_name = self.project.path2doc(filename)
+            if not doc_name:
+                continue
+
+            if doc_name not in self.project.docnames:
+                self.project.docnames.add(doc_name)
+                continue
+
+            other_files = [str(f.relative_to(root)) for f in root.glob(f"{doc_name}.*")]
+            project.logger.warning(
+                f'multiple files found for the document "{doc_name}": {other_files!r}\n'
+                f'Use {self.doc2path(doc_name)!r} for the build.', once=True)
+
+
+environment.BuildEnvironment.find_files = find_files
 
 
 def _depart_maths():
