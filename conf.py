@@ -8,6 +8,11 @@ import sys
 
 sys.path.append(str(Path("pep_sphinx_extensions").absolute()))
 
+# Add 'include_patterns' as a config variable
+from sphinx.config import Config
+Config.config_values['include_patterns'] = [], 'env', []
+del Config
+
 # -- Project information -----------------------------------------------------
 
 project = "PEPs"
@@ -25,24 +30,20 @@ source_suffix = {
 }
 
 # List of patterns (relative to source dir) to ignore when looking for source files.
+include_patterns = [
+    # Required for Sphinx
+    "contents.rst",
+    # PEP files
+    "pep-????.rst",
+    "pep-????.txt",
+    # PEP ancillary files
+    "pep-????/*.rst",
+    # Documentation
+    "docs/*.rst",
+]
 exclude_patterns = [
-    # Windows:
-    "Thumbs.db",
-    ".DS_Store",
-    # Python:
-    ".venv",
-    "venv",
-    "requirements.txt",
-    # Sphinx:
-    "build",
-    "output.txt",  # Link-check output
-    # PEPs:
-    "pep-0012",
-    "README.rst",
-    "CONTRIBUTING.rst",
-    "pep_sphinx_extensions/LICENCE.rst",
-    # Miscellaneous
-    ".codespell",
+    # PEP Template
+    "pep-0012/pep-NNNN.rst",
 ]
 
 # -- Options for HTML output -------------------------------------------------
@@ -56,6 +57,7 @@ html_theme = "pep_theme"  # The actual theme directory (child of html_theme_path
 html_use_index = False  # Disable index (we use PEP 0)
 html_style = ""  # must be defined here or in theme.conf, but is unused
 html_permalinks = False  # handled in the PEPContents transform
+html_baseurl = "https://peps.python.org"  # to create the CNAME file
 gettext_auto_build = False  # speed-ups
 
 templates_path = ['pep_sphinx_extensions/pep_theme/templates']  # Theme template relative paths from `confdir`

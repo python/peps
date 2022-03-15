@@ -3,13 +3,14 @@ Title: <REQUIRED: pep title>
 Author: <REQUIRED: list of authors' real names and optionally, email addrs>
 Sponsor: <real name of sponsor>
 PEP-Delegate: <PEP delegate's real name>
-Discussions-To: <email address or URL>
+Discussions-To: <REQUIRED: URL of current canonical discussion thread>
 Status: <REQUIRED: Draft | Active | Accepted | Provisional | Deferred | Rejected | Withdrawn | Final | Superseded>
 Type: <REQUIRED: Standards Track | Informational | Process>
+Content-Type: text/x-rst
 Requires: <pep numbers>
 Created: <date created on, in dd-mmm-yyyy format>
 Python-Version: <version number>
-Post-History: <REQUIRED: dates of postings to python-ideas and/or python-dev, in dd-mmm-yyyy format>
+Post-History: <REQUIRED: dates, in dd-mmm-yyyy format, and corresponding links to PEP discussion threads>
 Replaces: <pep number>
 Superseded-By: <pep number>
 Resolution: <url>
@@ -75,10 +76,10 @@ Open Issues
 [Any points that are still being decided/discussed.]
 
 
-References
-==========
+Footnotes
+=========
 
-[A collection of URLs used as references through the PEP.]
+[A collection of footnotes cited in the PEP, and a place to list non-inline hyperlink targets.]
 
 
 Copyright
@@ -86,14 +87,3 @@ Copyright
 
 This document is placed in the public domain or under the
 CC0-1.0-Universal license, whichever is more permissive.
-
-
-
-..
-    Local Variables:
-    mode: indented-text
-    indent-tabs-mode: nil
-    sentence-end-double-space: t
-    fill-column: 70
-    coding: utf-8
-    End:

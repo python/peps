@@ -1,0 +1,634 @@
+PEP: 684
+Title: A Per-Interpreter GIL
+Author: Eric Snow <ericsnowcurrently@gmail.com>
+Discussions-To: https://mail.python.org/archives/list/python-dev@python.org/thread/CF7B7FMACFYDAHU6NPBEVEY6TOSGICXU/
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 08-Mar-2022
+Python-Version: 3.11
+Post-History: `08-Mar-2022 <https://mail.python.org/archives/list/python-dev@python.org/thread/CF7B7FMACFYDAHU6NPBEVEY6TOSGICXU/>`__
+Resolution:
+
+.. XXX Split out an informational PEP with all the relevant info,
+   based on the "Consolidating Runtime Global State" section?
+
+Abstract
+========
+
+Since Python 1.5 (1997), CPython users can run multiple interpreters
+in the same process.  However, interpreters in the same process
+have always shared a significant
+amount of global state.  This is a source of bugs, with a growing
+impact as more and more people use the feature.  Furthermore,
+sufficient isolation would facilitate true multi-core parallelism,
+where interpreters no longer share the GIL.  The changes outlined in
+this proposal will result in that level of interpreter isolation.
+
+
+High-Level Summary
+==================
+
+At a high level, this proposal changes CPython in the following ways:
+
+* stops sharing the GIL between interpreters, given sufficient isolation
+* adds several new interpreter config options for isolation settings
+* adds some public C-API for fine-grained control when creating interpreters
+* keeps incompatible extensions from causing problems
+
+The GIL
+-------
+
+The GIL protects concurrent access to most of CPython's runtime state.
+So all that GIL-protected global state must move to each interpreter
+before the GIL can.
+
+(In a handful of cases, other mechanisms can be used to ensure
+thread-safe sharing instead, such as locks or "immortal" objects.)
+
+CPython Runtime State
+---------------------
+
+Properly isolating interpreters requires that most of CPython's
+runtime state be stored in the ``PyInterpreterState`` struct.  Currently,
+only a portion of it is; the rest is found either in global variables
+or in ``_PyRuntimeState``.  Most of that will have to be moved.
+
+This directly coincides with an ongoing effort (of many years) to greatly
+reduce internal use of C global variables and consolidate the runtime
+state into ``_PyRuntimeState`` and ``PyInterpreterState``.
+(See `Consolidating Runtime Global State`_ below.)  That project has
+`significant merit on its own <Benefits to Consolidation_>`_
+and has faced little controversy.  So, while a per-interpreter GIL
+relies on the completion of that effort, that project should not be
+considered a part of this proposal--only a dependency.
+
+Other Isolation Considerations
+------------------------------
+
+CPython's interpreters must be strictly isolated from each other, with
+few exceptions.  To a large extent they already are.  Each interpreter
+has its own copy of all modules, classes, functions, and variables.
+The CPython C-API docs `explain further <caveats_>`_.
+
+.. _caveats: https://docs.python.org/3/c-api/init.html#bugs-and-caveats
+
+However, aside from what has already been mentioned (e.g. the GIL),
+there are a couple of ways in which interpreters still share some state.
+
+First of all, some process-global resources (e.g. memory,
+file descriptors, environment variables) are shared.  There are no
+plans to change this.
+
+Second, some isolation is faulty due to bugs or implementations that
+did not take multiple interpreters into account.  This includes
+CPython's runtime and the stdlib, as well as extension modules that
+rely on global variables.  Bugs should be opened in these cases,
+as some already have been.
+
+Depending on Immortal Objects
+-----------------------------
+
+:pep:`683` introduces immortal objects as a CPython-internal feature.
+With immortal objects, we can share any otherwise immutable global
+objects between all interpreters.  Consequently, this PEP does not
+need to address how to deal with the various objects
+`exposed in the public C-API <capi objects_>`_.
+It also simplifies the question of what to do about the builtin
+static types.  (See `Global Objects`_ below.)
+
+Both issues have alternate solutions, but everything is simpler with
+immortal objects.  If PEP 683 is not accepted then this one will be
+updated with the alternatives.  This lets us reduce noise in this
+proposal.
+
+
+Motivation
+==========
+
+The fundamental problem we're solving here is a lack of true multi-core
+parallelism (for Python code) in the CPython runtime.  The GIL is the
+cause.  While it usually isn't a problem in practice, at the very least
+it makes Python's multi-core story murky, which makes the GIL
+a consistent distraction.
+
+Isolated interpreters are also an effective mechanism to support
+certain concurrency models.  :pep:`554` discusses this in more detail.
+
+Indirect Benefits
+-----------------
+
+Most of the effort needed for a per-interpreter GIL has benefits that
+make those tasks worth doing anyway:
+
+* makes multiple-interpreter behavior more reliable
+* has led to fixes for long-standing runtime bugs that otherwise
+  hadn't been prioritized
+* has been exposing (and inspiring fixes for) previously unknown runtime bugs
+* has driven cleaner runtime initialization (:pep:`432`, :pep:`587`)
+* has driven cleaner and more complete runtime finalization
+* led to structural layering of the C-API (e.g. ``Include/internal``)
+* also see `Benefits to Consolidation`_ below
+
+Furthermore, much of that work benefits other CPython-related projects:
+
+* performance improvements ("faster-cpython")
+* pre-fork application deployment (e.g. Instagram)
+* extension module isolation (see :pep:`630`, etc.)
+* embedding CPython
+
+Existing Use of Multiple Interpreters
+-------------------------------------
+
+The C-API for multiple interpreters has been used for many years.
+However, until relatively recently the feature wasn't widely known,
+nor extensively used (with the exception of mod_wsgi).
+
+In the last few years use of multiple interpreters has been increasing.
+Here are some of the public projects using the feature currently:
+
+* `mod_wsgi <https://github.com/GrahamDumpleton/mod_wsgi>`_
+* `OpenStack Ceph <https://github.com/ceph/ceph/pull/14971>`_
+* `JEP <https://github.com/ninia/jep>`_
+* `Kodi <https://github.com/xbmc/xbmc>`_
+
+Note that, with :pep:`554`, multiple interpreter usage would likely
+grow significantly (via Python code rather than the C-API).
+
+PEP 554
+-------
+
+:pep:`554` is strictly about providing a minimal stdlib module
+to give users access to multiple interpreters from Python code.
+In fact, it specifically avoids proposing any changes related to
+the GIL.  Consider, however, that users of that module would benefit
+from a per-interpreter GIL, which makes PEP 554 more appealing.
+
+
+Rationale
+=========
+
+During initial investigations in 2014, a variety of possible solutions
+for multi-core Python were explored, but each had its drawbacks
+without simple solutions:
+
+* the existing practice of releasing the GIL in extension modules
+  * doesn't help with Python code
+* other Python implementations (e.g. Jython, IronPython)
+  * CPython dominates the community
+* remove the GIL (e.g. gilectomy, "no-gil")
+  * too much technical risk (at the time)
+* Trent Nelson's "PyParallel" project
+  * incomplete; Windows-only at the time
+* ``multiprocessing``
+
+  * too much work to make it effective enough;
+    high penalties in some situations (at large scale, Windows)
+
+* other parallelism tools (e.g. dask, ray, MPI)
+  * not a fit for the stdlib
+* give up on multi-core (e.g. async, do nothing)
+  * this can only end in tears
+
+Even in 2014, it was fairly clear that a solution using isolated
+interpreters did not have a high level of technical risk and that
+most of the work was worth doing anyway.
+(The downside was the volume of work to be done.)
+
+
+Specification
+=============
+
+As `summarized above <High-Level Summary_>`__, this proposal involves the
+following changes, in the order they must happen:
+
+1. `consolidate global runtime state <Consolidating Runtime Global State_>`_
+   (including objects) into ``_PyRuntimeState``
+2. move nearly all of the state down into ``PyInterpreterState``
+3. finally, move the GIL down into ``PyInterpreterState``
+4. everything else
+   * add to the public C-API
+   * implement restrictions in ``ExtensionFileLoader``
+
+   * work with popular extension maintainers to help
+     with multi-interpreter support
+
+Per-Interpreter State
+---------------------
+
+The following runtime state will be moved to ``PyInterpreterState``:
+
+* all global objects that are not safely shareable (fully immutable)
+* the GIL
+* mutable, currently protected by the GIL
+* mutable, currently protected by some other per-interpreter lock
+* mutable, may be used independently in different interpreters
+* all other mutable (or effectively mutable) state
+  not otherwise excluded below
+
+Furthermore, a number of parts of the global state have already been
+moved to the interpreter, such as GC, warnings, and atexit hooks.
+
+The following state will not be moved:
+
+* global objects that are safely shareable, if any
+* immutable, often ``const``
+* treated as immutable
+* related to CPython's ``main()`` execution
+* related to the REPL
+* set during runtime init, then treated as immutable
+* mutable, protected by some global lock
+* mutable, atomic
+
+Note that currently the allocators (see ``Objects/obmalloc.c``) are shared
+between all interpreters, protected by the GIL.  They will need to move
+to each interpreter (or a global lock will be needed).  This is the
+highest risk part of the work to isolate interpreters and may require
+more than just moving fields down from ``_PyRuntimeState``.  Some of
+the complexity is reduced if CPython switches to a thread-safe
+allocator like mimalloc.
+
+.. _proposed capi:
+
+C-API
+-----
+
+The following private API will be made public:
+
+* ``_PyInterpreterConfig``
+* ``_Py_NewInterpreter()`` (as ``Py_NewInterpreterEx()``)
+
+The following fields will be added to ``PyInterpreterConfig``:
+
+* ``own_gil`` - (bool) create a new interpreter lock
+  (instead of sharing with the main interpreter)
+* ``strict_extensions`` - fail import in this interpreter for
+  incompatible extensions (see `Restricting Extension Modules`_)
+
+Restricting Extension Modules
+-----------------------------
+
+Extension modules have many of the same problems as the runtime when
+state is stored in global variables.  :pep:`630` covers all the details
+of what extensions must do to support isolation, and thus safely run in
+multiple interpreters at once.  This includes dealing with their globals.
+
+Extension modules that do not implement isolation will only run in
+the main interpreter.  In all other interpreters, the import will
+raise ``ImportError``.  This will be done through
+``importlib._bootstrap_external.ExtensionFileLoader``.
+
+We will work with popular extensions to help them support use in
+multiple interpreters.  This may involve adding to CPython's public C-API,
+which we will address on a case-by-case basis.
+
+Extension Module Compatibility
+''''''''''''''''''''''''''''''
+
+As noted in `Extension Modules`_, many extensions work fine in multiple
+interpreters without needing any changes.  The import system will still
+fail if such a module doesn't explicitly indicate support.  At first,
+not many extension modules will, so this is a potential source
+of frustration.
+
+We will address this by adding a context manager to temporarily disable
+the check on multiple interpreter support:
+``importlib.util.allow_all_extensions()``.
+
+Documentation
+-------------
+
+The "Sub-interpreter support" section of ``Doc/c-api/init.rst`` will be
+updated with the added API.
+
+
+Impact
+======
+
+Backwards Compatibility
+-----------------------
+
+No behavior or APIs are intended to change due to this proposal,
+with one exception noted in `the next section <Extension Modules_>`_.
+The existing C-API for managing interpreters will preserve its current
+behavior, with new behavior exposed through new API.  No other API
+or runtime behavior is meant to change, including compatibility with
+the stable ABI.
+
+See `Objects Exposed in the C-API`_ below for related discussion.
+
+Extension Modules
+'''''''''''''''''
+
+Currently the most common usage of Python, by far, is with the main
+interpreter running by itself.  This proposal has zero impact on
+extension modules in that scenario.  Likewise, for better or worse,
+there is no change in behavior under multiple interpreters created
+using the existing ``Py_NewInterpreter()``.
+
+Keep in mind that some extensions already break when used in multiple
+interpreters, due to keeping module state in global variables.  They
+may crash or, worse, experience inconsistent behavior.  That was part
+of the motivation for :pep:`630` and friends, so this is not a new
+situation nor a consequence of this proposal.
+
+In contrast, when the `proposed API <proposed capi_>`_ is used to
+create multiple interpreters, the default behavior will change for
+some extensions.  In that case, importing an extension will fail
+(outside the main interpreter) if it doesn't indicate support for
+multiple interpreters.  For extensions that already break in
+multiple interpreters, this will be an improvement.
+
+Now we get to the break in compatibility mentioned above.  Some
+extensions are safe under multiple interpreters, even though they
+haven't indicated that.  Unfortunately, there is no reliable way for
+the import system to infer that such an extension is safe, so
+importing them will still fail.  This case is addressed in
+`Extension Module Compatibility`_ below.
+
+Extension Module Maintainers
+----------------------------
+
+One related consideration is that a per-interpreter GIL will likely
+drive increased use of multiple interpreters, particularly if :pep:`554`
+is accepted.  Some maintainers of large extension modules have expressed
+concern about the increased burden they anticipate due to increased
+use of multiple interpreters.
+
+Specifically, enabling support for multiple interpreters will require
+substantial work for some extension modules.  To add that support,
+the maintainer(s) of such a module (often volunteers) would have to
+set aside their normal priorities and interests to focus on
+compatibility (see :pep:`630`).
+
+Of course, extension maintainers are free to not add support for use
+in multiple interpreters.  However, users will increasingly demand
+such support, especially if the feature grows
+in popularity.
+
+Either way, the situation can be stressful for maintainers of such
+extensions, particularly when they are doing the work in their spare
+time.  The concerns they have expressed are understandable, and we address
+the partial solution in `Restricting Extension Modules`_ below.
+
+Alternate Python Implementations
+--------------------------------
+
+Other Python implementation are not required to provide support for
+multiple interpreters in the same process (though some do already).
+
+Security Implications
+---------------------
+
+There is no known impact to security with this proposal.
+
+Maintainability
+---------------
+
+On the one hand, this proposal has already motivated a number of
+improvements that make CPython *more* maintainable.  That is expected
+to continue.  On the other hand, the underlying work has already
+exposed various pre-existing defects in the runtime that have had
+to be fixed.  That is also expected to continue as multiple interpreters
+receive more use.  Otherwise, there shouldn't be a significant impact
+on maintainability, so the net effect should be positive.
+
+Performance
+-----------
+
+The work to consolidate globals has already provided a number of
+improvements to CPython's performance, both speeding it up and using
+less memory, and this should continue. Performance benefits to a
+per-interpreter GIL have not been explored.  At the very least, it is
+not expected to make CPython slower (as long as interpreters are
+sufficiently isolated).
+
+
+How to Teach This
+=================
+
+This is an advanced feature for users of the C-API.  There is no
+expectation that this will be taught.
+
+That said, if it were taught then it would boil down to the following:
+
+    In addition to Py_NewInterpreter(), you can use Py_NewInterpreterEx()
+    to create an interpreter.  The config you pass it indicates how you
+    want that interpreter to behave.
+
+
+Reference Implementation
+========================
+
+<TBD>
+
+
+Open Issues
+===========
+
+* What are the risks/hurdles involved with moving the allocators?
+* Is ``allow_all_extensions`` the best name for the context manager?
+
+
+Deferred Functionality
+======================
+
+* ``PyInterpreterConfig`` option to always run the interpreter in a new thread
+* ``PyInterpreterConfig`` option to assign a "main" thread to the interpreter
+  and only run in that thread
+
+
+Rejected Ideas
+==============
+
+<TBD>
+
+
+Extra Context
+=============
+
+Sharing Global Objects
+----------------------
+
+We are sharing some global objects between interpreters.
+This is an implementation detail and relates more to
+`globals consolidation <Consolidating Runtime Global State>`_
+than to this proposal, but it is a significant enough detail
+to explain here.
+
+The alternative is to share no objects between interpreters, ever.
+To accomplish that, we'd have to sort out the fate of all our static
+types, as well as deal with compatibility issues for the many objects
+`exposed in the public C-API <capi objects_>`_.
+
+That approach introduces a meaningful amount of extra complexity
+and higher risk, though prototyping has demonstrated valid solutions.
+Also, it would likely result in a performance penalty.
+
+`Immortal objects <Depending on Immortal Objects_>`_ allow us to
+share the otherwise immutable global objects.  That way we avoid
+the extra costs.
+
+.. _capi objects:
+
+Objects Exposed in the C-API
+''''''''''''''''''''''''''''
+
+The C-API (including the limited API) exposes all the builtin types,
+including the builtin exceptions, as well as the builtin singletons.
+The exceptions are exposed as ``PyObject *`` but the rest are exposed
+as the static values rather than pointers.  This was one of the few
+non-trivial problems we had to solve for per-interpreter GIL.
+
+With immortal objects this is a non-issue.
+
+
+Consolidating Runtime Global State
+----------------------------------
+
+As noted in `CPython Runtime State`_ above, there is an active effort
+(separate from this PEP) to consolidate CPython's global state into the
+``_PyRuntimeState`` struct.  Nearly all the work involves moving that
+state from global variables.  The project is particularly relevant to
+this proposal, so below is some extra detail.
+
+Benefits to Consolidation
+'''''''''''''''''''''''''
+
+Consolidating the globals has a variety of benefits:
+
+* greatly reduces the number of C globals (best practice for C code)
+* the move draws attention to runtime state that is unstable or broken
+* encourages more consistency in how runtime state is used
+* makes multiple-interpreter behavior more reliable
+* leads to fixes for long-standing runtime bugs that otherwise
+  haven't been prioritized
+* exposes (and inspires fixes for) previously unknown runtime bugs
+* facilitates cleaner runtime initialization and finalization
+* makes it easier to discover/identify CPython's runtime state
+* makes it easier to statically allocate runtime state in a consistent way
+* better memory locality for runtime state
+* structural layering of the C-API (e.g. ``Include/internal``)
+
+Furthermore, much of that work benefits other CPython-related projects:
+
+* performance improvements ("faster-cpython")
+* pre-fork application deployment (e.g. Instagram)
+* extension module isolation (see :pep:`630`, etc.)
+* embedding CPython
+
+Scale of Work
+'''''''''''''
+
+The number of global variables to be moved is large enough to matter,
+but most are Python objects that can be dealt with in large groups
+(like ``Py_IDENTIFIER``).  In nearly all cases, moving these globals
+to the interpreter is highly mechanical.  That doesn't require
+cleverness but instead requires someone to put in the time.
+
+State To Be Moved
+'''''''''''''''''
+
+The remaining global variables can be categorized as follows:
+
+* global objects
+  * static types (incl. exception types)
+  * non-static types (incl. heap types, structseq types)
+  * singletons (static)
+  * singletons (initialized once)
+  * cached objects
+* non-objects
+  * will not (or unlikely to) change after init
+  * only used in the main thread
+  * initialized lazily
+  * pre-allocated buffers
+  * state
+
+Those globals are spread between the core runtime, the builtin modules,
+and the stdlib extension modules.
+
+For a breakdown of the remaining globals, run:
+
+.. code-block:: bash
+
+    ./python Tools/c-analyzer/table-file.py Tools/c-analyzer/cpython/globals-to-fix.tsv
+
+Already Completed Work
+''''''''''''''''''''''
+
+As mentioned, this work has been going on for many years.  Here are some
+of the things that have already been done:
+
+* cleanup of runtime initialization (see :pep:`432` / :pep:`587`)
+* extension module isolation machinery (see :pep:`384` / :pep:`3121` / :pep:`489`)
+* isolation for many builtin modules
+* isolation for many stdlib extension modules
+* addition of ``_PyRuntimeState``
+* no more ``_Py_IDENTIFIER()``
+* statically allocated:
+
+  * empty string
+  * string literals
+  * identifiers
+  * latin-1 strings
+  * length-1 bytes
+  * empty tuple
+
+Tooling
+'''''''
+
+As already indicated, there are several tools to help identify the
+globals and reason about them.
+
+* ``Tools/c-analyzer/cpython/globals-to-fix.tsv`` - the list of remaining globals
+* ``Tools/c-analyzer/c-analyzer.py``
+  * ``analyze`` - identify all the globals
+  * ``check`` - fail if there are any unsupported globals that aren't ignored
+* ``Tools/c-analyzer/table-file.py`` - summarize the known globals
+
+Also, the check for unsupported globals is incorporated into CI so that
+no new globals are accidentally added.
+
+Global Objects
+''''''''''''''
+
+Global objects that are safe to be shared (without a GIL) between
+interpreters can stay on ``_PyRuntimeState``.  Not only must the object
+be effectively immutable (e.g. singletons, strings), but not even the
+refcount can change for it to be safe.  Immortality (:pep:`683`)
+provides that.  (The alternative is that no objects are shared, which
+adds significant complexity to the solution, particularly for the
+objects `exposed in the public C-API <capi objects_>`_.)
+
+Builtin static types are a special case of global objects that will be
+shared.  They are effectively immutable except for one part:
+``__subclasses__`` (AKA ``tp_subclasses``).  We expect that nothing
+else on a builtin type will change, even the content
+of ``__dict__`` (AKA ``tp_dict``).
+
+``__subclasses__`` for the builtin types will be dealt with by making
+it a getter that does a lookup on the current ``PyInterpreterState``
+for that type.
+
+
+References
+==========
+
+Related:
+
+* :pep:`384`
+* :pep:`432`
+* :pep:`489`
+* :pep:`554`
+* :pep:`573`
+* :pep:`587`
+* :pep:`630`
+* :pep:`683`
+* :pep:`3121`
+
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.

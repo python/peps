@@ -38,7 +38,8 @@ class FileBuilder(StandaloneHTMLBuilder):
         toc_tree = self.env.tocs[docname].deepcopy()
         if len(toc_tree[0]) > 1:
             toc_tree = toc_tree[0][1]  # don't include document title
-            for node in toc_tree.traverse(nodes.reference):
+            del toc_tree[0]  # remove contents node
+            for node in toc_tree.findall(nodes.reference):
                 node["refuri"] = node["anchorname"] or '#'  # fix targets
             toc = self.render_partial(toc_tree)["fragment"]
         else:
