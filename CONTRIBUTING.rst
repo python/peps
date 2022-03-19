@@ -24,15 +24,16 @@ Contributing changes to existing PEPs
 In general, most non-Draft/Active PEPs are considered to be historical
 documents rather than living specifications or documentation. Major changes to
 their core content usually require a new PEP, while smaller modifications may
-or may not be appropriate, depending on the PEP's status. See `PEP 1
-<https://www.python.org/dev/peps/pep-0001/#pep-maintenance>`__ for more.
+or may not be appropriate, depending on the PEP's status. See `PEP Maintenance
+<https://peps.python.org/pep-0001/#pep-maintenance>`_
+and `Changing Existing PEPs
+<https://peps.python.org/pep-0001/#changing-existing-peps>`_ in PEP 1 for more.
 
-Copyediting and proofreading Draft and Active PEPs (including fixing spelling
-and formatting issues) is welcomed (subject to review by the PEP authors),
-and can be done via pull request to this repo, though we generally advise
-against PRs that simply mass-correct minor typos on older PEPs which don't
-significantly impair meaning and understanding.
+Copyediting and proofreading Draft and Active PEPs is welcome (subject to
+review by the PEP author), and can be done via pull request to this repo.
 Substantive content changes should first be proposed on PEP discussion threads.
+We do advise against PRs that simply mass-correct minor typos on older PEPs
+which don't significantly impair meaning and understanding.
 
 If you're still unsure, we encourage you to reach out first before opening a
 PR here. For example, you could contact the PEP author(s), propose your idea in
