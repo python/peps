@@ -28,7 +28,8 @@ Render PEPs locally
 -------------------
 
 See the `build documentation <./docs/build.rst>`__ for full
-instructions on how to render PEPs locally. In summary:
+instructions on how to render PEPs locally.
+In summary, run the following in a fresh, activated virtual environment:
 
 .. code-block:: bash
 
@@ -38,15 +39,14 @@ instructions on how to render PEPs locally. In summary:
     # Render the PEPs
     make render
 
-    # or, if you don't have 'make':
-    python3 build.py
-
+    # Or, if you don't have 'make':
+    python build.py
 
 The output HTML is found under the ``build`` directory.
 
 
-Tools to lint PEPs
-------------------
+Check and lint PEPs
+-------------------
 
 You can check for and fix common linting and spelling issues,
 either on-demand or automatically as you commit, with our pre-commit suite.
