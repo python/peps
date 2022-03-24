@@ -110,11 +110,22 @@ def _process_list_url(list_url: str) -> tuple[str, str]:
         if len(parts) > 6 and parts[6] in {"message", "thread"}:
             url_type = parts[6]
 
+    # Mailman3 list info structure is
+    # https://mail.python.org/mailman3/lists/<list_name>.python.org/
+    elif "mailman3" in parts:
+        list_name = (
+            parts[parts.index("mailman3") + 2].removesuffix(".python.org"))
+
     # Pipermail (Mailman) archive structure is
     # https://mail.python.org/pipermail/<list_name>/<month>-<year>/<id>
     elif "pipermail" in parts:
         list_name = parts[parts.index("pipermail") + 1]
         url_type = "message" if len(parts) > 6 else "list"
+
+    # Mailman listinfo structure is
+    # https://mail.python.org/mailman/listinfo/<list_name>
+    elif "listinfo" in parts:
+        list_name = parts[parts.index("listinfo") + 1]
 
     # Not a link to a mailing list, message or thread
     else:
