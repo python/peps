@@ -98,20 +98,36 @@ class PEPHeaders(transforms.Transform):
             field.parent.remove(field)
 
 
+def _process_list_url(list_url: str) -> tuple[str, str]:
+    url_type = "list"
+    parts = list_url.lower().strip().strip("/").split("/")
+
+    # HyperKitty (Mailman3) archive structure is
+    # https://mail.python.org/archives/list/<list_name>/thread/<id>
+    if "archives" in parts:
+        list_name = (
+            parts[parts.index("archives") + 2].removesuffix("@python.org"))
+        if len(parts) > 6 and parts[6] in {"message", "thread"}:
+            url_type = parts[6]
+
+    # Pipermail (Mailman) archive structure is
+    # https://mail.python.org/pipermail/<list_name>/<month>-<year>/<id>
+    elif "pipermail" in parts:
+        list_name = parts[parts.index("pipermail") + 1]
+        url_type = "message" if len(parts) > 6 else "list"
+
+    # Not a link to a mailing list, message or thread
+    else:
+        raise ValueError("Not a link to a mailing list, message or thread")
+
+    list_name = list_name.title().replace("Sig", "SIG")
+    return list_name, url_type
+
+
 def _pretty_thread(text: nodes.Text) -> nodes.Text:
-    parts = text.title().replace("Sig", "SIG").split("/")
-
-    # mailman structure is
-    # https://mail.python.org/archives/list/<list name>/thread/<id>
     try:
-        return nodes.Text(parts[parts.index("Archives") + 2].removesuffix("@Python.Org"))
+        list_name, url_type = _process_list_url(str(text))
     except ValueError:
-        pass
-
-    # pipermail structure is
-    # https://mail.python.org/pipermail/<list name>/<month-year>/<id>
-    try:
-        return nodes.Text(parts[parts.index("Pipermail") + 1])
-    except ValueError:
-        # archives and pipermail not in list, e.g. PEP 245
         return text
+
+    return nodes.Text(f"{list_name} {url_type}")
