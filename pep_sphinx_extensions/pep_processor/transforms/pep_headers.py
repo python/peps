@@ -74,15 +74,20 @@ class PEPHeaders(transforms.Transform):
                     if not isinstance(node, nodes.reference):
                         continue
                     node.replace_self(_mask_email(node))
-            elif name in {"discussions-to", "resolution"}:
+            elif name in {"discussions-to", "resolution", "post-history"}:
                 # Prettify mailing list and Discourse links
                 for node in para:
-                    if not isinstance(node, nodes.reference):
+                    if (not isinstance(node, nodes.reference)
+                            or not node["refuri"]):
                         continue
-                    if node["refuri"]:
-                        parts = node["refuri"].lower().split("/")
-                        if len(parts) > 2 and parts[2] in LINK_PRETTIFIERS:
-                            node[0] = _make_link_pretty(node[0])
+                    parts = node["refuri"].lower().split("/")
+                    if len(parts) <= 2 or parts[2] not in LINK_PRETTIFIERS:
+                        continue
+                    pretty_title = _make_link_pretty(str(node["refuri"]))
+                    if name == "post-history":
+                        node["reftitle"] = pretty_title
+                    else:
+                        node[0] = nodes.Text(pretty_title)
             elif name in {"replaces", "superseded-by", "requires"}:
                 # replace PEP numbers with normalised list of links to PEPs
                 new_body = []
@@ -178,6 +183,6 @@ def _process_pretty_url(url: str) -> tuple[str, str]:
     return item_name, item_type
 
 
-def _make_link_pretty(text: nodes.Text) -> nodes.Text:
-    item_name, item_type = _process_pretty_url(str(text))
-    return nodes.Text(f"{item_name} {item_type}")
+def _make_link_pretty(url: str) -> str:
+    item_name, item_type = _process_pretty_url(url)
+    return f"{item_name} {item_type}"
