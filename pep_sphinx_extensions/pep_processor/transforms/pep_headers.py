@@ -80,6 +80,9 @@ class PEPHeaders(transforms.Transform):
                     if (not isinstance(node, nodes.reference)
                             or not node["refuri"]):
                         continue
+                    # Have known mailto links link to their main list pages
+                    if node["refuri"].lower().startswith("mailto:"):
+                        node["refuri"] = _generate_list_url(node["refuri"])
                     parts = node["refuri"].lower().split("/")
                     if len(parts) <= 2 or parts[2] not in LINK_PRETTIFIERS:
                         continue
@@ -102,6 +105,26 @@ class PEPHeaders(transforms.Transform):
         # Remove unneeded fields
         for field in fields_to_remove:
             field.parent.remove(field)
+
+
+def _generate_list_url(mailto: str) -> str:
+    list_name_domain = mailto.lower().removeprefix("mailto:").strip()
+    list_name = list_name_domain.split("@")[0]
+
+    if list_name_domain.endswith("@googlegroups.com"):
+        return f"https://groups.google.com/g/{list_name}"
+
+    if not list_name_domain.endswith("@python.org"):
+        return mailto
+
+    # Active lists not yet on Mailman3; this URL will redirect if/when they are
+    if list_name in {"csv", "db-sig", "doc-sig", "python-list", "web-sig"}:
+        return f"https://mail.python.org/mailman/listinfo/{list_name}"
+    # Retired lists that are closed for posting, so only the archive matters
+    if list_name in {"import-sig", "python-3000"}:
+        return f"https://mail.python.org/pipermail/{list_name}/"
+    # The remaining lists (and any new ones) are all on Mailman3/Hyperkitty
+    return f"https://mail.python.org/archives/list/{list_name}@python.org/"
 
 
 def _process_list_url(parts: list[str]) -> tuple[str, str]:
