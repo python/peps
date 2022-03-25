@@ -75,13 +75,14 @@ class PEPHeaders(transforms.Transform):
                         continue
                     node.replace_self(_mask_email(node))
             elif name in {"discussions-to", "resolution"}:
-                # only handle threads, email addresses in Discussions-To aren't
-                # masked.
+                # Prettify mailing list and Discourse links
                 for node in para:
                     if not isinstance(node, nodes.reference):
                         continue
-                    if node["refuri"].startswith("https://mail.python.org"):
-                        node[0] = _pretty_thread(node[0])
+                    if node["refuri"]:
+                        parts = node["refuri"].lower().split("/")
+                        if len(parts) > 2 and parts[2] in LINK_PRETTIFIERS:
+                            node[0] = _make_link_pretty(node[0])
             elif name in {"replaces", "superseded-by", "requires"}:
                 # replace PEP numbers with normalised list of links to PEPs
                 new_body = []
@@ -98,9 +99,8 @@ class PEPHeaders(transforms.Transform):
             field.parent.remove(field)
 
 
-def _process_list_url(list_url: str) -> tuple[str, str]:
-    url_type = "list"
-    parts = list_url.lower().strip().strip("/").split("/")
+def _process_list_url(parts: list[str]) -> tuple[str, str]:
+    item_type = "list"
 
     # HyperKitty (Mailman3) archive structure is
     # https://mail.python.org/archives/list/<list_name>/thread/<id>
@@ -108,7 +108,7 @@ def _process_list_url(list_url: str) -> tuple[str, str]:
         list_name = (
             parts[parts.index("archives") + 2].removesuffix("@python.org"))
         if len(parts) > 6 and parts[6] in {"message", "thread"}:
-            url_type = parts[6]
+            item_type = parts[6]
 
     # Mailman3 list info structure is
     # https://mail.python.org/mailman3/lists/<list_name>.python.org/
@@ -120,7 +120,7 @@ def _process_list_url(list_url: str) -> tuple[str, str]:
     # https://mail.python.org/pipermail/<list_name>/<month>-<year>/<id>
     elif "pipermail" in parts:
         list_name = parts[parts.index("pipermail") + 1]
-        url_type = "message" if len(parts) > 6 else "list"
+        item_type = "message" if len(parts) > 6 else "list"
 
     # Mailman listinfo structure is
     # https://mail.python.org/mailman/listinfo/<list_name>
@@ -129,16 +129,55 @@ def _process_list_url(list_url: str) -> tuple[str, str]:
 
     # Not a link to a mailing list, message or thread
     else:
-        raise ValueError("Not a link to a mailing list, message or thread")
+        raise ValueError(
+            f"{'/'.join(parts)} not a link to a list, message or thread")
 
-    list_name = list_name.title().replace("Sig", "SIG")
-    return list_name, url_type
+    return list_name, item_type
 
 
-def _pretty_thread(text: nodes.Text) -> nodes.Text:
+def _process_discourse_url(parts: list[str]) -> tuple[str, str]:
+    item_name = "discourse"
+
+    if len(parts) < 5 or ("t" not in parts and "c" not in parts):
+        raise ValueError(
+            f"{'/'.join(parts)} not a link to a Discourse thread or category")
+
+    first_subpart = parts[4]
     try:
-        list_name, url_type = _process_list_url(str(text))
+        int(first_subpart)
     except ValueError:
-        return text
+        has_title = True
+    else:
+        has_title = False
 
-    return nodes.Text(f"{list_name} {url_type}")
+    if "t" in parts:
+        item_type = "post" if len(parts) > (5 + has_title) else "thread"
+    elif "c" in parts:
+        item_type = "category"
+        if has_title:
+            item_name = f"{first_subpart.replace('-', ' ')} {item_name}"
+
+    return item_name, item_type
+
+
+# Domains supported for pretty URL parsing
+LINK_PRETTIFIERS = {
+    "mail.python.org": _process_list_url,
+    "discuss.python.org": _process_discourse_url,
+}
+
+
+def _process_pretty_url(url: str) -> tuple[str, str]:
+    parts = url.lower().strip().strip("/").split("/")
+    try:
+        item_name, item_type = LINK_PRETTIFIERS[parts[2]](parts)
+    except KeyError as error:
+        raise ValueError(
+            "{url} not a link to a recognized domain to prettify") from error
+    item_name = item_name.title().replace("Sig", "SIG")
+    return item_name, item_type
+
+
+def _make_link_pretty(text: nodes.Text) -> nodes.Text:
+    item_name, item_type = _process_pretty_url(str(text))
+    return nodes.Text(f"{item_name} {item_type}")
