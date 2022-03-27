@@ -171,12 +171,7 @@ def _process_discourse_url(parts: list[str]) -> tuple[str, str]:
             f"{'/'.join(parts)} not a link to a Discourse thread or category")
 
     first_subpart = parts[4]
-    try:
-        int(first_subpart)
-    except ValueError:
-        has_title = True
-    else:
-        has_title = False
+    has_title = not first_subpart.isnumeric()
 
     if "t" in parts:
         item_type = "post" if len(parts) > (5 + has_title) else "thread"
