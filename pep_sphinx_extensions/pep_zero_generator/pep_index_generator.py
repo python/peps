@@ -18,6 +18,8 @@ to allow it to be processed as normal.
 from __future__ import annotations
 
 import csv
+import json
+import os
 from pathlib import Path
 import re
 from typing import TYPE_CHECKING
@@ -30,9 +32,25 @@ if TYPE_CHECKING:
     from sphinx.environment import BuildEnvironment
 
 
-def create_pep_zero(_: Sphinx, env: BuildEnvironment, docnames: list[str]) -> None:
-    # Sphinx app object is unneeded by this function
+def create_pep_json(peps: list[parser.PEP], out_dir: str) -> None:
+    pep_list = [
+        {
+            "number": pep.number,
+            "title": pep.title,
+            "authors": ", ".join([pep.authors.nick for pep.authors in pep.authors]),
+            "status": pep.status,
+            "type": pep.pep_type,
+            "url": f"https://peps.python.org/pep-{pep.number:0>4}/",
+        }
+        for pep in sorted(peps)
+    ]
 
+    out_file = os.path.join(out_dir, "peps.json")
+    with open(out_file, "w", encoding="UTF-8") as f:
+        json.dump(pep_list, f, indent=0)
+
+
+def create_pep_zero(app: Sphinx, env: BuildEnvironment, docnames: list[str]) -> None:
     # Read from root directory
     path = Path(".")
 
@@ -63,3 +81,6 @@ def create_pep_zero(_: Sphinx, env: BuildEnvironment, docnames: list[str]) -> No
     docnames.insert(1, pep_zero_filename)
     # Add to files for writer
     env.found_docs.add(pep_zero_filename)
+
+    # Create peps.json
+    create_pep_json(peps, app.outdir)
