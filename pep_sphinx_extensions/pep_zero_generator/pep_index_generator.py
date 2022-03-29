@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import csv
 import json
-import os
 from pathlib import Path
 import re
 from typing import TYPE_CHECKING
@@ -32,22 +31,27 @@ if TYPE_CHECKING:
     from sphinx.environment import BuildEnvironment
 
 
-def create_pep_json(peps: list[parser.PEP], out_dir: str) -> None:
+def create_pep_json(peps: list[parser.PEP]) -> str:
     pep_list = [
         {
             "number": pep.number,
             "title": pep.title,
             "authors": ", ".join(pep.authors.nick for pep.authors in pep.authors),
+            "discussions_to": pep.discussions_to,
             "status": pep.status,
             "type": pep.pep_type,
+            "created": pep.created,
+            "python_version": pep.python_version,
+            "post_history": pep.post_history,
+            "resolution": pep.resolution,
+            "requires": pep.requires,
+            "replaces": pep.replaces,
+            "superseded_by": pep.superseded_by,
             "url": f"https://peps.python.org/pep-{pep.number:0>4}/",
         }
         for pep in sorted(peps)
     ]
-
-    out_file = os.path.join(out_dir, "peps.json")
-    with open(out_file, "w", encoding="UTF-8") as f:
-        json.dump(pep_list, f, indent=0)
+    return json.dumps(pep_list, indent=0)
 
 
 def create_pep_zero(app: Sphinx, env: BuildEnvironment, docnames: list[str]) -> None:
@@ -83,4 +87,5 @@ def create_pep_zero(app: Sphinx, env: BuildEnvironment, docnames: list[str]) -> 
     env.found_docs.add(pep_zero_filename)
 
     # Create peps.json
-    create_pep_json(peps, app.outdir)
+    pep0_json = create_pep_json(peps)
+    Path(app.outdir, "peps.json").write_text(pep0_json, encoding="utf-8")

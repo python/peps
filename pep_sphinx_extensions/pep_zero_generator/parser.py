@@ -91,6 +91,20 @@ class PEP:
         # Parse PEP authors
         self.authors: list[Author] = _parse_authors(self, metadata["Author"], authors_overrides)
 
+        # Other headers
+        self.created = metadata["Created"]
+        self.discussions_to = metadata["Discussions-To"]
+        self.python_version = metadata["Python-Version"]
+        self.replaces = metadata["Replaces"]
+        self.requires = metadata["Requires"]
+        self.resolution = metadata["Resolution"]
+        self.superseded_by = metadata["Superseded-By"]
+        if metadata["Post-History"]:
+            # Squash duplicate whitespace
+            self.post_history = " ".join(metadata["Post-History"].split())
+        else:
+            self.post_history = None
+
     def __repr__(self) -> str:
         return f"<PEP {self.number:0>4} - {self.title}>"
 
