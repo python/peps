@@ -37,7 +37,7 @@ def create_pep_json(peps: list[parser.PEP], out_dir: str) -> None:
         {
             "number": pep.number,
             "title": pep.title,
-            "authors": ", ".join([pep.authors.nick for pep.authors in pep.authors]),
+            "authors": ", ".join(pep.authors.nick for pep.authors in pep.authors),
             "status": pep.status,
             "type": pep.pep_type,
             "url": f"https://peps.python.org/pep-{pep.number:0>4}/",
