@@ -88,4 +88,6 @@ def create_pep_zero(app: Sphinx, env: BuildEnvironment, docnames: list[str]) -> 
 
     # Create peps.json
     pep0_json = create_pep_json(peps)
-    Path(app.outdir, "peps.json").write_text(pep0_json, encoding="utf-8")
+    out_dir = Path(app.outdir) / "api"
+    out_dir.mkdir(exist_ok=True)
+    Path(out_dir, "peps.json").write_text(pep0_json, encoding="utf-8")
