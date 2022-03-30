@@ -19,9 +19,9 @@ Render PEPs locally
 
 1. Create a virtual environment and install requirements:
 
-   .. code-block:: console
+   .. code-block:: shell
 
-      $ make venv
+      make venv
 
    If you don't have access to ``make``, run:
 
@@ -35,15 +35,15 @@ Render PEPs locally
 2. **(Optional)** Delete prior build files.
    Generally only needed when making changes to the rendering system itself.
 
-   .. code-block:: console
+   .. code-block:: shell
 
-      $ rm -rf build
+      rm -rf build
 
 3. Run the build script:
 
-   .. code-block:: console
+   .. code-block:: shell
 
-      $ make render
+      make render
 
    If you don't have access to ``make``, run:
 
