@@ -32,9 +32,8 @@ if TYPE_CHECKING:
 
 
 def create_pep_json(peps: list[parser.PEP]) -> str:
-    pep_list = [
-        {
-            "number": pep.number,
+    pep_dict = {
+        pep.number: {
             "title": pep.title,
             "authors": ", ".join(pep.authors.nick for pep.authors in pep.authors),
             "discussions_to": pep.discussions_to,
@@ -50,8 +49,8 @@ def create_pep_json(peps: list[parser.PEP]) -> str:
             "url": f"https://peps.python.org/pep-{pep.number:0>4}/",
         }
         for pep in sorted(peps)
-    ]
-    return json.dumps(pep_list, indent=0)
+    }
+    return json.dumps(pep_dict, indent=1)
 
 
 def create_pep_zero(app: Sphinx, env: BuildEnvironment, docnames: list[str]) -> None:
