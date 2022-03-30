@@ -10,8 +10,8 @@ This can also be used to check that the PEP is valid reStructuredText before
 submission to the PEP editors.
 
 The rest of this document assumes you are working from a local clone of the
-`PEPs repository <https://github.com/python/peps>`__, with Python 3.9 or later
-installed.
+`PEPs repository <https://github.com/python/peps>`__, with 
+**Python 3.9 or later** installed.
 
 
 Render PEPs locally
