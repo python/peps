@@ -1,4 +1,5 @@
-Issue tracker is **ONLY** used for reporting bugs.
+Issue tracker is **ONLY** used for reporting bugs on documents (PEPs), not
+bugs in Python.
 
 New features should be discussed according to the following process:
 [PEP 1](https://peps.python.org/pep-0001/#start-with-an-idea-for-python)
