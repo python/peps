@@ -17,7 +17,10 @@ const makeDark = () => {
 
 
 const toggleColourScheme = () => {
-    if (localStorage.getItem("colour_scheme") === "dark") {
+    const colourScheme = localStorage.getItem("colour_scheme")
+    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches
+
+    if ((colourScheme === "dark") || (!colourScheme && prefersDark)) {
         makeLight()
         localStorage.setItem("colour_scheme", "light")
     } else {
