@@ -16,4 +16,8 @@ they provide.
 
 <!--- Provide a general summary of the issue in the Title above -->
 
-<!--- Tell us what should be changed and why -->
+### What did you spot, and where?
+
+### What did you expect to be changed?
+
+### Why?
