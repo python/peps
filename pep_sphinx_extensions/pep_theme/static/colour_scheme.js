@@ -3,15 +3,15 @@ const pygmentsNormal = document.getElementById("pyg");
 const pygmentsDark = document.getElementById("pyg-dark");
 
 const makeLight = () => {
-    dark.media = pygmentsNormal.media = pygmentsDark.media = ""
     dark.disabled = pygmentsDark.disabled = true
+    dark.media = pygmentsNormal.media = pygmentsDark.media = ""
     pygmentsNormal.disabled = false
 
 }
 
 const makeDark = () => {
-    dark.media = pygmentsNormal.media = pygmentsDark.media = ""
     dark.disabled = pygmentsDark.disabled = false
+    dark.media = pygmentsNormal.media = pygmentsDark.media = ""
     pygmentsNormal.disabled = true
 }
 
