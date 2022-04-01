@@ -18,10 +18,10 @@ class PEPZero(transforms.Transform):
 
 
 class PEPZeroSpecial(nodes.SparseNodeVisitor):
-    """Perform the special processing needed by PEP 0:
+    """Perform the special processing needed by PEP 0.
 
     - Mask email addresses.
-    - Link PEP numbers in the second column of 4-column tables to the PEPs themselves.
+    - Link PEP numbers and PEP titles in the table to the PEPs themselves.
 
     """
 
@@ -29,6 +29,7 @@ class PEPZeroSpecial(nodes.SparseNodeVisitor):
         super().__init__(document)
         self.pep_table: int = 0
         self.entry: int = 0
+        self.ref: str | None = None
 
     def unknown_visit(self, node: nodes.Node) -> None:
         """No processing for undefined node types."""
@@ -57,10 +58,13 @@ class PEPZeroSpecial(nodes.SparseNodeVisitor):
 
     def visit_row(self, _node: nodes.row) -> None:
         self.entry = 0  # reset column number
+        self.ref = None  # Reset PEP URL
 
     def visit_entry(self, node: nodes.entry) -> None:
         self.entry += 1
-        if self.pep_table and self.entry == 2 and len(node) == 1:
+        if not self.pep_table:
+            return
+        if self.entry == 2 and len(node) == 1:
             node["classes"].append("num")
             # if this is the PEP number column, replace the number with a link to the PEP
             para = node[0]
@@ -70,11 +74,17 @@ class PEPZeroSpecial(nodes.SparseNodeVisitor):
                     pep_num = int(pep_str)
                 except ValueError:
                     return
-                ref = self.document.settings.pep_url.format(pep_num)
-                para[0] = nodes.reference("", pep_str, refuri=ref)
+                self.ref = self.document.settings.pep_url.format(pep_num)
+                para[0] = nodes.reference("", pep_str, refuri=self.ref)
+        elif self.entry == 3 and len(node) == 1 and self.ref:
+            # If this is the PEP title column, add a link to the PEP
+            para = node[0]
+            if isinstance(para, nodes.paragraph) and len(para) == 1:
+                pep_title = para.astext()
+                para[0] = nodes.reference("", pep_title, refuri=self.ref)
 
 
-def _mask_email(ref: nodes.reference, pep_num: int | None = None) -> nodes.reference:
+def _mask_email(ref: nodes.reference) -> nodes.reference:
     """Mask the email address in `ref` and return a replacement node.
 
     `ref` is returned unchanged if it contains no email address.
@@ -82,15 +92,9 @@ def _mask_email(ref: nodes.reference, pep_num: int | None = None) -> nodes.refer
     If given an email not explicitly whitelisted, process it such that
     `user@host` -> `user at host`.
 
-    If given a PEP number `pep_num`, add a default email subject.
+    The returned node has no refuri link attribute.
 
     """
-    if "refuri" not in ref or not ref["refuri"].startswith("mailto:"):
+    if not ref.get("refuri", "").startswith("mailto:"):
         return ref
-    non_masked_addresses = {"peps@python.org", "python-list@python.org", "python-dev@python.org"}
-    if ref["refuri"].removeprefix("mailto:").strip() not in non_masked_addresses:
-        ref[0] = nodes.raw("", ref[0].replace("@", "&#32;&#97;t&#32;"), format="html")
-    if pep_num is None:
-        return ref[0]  # return email text without mailto link
-    ref["refuri"] += f"?subject=PEP%20{pep_num}"
-    return ref
+    return nodes.raw("", ref[0].replace("@", "&#32;&#97;t&#32;"), format="html")
