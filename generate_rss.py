@@ -167,7 +167,7 @@ def main():
             joined_authors = ", ".join(f"{name} ({email_address})" for name, email_address in parsed_authors)
         else:
             joined_authors = author
-        url = f"https://peps.python.org/pep-{pep_num:0>4}"
+        url = f"https://peps.python.org/pep-{pep_num:0>4}/"
 
         item = entry.FeedEntry()
         item.title(f"PEP {pep_num}: {title}")
