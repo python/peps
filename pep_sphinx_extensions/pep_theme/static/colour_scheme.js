@@ -3,21 +3,24 @@ const pygmentsNormal = document.getElementById("pyg");
 const pygmentsDark = document.getElementById("pyg-dark");
 
 const makeLight = () => {
-    dark.media = pygmentsNormal.media = pygmentsDark.media = ""
     dark.disabled = pygmentsDark.disabled = true
+    dark.media = pygmentsNormal.media = pygmentsDark.media = ""
     pygmentsNormal.disabled = false
 
 }
 
 const makeDark = () => {
-    dark.media = pygmentsNormal.media = pygmentsDark.media = ""
     dark.disabled = pygmentsDark.disabled = false
+    dark.media = pygmentsNormal.media = pygmentsDark.media = ""
     pygmentsNormal.disabled = true
 }
 
 
 const toggleColourScheme = () => {
-    if (localStorage.getItem("colour_scheme") === "dark") {
+    const colourScheme = localStorage.getItem("colour_scheme")
+    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches
+
+    if ((colourScheme === "dark") || (!colourScheme && prefersDark)) {
         makeLight()
         localStorage.setItem("colour_scheme", "light")
     } else {
