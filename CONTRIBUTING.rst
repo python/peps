@@ -18,12 +18,39 @@ first in an appropriate venue, drafting a PEP and gathering feedback, and
 developing at least a prototype reference implementation of your idea.
 
 
+Contributing changes to existing PEPs
+-------------------------------------
+
+In general, most non-Draft/Active PEPs are considered to be historical
+documents rather than living specifications or documentation. Major changes to
+their core content usually require a new PEP, while smaller modifications may
+or may not be appropriate, depending on the PEP's status. See `PEP Maintenance
+<https://peps.python.org/pep-0001/#pep-maintenance>`_
+and `Changing Existing PEPs
+<https://peps.python.org/pep-0001/#changing-existing-peps>`_ in PEP 1 for more.
+
+Copyediting and proofreading Draft and Active PEPs is welcome (subject to
+review by the PEP author), and can be done via pull request to this repo.
+Substantive content changes should first be proposed on PEP discussion threads.
+We do advise against PRs that simply mass-correct minor typos on older PEPs
+which don't significantly impair meaning and understanding.
+
+If you're still unsure, we encourage you to reach out first before opening a
+PR here. For example, you could contact the PEP author(s), propose your idea in
+a discussion venue appropriate to the PEP (such as `Typing-SIG
+<https://mail.python.org/archives/list/typing-sig@python.org/>`__ for static
+typing, or `Packaging Discourse <https://discuss.python.org/c/packaging/>`__
+for packaging), or `open an issue <https://github.com/python/peps/issues>`__.
+
+
 Commit messages and PR titles
 -----------------------------
 
-When adding or modifying a PEP, please always include the PEP number in the
-commit summary and pull request title.
-For example, ``PEP NNN: <summary of changes>``.
+When adding or modifying a PEP, please include the PEP number in the commit
+summary and pull request title. For example, ``PEP NNN: <summary of changes>``.
+Likewise, prefix rendering infrastructure changes with ``Infra:``, linting
+alterations with ``Lint:`` and other non-PEP meta changes, such as updates to
+the Readme/Contributing Guide, issue/PR template, etc., with ``Meta:``.
 
 
 Sign the CLA
@@ -122,11 +149,3 @@ or against all files with
 .. code-block:: bash
 
     pre-commit run --all-files --hook-stage manual codespell
-
-**Note**: While fixing spelling mistakes as part of more substantive
-copyediting and proofreading of draft and active PEPs is okay,
-we generally advise against PRs that simply mass-correct minor typos on
-older PEPs that don't significantly impair meaning and understanding,
-as these tend to create a fairly high level of noise and churn for
-PEP readers, authors and editors relative to the amount of practical value
-they provide.
