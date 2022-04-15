@@ -65,6 +65,19 @@ Render PEPs locally
 
 Several additional tools can be run through ``build.py``, or the Makefile.
 
+Note that before using ``build.py`` you must activate the virtual environment
+created earlier:
+
+.. code-block:: shell
+
+   source .venv/bin/activate
+
+Or on Windows:
+
+.. code-block:: ps1con
+
+   PS> .\.venv\Scripts\activate
+
 
 Check links
 '''''''''''
@@ -72,10 +85,10 @@ Check links
 Check the validity of links within PEP sources (runs the `Sphinx linkchecker
 <https://www.sphinx-doc.org/en/master/usage/builders/index.html#sphinx.builders.linkcheck.CheckExternalLinksBuilder>`__).
 
-.. code-block:: console
+.. code-block:: shell
 
-    (venv) $ python build.py --check-links
-    (venv) $ make check-links
+    python build.py --check-links
+    make check-links
 
 
 Stricter rendering
@@ -85,17 +98,17 @@ Run in `nit-picky <https://www.sphinx-doc.org/en/master/usage/configuration.html
 mode.
 This generates warnings for all missing references.
 
-.. code-block:: console
+.. code-block:: shell
 
-    (venv) $ python build.py --nitpicky
+    python build.py --nitpicky
 
 Fail the build on any warning.
 As of January 2022, there are around 250 warnings when building the PEPs.
 
-.. code-block:: console
+.. code-block:: shell
 
-    (venv) $ python build.py --fail-on-warning
-    (venv) $ make fail-warning
+    python build.py --fail-on-warning
+    make fail-warning
 
 
 ``build.py`` usage
@@ -103,6 +116,6 @@ As of January 2022, there are around 250 warnings when building the PEPs.
 
 For details on the command-line options to the ``build.py`` script, run:
 
-.. code-block:: console
+.. code-block:: shell
 
-    (venv) $ python build.py --help
+    python build.py --help
