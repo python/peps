@@ -21,7 +21,7 @@ resource "fastly_service_vcl" "peps" {
     action        = "set"
     destination   = "http.Strict-Transport-Security"
     ignore_if_set = false
-    source        = "\"max-age=300\""
+    source        = "\"max-age=31536000; includeSubDomains; preload\""
   }
 
   request_setting {
