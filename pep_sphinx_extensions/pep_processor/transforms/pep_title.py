@@ -22,13 +22,19 @@ class PEPTitle(transforms.Transform):
         pep_header_details = {}
 
         # Iterate through the header fields, which are the first section of the document
+        desired_fields = {"PEP", "Title"}
+        fields_to_remove = []
         for field in self.document[0]:
             # Hold details of the attribute's tag against its details
             row_attributes = {sub.tagname: sub.rawsource for sub in field}
             pep_header_details[row_attributes["field_name"]] = row_attributes["field_body"]
 
+            # Store the redundant fields in the table for removal
+            if row_attributes["field_name"] in desired_fields:
+                fields_to_remove.append(field)
+
             # We only need the PEP number and title
-            if pep_header_details.keys() >= {"PEP", "Title"}:
+            if pep_header_details.keys() >= desired_fields:
                 break
 
         # Create the title string for the PEP
@@ -45,6 +51,10 @@ class PEPTitle(transforms.Transform):
         self.document.children = [pep_title_node]
         pep_title_node.extend(document_children)
         self.document.note_implicit_target(pep_title_node, pep_title_node)
+
+        # Remove the now-redundant fields
+        for field in fields_to_remove:
+            field.parent.remove(field)
 
 
 def _line_to_nodes(text: str) -> list[nodes.Node]:
