@@ -10,38 +10,40 @@ This can also be used to check that the PEP is valid reStructuredText before
 submission to the PEP editors.
 
 The rest of this document assumes you are working from a local clone of the
-`PEPs repository <https://github.com/python/peps>`__, with Python 3.9 or later
-installed.
+`PEPs repository <https://github.com/python/peps>`__, with 
+**Python 3.9 or later** installed.
 
 
 Render PEPs locally
 -------------------
 
-1. Create a virtual environment and install requirements.
+1. Create a virtual environment and install requirements:
 
-   The rest of these instructions assume an active virtual environment named
-   ``venv``.
-   The Python Packaging User Guide contains
-   `instructions on creating a virtual environment <https://packaging.python.org/en/latest/guides/installing-using-pip-and-virtual-environments/#creating-a-virtual-environment>`__
-   for reference.
+   .. code-block:: shell
 
-   .. code-block:: console
+      make venv
 
-      (venv) $ python -m pip install --upgrade pip
-      (venv) $ python -m pip install -r requirements.txt
+   If you don't have access to ``make``, run:
+
+   .. code-block:: ps1con
+
+      PS> python -m venv .venv
+      PS> .\.venv\Scripts\activate
+      (venv) PS> python -m pip install --upgrade pip
+      (venv) PS> python -m pip install -r requirements.txt
 
 2. **(Optional)** Delete prior build files.
    Generally only needed when making changes to the rendering system itself.
 
-   .. code-block:: console
+   .. code-block:: shell
 
-      $ rm -rf build
+      rm -rf build
 
 3. Run the build script:
 
-   .. code-block:: console
+   .. code-block:: shell
 
-      (venv) $ make render
+      make render
 
    If you don't have access to ``make``, run:
 
@@ -63,6 +65,19 @@ Render PEPs locally
 
 Several additional tools can be run through ``build.py``, or the Makefile.
 
+Note that before using ``build.py`` you must activate the virtual environment
+created earlier:
+
+.. code-block:: shell
+
+   source .venv/bin/activate
+
+Or on Windows:
+
+.. code-block:: ps1con
+
+   PS> .\.venv\Scripts\activate
+
 
 Check links
 '''''''''''
@@ -70,10 +85,10 @@ Check links
 Check the validity of links within PEP sources (runs the `Sphinx linkchecker
 <https://www.sphinx-doc.org/en/master/usage/builders/index.html#sphinx.builders.linkcheck.CheckExternalLinksBuilder>`__).
 
-.. code-block:: console
+.. code-block:: shell
 
-    (venv) $ python build.py --check-links
-    (venv) $ make check-links
+    python build.py --check-links
+    make check-links
 
 
 Stricter rendering
@@ -83,17 +98,17 @@ Run in `nit-picky <https://www.sphinx-doc.org/en/master/usage/configuration.html
 mode.
 This generates warnings for all missing references.
 
-.. code-block:: console
+.. code-block:: shell
 
-    (venv) $ python build.py --nitpicky
+    python build.py --nitpicky
 
 Fail the build on any warning.
 As of January 2022, there are around 250 warnings when building the PEPs.
 
-.. code-block:: console
+.. code-block:: shell
 
-    (venv) $ python build.py --fail-on-warning
-    (venv) $ make fail-warning
+    python build.py --fail-on-warning
+    make fail-warning
 
 
 ``build.py`` usage
@@ -101,6 +116,6 @@ As of January 2022, there are around 250 warnings when building the PEPs.
 
 For details on the command-line options to the ``build.py`` script, run:
 
-.. code-block:: console
+.. code-block:: shell
 
-    (venv) $ python build.py --help
+    python build.py --help
