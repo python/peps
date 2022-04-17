@@ -102,6 +102,14 @@ class PEPHeaders(transforms.Transform):
                 # Mark unneeded fields
                 fields_to_remove.append(field)
 
+            # Remove any trailing commas and whitespace in the headers
+            if para and isinstance(para[-1], nodes.Text):
+                last_node = para[-1]
+                if last_node.astext().strip() == ",":
+                    last_node.parent.remove(last_node)
+                else:
+                    para[-1] = last_node.rstrip().rstrip(",")
+
         # Remove unneeded fields
         for field in fields_to_remove:
             field.parent.remove(field)
