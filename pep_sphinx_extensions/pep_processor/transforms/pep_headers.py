@@ -74,14 +74,23 @@ class PEPHeaders(transforms.Transform):
                     if not isinstance(node, nodes.reference):
                         continue
                     node.replace_self(_mask_email(node))
-            elif name in {"discussions-to", "resolution"}:
-                # only handle threads, email addresses in Discussions-To aren't
-                # masked.
+            elif name in {"discussions-to", "resolution", "post-history"}:
+                # Prettify mailing list and Discourse links
                 for node in para:
-                    if not isinstance(node, nodes.reference):
+                    if (not isinstance(node, nodes.reference)
+                            or not node["refuri"]):
                         continue
-                    if node["refuri"].startswith("https://mail.python.org"):
-                        node[0] = _pretty_thread(node[0])
+                    # Have known mailto links link to their main list pages
+                    if node["refuri"].lower().startswith("mailto:"):
+                        node["refuri"] = _generate_list_url(node["refuri"])
+                    parts = node["refuri"].lower().split("/")
+                    if len(parts) <= 2 or parts[2] not in LINK_PRETTIFIERS:
+                        continue
+                    pretty_title = _make_link_pretty(str(node["refuri"]))
+                    if name == "post-history":
+                        node["reftitle"] = pretty_title
+                    else:
+                        node[0] = nodes.Text(pretty_title)
             elif name in {"replaces", "superseded-by", "requires"}:
                 # replace PEP numbers with normalised list of links to PEPs
                 new_body = []
@@ -93,25 +102,113 @@ class PEPHeaders(transforms.Transform):
                 # Mark unneeded fields
                 fields_to_remove.append(field)
 
+            # Remove any trailing commas and whitespace in the headers
+            if para and isinstance(para[-1], nodes.Text):
+                last_node = para[-1]
+                if last_node.astext().strip() == ",":
+                    last_node.parent.remove(last_node)
+                else:
+                    para[-1] = last_node.rstrip().rstrip(",")
+
         # Remove unneeded fields
         for field in fields_to_remove:
             field.parent.remove(field)
 
 
-def _pretty_thread(text: nodes.Text) -> nodes.Text:
-    parts = text.title().replace("Sig", "SIG").split("/")
+def _generate_list_url(mailto: str) -> str:
+    list_name_domain = mailto.lower().removeprefix("mailto:").strip()
+    list_name = list_name_domain.split("@")[0]
 
-    # mailman structure is
-    # https://mail.python.org/archives/list/<list name>/thread/<id>
-    try:
-        return nodes.Text(parts[parts.index("Archives") + 2].removesuffix("@Python.Org"))
-    except ValueError:
-        pass
+    if list_name_domain.endswith("@googlegroups.com"):
+        return f"https://groups.google.com/g/{list_name}"
 
-    # pipermail structure is
-    # https://mail.python.org/pipermail/<list name>/<month-year>/<id>
+    if not list_name_domain.endswith("@python.org"):
+        return mailto
+
+    # Active lists not yet on Mailman3; this URL will redirect if/when they are
+    if list_name in {"csv", "db-sig", "doc-sig", "python-list", "web-sig"}:
+        return f"https://mail.python.org/mailman/listinfo/{list_name}"
+    # Retired lists that are closed for posting, so only the archive matters
+    if list_name in {"import-sig", "python-3000"}:
+        return f"https://mail.python.org/pipermail/{list_name}/"
+    # The remaining lists (and any new ones) are all on Mailman3/Hyperkitty
+    return f"https://mail.python.org/archives/list/{list_name}@python.org/"
+
+
+def _process_list_url(parts: list[str]) -> tuple[str, str]:
+    item_type = "list"
+
+    # HyperKitty (Mailman3) archive structure is
+    # https://mail.python.org/archives/list/<list_name>/thread/<id>
+    if "archives" in parts:
+        list_name = (
+            parts[parts.index("archives") + 2].removesuffix("@python.org"))
+        if len(parts) > 6 and parts[6] in {"message", "thread"}:
+            item_type = parts[6]
+
+    # Mailman3 list info structure is
+    # https://mail.python.org/mailman3/lists/<list_name>.python.org/
+    elif "mailman3" in parts:
+        list_name = (
+            parts[parts.index("mailman3") + 2].removesuffix(".python.org"))
+
+    # Pipermail (Mailman) archive structure is
+    # https://mail.python.org/pipermail/<list_name>/<month>-<year>/<id>
+    elif "pipermail" in parts:
+        list_name = parts[parts.index("pipermail") + 1]
+        item_type = "message" if len(parts) > 6 else "list"
+
+    # Mailman listinfo structure is
+    # https://mail.python.org/mailman/listinfo/<list_name>
+    elif "listinfo" in parts:
+        list_name = parts[parts.index("listinfo") + 1]
+
+    # Not a link to a mailing list, message or thread
+    else:
+        raise ValueError(
+            f"{'/'.join(parts)} not a link to a list, message or thread")
+
+    return list_name, item_type
+
+
+def _process_discourse_url(parts: list[str]) -> tuple[str, str]:
+    item_name = "discourse"
+
+    if len(parts) < 5 or ("t" not in parts and "c" not in parts):
+        raise ValueError(
+            f"{'/'.join(parts)} not a link to a Discourse thread or category")
+
+    first_subpart = parts[4]
+    has_title = not first_subpart.isnumeric()
+
+    if "t" in parts:
+        item_type = "post" if len(parts) > (5 + has_title) else "thread"
+    elif "c" in parts:
+        item_type = "category"
+        if has_title:
+            item_name = f"{first_subpart.replace('-', ' ')} {item_name}"
+
+    return item_name, item_type
+
+
+# Domains supported for pretty URL parsing
+LINK_PRETTIFIERS = {
+    "mail.python.org": _process_list_url,
+    "discuss.python.org": _process_discourse_url,
+}
+
+
+def _process_pretty_url(url: str) -> tuple[str, str]:
+    parts = url.lower().strip().strip("/").split("/")
     try:
-        return nodes.Text(parts[parts.index("Pipermail") + 1])
-    except ValueError:
-        # archives and pipermail not in list, e.g. PEP 245
-        return text
+        item_name, item_type = LINK_PRETTIFIERS[parts[2]](parts)
+    except KeyError as error:
+        raise ValueError(
+            "{url} not a link to a recognized domain to prettify") from error
+    item_name = item_name.title().replace("Sig", "SIG")
+    return item_name, item_type
+
+
+def _make_link_pretty(url: str) -> str:
+    item_name, item_type = _process_pretty_url(url)
+    return f"{item_name} {item_type}"
