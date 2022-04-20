@@ -41,6 +41,9 @@ lint: venv
 	$(VENVDIR)/bin/python3 -m pre_commit --version > /dev/null || $(VENVDIR)/bin/python3 -m pip install pre-commit
 	$(VENVDIR)/bin/python3 -m pre_commit run --all-files
 
+test: venv
+	$(VENVDIR)/bin/python3 -m pytest --cov pep_sphinx_extensions --cov-report html --cov-report term --cov-report xml
+
 spellcheck: venv
 	$(VENVDIR)/bin/python3 -m pre_commit --version > /dev/null || $(VENVDIR)/bin/python3 -m pip install pre-commit
 	$(VENVDIR)/bin/python3 -m pre_commit run --all-files --hook-stage manual codespell
