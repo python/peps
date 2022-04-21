@@ -35,4 +35,5 @@ def test_get_last_modified_timestamps():
     out = pep_footer._get_last_modified_timestamps()
 
     assert len(out) >= 585
+    # Should be a Unix timestamp and at least this
     assert out["pep-0008.txt"] >= 1643124055
