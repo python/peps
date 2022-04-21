@@ -49,6 +49,13 @@ from pep_sphinx_extensions.tests.utils import AUTHORS_OVERRIDES
                 last_first="Last, First, Jr.", nick="Last", email="first@example.com"
             ),
         ),
+        pytest.param(
+            ("First Last", "first at example.com"),
+            author.Author(
+                last_first="Last, First", nick="Last", email="first@example.com"
+            ),
+            marks=pytest.mark.xfail,
+        ),
     ],
 )
 def test_parse_author_email(test_input, expected):
