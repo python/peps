@@ -58,6 +58,15 @@ def test_pep_details(test_input, expected):
             "First Last",
             [Author(last_first="Last, First", nick="Last", email="")],
         ),
+        (
+            "user@example.com (First Last)",
+            [Author(last_first="Last, First", nick="Last", email="user@example.com")],
+        ),
+        pytest.param(
+            "First Last <user at example.com>",
+            [Author(last_first="Last, First", nick="Last", email="user@example.com")],
+            marks=pytest.mark.xfail,
+        ),
     ],
 )
 def test_parse_authors(test_input, expected):
