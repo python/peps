@@ -11,7 +11,7 @@ from pep_sphinx_extensions.tests.utils import AUTHORS_OVERRIDES
 def test_pep_repr():
     pep8 = parser.PEP(Path("pep-0008.txt"), AUTHORS_OVERRIDES)
 
-    assert (repr(pep8)) == "<PEP 0008 - Style Guide for Python Code>"
+    assert repr(pep8) == "<PEP 0008 - Style Guide for Python Code>"
 
 
 def test_pep_less_than():
