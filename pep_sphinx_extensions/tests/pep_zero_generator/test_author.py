@@ -38,14 +38,6 @@ from pep_sphinx_extensions.tests.utils import AUTHORS_OVERRIDES
             ),
         ),
         (
-            ("Bob v. Smith", "bob@example.com"),
-            author.Author(
-                last_first="\\v. Smith, Bob",
-                nick="\\v. Smith",
-                email="bob@example.com",
-            ),
-        ),
-        (
             ("Mariatta", "mariatta@example.com"),
             author.Author(
                 last_first="Mariatta", nick="Mariatta", email="mariatta@example.com"
