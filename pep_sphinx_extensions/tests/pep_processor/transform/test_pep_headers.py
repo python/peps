@@ -47,7 +47,7 @@ def test_generate_list_url(test_input, expected):
         ),
         (
             "https://discuss.python.org/c/peps/",
-            ("Peps Discourse", "category"),
+            ("PEPs Discourse", "category"),
         ),
     ],
 )
@@ -104,7 +104,7 @@ def test_process_pretty_url_invalid(test_input, expected):
         ),
         (
             "https://discuss.python.org/c/peps/",
-            "Peps Discourse category",
+            "PEPs Discourse category",
         ),
     ],
 )
