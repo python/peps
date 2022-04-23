@@ -6,12 +6,7 @@ from pep_sphinx_extensions.pep_processor.transforms import pep_footer
 def test_add_source_link():
     out = pep_footer._add_source_link(Path("pep-0008.txt"))
 
-    assert (
-        str(out) == "<paragraph>Source: "
-        '<reference refuri="https://github.com/python/peps/blob/main/pep-0008.txt">'
-        "https://github.com/python/peps/blob/main/pep-0008.txt</reference>"
-        "</paragraph>"
-    )
+    assert "https://github.com/python/peps/blob/main/pep-0008.txt" in str(out)
 
 
 def test_add_commit_history_info():
