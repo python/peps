@@ -42,7 +42,7 @@ lint: venv
 	$(VENVDIR)/bin/python3 -m pre_commit run --all-files
 
 test: venv
-	$(VENVDIR)/bin/python3 -m pytest --cov pep_sphinx_extensions --cov-report html --cov-report term --cov-report xml
+	$(VENVDIR)/bin/python3 -bb -X dev -W error -m pytest
 
 spellcheck: venv
 	$(VENVDIR)/bin/python3 -m pre_commit --version > /dev/null || $(VENVDIR)/bin/python3 -m pip install pre-commit
