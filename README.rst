@@ -23,6 +23,17 @@ Please don't commit changes with reStructuredText syntax errors that cause PEP
 generation to fail, or result in major rendering defects relative to what you
 intend.
 
+ReadTheDocs preview
+-------------------
+
+For every PR, we automatically create a preview of the rendered PEPs using
+ReadTheDocs. You can find it in the branch action box at the bottom of the
+PR page:
+
+- Click "Show all checks" to expand the box
+- Find the line for ``docs/readthedocs.org:pep-previews``
+- Click on "Details" to the right
+
 
 Render PEPs locally
 -------------------
