@@ -1,6 +1,3 @@
-const pygmentsLight = document.getElementById("pyg-light")
-const pygmentsDark = document.getElementById("pyg-dark")
-
 const prefersDark = window.matchMedia("(prefers-color-scheme: dark)")
 
 const getColourScheme = () => document.documentElement.dataset.colour_scheme
@@ -23,6 +20,8 @@ const nextColourScheme = (colourScheme = getColourScheme()) => {
 }
 
 const setPygments = (colourScheme = getColourScheme()) => {
+    const pygmentsDark = document.getElementById("pyg-dark")
+    const pygmentsLight = document.getElementById("pyg-light")
     pygmentsDark.disabled = colourScheme === "light"
     pygmentsLight.disabled = colourScheme === "dark"
     pygmentsDark.media = colourScheme === "auto" ? "(prefers-color-scheme: dark)" : ""
