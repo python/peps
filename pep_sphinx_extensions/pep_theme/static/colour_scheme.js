@@ -1,72 +1,41 @@
 const pygmentsLight = document.getElementById("pyg-light")
 const pygmentsDark = document.getElementById("pyg-dark")
 
-const makeLight = () => {
-    document.documentElement.dataset.colour_scheme = "light"
-    pygmentsDark.disabled = true
-    pygmentsLight.media = pygmentsDark.media = ""
-    pygmentsLight.disabled = false
-    localStorage.setItem("colour_scheme", "light")
+const prefersDark = window.matchMedia("(prefers-color-scheme: dark)")
+
+const getColourScheme = () => document.documentElement.dataset.colour_scheme
+const setColourScheme = (colourScheme = getColourScheme()) => {
+    document.documentElement.dataset.colour_scheme = colourScheme
+    setPygments(colourScheme)
+    setTooltip(nextColourScheme(colourScheme))
+    localStorage.setItem("colour_scheme", colourScheme)
 }
 
-const makeDark = () => {
-    document.documentElement.dataset.colour_scheme = "dark"
-    pygmentsDark.disabled = false
-    pygmentsLight.media = pygmentsDark.media = ""
-    pygmentsLight.disabled = true
-    localStorage.setItem("colour_scheme", "dark")
+// Map system theme to a cycle of steps
+const cycles = {
+    dark: ["auto", "light", "dark"], // auto (dark) → light → dark
+    light: ["auto", "dark", "light"], // auto (light) → dark → light
 }
 
-const makeAuto = () => {
-    document.documentElement.dataset.colour_scheme = "auto"
-    pygmentsLight.media = "(prefers-color-scheme: light)"
-    pygmentsDark.media = "(prefers-color-scheme: dark)"
-    pygmentsLight.disabled = false
-    pygmentsDark.disabled = false
-    localStorage.setItem("colour_scheme", "auto")
+const nextColourScheme = (colourScheme = getColourScheme()) => {
+    const cycle = cycles[prefersDark.matches ? "dark" : "light"]
+    return cycle[(cycle.indexOf(colourScheme) + 1) % 3]
 }
 
-const cycleColourScheme = () => {
-    const colourScheme = document.documentElement.dataset.colour_scheme
-    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches
-
-    if (prefersDark) { // auto (dark) → light → dark
-        if (colourScheme === "auto") {
-            makeLight()
-            setNextButton("dark")
-        } else if (colourScheme === "light") {
-            makeDark()
-            setNextButton("auto")
-        } else {
-            makeAuto()
-            setNextButton("light")
-        }
-    } else { // auto (light) → dark → light
-        if (colourScheme === "auto") {
-            makeDark()
-            setNextButton("light")
-        } else if (colourScheme === "dark") {
-            makeLight()
-            setNextButton("auto")
-        } else {
-            makeAuto()
-            setNextButton("dark")
-        }
-    }
+const setPygments = (colourScheme = getColourScheme()) => {
+    pygmentsDark.disabled = colourScheme === "light"
+    pygmentsLight.disabled = colourScheme === "dark"
+    pygmentsDark.media = colourScheme === "auto" ? "(prefers-color-scheme: dark)" : ""
+    pygmentsLight.media = colourScheme === "auto" ? "(prefers-color-scheme: light)" : ""
 }
 
-const setNextButton = (nextTheme) => {
-    const label = nextTheme === "auto" ? 'Adapt to system theme' : `Switch to ${nextTheme} mode`
+const setTooltip = (schemeOnClick = nextColourScheme()) => {
+    const label = schemeOnClick === "auto" ? "Adapt to system theme" : `Switch to ${schemeOnClick} mode`
     const button = document.getElementById("colour-scheme-cycler")
     button.setAttribute( "aria-label", label)
     button.setAttribute( "title", label)
 }
 
-/* set colour scheme from local storage */
-document.addEventListener("DOMContentLoaded", () => {
-    if (window.matchMedia("(prefers-color-scheme: dark)").matches) {
-        setNextButton("light")
-    } else {
-        setNextButton("dark")
-    }
-})
+// (Re)set tooltip and pygments state (page theme is set inline in page.html)
+document.addEventListener("DOMContentLoaded", () => setColourScheme())
+prefersDark.addEventListener("change", () => setColourScheme())
