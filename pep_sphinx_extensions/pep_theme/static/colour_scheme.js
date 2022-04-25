@@ -36,6 +36,6 @@ const setTooltip = (schemeOnClick = nextColourScheme()) => {
     button.setAttribute( "title", label)
 }
 
-// (Re)set tooltip and pygments state (page theme is set inline in page.html)
+// Initialize/update both tooltip and pygments state (page theme is initialized inline in page.html)
 document.addEventListener("DOMContentLoaded", () => setColourScheme())
 prefersDark.addEventListener("change", () => setColourScheme())
