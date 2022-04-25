@@ -91,7 +91,7 @@ class PEPTranslator(html5.HTML5Translator):
 
     def visit_bullet_list(self, node):
         if isinstance(node.parent, nodes.section) and "contents" in node.parent["names"]:
-            self.body.append("<details><summary>Contents</summary>")
+            self.body.append("<details><summary>Table of Contents</summary>")
             self.context.append("</details>")
         super().visit_bullet_list(node)
 
