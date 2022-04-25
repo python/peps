@@ -19,7 +19,7 @@ const cycles = {
 
 const nextColourScheme = (colourScheme = getColourScheme()) => {
     const cycle = cycles[prefersDark.matches ? "dark" : "light"]
-    return cycle[(cycle.indexOf(colourScheme) + 1) % 3]
+    return cycle[(cycle.indexOf(colourScheme) + 1) % cycle.length]
 }
 
 const setPygments = (colourScheme = getColourScheme()) => {
