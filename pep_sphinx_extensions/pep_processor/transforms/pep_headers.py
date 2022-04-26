@@ -204,8 +204,8 @@ def _process_pretty_url(url: str) -> tuple[str, str]:
         item_name, item_type = LINK_PRETTIFIERS[parts[2]](parts)
     except KeyError as error:
         raise ValueError(
-            "{url} not a link to a recognized domain to prettify") from error
-    item_name = item_name.title().replace("Sig", "SIG")
+            f"{url} not a link to a recognized domain to prettify") from error
+    item_name = item_name.title().replace("Sig", "SIG").replace("Pep", "PEP")
     return item_name, item_type
 
 
