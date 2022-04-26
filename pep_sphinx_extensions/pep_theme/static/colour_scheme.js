@@ -31,8 +31,8 @@ const setPygments = (colourScheme = getColourScheme()) => {
 const setTooltip = (schemeOnClick = nextColourScheme()) => {
     const label = schemeOnClick === "auto" ? "Adapt to system theme" : `Switch to ${schemeOnClick} mode`
     const button = document.getElementById("colour-scheme-cycler")
-    button.setAttribute( "aria-label", label)
-    button.setAttribute( "title", label)
+    button.setAttribute("aria-label", label)
+    button.setAttribute("title", label)
 }
 
 // Initialize/update both tooltip and pygments state (page theme is initialized inline in page.html)
