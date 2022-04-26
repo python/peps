@@ -4,7 +4,7 @@ const getColourScheme = () => document.documentElement.dataset.colour_scheme
 const setColourScheme = (colourScheme = getColourScheme()) => {
     document.documentElement.dataset.colour_scheme = colourScheme
     setPygments(colourScheme)
-    setTooltip(nextColourScheme(colourScheme))
+    setTooltip(colourScheme)
     localStorage.setItem("colour_scheme", colourScheme)
 }
 
@@ -28,8 +28,12 @@ const setPygments = (colourScheme = getColourScheme()) => {
     pygmentsLight.media = colourScheme === "auto" ? "(prefers-color-scheme: light)" : ""
 }
 
-const setTooltip = (schemeOnClick = nextColourScheme()) => {
-    const label = schemeOnClick === "auto" ? "Adapt to system theme" : `Switch to ${schemeOnClick} mode`
+const setTooltip = (colourScheme = getColourScheme()) => {
+    const schemeOnClick = nextColourScheme(colourScheme)
+    const currentLabel = colourScheme === "auto" ? 'Following system colour scheme' : `Selected ${colourScheme} mode`
+    const actionLabel = schemeOnClick === "auto" ? "adapt to system colour scheme" : `switch to ${schemeOnClick} mode`
+    const label = `${currentLabel}.\nClick to ${actionLabel}.`
+
     const button = document.getElementById("colour-scheme-cycler")
     button.setAttribute("aria-label", label)
     button.setAttribute("title", label)
