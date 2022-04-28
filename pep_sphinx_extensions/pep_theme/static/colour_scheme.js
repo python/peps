@@ -1,36 +1,31 @@
-const dark = document.getElementById("css-dark");
-const pygmentsNormal = document.getElementById("pyg");
-const pygmentsDark = document.getElementById("pyg-dark");
+const prefersDark = window.matchMedia("(prefers-color-scheme: dark)")
 
-const makeLight = () => {
-    dark.disabled = pygmentsDark.disabled = true
-    dark.media = pygmentsNormal.media = pygmentsDark.media = ""
-    pygmentsNormal.disabled = false
-
+const getColourScheme = () => document.documentElement.dataset.colour_scheme
+const setColourScheme = (colourScheme = getColourScheme()) => {
+    document.documentElement.dataset.colour_scheme = colourScheme
+    localStorage.setItem("colour_scheme", colourScheme)
+    setPygments(colourScheme)
 }
 
-const makeDark = () => {
-    dark.disabled = pygmentsDark.disabled = false
-    dark.media = pygmentsNormal.media = pygmentsDark.media = ""
-    pygmentsNormal.disabled = true
+// Map system theme to a cycle of steps
+const cycles = {
+    dark: ["auto", "light", "dark"], // auto (dark) → light → dark
+    light: ["auto", "dark", "light"], // auto (light) → dark → light
 }
 
-
-const toggleColourScheme = () => {
-    const colourScheme = localStorage.getItem("colour_scheme")
-    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches
-
-    if ((colourScheme === "dark") || (!colourScheme && prefersDark)) {
-        makeLight()
-        localStorage.setItem("colour_scheme", "light")
-    } else {
-        makeDark()
-        localStorage.setItem("colour_scheme", "dark")
-    }
+const nextColourScheme = (colourScheme = getColourScheme()) => {
+    const cycle = cycles[prefersDark.matches ? "dark" : "light"]
+    return cycle[(cycle.indexOf(colourScheme) + 1) % cycle.length]
 }
 
-/* set colour scheme from local storage */
-document.addEventListener("DOMContentLoaded", () => {
-    if (localStorage.getItem("colour_scheme") === "light") makeLight()
-    if (localStorage.getItem("colour_scheme") === "dark") makeDark()
-})
+const setPygments = (colourScheme = getColourScheme()) => {
+    const pygmentsDark = document.getElementById("pyg-dark")
+    const pygmentsLight = document.getElementById("pyg-light")
+    pygmentsDark.disabled = colourScheme === "light"
+    pygmentsLight.disabled = colourScheme === "dark"
+    pygmentsDark.media = colourScheme === "auto" ? "(prefers-color-scheme: dark)" : ""
+    pygmentsLight.media = colourScheme === "auto" ? "(prefers-color-scheme: light)" : ""
+}
+
+// Update Pygments state (the page theme is initialised inline, see page.html)
+document.addEventListener("DOMContentLoaded", () => setColourScheme())
