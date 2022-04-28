@@ -3,9 +3,8 @@ const prefersDark = window.matchMedia("(prefers-color-scheme: dark)")
 const getColourScheme = () => document.documentElement.dataset.colour_scheme
 const setColourScheme = (colourScheme = getColourScheme()) => {
     document.documentElement.dataset.colour_scheme = colourScheme
-    setPygments(colourScheme)
-    setTooltip(colourScheme)
     localStorage.setItem("colour_scheme", colourScheme)
+    setPygments(colourScheme)
 }
 
 // Map system theme to a cycle of steps
@@ -28,17 +27,5 @@ const setPygments = (colourScheme = getColourScheme()) => {
     pygmentsLight.media = colourScheme === "auto" ? "(prefers-color-scheme: light)" : ""
 }
 
-const setTooltip = (colourScheme = getColourScheme()) => {
-    const schemeOnClick = nextColourScheme(colourScheme)
-    const currentLabel = colourScheme === "auto" ? 'Following system colour scheme' : `Selected ${colourScheme} mode`
-    const actionLabel = schemeOnClick === "auto" ? "adapt to system colour scheme" : `switch to ${schemeOnClick} mode`
-    const label = `${currentLabel}.\nClick to ${actionLabel}.`
-
-    const button = document.getElementById("colour-scheme-cycler")
-    button.setAttribute("aria-label", label)
-    button.setAttribute("title", label)
-}
-
-// Update tooltip and Pygments state (see page.html; the page theme is initialised inline)
+// Initialize/update both tooltip and pygments state (page theme is initialized inline in page.html)
 document.addEventListener("DOMContentLoaded", () => setColourScheme())
-prefersDark.addEventListener("change", () => setColourScheme())
