@@ -85,5 +85,8 @@ Footnotes
 Copyright
 =========
 
+.. Do not edit this section. Per PEP 1, each new PEP must be dual-licensed
+   under PD and CC0-1.0. (This means each PEP is not allowed to be copyrighted.)
+
 This document is placed in the public domain or under the
 CC0-1.0-Universal license, whichever is more permissive.
