@@ -27,5 +27,5 @@ const setPygments = (colourScheme = getColourScheme()) => {
     pygmentsLight.media = colourScheme === "auto" ? "(prefers-color-scheme: light)" : ""
 }
 
-// Initialize/update both tooltip and pygments state (page theme is initialized inline in page.html)
+// Update Pygments state (the page theme is initialised inline, see page.html)
 document.addEventListener("DOMContentLoaded", () => setColourScheme())
