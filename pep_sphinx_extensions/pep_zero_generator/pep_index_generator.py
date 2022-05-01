@@ -78,7 +78,10 @@ def create_pep_zero(app: Sphinx, env: BuildEnvironment, docnames: list[str]) -> 
             peps.append(pep)
 
     pep0_text = writer.PEPZeroWriter().write_pep0(sorted(peps))
-    Path(f"{pep_zero_filename}.rst").write_text(pep0_text, encoding="utf-8")
+    pep0_path = Path(f"{pep_zero_filename}.rst")
+    pep0_path.write_text(pep0_text, encoding="utf-8")
+
+    peps.append(parser.PEP(pep0_path, authors_overrides))
 
     # Add to files for builder
     docnames.insert(1, pep_zero_filename)
