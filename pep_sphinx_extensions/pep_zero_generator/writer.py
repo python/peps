@@ -36,7 +36,7 @@ column_format = functools.partial(
     title_length=title_length
 )
 
-header = f"""\
+HEADER = f"""\
 PEP: 0
 Title: Index of Python Enhancement Proposals (PEPs)
 Last-Modified: {datetime.date.today()}
@@ -47,7 +47,7 @@ Content-Type: text/x-rst
 Created: 13-Jul-2000
 """
 
-intro = """\
+INTRO = """\
 This PEP contains the index of all Python Enhancement Proposals,
 known as PEPs.  PEP numbers are :pep:`assigned <1#pep-editors>`
 by the PEP editors, and once assigned are never changed.  The
@@ -112,7 +112,7 @@ class PEPZeroWriter:
         self.emit_table_separator()
         self.emit_newline()
 
-    def write_pep0(self, peps: list[PEP]):
+    def write_pep0(self, peps: list[PEP], header: str = HEADER, intro: str = INTRO, is_subindex: bool = False):
 
         # PEP metadata
         self.emit_text(header)
@@ -138,7 +138,8 @@ class PEPZeroWriter:
             ("Abandoned, Withdrawn, and Rejected PEPs", dead),
         ]
         for (category, peps_in_category) in pep_categories:
-            self.emit_pep_category(category, peps_in_category)
+            if is_subindex and len(peps_in_category) > 0:
+                self.emit_pep_category(category, peps_in_category)
 
         self.emit_newline()
 
@@ -152,13 +153,14 @@ class PEPZeroWriter:
         self.emit_newline()
 
         # Reserved PEP numbers
-        self.emit_title("Reserved PEP Numbers")
-        self.emit_column_headers()
-        for number, claimants in sorted(self.RESERVED.items()):
-            self.emit_pep_row({"type": ".", "status": ".", "number": number, "title": "RESERVED", "authors": claimants})
+        if not is_subindex:
+            self.emit_title("Reserved PEP Numbers")
+            self.emit_column_headers()
+            for number, claimants in sorted(self.RESERVED.items()):
+                self.emit_pep_row({"type": ".", "status": ".", "number": number, "title": "RESERVED", "authors": claimants})
 
-        self.emit_table_separator()
-        self.emit_newline()
+            self.emit_table_separator()
+            self.emit_newline()
 
         # PEP types key
         self.emit_title("PEP Types Key")
