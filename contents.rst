@@ -16,3 +16,4 @@ This is an internal Sphinx page; please go to the :doc:`PEP Index <pep-0000>`.
 
    docs/*
    pep-*
+   topic/*

@@ -32,3 +32,17 @@ TYPE_STANDARDS = "Standards Track"
 TYPE_VALUES = {TYPE_STANDARDS, TYPE_INFO, TYPE_PROCESS}
 # Active PEPs can only be for Informational or Process PEPs.
 ACTIVE_ALLOWED = {TYPE_PROCESS, TYPE_INFO}
+
+# map of topic -> additional description
+SUBINDICES_BY_TOPIC = {
+    "packaging": """\
+The canonical, up-to-date packaging specifications can be found on the
+`Python Packaging Authority`_ (PyPA's) `Specifications page`_.
+Packaging PEPs follow the `PyPA specification update process`_.
+They are used to propose major additions or changes to the PyPA specifications.
+
+.. _Specifications page: https://packaging.python.org/en/latest/specifications/
+.. _Python Packaging Authority: https://www.pypa.io/
+.. _PyPA specification update process: https://www.pypa.io/en/latest/specifications/#specification-update-process
+""",
+}
