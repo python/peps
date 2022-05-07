@@ -45,6 +45,6 @@ under the '{subindex.title()}' topic. This is a sub-index of :pep:`0`,
 the PEP index.
 """
         subindex_text = writer.PEPZeroWriter().write_pep0(
-            filtered_peps, header, subindex_intro, is_subindex=True,
+            filtered_peps, header, subindex_intro, is_pep0=False,
         )
         update_sphinx(f"topic/{subindex}", subindex_text, docnames, env)

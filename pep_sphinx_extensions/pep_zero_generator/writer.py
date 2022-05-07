@@ -112,7 +112,7 @@ class PEPZeroWriter:
         self.emit_table_separator()
         self.emit_newline()
 
-    def write_pep0(self, peps: list[PEP], header: str = HEADER, intro: str = INTRO, is_subindex: bool = False):
+    def write_pep0(self, peps: list[PEP], header: str = HEADER, intro: str = INTRO, is_pep0: bool = True):
 
         # PEP metadata
         self.emit_text(header)
@@ -138,7 +138,9 @@ class PEPZeroWriter:
             ("Abandoned, Withdrawn, and Rejected PEPs", dead),
         ]
         for (category, peps_in_category) in pep_categories:
-            if is_subindex and len(peps_in_category) > 0:
+            # For subindices, only emit categories with entries.
+            # For PEP 0, emit every category
+            if is_pep0 or len(peps_in_category) > 0:
                 self.emit_pep_category(category, peps_in_category)
 
         self.emit_newline()
@@ -153,7 +155,7 @@ class PEPZeroWriter:
         self.emit_newline()
 
         # Reserved PEP numbers
-        if not is_subindex:
+        if is_pep0:
             self.emit_title("Reserved PEP Numbers")
             self.emit_column_headers()
             for number, claimants in sorted(self.RESERVED.items()):
