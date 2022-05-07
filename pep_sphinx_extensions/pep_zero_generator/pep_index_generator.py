@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pep_sphinx_extensions.pep_zero_generator import parser
-from pep_sphinx_extensions.pep_zero_generator import subindicies
+from pep_sphinx_extensions.pep_zero_generator import subindices
 from pep_sphinx_extensions.pep_zero_generator import writer
 
 if TYPE_CHECKING:
@@ -57,13 +57,13 @@ def create_pep_zero(app: Sphinx, env: BuildEnvironment, docnames: list[str]) -> 
     peps = _parse_peps()
 
     pep0_text = writer.PEPZeroWriter().write_pep0(peps)
-    pep0_path = subindicies.update_sphinx("pep-0000", pep0_text, docnames, env)
+    pep0_path = subindices.update_sphinx("pep-0000", pep0_text, docnames, env)
     peps.append(parser.PEP(pep0_path))
 
-    subindicies_to_generate = (
+    subindices_to_generate = (
         "packaging",
     )
-    subindicies.generate_subindicies(subindicies_to_generate, peps, docnames, env)
+    subindices.generate_subindices(subindices_to_generate, peps, docnames, env)
 
     # Create peps.json
     Path(app.outdir, "peps.json").write_text(create_pep_json(peps), encoding="utf-8")

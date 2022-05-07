@@ -26,13 +26,13 @@ def update_sphinx(filename: str, text: str, docnames: list[str], env: BuildEnvir
     return file_path
 
 
-def generate_subindicies(
-    subindicies: tuple[str],
+def generate_subindices(
+    subindices: tuple[str],
     peps: list[PEP],
     docnames: list[str],
     env: BuildEnvironment
 ) -> None:
-    for subindex in subindicies:
+    for subindex in subindices:
         header_text = f"{subindex.title()} PEPs"
         header_line = "#" * len(header_text)
         header = header_text + "\n" + header_line + "\n"
