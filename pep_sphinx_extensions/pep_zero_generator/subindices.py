@@ -32,6 +32,9 @@ def generate_subindices(
     docnames: list[str],
     env: BuildEnvironment
 ) -> None:
+    # Create sub index page
+    generate_topic_contents(docnames, env)
+
     for subindex in subindices:
         header_text = f"{subindex.title()} PEPs"
         header_line = "#" * len(header_text)
@@ -48,3 +51,19 @@ the PEP index.
             filtered_peps, header, subindex_intro, is_pep0=False,
         )
         update_sphinx(f"topic/{subindex}", subindex_text, docnames, env)
+
+
+def generate_topic_contents(docnames: list[str], env: BuildEnvironment):
+    update_sphinx(f"topic/index", """\
+Topic Index
+***********
+
+PEPs are indexed by topic on the pages below:
+
+.. toctree::
+   :maxdepth: 1
+   :titlesonly:
+   :glob:
+
+   topic/*
+""", docnames, env)
