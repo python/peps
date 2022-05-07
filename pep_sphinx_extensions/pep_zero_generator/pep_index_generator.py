@@ -32,25 +32,7 @@ if TYPE_CHECKING:
 
 
 def create_pep_json(peps: list[parser.PEP]) -> str:
-    pep_dict = {
-        pep.number: {
-            "title": pep.title,
-            "authors": ", ".join(pep.authors.nick for pep.authors in pep.authors),
-            "discussions_to": pep.discussions_to,
-            "status": pep.status,
-            "type": pep.pep_type,
-            "created": pep.created,
-            "python_version": pep.python_version,
-            "post_history": pep.post_history,
-            "resolution": pep.resolution,
-            "requires": pep.requires,
-            "replaces": pep.replaces,
-            "superseded_by": pep.superseded_by,
-            "url": f"https://peps.python.org/pep-{pep.number:0>4}/",
-        }
-        for pep in sorted(peps)
-    }
-    return json.dumps(pep_dict, indent=1)
+    return json.dumps({pep.number: pep.full_details for pep in peps}, indent=1)
 
 
 def create_pep_zero(app: Sphinx, env: BuildEnvironment, docnames: list[str]) -> None:
@@ -77,7 +59,9 @@ def create_pep_zero(app: Sphinx, env: BuildEnvironment, docnames: list[str]) -> 
             pep = parser.PEP(path.joinpath(file_path).absolute(), authors_overrides)
             peps.append(pep)
 
-    pep0_text = writer.PEPZeroWriter().write_pep0(sorted(peps))
+    peps = sorted(peps)
+
+    pep0_text = writer.PEPZeroWriter().write_pep0(peps)
     pep0_path = Path(f"{pep_zero_filename}.rst")
     pep0_path.write_text(pep0_text, encoding="utf-8")
 
@@ -89,7 +73,6 @@ def create_pep_zero(app: Sphinx, env: BuildEnvironment, docnames: list[str]) -> 
     env.found_docs.add(pep_zero_filename)
 
     # Create peps.json
-    pep0_json = create_pep_json(peps)
-    out_dir = Path(app.outdir) / "api"
-    out_dir.mkdir(exist_ok=True)
-    Path(out_dir, "peps.json").write_text(pep0_json, encoding="utf-8")
+    json_path = Path(app.outdir, "api", "peps.json").resolve()
+    json_path.parent.mkdir(exist_ok=True)
+    json_path.write_text(create_pep_json(peps), encoding="utf-8")
