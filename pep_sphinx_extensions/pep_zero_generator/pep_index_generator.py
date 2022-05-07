@@ -21,6 +21,7 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from pep_sphinx_extensions.pep_zero_generator.constants import SUBINDICES_BY_TOPIC
 from pep_sphinx_extensions.pep_zero_generator import parser
 from pep_sphinx_extensions.pep_zero_generator import subindices
 from pep_sphinx_extensions.pep_zero_generator import writer
@@ -60,10 +61,7 @@ def create_pep_zero(app: Sphinx, env: BuildEnvironment, docnames: list[str]) -> 
     pep0_path = subindices.update_sphinx("pep-0000", pep0_text, docnames, env)
     peps.append(parser.PEP(pep0_path))
 
-    subindices_to_generate = (
-        "packaging",
-    )
-    subindices.generate_subindices(subindices_to_generate, peps, docnames, env)
+    subindices.generate_subindices(SUBINDICES_BY_TOPIC, peps, docnames, env)
 
     # Create peps.json
     Path(app.outdir, "peps.json").write_text(create_pep_json(peps), encoding="utf-8")

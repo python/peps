@@ -32,3 +32,7 @@ TYPE_STANDARDS = "Standards Track"
 TYPE_VALUES = {TYPE_STANDARDS, TYPE_INFO, TYPE_PROCESS}
 # Active PEPs can only be for Informational or Process PEPs.
 ACTIVE_ALLOWED = {TYPE_PROCESS, TYPE_INFO}
+
+SUBINDICES_BY_TOPIC = (
+    "packaging",
+)
