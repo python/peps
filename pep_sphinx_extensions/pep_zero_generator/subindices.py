@@ -27,15 +27,15 @@ def update_sphinx(filename: str, text: str, docnames: list[str], env: BuildEnvir
 
 
 def generate_subindices(
-    subindices: tuple[str],
+    subindices: dict[str, str],
     peps: list[PEP],
     docnames: list[str],
-    env: BuildEnvironment
+    env: BuildEnvironment,
 ) -> None:
     # Create sub index page
     generate_topic_contents(docnames, env)
 
-    for subindex in subindices:
+    for subindex, additional_description in subindices.items():
         header_text = f"{subindex.title()} PEPs"
         header_line = "#" * len(header_text)
         header = header_text + "\n" + header_line + "\n"
@@ -46,6 +46,8 @@ def generate_subindices(
 This is the index of all Python Enhancement Proposals (PEPs) labelled
 under the '{subindex.title()}' topic. This is a sub-index of :pep:`0`,
 the PEP index.
+
+{additional_description}
 """
         subindex_text = writer.PEPZeroWriter().write_pep0(
             filtered_peps, header, subindex_intro, is_pep0=False,
