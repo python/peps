@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import datetime
-import functools
 from typing import TYPE_CHECKING
 import unicodedata
 
@@ -25,16 +24,6 @@ from pep_sphinx_extensions.pep_zero_generator.errors import PEPError
 
 if TYPE_CHECKING:
     from pep_sphinx_extensions.pep_zero_generator.parser import PEP
-
-title_length = 55
-author_length = 40
-table_separator = "== ====  " + "="*title_length + " " + "="*author_length
-
-# column format is called as a function with a mapping containing field values
-column_format = functools.partial(
-    "{type}{status}{number: >5}  {title: <{title_length}} {authors}".format,
-    title_length=title_length
-)
 
 header = f"""\
 PEP: 0
@@ -80,21 +69,27 @@ class PEPZeroWriter:
     def emit_newline(self) -> None:
         self.output.append("")
 
-    def emit_table_separator(self) -> None:
-        self.output.append(table_separator)
-
     def emit_author_table_separator(self, max_name_len: int) -> None:
         author_table_separator = "=" * max_name_len + "  " + "=" * len("email address")
         self.output.append(author_table_separator)
 
-    def emit_pep_row(self, pep_details: dict[str, int | str]) -> None:
-        self.emit_text(column_format(**pep_details))
+    def emit_pep_row(self, *, type: str, status: str, number: int, title: str, authors: str) -> None:
+        self.emit_text(f"   * - {type}{status}")
+        self.emit_text(f"     - :pep:`{number} <{number}>`")
+        self.emit_text(f"     - :pep:`{title.replace('`', '')} <{number}>`")
+        self.emit_text(f"     - {authors}")
 
     def emit_column_headers(self) -> None:
         """Output the column headers for the PEP indices."""
-        self.emit_table_separator()
-        self.emit_pep_row({"status": ".", "type": ".", "number": "PEP", "title": "PEP Title", "authors": "PEP Author(s)"})
-        self.emit_table_separator()
+        self.emit_text(".. list-table::")
+        self.emit_text("   :header-rows: 1")
+        self.emit_text("   :widths: auto")
+        self.emit_text("   :class: pep-zero-table")
+        self.emit_newline()
+        self.emit_text("   * - ")
+        self.emit_text("     - PEP")
+        self.emit_text("     - PEP Title")
+        self.emit_text("     - PEP Author(s)")
 
     def emit_title(self, text: str, *, symbol: str = "=") -> None:
         self.output.append(text)
@@ -108,8 +103,13 @@ class PEPZeroWriter:
         self.emit_subtitle(category)
         self.emit_column_headers()
         for pep in peps:
-            self.output.append(column_format(**pep.details(title_length=title_length)))
-        self.emit_table_separator()
+            self.emit_pep_row(**pep.details)
+        # list-table must have at least one body row
+        if len(peps) == 0:
+            self.emit_text("   * -")
+            self.emit_text("     -")
+            self.emit_text("     -")
+            self.emit_text("     -")
         self.emit_newline()
 
     def write_pep0(self, peps: list[PEP]):
@@ -146,18 +146,16 @@ class PEPZeroWriter:
         self.emit_title("Numerical Index")
         self.emit_column_headers()
         for pep in peps:
-            self.emit_pep_row(pep.details(title_length=title_length))
+            self.emit_pep_row(**pep.details)
 
-        self.emit_table_separator()
         self.emit_newline()
 
         # Reserved PEP numbers
         self.emit_title("Reserved PEP Numbers")
         self.emit_column_headers()
         for number, claimants in sorted(self.RESERVED.items()):
-            self.emit_pep_row({"type": ".", "status": ".", "number": number, "title": "RESERVED", "authors": claimants})
+            self.emit_pep_row(type="", status="", number=number, title="RESERVED", authors=claimants)
 
-        self.emit_table_separator()
         self.emit_newline()
 
         # PEP types key
