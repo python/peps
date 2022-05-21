@@ -7,27 +7,15 @@ from docutils import transforms
 class PEPZero(transforms.Transform):
     """Schedule PEP 0 processing."""
 
-    # Run during sphinx post processing
+    # Run during sphinx post-processing
     default_priority = 760
 
     def apply(self) -> None:
-        # Walk document and then remove this node
-        visitor = PEPZeroSpecial(self.document)
-        self.document.walk(visitor)
+        # Walk document and mask email addresses if present.
+        for reference_node in self.document.findall(nodes.reference):
+            reference_node.replace_self(_mask_email(reference_node))
+        # Remove this node
         self.startnode.parent.remove(self.startnode)
-
-
-class PEPZeroSpecial(nodes.SparseNodeVisitor):
-    """Mask email addresses in PEP 0."""
-
-    def unknown_visit(self, node: nodes.Node) -> None:
-        """No processing for undefined node types."""
-        pass
-
-    @staticmethod
-    def visit_reference(node: nodes.reference) -> None:
-        """Mask email addresses if present."""
-        node.replace_self(_mask_email(node))
 
 
 def _mask_email(ref: nodes.reference) -> nodes.reference:
