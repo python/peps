@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import csv
 from email.parser import HeaderParser
 from pathlib import Path
 import re
@@ -23,14 +22,6 @@ if TYPE_CHECKING:
     from pep_sphinx_extensions.pep_zero_generator.author import Author
 
 
-# AUTHOR_OVERRIDES.csv is an exception file for PEP0 name parsing
-AUTHOR_OVERRIDES: dict[str, dict[str, str]] = {}
-with open("AUTHOR_OVERRIDES.csv", "r", encoding="utf-8") as f:
-    for line in csv.DictReader(f):
-        full_name = line.pop("Overridden Name")
-        AUTHOR_OVERRIDES[full_name] = line
-
-
 class PEP:
     """Representation of PEPs.
 
@@ -46,7 +37,7 @@ class PEP:
     # The required RFC 822 headers for all PEPs.
     required_headers = {"PEP", "Title", "Author", "Status", "Type", "Created"}
 
-    def __init__(self, filename: Path):
+    def __init__(self, filename: Path, authors_overrides: dict):
         """Init object from an open PEP file object.
 
         pep_file is full text of the PEP file, filename is path of the PEP file, author_lookup is author exceptions file
@@ -97,11 +88,7 @@ class PEP:
         self.status: str = status
 
         # Parse PEP authors
-        self.authors: list[Author] = _parse_authors(self, metadata["Author"], AUTHOR_OVERRIDES)
-
-        # Topic (for sub-indicies)
-        _topic = metadata.get("Topic", "").lower().split(",")
-        self.topics: set[str] = {topic for topic_raw in _topic if (topic := topic_raw.strip())}
+        self.authors: list[Author] = _parse_authors(self, metadata["Author"], authors_overrides)
 
         # Other headers
         self.created = metadata["Created"]
@@ -140,7 +127,9 @@ class PEP:
             "authors": ", ".join(author.nick for author in self.authors),
         }
 
-    def json(self) -> dict[str, str]:
+    @property
+    def full_details(self) -> dict[str, str]:
+        """Returns all headers of the PEP as a dict."""
         return {
             "title": self.title,
             "authors": ", ".join(author.nick for author in self.authors),
