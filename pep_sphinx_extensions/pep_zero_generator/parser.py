@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 from email.parser import HeaderParser
 from pathlib import Path
 import re
@@ -22,6 +23,14 @@ if TYPE_CHECKING:
     from pep_sphinx_extensions.pep_zero_generator.author import Author
 
 
+# AUTHOR_OVERRIDES.csv is an exception file for PEP0 name parsing
+AUTHOR_OVERRIDES: dict[str, dict[str, str]] = {}
+with open("AUTHOR_OVERRIDES.csv", "r", encoding="utf-8") as f:
+    for line in csv.DictReader(f):
+        full_name = line.pop("Overridden Name")
+        AUTHOR_OVERRIDES[full_name] = line
+
+
 class PEP:
     """Representation of PEPs.
 
@@ -37,7 +46,7 @@ class PEP:
     # The required RFC 822 headers for all PEPs.
     required_headers = {"PEP", "Title", "Author", "Status", "Type", "Created"}
 
-    def __init__(self, filename: Path, authors_overrides: dict):
+    def __init__(self, filename: Path):
         """Init object from an open PEP file object.
 
         pep_file is full text of the PEP file, filename is path of the PEP file, author_lookup is author exceptions file
@@ -88,7 +97,11 @@ class PEP:
         self.status: str = status
 
         # Parse PEP authors
-        self.authors: list[Author] = _parse_authors(self, metadata["Author"], authors_overrides)
+        self.authors: list[Author] = _parse_authors(self, metadata["Author"], AUTHOR_OVERRIDES)
+
+        # Topic (for sub-indicies)
+        _topic = metadata.get("Topic", "").lower().split(",")
+        self.topics: set[str] = {topic for topic_raw in _topic if (topic := topic_raw.strip())}
 
         # Other headers
         self.created = metadata["Created"]
@@ -125,6 +138,23 @@ class PEP:
             "status": " " if self.status in HIDE_STATUS else self.status[0].upper(),
             # the author list as a comma-separated with only last names
             "authors": ", ".join(author.nick for author in self.authors),
+        }
+
+    def json(self) -> dict[str, str]:
+        return {
+            "title": self.title,
+            "authors": ", ".join(author.nick for author in self.authors),
+            "discussions_to": self.discussions_to,
+            "status": self.status,
+            "type": self.pep_type,
+            "created": self.created,
+            "python_version": self.python_version,
+            "post_history": self.post_history,
+            "resolution": self.resolution,
+            "requires": self.requires,
+            "replaces": self.replaces,
+            "superseded_by": self.superseded_by,
+            "url": f"https://peps.python.org/pep-{self.number:0>4}/",
         }
 
 
