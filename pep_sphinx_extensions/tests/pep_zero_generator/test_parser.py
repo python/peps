@@ -9,40 +9,33 @@ from pep_sphinx_extensions.tests.utils import AUTHORS_OVERRIDES
 
 
 def test_pep_repr():
-    pep8 = parser.PEP(Path("pep-0008.txt"), AUTHORS_OVERRIDES)
+    pep8 = parser.PEP(Path("pep-0008.txt"))
 
     assert repr(pep8) == "<PEP 0008 - Style Guide for Python Code>"
 
 
 def test_pep_less_than():
-    pep8 = parser.PEP(Path("pep-0008.txt"), AUTHORS_OVERRIDES)
-    pep3333 = parser.PEP(Path("pep-3333.txt"), AUTHORS_OVERRIDES)
+    pep8 = parser.PEP(Path("pep-0008.txt"))
+    pep3333 = parser.PEP(Path("pep-3333.txt"))
 
     assert pep8 < pep3333
 
 
 def test_pep_equal():
-    pep_a = parser.PEP(Path("pep-0008.txt"), AUTHORS_OVERRIDES)
-    pep_b = parser.PEP(Path("pep-0008.txt"), AUTHORS_OVERRIDES)
+    pep_a = parser.PEP(Path("pep-0008.txt"))
+    pep_b = parser.PEP(Path("pep-0008.txt"))
 
     assert pep_a == pep_b
 
 
-@pytest.mark.parametrize(
-    "test_input, expected",
-    [
-        (80, "Style Guide for Python Code"),
-        (10, "Style ..."),
-    ],
-)
-def test_pep_details(test_input, expected):
-    pep8 = parser.PEP(Path("pep-0008.txt"), AUTHORS_OVERRIDES)
+def test_pep_details(monkeypatch):
+    pep8 = parser.PEP(Path("pep-0008.txt"))
 
-    assert pep8.details(title_length=test_input) == {
+    assert pep8.details == {
         "authors": "GvR, Warsaw, Coghlan",
         "number": 8,
         "status": " ",
-        "title": expected,
+        "title": "Style Guide for Python Code",
         "type": "P",
     }
 
@@ -71,10 +64,10 @@ def test_pep_details(test_input, expected):
 )
 def test_parse_authors(test_input, expected):
     # Arrange
-    pep = parser.PEP(Path("pep-0160.txt"), AUTHORS_OVERRIDES)
+    dummy_object = parser.PEP(Path("pep-0160.txt"))
 
     # Act
-    out = parser._parse_authors(pep, test_input, AUTHORS_OVERRIDES)
+    out = parser._parse_authors(dummy_object, test_input, AUTHORS_OVERRIDES)
 
     # Assert
     assert out == expected
@@ -82,7 +75,7 @@ def test_parse_authors(test_input, expected):
 
 def test_parse_authors_invalid():
 
-    pep = parser.PEP(Path("pep-0008.txt"), AUTHORS_OVERRIDES)
+    pep = parser.PEP(Path("pep-0008.txt"))
 
     with pytest.raises(PEPError, match="no authors found"):
         parser._parse_authors(pep, "", AUTHORS_OVERRIDES)
