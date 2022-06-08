@@ -49,7 +49,14 @@ exclude_patterns = [
 # -- Options for HTML output -------------------------------------------------
 
 # HTML output settings
+<<<<<<< Updated upstream
 html_math_renderer = "maths_to_html"  # Maths rendering
+=======
+html_math_renderer = "math2html"
+html_show_copyright = False
+html_show_sphinx = False
+html_title = "PEPs.Python.org"
+>>>>>>> Stashed changes
 
 # Theme settings
 html_theme_path = ["pep_sphinx_extensions"]
