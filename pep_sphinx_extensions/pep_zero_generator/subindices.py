@@ -19,7 +19,7 @@ def update_sphinx(filename: str, text: str, docnames: list[str], env: BuildEnvir
     file_path.write_text(text, encoding="utf-8")
 
     # Add to files for builder
-    docnames.insert(1, filename)
+    docnames.append(filename)
     # Add to files for writer
     env.found_docs.add(filename)
 
