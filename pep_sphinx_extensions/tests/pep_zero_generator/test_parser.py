@@ -28,21 +28,14 @@ def test_pep_equal():
     assert pep_a == pep_b
 
 
-@pytest.mark.parametrize(
-    "test_input, expected",
-    [
-        (80, "Style Guide for Python Code"),
-        (10, "Style ..."),
-    ],
-)
-def test_pep_details(test_input, expected):
+def test_pep_details():
     pep8 = parser.PEP(Path("pep-0008.txt"), AUTHORS_OVERRIDES)
 
-    assert pep8.details(title_length=test_input) == {
+    assert pep8.details == {
         "authors": "GvR, Warsaw, Coghlan",
         "number": 8,
         "status": " ",
-        "title": expected,
+        "title": "Style Guide for Python Code",
         "type": "P",
     }
 
