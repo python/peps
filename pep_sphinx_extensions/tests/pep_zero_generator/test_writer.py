@@ -3,7 +3,6 @@ from pathlib import Path
 import pytest
 
 from pep_sphinx_extensions.pep_zero_generator import parser, writer
-from pep_sphinx_extensions.tests.utils import AUTHORS_OVERRIDES
 
 
 def test_pep_zero_writer_emit_text_newline():
@@ -48,11 +47,7 @@ def test_pep_zero_writer_emit_title():
 )
 def test_verify_email_addresses(test_input, expected):
     # Arrange
-    peps = [
-        parser.PEP(
-            Path(f"pep_sphinx_extensions/tests/peps/{test_input}"), AUTHORS_OVERRIDES
-        )
-    ]
+    peps = [parser.PEP(Path(f"pep_sphinx_extensions/tests/peps/{test_input}"))]
 
     # Act
     out = writer._verify_email_addresses(peps)
