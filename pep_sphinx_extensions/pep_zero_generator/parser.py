@@ -127,6 +127,25 @@ class PEP:
             "authors": ", ".join(author.nick for author in self.authors),
         }
 
+    @property
+    def full_details(self) -> dict[str, str]:
+        """Returns all headers of the PEP as a dict."""
+        return {
+            "title": self.title,
+            "authors": ", ".join(author.nick for author in self.authors),
+            "discussions_to": self.discussions_to,
+            "status": self.status,
+            "type": self.pep_type,
+            "created": self.created,
+            "python_version": self.python_version,
+            "post_history": self.post_history,
+            "resolution": self.resolution,
+            "requires": self.requires,
+            "replaces": self.replaces,
+            "superseded_by": self.superseded_by,
+            "url": f"https://peps.python.org/pep-{self.number:0>4}/",
+        }
+
 
 def _raise_pep_error(pep: PEP, msg: str, pep_num: bool = False) -> None:
     if pep_num:
