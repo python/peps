@@ -62,4 +62,6 @@ def create_pep_zero(app: Sphinx, env: BuildEnvironment, docnames: list[str]) -> 
     subindices.generate_subindices(SUBINDICES_BY_TOPIC, peps, docnames, env)
 
     # Create peps.json
-    Path(app.outdir, "peps.json").write_text(create_pep_json(peps), encoding="utf-8")
+    json_path = Path(app.outdir, "api", "peps.json").resolve()
+    json_path.parent.mkdir(exist_ok=True)
+    json_path.write_text(create_pep_json(peps), encoding="utf-8")
