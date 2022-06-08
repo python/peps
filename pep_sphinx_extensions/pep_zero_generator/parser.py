@@ -6,7 +6,6 @@ import csv
 from email.parser import HeaderParser
 from pathlib import Path
 import re
-import textwrap
 from typing import TYPE_CHECKING
 
 from pep_sphinx_extensions.pep_zero_generator.author import parse_author_email
@@ -127,13 +126,14 @@ class PEP:
     def __eq__(self, other):
         return self.number == other.number
 
-    def details(self, *, title_length) -> dict[str, str | int]:
+    @property
+    def details(self) -> dict[str, str | int]:
         """Return the line entry for the PEP."""
         return {
             # how the type is to be represented in the index
             "type": self.pep_type[0].upper(),
             "number": self.number,
-            "title": _title_abbr(self.title, title_length),
+            "title": self.title,
             # how the status should be represented in the index
             "status": " " if self.status in HIDE_STATUS else self.status[0].upper(),
             # the author list as a comma-separated with only last names
@@ -202,11 +202,3 @@ def _parse_author(data: str) -> list[tuple[str, str]]:
         if author_list:
             break
     return author_list
-
-
-def _title_abbr(title, title_length) -> str:
-    """Shorten the title to be no longer than the max title length."""
-    if len(title) <= title_length:
-        return title
-    wrapped_title, *_excess = textwrap.wrap(title, title_length - 4)
-    return f"{wrapped_title} ..."
