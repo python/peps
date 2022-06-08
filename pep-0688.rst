@@ -1,0 +1,279 @@
+PEP: 688
+Title: Making the buffer protocol accessible in Python
+Author: Jelle Zijlstra <jelle.zijlstra@gmail.com>
+Discussions-To: https://discuss.python.org/t/15265
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 23-Apr-2022
+Python-Version: 3.12
+Post-History: `23-Apr-2022 <https://mail.python.org/archives/list/typing-sig@python.org/thread/CX7GPSIYQEL23RXMYL66GAKGP4RLUD7P/>`__,
+              `25-Apr-2022 <https://discuss.python.org/t/15265>`__
+
+
+Abstract
+========
+
+This PEP proposes a mechanism for Python code to inspect whether a
+type supports the C-level buffer protocol. This allows type
+checkers to evaluate whether objects implement the protocol.
+
+
+Motivation
+==========
+
+The CPython C API provides a versatile mechanism for accessing the
+underlying memory of an object—the `buffer protocol <https://docs.python.org/3/c-api/buffer.html>`__
+introduced in :pep:`3118`.
+Functions that accept binary data are usually written to handle any
+object implementing the buffer protocol. For example, at the time of writing,
+there are around 130 functions in CPython using the Argument Clinic
+``Py_buffer`` type, which accepts the buffer protocol.
+
+Currently, there is no way for Python code to inspect whether an object
+supports the buffer protocol. Moreover, the static type system
+does not provide a type annotation to represent the protocol.
+This is a `common problem <https://github.com/python/typing/issues/593>`__
+when writing type annotations for code that accepts generic buffers.
+
+
+Rationale
+=========
+
+Current options
+---------------
+
+There are two current workarounds for annotating buffer types in
+the type system, but neither is adequate.
+
+First, the `current workaround <https://github.com/python/typeshed/blob/2a0fc1b582ef84f7a82c0beb39fa617de2539d3d/stdlib/_typeshed/__init__.pyi#L194>`__
+for buffer types in typeshed is a type alias
+that lists well-known buffer types in the standard library, such as
+``bytes``, ``bytearray``, ``memoryview``, and ``array.array``. This
+approach works for the standard library, but it does not extend to
+third-party buffer types.
+
+Second, the `documentation <https://docs.python.org/3.10/library/typing.html#typing.ByteString>`__
+for ``typing.ByteString`` currently states:
+
+   This type represents the types ``bytes``, ``bytearray``, and
+   ``memoryview`` of byte sequences.
+
+   As a shorthand for this type, ``bytes`` can be used to annotate
+   arguments of any of the types mentioned above.
+
+Although this sentence has been in the documentation
+`since 2015 <https://github.com/python/cpython/commit/2a19d956ab92fc9084a105cc11292cb0438b322f>`__,
+the use of ``bytes`` to include these other types is not specified
+in any of the typing PEPs. Furthermore, this mechanism has a number of
+problems. It does not include all possible buffer types, and it
+makes the ``bytes`` type ambiguous in type annotations. After all,
+there are many operations that are valid on ``bytes`` objects, but
+not on ``memoryview`` objects, and it is perfectly possible for
+a function to accept ``bytes`` but not ``memoryview`` objects.
+A mypy user
+`reports <https://github.com/python/mypy/issues/12643#issuecomment-1105914159>`__
+that this shortcut has caused significant problems for the ``psycopg`` project.
+
+Kinds of buffers
+----------------
+
+The C buffer protocol supports 
+`many options <https://docs.python.org/3.10/c-api/buffer.html#buffer-request-types>`__,
+affecting strides, contiguity, and support for writing to the buffer. Some of these
+options would be useful in the type system. For example, typeshed
+currently provides separate type aliases for writable and read-only
+buffers.
+
+However, in the C buffer protocol, these options cannot be
+queried directly on the type object. The only way to figure out
+whether an object supports a writable buffer is to actually
+ask for the buffer. For some types, such as ``memoryview``,
+whether the buffer is writable depends on the instance:
+some instances are read-only and others are not. As such, we propose to
+expose only whether a type implements the buffer protocol at
+all, not whether it supports more specific options such as
+writable buffers.
+
+Specification
+=============
+
+types.Buffer
+------------
+
+A new class, ``types.Buffer``, will be added. It cannot be instantiated or
+subclassed at runtime, but supports the ``__instancecheck__`` and
+``__subclasscheck__`` hooks.  In CPython, these will check for the presence of the
+``bf_getbuffer`` slot in the type object:
+
+.. code-block:: pycon
+
+   >>> from types import Buffer
+   >>> isinstance(b"xy", Buffer)
+   True
+   >>> issubclass(bytes, Buffer)
+   True
+   >>> issubclass(memoryview, Buffer)
+   True
+   >>> isinstance("xy", Buffer)
+   False
+   >>> issubclass(str, Buffer)
+   False
+
+The new class can also be used in type annotations:
+
+.. code-block:: python
+
+   def need_buffer(b: Buffer) -> memoryview:
+       return memoryview(b)
+
+   need_buffer(b"xy")  # ok
+   need_buffer("xy")  # rejected by static type checkers
+
+Usage in stub files
+-------------------
+
+For static typing purposes, types defined in C extensions usually
+require stub files, as :pep:`described in PEP 484 <484#stub-files>`.
+In stub files, ``types.Buffer`` may be used as a base class to
+indicate that a class implements the buffer protocol.
+
+For example, ``memoryview`` may be declared as follows in a stub:
+
+.. code-block:: python
+
+   class memoryview(types.Buffer, Sized, Sequence[int]):
+       ...
+
+The ``types.Buffer`` class does not require any special treatment
+by type checkers.
+
+Equivalent for older Python versions
+------------------------------------
+
+New typing features are usually backported to older Python versions
+in the `typing_extensions <https://pypi.org/project/typing-extensions/>`_
+package. Because the buffer protocol
+is accessible only in C, ``types.Buffer`` cannot be implemented
+in a pure-Python package like ``typing_extensions``. As a temporary
+workaround, a ``typing_extensions.Buffer``
+`abstract base class <Buffer ABC_>`__ will be provided for Python versions
+that do not have ``types.Buffer`` available.
+
+For the benefit of
+static type checkers, ``typing_extensions.Buffer`` can be used as
+a base class in stubs to mark types as supporting the buffer protocol.
+For runtime uses, the ``ABC.register`` API can be used to register
+buffer classes with ``typing_extensions.Buffer``.
+
+When ``types.Buffer`` is available, ``typing_extensions`` should simply
+re-export it. Thus, users who register their buffer class manually
+with ``typing_extensions.Buffer.register`` should use a guard to make
+sure their code continues to work once ``types.Buffer`` is in the
+standard library. 
+
+
+No special meaning for ``bytes``
+--------------------------------
+
+The special case stating that ``bytes`` may be used as a shorthand
+for other ``ByteString`` types will be removed from the ``typing``
+documentation.
+With ``types.Buffer`` available as an alternative, there will be no good
+reason to allow ``bytes`` as a shorthand.
+We suggest that type checkers currently implementing this behavior
+should deprecate and eventually remove it.
+
+
+Backwards Compatibility
+=======================
+
+As the runtime changes in this PEP only add a new class, there are
+no backwards compatibility concerns.
+
+However, the recommendation to remove the special behavior for
+``bytes`` in type checkers does have a backwards compatibility
+impact on their users. An `experiment <https://github.com/python/mypy/pull/12661>`__
+with mypy shows that several major open source projects that use it
+for type checking will see new errors if the ``bytes`` promotion
+is removed. Many of these errors can be fixed by improving
+the stubs in typeshed, as has already been done for the
+`builtins <https://github.com/python/typeshed/pull/7631>`__,
+`binascii <https://github.com/python/typeshed/pull/7677>`__,
+`pickle <https://github.com/python/typeshed/pull/7678>`__, and
+`re <https://github.com/python/typeshed/pull/7679>`__ modules.
+Overall, the change improves type safety and makes the type system
+more consistent, so we believe the migration cost is worth it.
+
+
+How to Teach This
+=================
+
+We will add notes pointing to ``types.Buffer`` in appropriate places in the
+documentation, such as `typing.readthedocs.io <https://typing.readthedocs.io/en/latest/>`__
+and the `mypy cheat sheet <https://mypy.readthedocs.io/en/stable/cheat_sheet_py3.html>`__.
+Type checkers may provide additional pointers in their error messages. For example,
+when they encounter a buffer object being passed to a function that
+is annotated to only accept ``bytes``, the error message could include a note suggesting
+the use of ``types.Buffer`` instead.
+
+
+Reference Implementation
+========================
+
+An implementation of ``types.Buffer`` is
+`available <https://github.com/python/cpython/compare/main...JelleZijlstra:typesbuffer?expand=1>`__
+in the author's fork.
+
+
+Rejected Ideas
+==============
+
+Buffer ABC
+----------
+
+An `earlier proposal <https://github.com/python/cpython/issues/71688>`__ suggested
+adding a ``collections.abc.Buffer``
+`abstract base class <https://docs.python.org/3/glossary.html#term-abstract-base-class>`__
+to represent buffer objects. This idea
+stalled because an ABC with no methods does not fit well into the ``collections.abc``
+module. Furthermore, it required manual registration of buffer classes, including
+those in the standard library. This PEP's approach of using the ``__instancecheck__``
+hook is more natural and does not require explicit registration.
+
+Nevertheless, the ABC proposal has the advantage that it does not require C changes.
+This PEP proposes to adopt a version of it in the third-party ``typing_extensions``
+package for the benefit of users of older Python versions.
+
+Keep ``bytearray`` compatible with ``bytes``
+--------------------------------------------
+
+It has been suggested to remove the special case where ``memoryview`` is
+always compatible with ``bytes``, but keep it for ``bytearray``, because
+the two types have very similar interfaces. However, several standard
+library functions (e.g., ``re.compile`` and ``socket.getaddrinfo``) accept
+``bytes`` but not ``bytearray``. In most codebases, ``bytearray`` is also
+not a very common type. We prefer to have users spell out accepted types
+explicitly (or use ``Protocol`` from :pep:`544` if only a specific set of
+methods is required).
+
+
+Open Issues
+===========
+
+Read-only and writable buffers
+------------------------------
+
+To avoid making changes to the buffer protocol itself, this PEP currently
+does not provide a way to distinguish between read-only and writable buffers.
+That's unfortunate, because some APIs require a writable buffer, and one of
+the most common buffer types (``bytes``) is always read-only.
+Should we add a new mechanism in C to declare that a type implementing the
+buffer protocol is potentially writable?
+
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
