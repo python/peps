@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from pep_sphinx_extensions.pep_zero_generator.author import Author
 
 
-# AUTHOR_OVERRIDES.csv is an exception file for PEP0 name parsing
+# AUTHOR_OVERRIDES.csv is an exception file for PEP 0 name parsing
 AUTHOR_OVERRIDES: dict[str, dict[str, str]] = {}
 with open("AUTHOR_OVERRIDES.csv", "r", encoding="utf-8") as f:
     for line in csv.DictReader(f):
@@ -99,7 +99,7 @@ class PEP:
         # Parse PEP authors
         self.authors: list[Author] = _parse_authors(self, metadata["Author"], AUTHOR_OVERRIDES)
 
-        # Topic (for sub-indicies)
+        # Topic (for sub-indices)
         _topic = metadata.get("Topic", "").lower().split(",")
         self.topic: set[str] = {topic for topic_raw in _topic if (topic := topic_raw.strip())}
 

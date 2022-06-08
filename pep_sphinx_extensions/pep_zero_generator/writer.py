@@ -140,7 +140,7 @@ class PEPZeroWriter:
             ("Abandoned, Withdrawn, and Rejected PEPs", dead),
         ]
         for (category, peps_in_category) in pep_categories:
-            # For subindices, only emit categories with entries.
+            # For sub-indices, only emit categories with entries.
             # For PEP 0, emit every category
             if is_pep0 or len(peps_in_category) > 0:
                 self.emit_pep_category(category, peps_in_category)
