@@ -1,0 +1,486 @@
+PEP: 690
+Title: Lazy Imports
+Author: Germán Méndez Bravo <german.mb@gmail.com>, Carl Meyer <carl@oddbird.net>
+Sponsor: Barry Warsaw <barry@python.org>
+Discussions-To: https://discuss.python.org/t/pep-690-lazy-imports/15474
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 29-Apr-2022
+Python-Version: 3.12
+Post-History: `03-May-2022 <https://discuss.python.org/t/pep-690-lazy-imports/15474>`__,
+              `03-May-2022 <https://mail.python.org/archives/list/python-dev@python.org/thread/IHOSWMIBKCXVB46FI7NGOC2F34RUYZ5Z/>`__
+
+
+Abstract
+========
+
+This PEP proposes a feature to transparently defer the execution of imported
+modules until the moment when an imported object is used.  Since Python
+programs commonly import many more modules than a single invocation of the
+program is likely to use in practice, lazy imports can greatly reduce the
+overall number of modules loaded, improving startup time and memory usage. Lazy
+imports also mostly eliminate the risk of import cycles.
+
+
+Motivation
+==========
+
+Common Python code style :pep:`prefers <8#imports>` imports at module
+level, so they don't have to be repeated within each scope the imported object
+is used in, and to avoid the inefficiency of repeated execution of the import
+system at runtime. This means that importing the main module of a program
+typically results in an immediate cascade of imports of most or all of the
+modules that may ever be needed by the program.
+
+Consider the example of a Python command line program with a number of
+subcommands. Each subcommand may perform different tasks, requiring the import
+of different dependencies. But a given invocation of the program will only
+execute a single subcommand, or possibly none (i.e. if just ``--help`` usage
+info is requested). Top-level eager imports in such a program will result in
+the import of many modules that will never be used at all; the time spent
+(possibly compiling and) executing these modules is pure waste.
+
+In an effort to improve startup time, some large Python CLIs tools make imports
+lazy by manually placing imports inline into functions to delay imports of
+expensive subsystems. This manual approach is labor-intensive and fragile; one
+misplaced import or refactor can easily undo painstaking optimization work.
+
+Existing import-hook-based solutions such as `demandimport
+<https://github.com/bwesterb/py-demandimport/>`_ or `importlib.util.LazyLoader
+<https://docs.python.org/3/library/importlib.html#importlib.util.LazyLoader>`_
+are limited in that only certain styles of import can be made truly lazy
+(imports such as ``from foo import a, b`` will still eagerly import the module
+``foo``) and they impose additional runtime overhead on every module attribute
+access.
+
+This PEP proposes a more comprehensive solution for lazy imports that does not
+impose detectable overhead in real-world use. The implementation in this PEP
+has already `demonstrated
+<https://github.com/facebookincubator/cinder/blob/cinder/3.8/CinderDoc/lazy_imports.rst>`_
+startup time improvements up to 70% and memory-use reductions up to
+40% on real-world Python CLIs.
+
+Lazy imports also eliminate most import cycles. With eager imports, "false
+cycles" can easily occur which are fixed by simply moving an import to the
+bottom of a module or inline into a function, or switching from ``from foo
+import bar`` to ``import foo``. With lazy imports, these "cycles" just work.
+The only cycles which will remain are those where two modules actually each use
+a name from the other at module level; these "true" cycles are only fixable by
+refactoring the classes or functions involved.
+
+
+Rationale
+=========
+
+The aim of this feature is to make imports transparently lazy. "Lazy" means
+that the import of a module (execution of the module body and addition of the
+module object to ``sys.modules``) should not occur until the module (or a name
+imported from it) is actually referenced during execution. "Transparent" means
+that besides the delayed import (and necessarily observable effects of that,
+such as delayed import side effects and changes to ``sys.modules``), there is
+no other observable change in behavior: the imported object is present in the
+module namespace as normal and is transparently loaded whenever first used: its
+status as a "lazy imported object" is not directly observable from Python or
+from C extension code.
+
+The requirement that the imported object be present in the module namespace as
+usual, even before the import has actually occurred, means that we need some
+kind of "lazy object" placeholder to represent the not-yet-imported object.
+The transparency requirement dictates that this placeholder must never be
+visible to Python code; any reference to it must trigger the import and replace
+it with the real imported object.
+
+Given the possibility that Python (or C extension) code may pull objects
+directly out of a module ``__dict__``, the only way to reliably prevent
+accidental leakage of lazy objects is to have the dictionary itself be
+responsible to ensure resolution of lazy objects on lookup.
+
+To avoid a performance penalty on the vast majority of dictionaries which never
+contain any lazy objects, we install a specialized lookup function
+(``lookdict_unicode_lazy``) for module namespace dictionaries when they first
+gain a lazy-object value. When this lookup function finds that the key
+references a lazy object, it resolves the lazy object immediately before
+returning it.
+
+Some operations on dictionaries (e.g. iterating all values) don't go through
+the lookup function; in these cases we have to add a check if the lookup
+function is ``lookdict_unicode_lazy`` and if so, resolve all lazy values first.
+
+This implementation comprehensively prevents leakage of lazy objects, ensuring
+they are always resolved to the real imported object before anyone can get hold
+of them for any use, while avoiding any significant performance impact on
+dictionaries in general.
+
+
+Specification
+=============
+
+Lazy imports are opt-in, and globally enabled via a new ``-L`` flag to the
+Python interpreter, or a ``PYTHONLAZYIMPORTS`` environment variable.
+
+When enabled, the loading and execution of all (and only) top level imports is
+deferred until the imported name is used. This could happen immediately (e.g.
+on the very next line after the import statement) or much later (e.g. while
+using the name inside a function being called by some other code at some later
+time.)
+
+For these top level imports, there are two exceptions which will make them
+eager (not lazy): imports inside ``try``/``except``/``finally``  or ``with``
+blocks, and star imports (``from foo import *``.) Imports inside
+exception-handling blocks (this includes ``with`` blocks, since those can also
+"catch" and handle exceptions) remain eager so that any exceptions arising from
+the import can be handled. Star imports must remain eager since performing the
+import is the only way to know which names should be added to the namespace.
+
+Imports inside class definitions or inside functions/methods are not "top
+level" and are never lazy.
+
+Dynamic imports using ``__import__()`` or ``importlib.import_module()`` are
+also never lazy.
+
+
+Example
+-------
+
+Say we have a module ``spam.py``::
+
+    # simulate some work
+    import time
+    time.sleep(10)
+    print("spam loaded")
+
+And a module ``eggs.py`` which imports it::
+
+    import spam
+    print("imports done")
+
+If we run ``python -L eggs.py``, the ``spam`` module will never be imported
+(because it is never referenced after the import), ``"spam loaded"`` will never
+be printed, and there will be no 10 second delay.
+
+But if ``eggs.py`` simply references the name ``spam`` after importing it, that
+will be enough to trigger the import of ``spam.py``::
+
+    import spam
+    print("imports done")
+    spam
+
+Now if we run ``python -L eggs.py``, we will see the output ``"imports done"``
+printed first, then a 10 second delay, and then ``"spam loaded"`` printed after
+that.
+
+Of course, in real use cases (especially with lazy imports), it's not
+recommended to rely on import side effects like this to trigger real work. This
+example is just to clarify the behavior of lazy imports.
+
+
+Debuggability
+-------------
+
+The implementation will ensure that exceptions resulting from a deferred import
+have metadata attached pointing the user to the original import statement, to
+ease debuggability of errors from lazy imports.
+
+Additionally, debug logging from ``python -v`` will include logging when an
+import statement has been encountered but execution of the import will be
+deferred.
+
+Python's ``-X importtime`` feature for profiling import costs adapts naturally
+to lazy imports; the profiled time is the time spent actually importing.
+
+
+Per-module opt out
+------------------
+
+Due to the backwards compatibility issues mentioned below, it may be necessary
+to force some imports to be eager.
+
+In first-party code, since imports inside a ``try`` or ``with`` block are never
+lazy, this can be easily accomplished::
+
+    try:  # force these imports to be eager
+        import foo
+        import bar
+    finally:
+        pass
+
+This PEP proposes to add a new ``importlib.eager_imports()`` context manager,
+so the above technique can be less verbose and doesn't require comments to
+clarify its intent::
+
+    with eager_imports():
+        import foo
+        import bar
+
+Since imports within context managers are always eager, the ``eager_imports()``
+context manager can just be an alias to a null context manager. The context
+manager does not force all imports to be recursively eager: ``foo`` and ``bar``
+will be imported eagerly, but imports within those modules will still follow
+the usual laziness rules.
+
+The more difficult case can occur if an import in third-party code that can't
+easily be modified must be forced to be eager. For this purpose, we propose to
+add an API to ``importlib`` that can be called early in the process to specify
+a list of module names within which all imports will be eager::
+
+    from importlib import set_eager_imports
+
+    set_eager_imports(["one.mod", "another"])
+
+The effect of this is also shallow: all imports within ``one.mod`` will be
+eager, but not imports in all modules imported by ``one.mod``.
+
+``set_eager_imports()`` can also take a callback which receives a module name and returns
+whether imports within this module should be eager::
+
+    import re
+    from importlib import set_eager_imports
+    
+    def eager_imports(name):
+        return re.match(r"foo\.[^.]+\.logger", name)
+
+    set_eager_imports(eager_imports)
+
+
+Backwards Compatibility
+=======================
+
+This proposal preserves full backwards compatibility when the feature is
+disabled, which is the default.
+
+Even when enabled, most code will continue to work normally without any
+observable change (other than improved startup time and memory usage.)
+Namespace packages are not affected: they work just as they do currently,
+except lazily.
+
+In some existing code, lazy imports could produce currently unexpected results
+and behaviors. The problems that we may see when enabling lazy imports in an
+existing codebase are related to:
+
+
+Import Side Effects
+-------------------
+
+Import side effects that would otherwise be produced by the execution of
+imported modules during the execution of import statements will be deferred at
+least until the imported objects are used.
+
+These import side effects may include:
+
+* code executing any side-effecting logic during import;
+* relying on imported submodules being set as attributes in the parent module.
+
+A relevant and typical affected case is the `click
+<https://click.palletsprojects.com/>`_ library for building Python command-line
+interfaces. If e.g. ``cli = click.group()`` is defined in ``main.py``, and
+``sub.py`` imports ``cli`` from ``main`` and adds subcommands to it via
+decorator (``@cli.command(...)``), but the actual ``cli()`` call is in
+``main.py``, then lazy imports may prevent the subcommands from being
+registered, since in this case Click is depending on side effects of the import
+of ``sub.py``. In this case the fix is to ensure the import of ``sub.py`` is
+eager, e.g. by using the ``importlib.eager_imports()`` context manager.
+
+
+Dynamic Paths
+-------------
+
+There could be issues related to dynamic Python import paths; particularly,
+adding (and then removing after the import) paths from ``sys.path``::
+
+    sys.path.insert(0, "/path/to/foo/module")
+    import foo
+    del sys.path[0]
+    foo.Bar()
+
+In this case, with lazy imports enabled, the import of ``foo`` will not
+actually occur while the addition to ``sys.path`` is present.
+
+
+Deferred Exceptions
+-------------------
+
+All exceptions arising from import (including ``ModuleNotFoundError``) are
+deferred from import time to first-use time, which could complicate debugging.
+Accessing an object in the middle of any code could trigger a deferred import
+and produce ``ImportError`` or any other exception resulting from the
+resolution of the deferred object, while loading and executing the related
+imported module. The implementation will provide debugging assistance in
+lazy-import-triggered tracebacks to mitigate this issue.
+
+
+Security Implications
+=====================
+
+Deferred execution of code could produce security concerns if process owner,
+path, ``sys.path``, or other sensitive environment or contextual states change
+between the time the ``import`` statement is executed and the time where the
+imported object is used.
+
+
+Performance Impact
+==================
+
+The reference implementation has shown that the feature has negligible
+performance impact on existing real-world codebases (Instagram Server and other
+several CLI programs at Meta), while providing substantial improvements to
+startup time and memory usage.
+
+The reference implementation shows small performance regressions in a few
+pyperformance benchmarks, but improvements in others. (TODO update with
+detailed data from 3.11 port of implementation.)
+
+
+How to Teach This
+=================
+
+Since the feature is opt-in, beginners should not encounter it by default.
+Documentation of the ``-L`` flag and ``PYTHONLAZYIMPORTS`` environment variable
+can clarify the behavior of lazy imports.
+
+Some best practices to deal with some of the issues that could arise and to
+better take advantage of lazy imports are:
+
+* Avoid relying on import side effects. Perhaps the most common reliance on
+  import side effects is the registry pattern, where population of some
+  external registry happens implicitly during the importing of modules, often
+  via decorators. Instead, the registry should be built via an explicit call
+  that perhaps does a discovery process to find decorated functions or classes.
+
+* Always import needed submodules explicitly, don't rely on some other import
+  to ensure a module has its submodules as attributes. That is, do ``import
+  foo.bar; foo.bar.Baz``, not ``import foo; foo.bar.Baz``. The latter only
+  works (unreliably) because the attribute ``foo.bar`` is added as a side
+  effect of ``foo.bar`` being imported somewhere else. With lazy imports this
+  may not always happen on time.
+
+* Avoid using star imports, as those are always eager.
+
+* When possible, do not import whole submodules. Import specific names instead;
+  i.e.: do ``from foo.bar import Baz``, not ``import foo.bar`` and then
+  ``foo.bar.Baz``. If you import submodules (such as ``foo.qux`` and
+  ``foo.fred``), with lazy imports enabled, when you access the parent module's
+  name (``foo`` in this case), that will trigger loading all of the sibling
+  submodules of the parent module (``foo.bar``, ``foo.qux`` and ``foo.fred``),
+  not only the one being accessed, because the parent module ``foo`` is the
+  actual deferred object name.
+
+
+Reference Implementation
+========================
+
+The current reference implementation is available as part of
+`Cinder <https://github.com/facebookincubator/cinder>`_.
+Reference implementation is in use within Meta Platforms and has proven to
+achieve improvements in startup time (and total runtime for some applications)
+in the range of 40%-70%, as well as significant reduction in memory footprint
+(up to 40%), thanks to not needing to execute imports that end up being unused
+in the common flow.
+
+
+Rejected Ideas
+==============
+
+Per-module opt-in
+-----------------
+
+A per-module opt-in using e.g. ``from __future__ import lazy_imports`` has a
+couple of disadvantages:
+
+* It is less practical to achieve robust and significant startup-time or
+  memory-use wins by piecemeal application of lazy imports. Generally it would
+  require blanket application of the ``__future__`` import to most of the
+  codebase, as well as to third-party dependencies (which may be hard or
+  impossible.)
+
+* ``__future__`` imports are not feature flags, they are for transition to
+  behaviors which will become default in the future. It is not clear if lazy
+  imports will ever make sense as the default behavior, so we should not
+  promise this with a ``__future__`` import. Thus, a per-module opt-in would
+  require a new ``from __optional_features__ import lazy_imports`` or similar
+  mechanism.
+
+Experience with the reference implementation suggests that the most practical
+adoption path for lazy imports is for a specific deployed application to opt-in
+globally, observe whether anything breaks, and opt-out specific modules as
+needed to account for e.g. reliance on import side effects.
+
+
+Explicit syntax for lazy imports
+--------------------------------
+
+If the primary objective of lazy imports were solely to work around import
+cycles and forward references, an explicitly-marked syntax for particular
+targeted imports to be lazy would make a lot of sense. But in practice it would
+be very hard to get robust startup time or memory use benefits from this
+approach, since it would require converting most imports within your code base
+(and in third-party dependencies) to use the lazy import syntax.
+
+It would be possible to aim for a "shallow" laziness where only the top-level
+imports of subsystems from the main module are made explicitly lazy, but then
+imports within the subsystems are all eager. This is extremely fragile, though
+-- it only takes one mis-placed import to undo the carefully constructed
+shallow laziness. Globally enabling lazy imports, on the other hand, provides
+in-depth robust laziness where you always pay only for the imports you use.
+
+
+Half-lazy imports
+-----------------
+
+It would be possible to eagerly run the import loader to the point of finding
+the module source, but then defer the actual execution of the module and
+creation of the module object. The advantage of this would be that certain
+classes of import errors (e.g. a simple typo in the module name) would be
+caught eagerly instead of being deferred to the use of an imported name.
+
+The disadvantage would be that the startup time benefits of lazy imports would
+be significantly reduced, since unused imports would still require a filesystem
+``stat()`` call, at least. It would also introduce a possibly non-obvious split
+between *which* import errors are raised eagerly and which are delayed, when
+lazy imports are enabled.
+
+This idea is rejected for now on the basis that in practice, confusion about
+import typos has not been an observed problem with the reference
+implementation. Generally delayed imports are not delayed forever, and errors
+show up soon enough to be caught and fixed (unless the import is truly unused.)
+
+
+Lazy dynamic imports
+--------------------
+
+It would be possible to add a ``lazy=True`` or similar option to
+``__import__()`` and/or ``importlib.import_module()``, to enable them to
+perform lazy imports.  That idea is rejected in this PEP for lack of a clear
+use case. Dynamic imports are already far outside the :pep:`8` code style
+recommendations for imports, and can easily be made precisely as lazy as
+desired by placing them at the desired point in the code flow. These aren't
+commonly used at module top level, which is where lazy imports applies.
+
+
+Deep eager-imports override
+---------------------------
+
+The proposed ``importlib.eager_imports()`` context manager and
+``importlib.set_eager_imports()`` override both have shallow effects: they only
+force eagerness for the location where they are applied, not transitively. It
+would be possible (although not simple) to provide a deep/transitive version of
+one or both. That idea is rejected in this PEP because experience with the
+reference implementation has not shown it to be necessary, and because it
+prevents local reasoning about laziness of imports.
+
+A deep override can lead to confusing behavior because the
+transitively-imported modules may be imported from multiple locations, some of
+which use the "deep eager override" and some of which don't. Thus those modules
+may still be imported lazily initially, if they are first imported from a
+location that doesn't have the override.
+
+With deep overrides it is not possible to locally reason about whether a given
+import will be lazy or eager. With the behavior specified in this PEP, such
+local reasoning is possible.
+
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.

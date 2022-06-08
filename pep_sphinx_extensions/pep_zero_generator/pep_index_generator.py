@@ -18,6 +18,7 @@ to allow it to be processed as normal.
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 import re
 from typing import TYPE_CHECKING
@@ -30,9 +31,29 @@ if TYPE_CHECKING:
     from sphinx.environment import BuildEnvironment
 
 
-def create_pep_zero(_: Sphinx, env: BuildEnvironment, docnames: list[str]) -> None:
-    # Sphinx app object is unneeded by this function
+def create_pep_json(peps: list[parser.PEP]) -> str:
+    pep_dict = {
+        pep.number: {
+            "title": pep.title,
+            "authors": ", ".join(pep.authors.nick for pep.authors in pep.authors),
+            "discussions_to": pep.discussions_to,
+            "status": pep.status,
+            "type": pep.pep_type,
+            "created": pep.created,
+            "python_version": pep.python_version,
+            "post_history": pep.post_history,
+            "resolution": pep.resolution,
+            "requires": pep.requires,
+            "replaces": pep.replaces,
+            "superseded_by": pep.superseded_by,
+            "url": f"https://peps.python.org/pep-{pep.number:0>4}/",
+        }
+        for pep in sorted(peps)
+    }
+    return json.dumps(pep_dict, indent=1)
 
+
+def create_pep_zero(app: Sphinx, env: BuildEnvironment, docnames: list[str]) -> None:
     # Read from root directory
     path = Path(".")
 
@@ -57,9 +78,18 @@ def create_pep_zero(_: Sphinx, env: BuildEnvironment, docnames: list[str]) -> No
             peps.append(pep)
 
     pep0_text = writer.PEPZeroWriter().write_pep0(sorted(peps))
-    Path(f"{pep_zero_filename}.rst").write_text(pep0_text, encoding="utf-8")
+    pep0_path = Path(f"{pep_zero_filename}.rst")
+    pep0_path.write_text(pep0_text, encoding="utf-8")
+
+    peps.append(parser.PEP(pep0_path, authors_overrides))
 
     # Add to files for builder
     docnames.insert(1, pep_zero_filename)
     # Add to files for writer
     env.found_docs.add(pep_zero_filename)
+
+    # Create peps.json
+    pep0_json = create_pep_json(peps)
+    out_dir = Path(app.outdir) / "api"
+    out_dir.mkdir(exist_ok=True)
+    Path(out_dir, "peps.json").write_text(pep0_json, encoding="utf-8")
