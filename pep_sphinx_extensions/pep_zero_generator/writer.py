@@ -113,6 +113,8 @@ class PEPZeroWriter:
         self.emit_newline()
 
     def write_pep0(self, peps: list[PEP], header: str = HEADER, intro: str = INTRO, is_pep0: bool = True):
+        if len(peps) == 0:
+            return ""
 
         # PEP metadata
         self.emit_text(header)
