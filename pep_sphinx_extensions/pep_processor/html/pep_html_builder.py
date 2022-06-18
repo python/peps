@@ -36,7 +36,7 @@ class FileBuilder(StandaloneHTMLBuilder):
 
         # local table of contents
         toc_tree = self.env.tocs[docname].deepcopy()
-        if len(toc_tree[0]) > 1:
+        if len(toc_tree) and len(toc_tree[0]) > 1:
             toc_tree = toc_tree[0][1]  # don't include document title
             del toc_tree[0]  # remove contents node
             for node in toc_tree.findall(nodes.reference):
