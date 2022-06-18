@@ -89,8 +89,8 @@ class PEPZeroWriter:
         self.emit_newline()
         self.emit_text("   * - ")
         self.emit_text("     - PEP")
-        self.emit_text("     - PEP Title")
-        self.emit_text("     - PEP Author(s)")
+        self.emit_text("     - Title")
+        self.emit_text("     - Authors")
 
     def emit_title(self, text: str, *, symbol: str = "=") -> None:
         self.output.append(text)
