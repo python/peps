@@ -18,7 +18,8 @@ arguments specified by them are of the same type. However, that behaviour can
 be very limiting. Therefore, in this PEP we propose a new way to enable more
 precise ``**kwargs`` typing. The new approach revolves around using
 ``TypedDict`` to type ``**kwargs`` that comprise keyword arguments of different
-types.
+types. It also involves introducing a grammar change and a new dunder
+``__unpack__``\.
 
 Motivation
 ==========
@@ -83,7 +84,16 @@ in more detail in section `Grammar Changes`_. Continuing the previous example:
 
 would mean that the ``**kwargs`` comprise two keyword arguments specified by
 ``Movie`` (i.e. a ``name`` keyword of type ``str`` and a ``year`` keyword of
-type ``int``). Then, inside the function itself, the type checkers should treat
+type ``int``). This indicates that the function should be called as follows:
+
+::
+
+    kwargs: Movie = {name: "Life of Brian", year: 1979}
+
+    foo(**kwargs)                               # OK!
+    foo(name="The Meaning of Life", year=1983)  # OK!
+
+Inside the function itself, the type checkers should treat
 the ``kwargs`` parameter as a ``TypedDict``:
 
 ::
@@ -100,8 +110,9 @@ Function calls with standard dictionaries
 -----------------------------------------
 
 Calling a function that has ``**kwargs`` typed using the ``**kwargs: **Movie``
-syntax with a standard dictionary must generate a type checker error. For
-example:
+syntax with a dictionary of type ``dict[str, object]`` must generate a type
+checker error. On the other hand, the behaviour for functions using standard,
+untyped dictionaries can depend on the type checker. For example:
 
 ::
 
@@ -113,6 +124,8 @@ example:
     typed_movie: Movie = {"name": "The Meaning of Life", "year": 1983}
     foo(**typed_movie)  # OK!
 
+    another_movie = {"name": "Life of Brian", "year": 1979}
+    foo(**another_movie)  # Depends on the type checker.
 
 Keyword collisions
 ------------------
@@ -133,7 +146,6 @@ generated. For example:
                                                       # positional argument,
                                                       # so **kwargs can contain
                                                       # a "name" keyword.
-
 
 Required and non-required keys
 ------------------------------
@@ -157,6 +169,7 @@ caller, then an error must be reported by type checkers.
 
 Assignment
 ----------
+
 Assignments of a function typed with the ``**kwargs: **Movie`` construct and
 another callable type should pass type checking only if they are compatible.
 This can happen in the following cases:
@@ -198,19 +211,52 @@ Continuing the previous example:
         number: NotRequired[int]
     
     def src(**kwargs: **Example): ...
-    def dest(animal: Dog, string: str, number: int = ...): ...
+    def dest(*, animal: Dog, string: str, number: int = ...): ...
 
     dest = src  # OK!
 
-3. The destination callable contains ``**kwargs: **TypedDict``, the source
-callable doesn't contain ``**kwargs`` and the destination function's
-``TypedDict`` fields are assignable to the corresponding keyword arguments in
-the source function. Again, required and not required keys should be compatible
-with the keyword arguments and the rest of the parameters should be compatible.
-For example:
+It is worth pointing out that the destination function's arguments that are to
+be compatible with the keys and values from the ``TypedDict`` must be keyword
+only arguments:
 
 ::
 
+    def dest(animal: Dog, string: str, number: int = ...): ...
+    dest(animal_instance, "some string")  # OK!
+    dest = src
+    dest(animal_instance, "some string")  # WRONG! The same call fails at
+                                          # runtime now because 'src' expects
+                                          # keyword arguments.
+
+3. The reverse situation where the destination callable
+contains ``**kwargs: **TypedDict`` and the source callable doesn't contain
+``**kwargs`` should be only allowed if the ``TypedDict`` in the destination
+function signature is final. This is because, we cannot be sure that additional
+keyword arguments are not being passed in when an instance of a subclass had
+been assigned to a variable with a base class type and then unpacked in the
+destination callable invocation:
+
+::
+
+    def dest(**Animal): ...
+    def src(name: str): ...
+
+    dog: Dog = {"name": "Daisy", "breed": "Labrador"}
+    animal: Animal = dog
+
+    dest = src      # WRONG!
+    dest(**animal)  # Fails at runtime.
+
+However, when the ``TypedDict`` in the function signature is final, we are
+sure that no additional keywords can be passed that way. In this situation the
+destination function's ``TypedDict`` fields should be assignable to the
+corresponding keyword arguments in the source function. Again, required and not
+required keys should be compatible with the keyword arguments and the rest of
+the parameters should be compatible. For example:
+
+::
+
+    @final
     class Example(TypedDict):
         animal: Dog
         string: str
@@ -219,7 +265,18 @@ For example:
     def src(animal: Animal, string: str, number: int = ...): ...
     def dest(**kwargs: **Example): ...
 
-    dest = src  # OK!
+    dest = src  # OK! 
+
+Similarly to the previous case it is worth pointing out that the source
+callable arguments that are to be compatible with ``TypedDict`` keys and
+values that ``**kwargs`` of the destination callable were typed with have to be
+passable by keyword:
+
+::
+
+    def src(animal: Animal, /, string: str, number: int = ...): ...
+
+    dest = src  # WRONG! 'animal' is a positional only argument.
 
 4. The destination callable contains ``**kwargs: **TypedDict`` and the source
 callable contains untyped ``**kwargs``:
@@ -236,6 +293,26 @@ callable contains traditionally typed ``**kwargs: T`` and each of the
 destination function ``TypedDict``\'s fields is assignable to a variable of
 type ``T``.
 
+::
+
+    class Vehicle:
+        ...
+    
+    class Car(Vehicle):
+        ...
+
+    class Motorcycle(Vehicle):
+        ...
+
+    class Vehicles(TypedDict):
+        car: Car
+        moto: Motorcycle
+    
+    def dest(**kwargs: **Vehicles): ...
+    def src(**kwargs: Vehicle): ...
+
+    dest = src  # OK!
+
 On the other hand, if the destination callable contains either untyped or
 traditionally typed ``**kwargs: T`` and the source callable is typed using
 ``**kwargs: **TypedDict`` then an error should be generated, because
@@ -244,8 +321,63 @@ traditionally typed ``**kwargs`` aren't checked for keyword names.
 To summarize, function parameters should behave contravariantly and function
 return types should behave covariantly.
 
+Passing kwargs inside a function to another function
+----------------------------------------------------
+
+Point 3 of the Assignment section mentions the problem of possibly passing
+additional keyword arguments by assigning a subclass instance to a variable
+that has a base class type. Let's consider the following example:
+
+::
+
+    class Animal(TypedDict):
+        name: str
+    
+    class Dog(Animal):
+        breed: str
+
+    def takes_name(name: str): ...
+
+    dog: Dog = {"name": "Daisy", "breed": "Labrador"}
+    animal: Animal = dog
+
+    def foo(**kwargs: **Animal):
+        print(kwargs["name"].capitalize())
+    
+    def bar(**kwargs: **Animal):
+        takes_name(**kwargs)
+    
+    def baz(animal: Animal):
+        takes_name(**animal)
+    
+    def spam(**kwargs: **Animal):
+        baz(kwargs)
+    
+    foo(**animal)   # OK! foo only expects and uses keywords of 'Animal'.
+
+    bar(**animal)   # WRONG! This will fail at runtime because 'breed' keyword
+                    # will be passed to 'takes_name' as well.
+    
+    spam(**animal)  # WRONG! Again, 'breed' keyword will be eventually passed
+                    # to 'takes_name'.
+
+In the example above, the call to ``foo`` will not cause any issues at
+runtime. Even though ``foo`` expects ``kwargs`` of type ``Animal`` it doesn't
+matter if it receives additional arguments because it only reads and uses what
+it needs completely ignoring any additional values.
+
+The calls to ``bar`` and ``spam`` will fail because an unexpected keyword
+argument will be passed to the ``takes_name`` function. Similarly, if inside
+the function ``kwargs`` are being iterated over, then the runtime behaviour may
+not be in line with what the function's author intended or predicted.
+
+Therefore, ``kwargs`` hinted with an unpacked ``TypedDict`` can only be passed
+to another function or iterated over if the particular ``TypedDict`` is final.
+Otherwise, the type checker should generate an error.
+
 Grammar Changes
 ===============
+
 This PEP requires a grammar change so that the double asterisk syntax is
 allowed for ``**kwargs`` annotations. The proposed change is to extend the
 ``kwds`` rule as follows:
@@ -302,8 +434,7 @@ should look as below:
       body=[
         Expr(
           value=Constant(value=Ellipsis))],
-      decorator_list=[])],
-    type_ignores=[])
+      decorator_list=[])
 
 The runtime annotations should be consistent with the AST. Continuing the
 previous example:
@@ -317,7 +448,9 @@ previous example:
 
 The double asterisk syntax should call the ``__unpack__`` special method on
 the object it was used on. This means that ``def foo(**kwargs: **T): ...`` is
-equivalent to ``def foo(**kwargs: T.__unpack__()): ...``.
+equivalent to ``def foo(**kwargs: T.__unpack__()): ...``. In addition,
+``**Movie`` in the example above is the ``repr`` of the object that
+``__unpack__()`` returns.
 
 Backwards Compatibility
 -----------------------
@@ -338,6 +471,30 @@ the keywords arguments are "unpacked" from the ``TypedDict``. Secondly, there
 would be no need to introduce any new special forms. Lastly, the use of
 ``Unpack`` for the purposes described in this PEP does not interfere with the
 use cases described in :pep:`646`\.
+
+It is worth pointing out that the AST generated for ``Unpack`` would differ
+from the AST generated for the double asterisk syntax:
+
+::
+
+    FunctionDef(
+      name='foo',
+      args=arguments(
+        posonlyargs=[],
+        args=[],
+        kwonlyargs=[],
+        kw_defaults=[],
+        kwarg=arg(
+          arg='kwargs',
+          annotation=Subscript(
+            value=Name(id='Unpack', ctx=Load()),
+            slice=Name(id='Movie', ctx=Load()),
+            ctx=Load())),
+        defaults=[]),
+      body=[
+        Expr(
+          value=Constant(value=Ellipsis))],
+      decorator_list=[]),
 
 Alternatives
 ------------
@@ -389,7 +546,7 @@ can result in an error:
     
     TypedDictUnion = Movie | Book
 
-    def foo(**kwargs: **TypedDictUnion) -> None: ...  # ERROR! Unsupported use
+    def foo(**kwargs: **TypedDictUnion) -> None: ...  # WRONG! Unsupported use
                                                       # of a union of
                                                       # TypedDicts to type
                                                       # **kwargs
