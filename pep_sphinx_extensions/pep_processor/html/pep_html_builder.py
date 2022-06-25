@@ -30,10 +30,6 @@ class FileBuilder(StandaloneHTMLBuilder):
         except KeyError:
             title = ""
 
-        # source filename
-        file_is_rst = Path(self.env.srcdir, docname + ".rst").exists()
-        source_name = f"{docname}.rst" if file_is_rst else f"{docname}.txt"
-
         # local table of contents
         toc_tree = self.env.tocs[docname].deepcopy()
         if len(toc_tree) and len(toc_tree[0]) > 1:
@@ -45,7 +41,7 @@ class FileBuilder(StandaloneHTMLBuilder):
         else:
             toc = ""  # PEPs with no sections -- 9, 210
 
-        return {"title": title, "sourcename": source_name, "toc": toc, "body": body}
+        return {"title": title, "sourcename": f"{docname}.rst", "toc": toc, "body": body}
 
 
 class DirectoryBuilder(FileBuilder):

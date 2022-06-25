@@ -4,7 +4,7 @@ from pep_sphinx_extensions.pep_zero_generator import parser, pep_index_generator
 
 
 def test_create_pep_json():
-    peps = [parser.PEP(Path("pep-0008.txt"))]
+    peps = [parser.PEP(Path("pep-0008.rst"))]
 
     out = pep_index_generator.create_pep_json(peps)
 

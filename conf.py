@@ -26,7 +26,6 @@ extensions = ["pep_sphinx_extensions", "sphinx.ext.githubpages"]
 # The file extensions of source files. Sphinx uses these suffixes as sources.
 source_suffix = {
     ".rst": "pep",
-    ".txt": "pep",
 }
 
 # List of patterns (relative to source dir) to ignore when looking for source files.
@@ -35,7 +34,6 @@ include_patterns = [
     "contents.rst",
     # PEP files
     "pep-????.rst",
-    "pep-????.txt",
     # PEP ancillary files
     "pep-????/*.rst",
     # Documentation
