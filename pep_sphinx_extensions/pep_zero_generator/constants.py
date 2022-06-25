@@ -45,4 +45,9 @@ They are used to propose major additions or changes to the PyPA specifications.
 .. _specifications: https://packaging.python.org/en/latest/specifications/
 .. _PyPA specification update process: https://www.pypa.io/en/latest/specifications/#specification-update-process
 """,
+    "typing": """\
+Many recent PEPs propose changes to Python's static type system
+or otherwise relate to type annotationsqq.
+They are listed here for reference.
+"""
 }
