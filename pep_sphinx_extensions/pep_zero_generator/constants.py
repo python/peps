@@ -47,7 +47,7 @@ They are used to propose major additions or changes to the PyPA specifications.
 """,
     "typing": """\
 Many recent PEPs propose changes to Python's static type system
-or otherwise relate to type annotationsqq.
+or otherwise relate to type annotations.
 They are listed here for reference.
 """
 }
