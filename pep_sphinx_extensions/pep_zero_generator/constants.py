@@ -45,4 +45,10 @@ They are used to propose major additions or changes to the PyPA specifications.
 .. _specifications: https://packaging.python.org/en/latest/specifications/
 .. _PyPA specification update process: https://www.pypa.io/en/latest/specifications/#specification-update-process
 """,
+    "releases": """\
+A PEP is written to specify the release cycle for each minor release of Python.
+See the `dev guide`_ for more information.
+
+.. _dev guide: https://devguide.python.org/
+"""
 }
