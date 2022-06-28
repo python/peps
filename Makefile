@@ -21,7 +21,7 @@ rss: venv
 	$(VENVDIR)/bin/python3 generate_rss.py
 
 clean: clean-venv
-	-rm -rf build
+	-rm -rf build topic
 
 clean-venv:
 	rm -rf $(VENVDIR)
