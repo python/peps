@@ -1,3 +1,7 @@
+// Handle setting and changing the site's color scheme (light/dark)
+
+"use strict";
+
 const prefersDark = window.matchMedia("(prefers-color-scheme: dark)")
 
 const getColourScheme = () => document.documentElement.dataset.colour_scheme
