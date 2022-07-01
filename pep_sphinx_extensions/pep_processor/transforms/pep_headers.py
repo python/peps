@@ -98,6 +98,17 @@ class PEPHeaders(transforms.Transform):
                     target = self.document.settings.pep_url.format(int(pep_str))
                     new_body += [nodes.reference("", pep_str, refuri=target), nodes.Text(", ")]
                 para[:] = new_body[:-1]  # drop trailing space
+            elif name == "topic":
+                new_body = []
+                for topic_name in body.astext().split(","):
+                    if topic_name:
+                        target = f"/topic/{topic_name.lower().strip()}/"
+                        new_body += [
+                            nodes.reference("", topic_name, refuri=target),
+                            nodes.Text(", "),
+                        ]
+                if new_body:
+                    para[:] = new_body[:-1]  # Drop trailing space/comma
             elif name in {"last-modified", "content-type", "version"}:
                 # Mark unneeded fields
                 fields_to_remove.append(field)
