@@ -57,7 +57,7 @@ def _depart_maths():
 def _update_config_for_builder(app: Sphinx) -> None:
     app.env.document_ids = {}  # For PEPReferenceRoleTitleText
     if app.builder.name == "dirhtml":
-        app.env.settings["pep_url"] = "../pep-{:0>4}"
+        app.env.settings["pep_url"] = "/pep-{:0>4}"
 
     # internal_builder exists if Sphinx is run by build.py
     if "internal_builder" not in app.tags:
@@ -77,7 +77,7 @@ def _post_build(app: Sphinx, exception: Exception | None) -> None:
 def setup(app: Sphinx) -> dict[str, bool]:
     """Initialize Sphinx extension."""
 
-    environment.default_settings["pep_url"] = "pep-{:0>4}.html"
+    environment.default_settings["pep_url"] = "/pep-{:0>4}.html"
     environment.default_settings["halt_level"] = 2  # Fail on Docutils warning
 
     # Register plugin logic
