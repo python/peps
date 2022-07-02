@@ -4,22 +4,13 @@ import subprocess
 
 from docutils import nodes
 from docutils import transforms
-from docutils.transforms import misc
-from docutils.transforms import references
-
-from pep_sphinx_extensions import config
 
 
 class PEPFooter(transforms.Transform):
     """Footer transforms for PEPs.
 
-     - Appends external links to footnotes.
-     - Creates a link to the (GitHub) source text.
-
-    TargetNotes:
-        Locate the `References` section, insert a placeholder at the end
-        for an external target footnote insertion transform, and schedule
-        the transform to run immediately.
+     - Remove the References/Footnotes section if it is empty when rendered.
+     - Create a link to the (GitHub) source text.
 
     Source Link:
         Create the link to the source file from the document source path,
@@ -35,77 +26,77 @@ class PEPFooter(transforms.Transform):
         if not pep_source_path.match("pep-*"):
             return  # not a PEP file, exit early
 
-        doc = self.document[0]
-        reference_section = copyright_section = None
-
         # Iterate through sections from the end of the document
-        num_sections = len(doc)
-        for i, section in enumerate(reversed(doc)):
+        for section in reversed(self.document[0]):
             if not isinstance(section, nodes.section):
                 continue
-            title_words = section[0].astext().lower().split()
-            if "references" in title_words:
-                reference_section = section
-                break
-            elif "copyright" in title_words:
-                copyright_section = num_sections - i - 1
-
-        # Add a references section if we didn't find one
-        if not reference_section:
-            reference_section = nodes.section()
-            reference_section += nodes.title("", "References")
-            self.document.set_id(reference_section)
-            if copyright_section:
-                # Put the new "References" section before "Copyright":
-                doc.insert(copyright_section, reference_section)
-            else:
-                # Put the new "References" section at end of doc:
-                doc.append(reference_section)
-
-        # Add and schedule execution of the TargetNotes transform
-        pending = nodes.pending(references.TargetNotes)
-        reference_section.append(pending)
-        self.document.note_pending(pending, priority=0)
-
-        # If there are no references after TargetNotes has finished, remove the
-        # references section
-        pending = nodes.pending(misc.CallBack, details={"callback": _cleanup_callback})
-        reference_section.append(pending)
-        self.document.note_pending(pending, priority=1)
+            title_words = {*section[0].astext().lower().split()}
+            if {"references", "footnotes"} & title_words:
+                # Remove references/footnotes sections if there is no displayed
+                # content (i.e. they only have title & link target nodes)
+                to_hoist = []
+                types = set()
+                for node in section:
+                    types.add(type(node))
+                    if isinstance(node, nodes.target):
+                        to_hoist.append(node)
+                if types <= {nodes.title, nodes.target}:
+                    section.parent.extend(to_hoist)
+                    section.parent.remove(section)
 
         # Add link to source text and last modified date
         if pep_source_path.stem != "pep-0000":
+            if pep_source_path.stem != "pep-0210":  # 210 is entirely empty, skip
+                self.document += nodes.transition()
             self.document += _add_source_link(pep_source_path)
             self.document += _add_commit_history_info(pep_source_path)
 
 
-def _cleanup_callback(pending: nodes.pending) -> None:
-    """Remove an empty "References" section.
-
-    Called after the `references.TargetNotes` transform is complete.
-
-    """
-    if len(pending.parent) == 2:  # <title> and <pending>
-        pending.parent.parent.remove(pending.parent)
-
-
 def _add_source_link(pep_source_path: Path) -> nodes.paragraph:
     """Add link to source text on VCS (GitHub)"""
-    source_link = config.pep_vcs_url + pep_source_path.name
+    source_link = f"https://github.com/python/peps/blob/main/{pep_source_path.name}"
     link_node = nodes.reference("", source_link, refuri=source_link)
     return nodes.paragraph("", "Source: ", link_node)
 
 
 def _add_commit_history_info(pep_source_path: Path) -> nodes.paragraph:
     """Use local git history to find last modified date."""
-    args = ["git", "--no-pager", "log", "-1", "--format=%at", pep_source_path.name]
     try:
-        file_modified = subprocess.check_output(args)
-        since_epoch = file_modified.decode("utf-8").strip()
-        dt = datetime.datetime.utcfromtimestamp(float(since_epoch))
-    except (subprocess.CalledProcessError, ValueError):
+        since_epoch = LAST_MODIFIED_TIMES[pep_source_path.name]
+    except KeyError:
         return nodes.paragraph()
 
-    commit_link = config.pep_commits_url + pep_source_path.name
-    link_node = nodes.reference("", f"{dt.isoformat(sep=' ')} GMT", refuri=commit_link)
+    iso_time = datetime.datetime.utcfromtimestamp(since_epoch).isoformat(sep=" ")
+    commit_link = f"https://github.com/python/peps/commits/main/{pep_source_path.name}"
+    link_node = nodes.reference("", f"{iso_time} GMT", refuri=commit_link)
     return nodes.paragraph("", "Last modified: ", link_node)
+
+
+def _get_last_modified_timestamps():
+    # get timestamps and changed files from all commits (without paging results)
+    args = ["git", "--no-pager", "log", "--format=#%at", "--name-only"]
+    with subprocess.Popen(args, stdout=subprocess.PIPE) as process:
+        all_modified = process.stdout.read().decode("utf-8")
+        process.stdout.close()
+        if process.wait():  # non-zero return code
+            return {}
+
+    # set up the dictionary with the *current* files
+    last_modified = {path.name: 0 for path in Path().glob("pep-*") if path.suffix in {".txt", ".rst"}}
+
+    # iterate through newest to oldest, updating per file timestamps
+    change_sets = all_modified.removeprefix("#").split("#")
+    for change_set in change_sets:
+        timestamp, files = change_set.split("\n", 1)
+        for file in files.strip().split("\n"):
+            if file.startswith("pep-") and file[-3:] in {"txt", "rst"}:
+                if last_modified.get(file) == 0:
+                    try:
+                        last_modified[file] = float(timestamp)
+                    except ValueError:
+                        pass  # if float conversion fails
+
+    return last_modified
+
+
+LAST_MODIFIED_TIMES = _get_last_modified_timestamps()

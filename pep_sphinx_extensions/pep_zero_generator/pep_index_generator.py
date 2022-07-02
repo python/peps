@@ -17,12 +17,13 @@ to allow it to be processed as normal.
 """
 from __future__ import annotations
 
-import csv
+import json
 from pathlib import Path
-import re
 from typing import TYPE_CHECKING
 
+from pep_sphinx_extensions.pep_zero_generator.constants import SUBINDICES_BY_TOPIC
 from pep_sphinx_extensions.pep_zero_generator import parser
+from pep_sphinx_extensions.pep_zero_generator import subindices
 from pep_sphinx_extensions.pep_zero_generator import writer
 
 if TYPE_CHECKING:
@@ -30,36 +31,37 @@ if TYPE_CHECKING:
     from sphinx.environment import BuildEnvironment
 
 
-def create_pep_zero(_: Sphinx, env: BuildEnvironment, docnames: list[str]) -> None:
-    # Sphinx app object is unneeded by this function
-
+def _parse_peps() -> list[parser.PEP]:
     # Read from root directory
     path = Path(".")
-
-    pep_zero_filename = "pep-0000"
     peps: list[parser.PEP] = []
-    pep_pat = re.compile(r"pep-\d{4}")  # Path.match() doesn't support regular expressions
-
-    # AUTHOR_OVERRIDES.csv is an exception file for PEP0 name parsing
-    with open("AUTHOR_OVERRIDES.csv", "r", encoding="utf-8") as f:
-        authors_overrides = {}
-        for line in csv.DictReader(f):
-            full_name = line.pop("Overridden Name")
-            authors_overrides[full_name] = line
 
     for file_path in path.iterdir():
         if not file_path.is_file():
             continue  # Skip directories etc.
         if file_path.match("pep-0000*"):
             continue  # Skip pre-existing PEP 0 files
-        if pep_pat.match(str(file_path)) and file_path.suffix in {".txt", ".rst"}:
-            pep = parser.PEP(path.joinpath(file_path).absolute(), authors_overrides)
+        if file_path.match("pep-????.???") and file_path.suffix in {".txt", ".rst"}:
+            pep = parser.PEP(path.joinpath(file_path).absolute())
             peps.append(pep)
 
-    pep0_text = writer.PEPZeroWriter().write_pep0(sorted(peps))
-    Path(f"{pep_zero_filename}.rst").write_text(pep0_text, encoding="utf-8")
+    return sorted(peps)
 
-    # Add to files for builder
-    docnames.insert(1, pep_zero_filename)
-    # Add to files for writer
-    env.found_docs.add(pep_zero_filename)
+
+def create_pep_json(peps: list[parser.PEP]) -> str:
+    return json.dumps({pep.number: pep.full_details for pep in peps}, indent=1)
+
+
+def create_pep_zero(app: Sphinx, env: BuildEnvironment, docnames: list[str]) -> None:
+    peps = _parse_peps()
+
+    pep0_text = writer.PEPZeroWriter().write_pep0(peps)
+    pep0_path = subindices.update_sphinx("pep-0000", pep0_text, docnames, env)
+    peps.append(parser.PEP(pep0_path))
+
+    subindices.generate_subindices(SUBINDICES_BY_TOPIC, peps, docnames, env)
+
+    # Create peps.json
+    json_path = Path(app.outdir, "api", "peps.json").resolve()
+    json_path.parent.mkdir(exist_ok=True)
+    json_path.write_text(create_pep_json(peps), encoding="utf-8")

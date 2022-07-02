@@ -1,0 +1,572 @@
+PEP: 692
+Title: Using TypedDict for more precise \*\*kwargs typing
+Author: Franek Magiera <framagie@gmail.com>
+Sponsor: Jelle Zijlstra <jelle.zijlstra@gmail.com>
+Discussions-To: https://mail.python.org/archives/list/typing-sig@python.org/thread/U42MJE6QZYWPVIFHJIGIT7OE52ZGIQV3/
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 29-May-2022
+Python-Version: 3.12
+Post-History: `29-May-2022 <https://mail.python.org/archives/list/typing-sig@python.org/thread/U42MJE6QZYWPVIFHJIGIT7OE52ZGIQV3/>`__,
+
+
+Abstract
+========
+
+Currently ``**kwargs`` can be type hinted as long as all of the keyword
+arguments specified by them are of the same type. However, that behaviour can
+be very limiting. Therefore, in this PEP we propose a new way to enable more
+precise ``**kwargs`` typing. The new approach revolves around using
+``TypedDict`` to type ``**kwargs`` that comprise keyword arguments of different
+types. It also involves introducing a grammar change and a new dunder
+``__unpack__``.
+
+Motivation
+==========
+
+Currently annotating ``**kwargs`` with a type ``T`` means that the ``kwargs``
+type is in fact ``dict[str, T]``. For example::
+
+    def foo(**kwargs: str) -> None: ...
+
+means that all keyword arguments in ``foo`` are strings (i.e., ``kwargs`` is
+of type ``dict[str, str]``). This behaviour limits the ability to type
+annotate ``**kwargs`` only to the cases where all of them are of the same type.
+However, it is often the case that keyword arguments conveyed by ``**kwargs``
+have different types that are dependent on the keyword's name. In those cases
+type annotating ``**kwargs`` is not possible. This is especially a problem for
+already existing codebases where the need of refactoring the code in order to
+introduce proper type annotations may be considered not worth the effort. This
+in turn prevents the project from getting all of the benefits that type hinting
+can provide. As a consequence, there has been a `lot of discussion <mypyIssue4441_>`__
+around supporting more precise ``**kwargs`` typing and it became a
+feature that would be valuable for a large part of the Python community.
+
+Rationale
+=========
+
+:pep:`589` introduced the ``TypedDict`` type constructor that supports dictionary
+types consisting of string keys and values of potentially different types. A
+function's keyword arguments represented by a formal parameter that begins with
+double asterisk, such as ``**kwargs``, are received as a dictionary.
+Additionally, such functions are often called using unpacked dictionaries to
+provide keyword arguments. This makes ``TypedDict`` a perfect candidate to be
+used for more precise ``**kwargs`` typing. In addition, with ``TypedDict``
+keyword names can be taken into account during static type analysis. However,
+specifying ``**kwargs`` type with a ``TypedDict`` means, as mentioned earlier,
+that each keyword argument specified by ``**kwargs`` is a ``TypedDict`` itself.
+For instance::
+
+    class Movie(TypedDict):
+        name: str
+        year: int
+    
+    def foo(**kwargs: Movie) -> None: ...
+
+means that each keyword argument in ``foo`` is itself a ``Movie`` dictionary
+that has a ``name`` key with a string type value and a ``year`` key with an
+integer type value. Therefore, in order to support specifying ``kwargs`` type
+as a ``TypedDict`` without breaking current behaviour, a new syntax has to be
+introduced.
+
+Specification
+=============
+
+To support the aforementioned use case we propose to use the double asterisk
+syntax inside of the type annotation. The required grammar change is discussed
+in more detail in section `Grammar Changes`_. Continuing the previous example::
+
+    def foo(**kwargs: **Movie) -> None: ...
+
+would mean that the ``**kwargs`` comprise two keyword arguments specified by
+``Movie`` (i.e. a ``name`` keyword of type ``str`` and a ``year`` keyword of
+type ``int``). This indicates that the function should be called as follows::
+
+    kwargs: Movie = {name: "Life of Brian", year: 1979}
+
+    foo(**kwargs)                               # OK!
+    foo(name="The Meaning of Life", year=1983)  # OK!
+
+Inside the function itself, the type checkers should treat
+the ``kwargs`` parameter as a ``TypedDict``::
+
+    def foo(**kwargs: **Movie) -> None:
+        assert_type(kwargs, Movie)  # OK!
+
+
+Using the new annotation will not have any runtime effect - it should only be
+taken into account by type checkers. Any mention of errors in the following
+sections relates to type checker errors.
+
+Function calls with standard dictionaries
+-----------------------------------------
+
+Calling a function that has ``**kwargs`` typed using the ``**kwargs: **Movie``
+syntax with a dictionary of type ``dict[str, object]`` must generate a type
+checker error. On the other hand, the behaviour for functions using standard,
+untyped dictionaries can depend on the type checker. For example::
+
+    def foo(**kwargs: **Movie) -> None: ...
+
+    movie: dict[str, object] = {"name": "Life of Brian", "year": 1979}
+    foo(**movie)  # WRONG! Movie is of type dict[str, object]
+
+    typed_movie: Movie = {"name": "The Meaning of Life", "year": 1983}
+    foo(**typed_movie)  # OK!
+
+    another_movie = {"name": "Life of Brian", "year": 1979}
+    foo(**another_movie)  # Depends on the type checker.
+
+Keyword collisions
+------------------
+
+A ``TypedDict`` that is used to type ``**kwargs`` could potentially contain
+keys that are already defined in the function's signature. If the duplicate
+name is a standard argument, an error should be reported by type checkers.
+If the duplicate name is a positional only argument, no errors should be
+generated. For example::
+
+    def foo(name, **kwargs: **Movie) -> None: ...     # WRONG! "name" will
+                                                      # always bind to the
+                                                      # first parameter.
+
+    def foo(name, /, **kwargs: **Movie) -> None: ...  # OK! "name" is a
+                                                      # positional argument,
+                                                      # so **kwargs can contain
+                                                      # a "name" keyword.
+
+Required and non-required keys
+------------------------------
+
+By default all keys in a ``TypedDict`` are required. This behaviour can be
+overridden by setting the dictionary's ``total`` parameter as ``False``.
+Moreover, :pep:`655` introduced new type qualifiers - ``typing.Required`` and
+``typing.NotRequired`` - that enable specifying whether a particular key is
+required or not::
+
+    class Movie(TypedDict):
+        title: str
+        year: NotRequired[int]
+
+When using a ``TypedDict`` to type ``**kwargs`` all of the required and
+non-required keys should correspond to required and non-required function
+keyword parameters. Therefore, if a required key is not supported by the
+caller, then an error must be reported by type checkers.
+
+Assignment
+----------
+
+Assignments of a function typed with the ``**kwargs: **Movie`` construct and
+another callable type should pass type checking only if they are compatible.
+This can happen for the scenarios described below.
+
+Source and destination contain ``**kwargs``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Both destination and source functions have a ``**kwargs: **TypedDict``
+parameter and the destination function's ``TypedDict`` is assignable to the
+source function's ``TypedDict`` and the rest of the parameters are
+compatible::
+
+    class Animal(TypedDict):
+        name: str
+    
+    class Dog(Animal):
+        breed: str
+
+    def accept_animal(**kwargs: **Animal): ...
+    def accept_dog(**kwargs: **Dog): ...
+
+    accept_dog = accept_animal  # OK! Expression of type Dog can be
+                                # assigned to a variable of type Animal.
+
+    accept_animal = accept_dog  # WRONG! Expression of type Animal
+                                # cannot be assigned to a variable of type Dog.
+
+.. _pep-692-assignment-dest-no-kwargs:
+
+Source contains ``**kwargs`` and destination doesn't
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The destination callable doesn't contain ``**kwargs``, the source callable
+contains ``**kwargs: **TypedDict`` and the destination function's keyword
+arguments are assignable to the corresponding keys in source function's
+``TypedDict``. Moreover, not required keys should correspond to optional
+function arguments, whereas required keys should correspond to required
+function arguments. Again, the rest of the parameters have to be compatible.
+Continuing the previous example::
+
+    class Example(TypedDict):
+        animal: Animal 
+        string: str
+        number: NotRequired[int]
+    
+    def src(**kwargs: **Example): ...
+    def dest(*, animal: Dog, string: str, number: int = ...): ...
+
+    dest = src  # OK!
+
+It is worth pointing out that the destination function's arguments that are to
+be compatible with the keys and values from the ``TypedDict`` must be keyword
+only arguments::
+
+    def dest(animal: Dog, string: str, number: int = ...): ...
+    dest(animal_instance, "some string")  # OK!
+    dest = src
+    dest(animal_instance, "some string")  # WRONG! The same call fails at
+                                          # runtime now because 'src' expects
+                                          # keyword arguments.
+
+The reverse situation where the destination callable contains
+``**kwargs: **TypedDict`` and the source callable doesn't contain
+``**kwargs`` should be disallowed. This is because, we cannot be sure that
+additional keyword arguments are not being passed in when an instance of a
+subclass had been assigned to a variable with a base class type and then
+unpacked in the destination callable invocation::
+
+    def dest(**Animal): ...
+    def src(name: str): ...
+
+    dog: Dog = {"name": "Daisy", "breed": "Labrador"}
+    animal: Animal = dog
+
+    dest = src      # WRONG!
+    dest(**animal)  # Fails at runtime.
+
+Similar situation can happen even without inheritance as compatibility
+between ``TypedDict``\s is based on structural subtyping.
+
+Source contains untyped ``**kwargs``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The destination callable contains ``**kwargs: **TypedDict`` and the source
+callable contains untyped ``**kwargs``::
+
+    def src(**kwargs): ...
+    def dest(**kwargs: **Movie): ...
+
+    dest = src  # OK!
+
+Source contains traditionally typed ``**kwargs: T``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The destination callable contains ``**kwargs: **TypedDict``, the source
+callable contains traditionally typed ``**kwargs: T`` and each of the
+destination function ``TypedDict``'s fields is assignable to a variable of
+type ``T``::
+
+    class Vehicle:
+        ...
+    
+    class Car(Vehicle):
+        ...
+
+    class Motorcycle(Vehicle):
+        ...
+
+    class Vehicles(TypedDict):
+        car: Car
+        moto: Motorcycle
+    
+    def dest(**kwargs: **Vehicles): ...
+    def src(**kwargs: Vehicle): ...
+
+    dest = src  # OK!
+
+On the other hand, if the destination callable contains either untyped or
+traditionally typed ``**kwargs: T`` and the source callable is typed using
+``**kwargs: **TypedDict`` then an error should be generated, because
+traditionally typed ``**kwargs`` aren't checked for keyword names.
+
+To summarize, function parameters should behave contravariantly and function
+return types should behave covariantly.
+
+Passing kwargs inside a function to another function
+----------------------------------------------------
+
+:ref:`A previous point <pep-692-assignment-dest-no-kwargs>`
+mentions the problem of possibly passing additional keyword arguments by
+assigning a subclass instance to a variable that has a base class type. Let's
+consider the following example::
+
+    class Animal(TypedDict):
+        name: str
+    
+    class Dog(Animal):
+        breed: str
+
+    def takes_name(name: str): ...
+
+    dog: Dog = {"name": "Daisy", "breed": "Labrador"}
+    animal: Animal = dog
+
+    def foo(**kwargs: **Animal):
+        print(kwargs["name"].capitalize())
+    
+    def bar(**kwargs: **Animal):
+        takes_name(**kwargs)
+    
+    def baz(animal: Animal):
+        takes_name(**animal)
+    
+    def spam(**kwargs: **Animal):
+        baz(kwargs)
+    
+    foo(**animal)   # OK! foo only expects and uses keywords of 'Animal'.
+
+    bar(**animal)   # WRONG! This will fail at runtime because 'breed' keyword
+                    # will be passed to 'takes_name' as well.
+    
+    spam(**animal)  # WRONG! Again, 'breed' keyword will be eventually passed
+                    # to 'takes_name'.
+
+In the example above, the call to ``foo`` will not cause any issues at
+runtime. Even though ``foo`` expects ``kwargs`` of type ``Animal`` it doesn't
+matter if it receives additional arguments because it only reads and uses what
+it needs completely ignoring any additional values.
+
+The calls to ``bar`` and ``spam`` will fail because an unexpected keyword
+argument will be passed to the ``takes_name`` function.
+
+Therefore, ``kwargs`` hinted with an unpacked ``TypedDict`` can only be passed
+to another function if the function to which unpacked kwargs are being passed
+to has ``**kwargs`` in its signature as well, because then additional keywords
+would not cause errors at runtime during function invocation. Otherwise, the
+type checker should generate an error.
+
+In cases similar to the ``bar`` function above the problem could be worked
+around by explicitly dereferencing desired fields and using them as parameters
+to perform the function call::
+
+    def bar(**kwargs: **Animal):
+        name = kwargs["name"]
+        takes_name(name)
+
+Intended Usage
+--------------
+
+This proposal will bring a large benefit to the codebases that already use
+``**kwargs`` because of the flexibility that they provided in the initial
+phases of the development, but now are mature enough to use a stricter
+contract via type hints. 
+
+Adding type hints directly in the source code as opposed to the ``*.pyi``
+stubs benefits anyone who reads the code as it is easier to understand. Given
+that currently precise ``**kwargs`` type hinting is impossible in that case the
+choices are to either not type hint ``**kwargs`` at all, which isn't ideal, or
+to refactor the function to use explicit keyword arguments, which often exceeds
+the scope of time and effort allocated to adding type hinting and, as any code
+change, introduces risk for both project maintainers and users. In that case
+hinting ``**kwargs`` using a ``TypedDict`` as described in this PEP will not
+require refactoring and function body and function invocations could be
+appropriately type checked.
+
+Another useful pattern that justifies using and typing ``**kwargs`` as proposed
+is when the function's API should allow for optional keyword arguments that
+don't have default values.
+
+However, it has to be pointed out that in some cases there are better tools
+for the job than using ``TypedDict`` to type ``**kwargs`` as proposed in this
+PEP. For example, when writing new code if all the keyword arguments are
+required or have default values then writing everything explicitly is better
+than using ``**kwargs`` and a ``TypedDict``::
+
+    def foo(name: str, year: int): ...  # Preferred way.
+    def foo(**kwargs: **Movie): ...
+
+Similarly, when type hinting third party libraries via stubs it is again better
+to state the function signature explicitly - this is the only way to type such
+a function if it has default parameters. Another issue that may arise in this
+case when trying to type hint the function with a ``TypedDict`` is that some
+standard function arguments may be treated as keyword only::
+
+    def foo(name, year): ...              # Function in a third party library.
+
+    def foo(**Movie): ...                 # Function signature in a stub file.
+
+    foo("Life of Brian", 1979)            # This would be now failing type
+                                          # checking but is fine.
+
+    foo(name="Life of Brian", year=1979)  # This would be the only way to call
+                                          # the function now that passes type
+                                          # checking.
+
+Therefore, in this case it is again preferred to type hint such function
+explicitly as::
+
+    def foo(name: str, year: int): ...
+
+Grammar Changes
+===============
+
+This PEP requires a grammar change so that the double asterisk syntax is
+allowed for ``**kwargs`` annotations. The proposed change is to extend the
+``kwds`` rule in `the grammar <https://docs.python.org/3/reference/grammar.html>`__ 
+as follows:
+
+Before:
+
+.. code-block:: peg
+
+    kwds: '**' param_no_default 
+
+After:
+
+.. code-block:: peg
+
+    kwds:
+        | '**' param_no_default_double_star_annotation
+        | '**' param_no_default
+
+    param_no_default_double_star_annotation:
+        | param_double_star_annotation & ')'
+
+    param_double_star_annotation: NAME double_star_annotation
+
+    double_star_annotation: ':' double_star_expression
+
+    double_star_expression: '**' expression
+
+A new AST node needs to be created so that type checkers can differentiate the
+semantics of the new syntax from the existing one, which indicates that all
+``**kwargs`` should be of the same type. Then, whenever the new syntax is
+used, type checkers will be able to take into account that ``**kwargs`` should
+be unpacked. The proposition is to add a new ``DoubleStarred`` AST node. Then,
+an AST node for the function defined as::
+
+    def foo(**kwargs: **Movie): ...
+
+should look as below::
+
+    FunctionDef(
+      name='foo',
+      args=arguments(
+        posonlyargs=[],
+        args=[],
+        kwonlyargs=[],
+        kw_defaults=[],
+        kwarg=arg(
+          arg='kwargs',
+          annotation=DoubleStarred(
+            value=Name(id='Movie', ctx=Load()),
+            ctx=Load())),
+        defaults=[]),
+      body=[
+        Expr(
+          value=Constant(value=Ellipsis))],
+      decorator_list=[])
+
+The runtime annotations should be consistent with the AST. Continuing the
+previous example::
+
+    >>> def foo(**kwargs: **Movie): ...
+    ...
+    >>> foo.__annotations__
+    {'kwargs': **Movie}
+
+The double asterisk syntax should call the ``__unpack__`` special method on
+the object it was used on. This means that ``def foo(**kwargs: **T): ...`` is
+equivalent to ``def foo(**kwargs: T.__unpack__()): ...``. In addition,
+``**Movie`` in the example above is the ``repr`` of the object that
+``__unpack__()`` returns.
+
+Backwards Compatibility
+-----------------------
+
+Using the double asterisk syntax for annotating ``**kwargs`` would be available
+only in new versions of Python. :pep:`646` dealt with the similar problem and
+its authors introduced a new type operator ``Unpack``. For the purposes of this
+PEP, the proposition is to reuse ``Unpack`` for more precise ``**kwargs``
+typing. For example::
+
+    def foo(**kwargs: Unpack[Movie]) -> None: ...
+
+There are several reasons for reusing :pep:`646`'s ``Unpack``. Firstly, the
+name is quite suitable and intuitive for the ``**kwargs`` typing use case as
+the keywords arguments are "unpacked" from the ``TypedDict``. Secondly, there
+would be no need to introduce any new special forms. Lastly, the use of
+``Unpack`` for the purposes described in this PEP does not interfere with the
+use cases described in :pep:`646`.
+
+Alternatives
+------------
+
+Instead of making the grammar change, ``Unpack`` could be the only way to
+annotate ``**kwargs`` of different types. However, introducing the double
+asterisk syntax has two advantages. Namely, it is more concise and more
+intuitive than using ``Unpack``.
+
+How to Teach This
+=================
+
+This PEP could be linked in the ``typing`` module's documentation. Moreover, a
+new section on using ``Unpack`` as well as the new double asterisk syntax could
+be added to the aforementioned docs. Similar sections could be also added to
+the `mypy documentation <https://mypy.readthedocs.io/>`_ and the
+`typing RTD documentation <https://typing.readthedocs.io/>`_.
+
+Reference Implementation
+========================
+
+There is a proof-of-concept implementation of typing ``**kwargs`` using
+``TypedDict`` as a `pull request to mypy <mypyPull10576_>`__
+and `to mypy_extensions <mypyExtensionsPull22_>`__.
+The implementation uses ``Expand`` instead of ``Unpack``.
+
+The `Pyright type checker <https://github.com/microsoft/pyright>`_
+`provides provisional support <pyrightProvisionalImplementation_>`__
+for `this feature <pyrightIssue3002_>`__.
+
+A proof-of-concept implementation of the CPython `grammar changes`_ described in
+this PEP is `available on GitHub <cpythonGrammarChangePoc_>`__.
+
+Rejected Ideas
+==============
+
+``TypedDict`` unions
+--------------------
+
+It is possible to create unions of typed dictionaries. However, supporting
+typing ``**kwargs`` with a union of typed dicts would greatly increase the
+complexity of the implementation of this PEP and there seems to be no
+compelling use case to justify the support for this. Therefore, using unions of
+typed dictionaries to type ``**kwargs`` as described in the context of this PEP
+can result in an error::
+
+    class Book(TypedDict):
+        genre: str
+        pages: int
+    
+    TypedDictUnion = Movie | Book
+
+    def foo(**kwargs: **TypedDictUnion) -> None: ...  # WRONG! Unsupported use
+                                                      # of a union of
+                                                      # TypedDicts to type
+                                                      # **kwargs
+
+Instead, a function that expects a union of ``TypedDict``\s can be
+overloaded::
+
+    @overload
+    def foo(**kwargs: **Movie): ...
+
+    @overload
+    def foo(**kwargs: **Book): ...
+
+
+References
+==========
+
+.. _mypyIssue4441: https://github.com/python/mypy/issues/4441
+.. _mypyPull10576: https://github.com/python/mypy/pull/10576
+.. _mypyExtensionsPull22: https://github.com/python/mypy_extensions/pull/22/files
+.. _pyrightIssue3002: https://github.com/microsoft/pyright/issues/3002
+.. _pyrightProvisionalImplementation: https://github.com/microsoft/pyright/commit/5bee749eb171979e3f526cd8e5bf66b00593378a
+.. _cpythonGrammarChangePoc: https://github.com/python/cpython/compare/main...franekmagiera:annotate-kwargs
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.

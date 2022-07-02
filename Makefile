@@ -1,81 +1,49 @@
-# Builds PEP files to HTML using docutils or sphinx
-# Also contains testing targets
-
-PEP2HTML=pep2html.py
+# Builds PEP files to HTML using sphinx
 
 PYTHON=python3
+VENVDIR=.venv
+JOBS=8
+RENDER_COMMAND=$(VENVDIR)/bin/python3 build.py -j $(JOBS)
 
-VENV_DIR=venv
+render: venv
+	$(RENDER_COMMAND)
 
-.SUFFIXES: .txt .html .rst
+pages: venv rss
+	$(RENDER_COMMAND) --build-dirs
 
-.txt.html:
-	@$(PYTHON) $(PEP2HTML) $<
+fail-warning: venv
+	$(RENDER_COMMAND) --fail-on-warning
 
-.rst.html:
-	@$(PYTHON) $(PEP2HTML) $<
+check-links: venv
+	$(RENDER_COMMAND) --check-links
 
-TARGETS= $(patsubst %.rst,%.html,$(wildcard pep-????.rst)) $(patsubst %.txt,%.html,$(wildcard pep-????.txt)) pep-0000.html
+rss: venv
+	$(VENVDIR)/bin/python3 generate_rss.py
 
-all: pep-0000.rst $(TARGETS)
-
-$(TARGETS): pep2html.py
-
-pep-0000.rst: $(wildcard pep-????.txt) $(wildcard pep-????.rst) $(wildcard pep0/*.py) genpepindex.py
-	$(PYTHON) genpepindex.py .
-
-rss:
-	$(PYTHON) pep2rss.py .
-
-install:
-	echo "Installing is not necessary anymore. It will be done in post-commit."
-
-clean:
-	-rm pep-0000.rst
-	-rm *.html
+clean: clean-venv
 	-rm -rf build
 
-update:
-	git pull https://github.com/python/peps.git
+clean-venv:
+	rm -rf $(VENVDIR)
 
 venv:
-	$(PYTHON) -m venv $(VENV_DIR)
-	./$(VENV_DIR)/bin/python -m pip install -r requirements.txt
+	@if [ -d $(VENVDIR) ] ; then \
+		echo "venv already exists."; \
+		echo "To recreate it, remove it first with \`make clean-venv'."; \
+	else \
+		$(PYTHON) -m venv $(VENVDIR); \
+		$(VENVDIR)/bin/python3 -m pip install -U pip wheel; \
+		$(VENVDIR)/bin/python3 -m pip install -r requirements.txt; \
+		echo "The venv has been created in the $(VENVDIR) directory"; \
+	fi
 
-package: all rss
-	mkdir -p build/peps
-	cp pep-*.txt build/peps/
-	cp pep-*.rst build/peps/
-	cp *.html build/peps/
-	cp *.png build/peps/
-	cp *.rss build/peps/
-	tar -C build -czf build/peps.tar.gz peps
+lint: venv
+	$(VENVDIR)/bin/python3 -m pre_commit --version > /dev/null || $(VENVDIR)/bin/python3 -m pip install pre-commit
+	$(VENVDIR)/bin/python3 -m pre_commit run --all-files
 
-lint:
-	pre-commit --version > /dev/null || python3 -m pip install pre-commit
-	pre-commit run --all-files
+test: venv
+	$(VENVDIR)/bin/python3 -bb -X dev -W error -m pytest
 
-# New Sphinx targets:
-
-SPHINX_JOBS=8
-SPHINX_BUILD=$(PYTHON) build.py -j $(SPHINX_JOBS)
-
-# TODO replace `rss:` with this when merged & tested
-pep_rss:
-	$(PYTHON) pep_rss_gen.py
-
-pages: pep_rss
-	$(SPHINX_BUILD) --index-file
-
-sphinx:
-	$(SPHINX_BUILD)
-
-# for building Sphinx without a web-server
-sphinx-local:
-	$(SPHINX_BUILD) --build-files
-
-fail-warning:
-	$(SPHINX_BUILD) --fail-on-warning
-
-check-links:
-	$(SPHINX_BUILD) --check-links
+spellcheck: venv
+	$(VENVDIR)/bin/python3 -m pre_commit --version > /dev/null || $(VENVDIR)/bin/python3 -m pip install pre-commit
+	$(VENVDIR)/bin/python3 -m pre_commit run --all-files --hook-stage manual codespell

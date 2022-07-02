@@ -33,10 +33,6 @@ def parse_author_email(author_email_tuple: tuple[str, str], authors_overrides: d
     if name_parts.mononym is not None:
         return Author(name_parts.mononym, name_parts.mononym, email)
 
-    if name_parts.surname[1] == ".":
-        # Add an escape to avoid docutils turning `v.` into `22.`.
-        name_parts.surname = f"\\{name_parts.surname}"
-
     if name_parts.suffix:
         last_first = f"{name_parts.surname}, {name_parts.forename}, {name_parts.suffix}"
         return Author(last_first, name_parts.surname, email)
@@ -63,7 +59,7 @@ def _parse_name(full_name: str) -> _Name:
     num_parts = len(name_parts)
     suffix = raw_suffix.strip()
 
-    if num_parts == 0:
+    if name_parts == [""]:
         raise ValueError("Name is empty!")
     elif num_parts == 1:
         return _Name(mononym=name_parts[0], suffix=suffix)
