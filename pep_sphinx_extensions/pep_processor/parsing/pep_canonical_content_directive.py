@@ -15,7 +15,7 @@ class CanonicalContent(rst.Directive):
     final_argument_whitespace = True
     option_spec = {}
 
-    default_canonical_link_title = "the Python Docs"
+    default_canonical_link_title = "the Python docs"
     default_canonical_link_uri = "https://docs.python.org/"
     generic_canonical_link_title = "this link"
     use_default_link = True
@@ -35,7 +35,7 @@ class CanonicalContent(rst.Directive):
 
     def run(self) -> list[nodes.admonition]:
 
-        if self.arguments or (not self.content and self.use_default_link):
+        if self.arguments or (self.use_default_link and not self.content):
             if self.arguments:
                 link_title = self.generic_canonical_link_title
                 link_uri = self.arguments[0]
