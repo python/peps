@@ -36,6 +36,12 @@ def create_parser():
     parser.add_argument("-j", "--jobs", type=int, default=1,
                         help="How many parallel jobs to run (if supported). "
                              "Integer, default 1.")
+    parser.add_argument(
+        "-o",
+        "--output-dir",
+        default="build",  # synchronise with render.yaml -> deploy step
+        help="Output directory, relative to root. Default 'build'.",
+    )
 
     return parser.parse_args()
 
@@ -57,7 +63,7 @@ if __name__ == "__main__":
 
     root_directory = Path(".").absolute()
     source_directory = root_directory
-    build_directory = root_directory / "build"  # synchronise with deploy-gh-pages.yaml -> deploy step
+    build_directory = root_directory / args.output_dir
     doctree_directory = build_directory / ".doctrees"
 
     # builder configuration
