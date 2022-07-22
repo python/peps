@@ -10,7 +10,7 @@ from sphinx import project
 
 from pep_sphinx_extensions.pep_processor.html import pep_html_builder
 from pep_sphinx_extensions.pep_processor.html import pep_html_translator
-from pep_sphinx_extensions.pep_processor.parsing import pep_canonical_content_directive
+from pep_sphinx_extensions.pep_processor.parsing import pep_banner_directive
 from pep_sphinx_extensions.pep_processor.parsing import pep_parser
 from pep_sphinx_extensions.pep_processor.parsing import pep_role
 from pep_sphinx_extensions.pep_processor.transforms import pep_references
@@ -96,9 +96,11 @@ def setup(app: Sphinx) -> dict[str, bool]:
 
     # Register custom directives
     app.add_directive(
-        'canonical-content', pep_canonical_content_directive.CanonicalContent)
+        "pep-banner", pep_banner_directive.PEPBanner)
     app.add_directive(
-        'canonical-content-pypa', pep_canonical_content_directive.CanonicalContentPyPA)
+        "canonical-doc", pep_banner_directive.CanonicalDocBanner)
+    app.add_directive(
+        "canonical-pypa-spec", pep_banner_directive.CanonicalPyPASpecBanner)
 
     # Register event callbacks
     app.connect("builder-inited", _update_config_for_builder)  # Update configuration values for builder used
