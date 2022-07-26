@@ -109,6 +109,12 @@ class PEPHeaders(transforms.Transform):
                         ]
                 if new_body:
                     para[:] = new_body[:-1]  # Drop trailing space/comma
+            elif name == "status":
+                target = self.document.settings.pep_url.format(1) + "#pep-review-resolution"
+                para[:] = [nodes.reference("", body.astext(), internal=True, refuri=target)]
+            elif name == "type":
+                target = self.document.settings.pep_url.format(1) + "#pep-types"
+                para[:] = [nodes.reference("", body.astext(), internal=True, refuri=target)]
             elif name in {"last-modified", "content-type", "version"}:
                 # Mark unneeded fields
                 fields_to_remove.append(field)
