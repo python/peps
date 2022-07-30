@@ -63,12 +63,13 @@ class CanonicalDocBanner(PEPBanner):
     """Insert an admonition pointing readers to a PEP's canonical docs."""
 
     admonition_pre_template = (
-        "This PEP is a historical document; the up-to-date, canonical "
-        "documentation can now be found at {link_content}."
+        "This PEP is a historical document. "
+        "The up-to-date, canonical documentation can now be found "
+        "at {link_content}."
     )
     admonition_pre_text = (
-        "This PEP is a historical document; the up-to-date, canonical "
-        "documentation can now be found elsewhere."
+        "This PEP is a historical document. "
+        "The up-to-date, canonical documentation can now be found elsewhere."
     )
     admonition_post_text = (
         "See :pep:`1` for how to propose changes."
@@ -82,15 +83,14 @@ class CanonicalPyPASpecBanner(PEPBanner):
     """Insert a specialized admonition for PyPA packaging specifications."""
 
     admonition_pre_template = (
-        "This PEP is a historical document; the up-to-date, canonical spec, "
-        "{link_content}, "
-        "is maintained on the `PyPA specs page "
-        f"<{PYPA_SPEC_BASE_URL}>`__."
+        "This PEP is a historical document. "
+        "the up-to-date, canonical spec, {link_content}, is maintained on "
+        f"the `PyPA specs page <{PYPA_SPEC_BASE_URL}>`__."
     )
     admonition_pre_text = (
-        "This PEP is a historical document; the up-to-date, canonical "
-        "specification is maintained on the `PyPA specs page "
-        f"<{PYPA_SPEC_BASE_URL}>`__."
+        "This PEP is a historical document. "
+        "The up-to-date, canonical specification is maintained on "
+        f"the `PyPA specs page <{PYPA_SPEC_BASE_URL}>`__."
     )
     admonition_post_text = (
         "See the `PyPA specification update process "
