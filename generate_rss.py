@@ -7,7 +7,7 @@ import email.utils
 from pathlib import Path
 import re
 
-import docutils
+import docutils.frontend
 from docutils import nodes
 from docutils import utils
 from docutils.parsers import rst
