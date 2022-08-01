@@ -8,7 +8,6 @@ from pathlib import Path
 import re
 
 import docutils
-from docutils import frontend
 from docutils import nodes
 from docutils import utils
 from docutils.parsers import rst
@@ -23,14 +22,6 @@ PEP_ROOT = Path(__file__).parent
 # Monkeypatch feedgen.util.formatRFC2822
 def _format_rfc_2822(dt: datetime.datetime) -> str:
     return email.utils.format_datetime(dt, usegmt=True)
-
-
-# Monkeypatch nodes.Node.findall for forwards compatability
-if docutils.__version_info__ < (0, 18, 1):
-    def findall(self, *args, **kwargs):
-        return iter(self.traverse(*args, **kwargs))
-
-    nodes.Node.findall = findall
 
 
 entry.formatRFC2822 = feed.formatRFC2822 = _format_rfc_2822
