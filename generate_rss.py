@@ -131,7 +131,7 @@ def pep_creation(full_path: Path) -> datetime.datetime:
 
 def parse_rst(full_path: Path) -> nodes.document:
     text = full_path.read_text(encoding="utf-8")
-    settings = frontend.OptionParser((rst.Parser,)).get_default_values()
+    settings = docutils.frontend.get_default_settings(rst.Parser)
     document = utils.new_document(f'<{full_path}>', settings=settings)
     rst.Parser(rfc2822=True).parse(text, document)
     return document
