@@ -49,6 +49,6 @@ They are used to propose major additions or changes to the PyPA specifications.
 A PEP is written to specify the release cycle for each feature release of Python.
 See the `developer's guide`_ for more information.
 
-.. _developer's guide: https://devguide.python.org/
+.. _developer's guide: https://devguide.python.org/devcycle/
 """
 }
