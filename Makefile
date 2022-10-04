@@ -3,7 +3,8 @@
 PYTHON=python3
 VENVDIR=.venv
 JOBS=8
-RENDER_COMMAND=$(VENVDIR)/bin/python3 build.py -j $(JOBS)
+OUTPUT_DIR=build
+RENDER_COMMAND=$(VENVDIR)/bin/python3 build.py -j $(JOBS) -o $(OUTPUT_DIR)
 
 render: venv
 	$(RENDER_COMMAND)
@@ -21,7 +22,7 @@ rss: venv
 	$(VENVDIR)/bin/python3 generate_rss.py
 
 clean: clean-venv
-	-rm -rf build
+	-rm -rf build topic
 
 clean-venv:
 	rm -rf $(VENVDIR)

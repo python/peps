@@ -10,7 +10,7 @@ sys.path.append(str(Path("pep_sphinx_extensions").absolute()))
 
 # Add 'include_patterns' as a config variable
 from sphinx.config import Config
-Config.config_values['include_patterns'] = [], 'env', []
+Config.config_values["include_patterns"] = [], "env", []
 del Config
 
 # -- Project information -----------------------------------------------------
@@ -21,7 +21,11 @@ master_doc = "contents"
 # -- General configuration ---------------------------------------------------
 
 # Add any Sphinx extension module names here, as strings.
-extensions = ["pep_sphinx_extensions", "sphinx.ext.githubpages"]
+extensions = [
+"pep_sphinx_extensions",
+"sphinx.ext.intersphinx",
+"sphinx.ext.githubpages",
+]
 
 # The file extensions of source files. Sphinx uses these suffixes as sources.
 source_suffix = {
@@ -46,6 +50,13 @@ exclude_patterns = [
     "pep-0012/pep-NNNN.rst",
 ]
 
+# Intersphinx configuration
+intersphinx_mapping = {
+    'python': ('https://docs.python.org/3/', None),
+    'packaging': ('https://packaging.python.org/en/latest/', None),
+}
+intersphinx_disabled_reftypes = []
+
 # -- Options for HTML output -------------------------------------------------
 
 # HTML output settings
@@ -60,4 +71,4 @@ html_permalinks = False  # handled in the PEPContents transform
 html_baseurl = "https://peps.python.org"  # to create the CNAME file
 gettext_auto_build = False  # speed-ups
 
-templates_path = ['pep_sphinx_extensions/pep_theme/templates']  # Theme template relative paths from `confdir`
+templates_path = ["pep_sphinx_extensions/pep_theme/templates"]  # Theme template relative paths from `confdir`
