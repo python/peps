@@ -189,20 +189,21 @@ class PEPZeroWriter:
 
         self.emit_newline()
 
-        # PEP owners
-        authors_dict = _verify_email_addresses(peps)
-        max_name_len = max(len(author_name) for author_name in authors_dict)
-        self.emit_title("Authors/Owners")
-        self.emit_author_table_separator(max_name_len)
-        self.emit_text(f"{'Name':{max_name_len}}  Email Address")
-        self.emit_author_table_separator(max_name_len)
-        for author_name in _sort_authors(authors_dict):
-            # Use the email from authors_dict instead of the one from "author" as
-            # the author instance may have an empty email.
-            self.emit_text(f"{author_name:{max_name_len}}  {authors_dict[author_name]}")
-        self.emit_author_table_separator(max_name_len)
-        self.emit_newline()
-        self.emit_newline()
+        if is_pep0:
+            # PEP owners
+            authors_dict = _verify_email_addresses(peps)
+            max_name_len = max(len(author_name) for author_name in authors_dict)
+            self.emit_title("Authors/Owners")
+            self.emit_author_table_separator(max_name_len)
+            self.emit_text(f"{'Name':{max_name_len}}  Email Address")
+            self.emit_author_table_separator(max_name_len)
+            for author_name in _sort_authors(authors_dict):
+                # Use the email from authors_dict instead of the one from "author" as
+                # the author instance may have an empty email.
+                self.emit_text(f"{author_name:{max_name_len}}  {authors_dict[author_name]}")
+            self.emit_author_table_separator(max_name_len)
+            self.emit_newline()
+            self.emit_newline()
 
         pep0_string = "\n".join([str(s) for s in self.output])
         return pep0_string

@@ -8,11 +8,6 @@ import sys
 
 sys.path.append(str(Path("pep_sphinx_extensions").absolute()))
 
-# Add 'include_patterns' as a config variable
-from sphinx.config import Config
-Config.config_values["include_patterns"] = [], "env", []
-del Config
-
 # -- Project information -----------------------------------------------------
 
 project = "PEPs"
@@ -22,9 +17,9 @@ master_doc = "contents"
 
 # Add any Sphinx extension module names here, as strings.
 extensions = [
-"pep_sphinx_extensions",
-"sphinx.ext.intersphinx",
-"sphinx.ext.githubpages",
+    "pep_sphinx_extensions",
+    "sphinx.ext.intersphinx",
+    "sphinx.ext.githubpages",
 ]
 
 # The file extensions of source files. Sphinx uses these suffixes as sources.

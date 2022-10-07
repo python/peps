@@ -115,12 +115,16 @@ directly out of a module ``__dict__``, the only way to reliably prevent
 accidental leakage of lazy objects is to have the dictionary itself be
 responsible to ensure resolution of lazy objects on lookup.
 
-To avoid a performance penalty on the vast majority of dictionaries which never
-contain any lazy objects, we set a specialized lookup kind (`DictKeysKind
-<https://github.com/python/cpython/blob/3.11/Include/internal/pycore_dict.h#L80>`_)
-for module namespace dictionaries when they first gain a lazy-object value. When
-a lazy lookup kind is set and lookup finds that the key references a lazy
-object, it resolves the lazy object immediately before returning it.
+When a lookup finds that the key references a lazy object, it resolves the lazy
+object immediately before returning it. To avoid side effects mutating
+dictionaries midway through iteration, all lazy objects in a dictionary are
+resolved prior to starting an iteration; this could incur a performance penalty
+when using bulk iterations (``iter(dict)``, ``reversed(dict)``,
+``dict.__reversed__()``, ``dict.keys()``, ``iter(dict.keys())`` and
+``reversed(dict.keys())``). To avoid this performance penalty on the vast
+majority of dictionaries, which never contain any lazy objects, we steal a bit
+from the ``dk_kind`` field for a new ``dk_lazy_imports`` bitfield to keep track
+of whether a dictionary may contain lazy objects or not.
 
 This implementation comprehensively prevents leakage of lazy objects, ensuring
 they are always resolved to the real imported object before anyone can get hold
@@ -131,18 +135,33 @@ dictionaries in general.
 Specification
 =============
 
-Lazy imports are opt-in, and globally enabled either via a new ``-L`` flag to
-the Python interpreter or via a call to a new ``importlib.set_lazy_imports()``
-function, which makes all imports after the call lazy.
+Lazy imports are opt-in, and they can be:
+
+* Globally enabled, either via a new ``-L`` flag to the Python interpreter or
+  via a call to a new ``importlib.set_lazy_imports()`` function, which makes
+  *all* new relevant imports after the call immediately lazy.
+
+* Enabled in a specific module, via ``importlib.enable_lazy_imports_in_module()``.
+
+When the flag ``-L`` is passed to the Python interpreter, a new
+``sys.flags.lazy_imports`` is set to ``True``, otherwise it exists as ``False``.
+This flag is used to propagate ``-L`` to new Python subprocesses.
+
+The flag in ``sys.flags.lazy_imports`` does not necessarily reflect the current
+status of lazy imports, only whether the interpreter was started with the ``-L``
+option. Actual current status of whether lazy imports is enabled or not at any
+moment can be retrieved using ``importlib.is_lazy_imports_enabled()``, which
+will return ``True`` if lazy imports is enabled at the call point or ``False``
+otherwise.
 
 When enabled, the loading and execution of all (and only) top-level imports is
 deferred until the imported name is first used. This could happen immediately
-(e.g.  on the very next line after the import statement) or much later (e.g.
+(e.g. on the very next line after the import statement) or much later (e.g.
 while using the name inside a function being called by some other code at some
 later time.)
 
 For these top level imports, there are two contexts which will make them eager
-(not lazy): imports inside ``try`` / ``except`` / ``finally``  or ``with``
+(not lazy): imports inside ``try`` / ``except`` / ``finally`` or ``with``
 blocks, and star imports (``from foo import *``.) Imports inside
 exception-handling blocks (this includes ``with`` blocks, since those can also
 "catch" and handle exceptions) remain eager so that any exceptions arising from
@@ -268,31 +287,34 @@ Lazy imports are represented internally by a "lazy import" object. When a lazy
 import occurs (say ``import foo`` or ``from foo import bar``), the key ``"foo"``
 or ``"bar"`` is immediately added to the module namespace dictionary, but with
 its value set to an internal-only "lazy import" object that preserves all the
-necessary metadata to execute the import later. The ``DictKeysKind`` for the
-module namespace dictionary is updated from e.g. ``DICT_KEYS_UNICODE`` to
-``DICT_KEYS_UNICODE_LAZY`` to signal that this particular dictionary may contain
-lazy import objects.
+necessary metadata to execute the import later.
 
-(In case someone adds a non-unicode key to a module namespace dictionary also
-containing lazy import objects, e.g. via ``globals()[42] = "foo"``, there is
-also ``DICT_KEYS_GENERAL_LAZY``, but in most cases this is not needed.)
+The lazy object is intended to be opaque and self-contained, it has no
+attributes and it can not be resolved in any way. A ``repr()`` of it would be
+shown as something like: ``<lazy_object 'fully.qualified.name'>``.
 
-Anytime a key is looked up in a dictionary with ``DICT_KEYS_UNICODE_LAZY`` or
-``DICT_KEYS_GENERAL_LAZY``, the value is checked to see if it is a lazy import
-object. If so, the import is immediately executed, the lazy import object is
-replaced in the dictionary by the actual imported value, and the imported value
-is returned from the lookup.
+A new boolean flag in ``PyDictKeysObject`` (``dk_lazy_imports``) is set to
+signal that this particular dictionary may contain lazy import objects. This
+flag is only used to efficiently resolve all lazy objects in "bulk" operations,
+when a dictionay may contain lazy objects.
+
+Anytime a key is looked up in a dictionary to extract its value, the
+value is checked to see if it is a lazy import object. If so, the lazy object
+is immediately resolved, the relevant imported modules executed, the lazy
+import object is replaced in the dictionary (if possible) by the actual
+imported value, and the resolved value is returned from the lookup function. A
+dictionary could mutate as part of an import side effect while resolving a lazy
+import object. In this case it is not possible to efficiently replace the key
+value with the resolved object. In this case, the lazy import object will gain
+a cached pointer to the resolved object. On next access that cached reference
+will be returned and the lazy import object will be replaced in the dict with
+the resolved value.
 
 Because this is all handled internally by the dictionary implementation, lazy
 import objects can never escape from the module namespace to become visible to
 Python code; they are always resolved at their first reference.
 
-Since only (some) module namespace dictionaries will ever have
-``DICT_KEYS_*_LAZY`` set, the (minimal) extra lookup overhead to check for lazy
-import objects is only paid by those dictionaries that need it; other
-dictionaries have no added overhead.
-
-No stub or dummy objects are ever visible to Python code or placed in
+No stub, dummy or thunk objects are ever visible to Python code or placed in
 ``sys.modules``. Other than the delayed import, the implementation is
 transparent.
 
@@ -312,21 +334,42 @@ import object. When ``modb.foo`` is later referenced, it will also try to
 Python, and at this point will replace the lazy import object at
 ``modb.__dict__["foo"]`` with the actual module ``foo``.
 
-There is one case in which a lazy import object can escape one dictionary (but
-only into another dictionary) without being resolved. To preserve the
-performance of bulk-copy operations like ``dict.update()`` and ``dict.copy()``,
-they do not check for or resolve lazy import objects. However, if the source
-dict has a ``*_LAZY`` lookup kind set that indicates it might contain lazy
-objects, that lookup kind will be passed on to the updated/copied dictionary.
-This still ensures that the lazy import object can't escape into Python code
-without being resolved.
+There are two cases in which a lazy import object can escape a dictionary:
 
-Other "bulk" dictionary lookup methods (such as ``dict.items()``,
-``dict.values()``, etc) will resolve all lazy import objects in the dictionary.
-Since it is uncommon for any of these to be used on a module namespace
-dictionary, the priority here is simplicity of implementation and minimizing the
-overhead on normal non-lazy dictionaries (just one check to see if the
-dictionary has a ``*_LAZY`` lookup kind).
+* Into another dictionary: to preserve the performance of bulk-copy operations
+  like ``dict.update()`` and ``dict.copy()``, they do not check for or resolve
+  lazy import objects. However, if the source dict has the ``dk_lazy_imports``
+  flag set that indicates it may contain lazy objects, that flag will be
+  passed on to the updated/copied dictionary. This still ensures that the lazy
+  import object can't escape into Python code without being resolved.
+
+* Through the garbage collector: lazy imported objects are still Python objects
+  and live within the garbage collector; as such, they can be collected and seen
+  by means of using ``gc.collect()`` and ``gc.get_objects()``. Lazy objects are
+  not useful but they are also harmless and pose no danger if extracted from the
+  garbage collector in this way.
+
+When a lazy object is added to a dictionary the flag ``dk_lazy_imports`` is set
+and once set, the only case the flag gets cleared is when *all* lazy import
+objects get resolved, during one of the "bulk" dictionary lookup operations.
+
+All "bulk" dictionary lookup methods involving values (such as ``dict.items()``,
+``dict.values()``, ``PyDict_Next()`` etc.) will attempt to resolve *all* lazy
+import objects in the dictionary prior to starting the iteration. Since only (some)
+module namespace dictionaries will ever have ``dk_lazy_imports`` set, the extra
+overhead of resolving all lazy import objects inside a dictionary is only paid
+by those dictionaries that need it. Minimizing the overhead on normal non-lazy
+dictionaries is the sole purpose of the ``dk_lazy_imports`` flag.
+
+``PyDict_Next`` will attempt to resolve all lazy import objects the first time
+position ``0`` is accessed, and those imports could fail with exceptions. Since
+``PyDict_Next`` cannot set an exception, ``PyDict_Next`` will return ``0``
+immediately in this case, and any exception will be printed to stderr as an
+unraisable exception.
+
+For this reason, this PEP introduces ``PyDict_NextWithError``, that works in the
+same way as ``PyDict_Next``, but which can set an error when returning ``0`` and
+this should be checked via ``PyErr_Occurred()`` after the call.
 
 The eagerness of imports within ``try`` / ``except`` / ``with`` blocks or within
 class or function bodies is handled in the compiler via a new
@@ -334,35 +377,16 @@ class or function bodies is handled in the compiler via a new
 ``IMPORT_NAME``, which may be lazy or eager depending on ``-L`` and/or
 ``importlib.set_lazy_imports()``.
 
-
-Exceptions
-----------
-
-Exceptions that occur during a lazy import bubble up and erase the
-partially-constructed module(s) from ``sys.modules``, just as exceptions during
-normal import do.
-
-Since errors raised during a lazy import will occur later (wherever the imported
-name is first referenced) than they would if the import were eager, it is
-possible that they could be accidentally caught by exception handlers that
-didn't expect the import to be running within their ``try`` block, leading to
-confusion. To reduce the potential for this confusion, exceptions raised in the
-course of executing a lazy import will be replaced by a ``LazyImportError``
-exception (a subclass of ``ImportError``), with ``__cause__`` set to the
-original exception.
-
-The ``LazyImportError`` will have source location metadata attached pointing the
-user to the original import statement, to ease debuggability of errors from lazy
-imports. (It won't have a full traceback to the original import location; this
-is too expensive to preserve for all lazy imports, and it's not clear that it
-provides significant value over simply knowing the location of the import
-statement.)
-
-Only ``Exception`` are replaced in this way, not ``BaseException``.
-``BaseException`` are for "system-exiting" exceptions like ``KeyboardInterrupt``
-or ``SystemExit``; these are normally not caught, and if they are caught, it is
-less likely to be specific to a certain bit of code that was expected to raise
-them, and more likely that the goal is to catch them whatever their origin.
+The current status of lazy imports at any given place can be retrieved by using
+``importlib.is_lazy_imports_enabled()`` and is determined by a combination of
+the passed ``-L`` option flag; an interpreter-wide flag set by
+``importlib.set_lazy_imports()`` and the container object passed in its
+``excluding`` keyword argument; and a flag set by
+``importlib.enable_lazy_imports_in_module()`` in nearest running module frame.
+All these together are used to cache the current status of lazy imports in the
+currently running frame. This cache is globally busted whenever any of these
+API functions is called so that changes take effect immediately for all new
+import statements.
 
 
 Debugging
@@ -393,7 +417,7 @@ In this example, if lazy imports have been enabled the first call to
 ``is_lazy_import`` will return ``True`` and the second will return ``False``.
 
 
-Per-module opt out
+Per-module opt-out
 ------------------
 
 Due to the backwards compatibility issues mentioned below, it may be necessary
@@ -426,9 +450,10 @@ rules.
 
 The more difficult case can occur if an import in third-party code that can't
 easily be modified must be forced to be eager. For this purpose,
-``importlib.set_lazy_imports()`` takes an optional keyword-only ``excluding``
-argument, which can be set to a container of module names within which all
-imports will be eager::
+``importlib.set_lazy_imports()`` takes two optional arguments: a boolean, ``True``
+by default, for enabling or disabling lazy imports, and an optional keyword-only
+``excluding`` argument, which can be set to a container of module names within
+which all imports will be eager::
 
     from importlib import set_lazy_imports
 
@@ -437,17 +462,19 @@ imports will be eager::
 The effect of this is also shallow: all imports within ``one.mod`` will be
 eager, but not imports in all modules imported by ``one.mod``.
 
-The ``excluding`` parameter of ``set_lazy_imports()`` can also be set to a
-callback which receives a module name and returns whether imports within this
-module should be eager::
+The ``excluding`` parameter of ``set_lazy_imports()`` can be a container of any
+type that will be checked to see whether it contains a module name or not. If
+the module name is contained in the object, it should be eager. Thus, another
+example use case for this argument could be::
 
     import re
     from importlib import set_lazy_imports
 
-    def eager_imports(name):
-        return re.match(r"foo\.[^.]+\.logger", name)
+    class Checker:
+        def __contains__(self, name):
+            return re.match(r"foo\.[^.]+\.logger", name)
 
-    set_lazy_imports(excluding=eager_imports)
+    set_lazy_imports(excluding=Checker())
 
 If Python was executed with the ``-L`` flag, then lazy imports will already be
 globally enabled, and the only effect of calling ``set_lazy_imports()`` will be
@@ -458,7 +485,7 @@ cleared and all eligible imports (module-level imports not in
 
 ``set_lazy_imports()`` may be called more than once, with subsequent calls
 having only the effect of globally replacing or clearing the ``excluding``
-list/callback.  Generally there should be no reason to do this: the intended use
+list/callback. Generally there should be no reason to do this: the intended use
 is a single call to ``set_lazy_imports`` in the main module, early in the
 process.
 
@@ -466,6 +493,37 @@ This opt-out system is designed to maintain the possibility of local reasoning
 about the laziness of an import. You only need to see the code of one module,
 and the ``excluding`` argument to ``set_lazy_imports``, if any, to know whether
 a given import will be eager or lazy.
+
+
+Per-module opt-in
+-----------------
+
+Experience with the reference implementation suggests that the most practical
+adoption path for lazy imports is for a specific deployed application to opt-in
+globally, observe whether anything breaks, and opt-out specific modules as
+needed.
+
+It is less practical to achieve robust and significant startup-time or
+memory-use wins by piecemeal application of lazy imports. Generally it would
+require blanket application of the per-module opt-in to most of the
+codebase, as well as to third-party dependencies (which may be hard or
+impossible.)
+
+However, under some use cases it may be convenient to have a way to enable lazy
+imports whether the application/end user requests it or not. This too can be
+easily achieved::
+
+    from importlib import enable_lazy_imports_in_module
+    enable_lazy_imports_in_module()
+
+After calling ``enable_lazy_imports_in_module()``, every import in the module
+would be lazy. This could be very helpful for libraries importing subpackages
+into their main namespace by default, as a mean of exporting them without
+suffering from the penalties and slowdowns of actually doing the import. This
+was one of the motivating reasons behind SPEC-1, used by Scientific Python
+libraries, where exposing symbols for interactive exploration and teaching
+purposes allows making all the subpackages available there from the start
+without the additional cost of actually doing the imports.
 
 
 Testing
@@ -479,11 +537,33 @@ enabled.
 C API
 -----
 
-For authors of C extension modules, the proposed
-``importlib.set_lazy_imports()`` function will also be exposed in the stable C
-API as ``PyImport_SetLazyImports(PyObject *names_or_callback_or_null)``, and
-``importlib.is_lazy_import`` will be available as ``PyDict_IsLazyImport(PyObject
-*dict, PyObject *key)``.
+For authors of C extension modules, the proposed public C API is as follows:
+
+.. list-table::
+   :widths: 50 50
+   :header-rows: 1
+
+   * - C API
+     - Python API
+   * - ``PyObject *PyImport_SetLazyImports(PyObject *enabled, PyObject *excluding)``
+     - ``importlib.set_lazy_imports(enabled: bool = True, *, excluding: typing.Container[str] | None = None)``
+   * - ``int PyDict_IsLazyImport(PyObject *dict, PyObject *name)``
+     - ``importlib.is_lazy_import(dict: typing.Dict[str, object], name: str) -> bool``
+   * - ``int PyImport_IsLazyImportsEnabled()``
+     - ``importlib.is_lazy_imports_enabled() -> bool``
+   * - ``void PyDict_ResolveLazyImports(PyObject *dict)``
+     -
+   * - ``PyDict_NextWithError()``
+     -
+
+* ``void PyDict_ResolveLazyImports(PyObject *dict)`` resolves all lazy objects
+  in a dictionary, if any. To be used prior calling ``PyDict_NextWithError()``
+  or ``PyDict_Next()``.
+
+* ``PyDict_NextWithError()``, works the same way as ``PyDict_Next()``, with
+  the exception it propagates any errors to the caller by returning ``0`` and
+  setting an exception. Caller should use the ``if (PyErr_Ocurred())`` semantics
+  to check for any errors.
 
 
 Backwards Compatibility
@@ -547,17 +627,15 @@ issue, since imports inside a ``with`` block are always eager.
 Deferred Exceptions
 -------------------
 
-All exceptions arising from import (including ``ModuleNotFoundError``) are
-deferred from import time to first-use time, which could complicate debugging.
-Referencing a name in the middle of any code could trigger a deferred import and
-produce ``LazyImportError`` while loading and executing the related imported
-module.
+Exceptions that occur during a lazy import bubble up and erase the
+partially-constructed module(s) from ``sys.modules``, just as exceptions during
+normal import do.
 
-Ensuring all lazy import errors are raised as ``LazyImportError`` mitigates this
-issue by reducing the likelihood that they will be accidentally caught and
-mistaken for a different expected exception.  ``LazyImportError`` will also
-provide the location of the original import statement to aid in debugging, as
-described above.
+Since errors raised during a lazy import will occur later than they would if
+the import were eager (i.e. wherever the name is first referenced), it is also
+possible that they could be accidentally caught by exception handlers that did
+not expect the import to be running within their ``try`` block, leading to
+confusion.
 
 
 Drawbacks
@@ -573,6 +651,9 @@ Downsides of this PEP include:
 * Some popular Python coding patterns (notably centralized registries populated
   by a decorator) rely on import side effects and may require explicit opt-out to
   work as expected with lazy imports.
+
+* Exceptions can be raised at any point while accessing names representing lazy
+  imports, this could lead to confusion and debugging of unexpected exceptions.
 
 Lazy import semantics are already possible and even supported today in the
 Python standard library, so these drawbacks are not newly introduced by this
@@ -657,36 +738,45 @@ is in use within Meta and has proven to achieve improvements in startup time
 significant reduction in memory footprint (up to 40%), thanks to not needing to
 execute imports that end up being unused in the common flow.
 
-An updated reference implementation based on CPython main branch is in progress
-and will be linked here soon. (TODO link.)
+An updated reference implementation based on CPython main branch is available
+in the `GitHub Pull Request <https://github.com/Kronuz/cpython/pull/17>`_.
 
 
 Rejected Ideas
 ==============
 
-Per-module opt-in
------------------
+Wrapping deferred exceptions
+----------------------------
 
-A per-module opt-in using e.g. ``from __future__ import lazy_imports`` has a
-couple of disadvantages:
+To reduce the potential for confusion, exceptions raised in the
+course of executing a lazy import could be replaced by a ``LazyImportError``
+exception (a subclass of ``ImportError``), with a ``__cause__`` set to the
+original exception. The ``LazyImportError`` would have source location metadata
+attached pointing the user to the original import statement, to ease
+debuggability of errors from lazy imports.
 
-* It is less practical to achieve robust and significant startup-time or
-  memory-use wins by piecemeal application of lazy imports. Generally it would
-  require blanket application of the ``__future__`` import to most of the
-  codebase, as well as to third-party dependencies (which may be hard or
-  impossible.)
+Ensuring that all lazy import errors are raised as ``LazyImportError`` would
+mitigate the potential confusion by reducing the likelihood that they would be
+accidentally caught and mistaken for a different expected exception. However,
+in practice we have seen cases, e.g. inside tests, where failing modules raise
+``unittest.SkipTest`` exception and this would too end up being wrapped in
+``LazyImportError``, making such tests fail because true exception types are
+being magically hidden. The drawbacks here seem to outweigh the hypothetical
+case where unexpected deferred exceptions are caught by mistake.
 
-* ``__future__`` imports are not feature flags, they are for transition to
-  behaviors which will become default in the future. It is not clear if lazy
-  imports will ever make sense as the default behavior, so we should not
-  promise this with a ``__future__`` import. Thus, a per-module opt-in would
-  require a new ``from __optional_features__ import lazy_imports`` or similar
-  mechanism.
 
-Experience with the reference implementation suggests that the most practical
-adoption path for lazy imports is for a specific deployed application to opt-in
-globally, observe whether anything breaks, and opt-out specific modules as
-needed.
+Per-module opt-in using future imports
+--------------------------------------
+
+A per-module opt-in using future imports (i.e.
+``from __future__ import lazy_imports``) does not make sense because
+``__future__`` imports are not feature flags, they are for transition to
+behaviors which will become default in the future. It is not clear if lazy
+imports will ever make sense as the default behavior, so we should not
+promise this with a ``__future__`` import. Thus, the proposed per-module opt-in
+uses a function call rather than dedicated syntax. Dedicated syntax would
+require a new ``from __optional_features__ import lazy_imports`` or similar
+mechanism.
 
 
 Explicit syntax for individual lazy imports
@@ -777,7 +867,7 @@ Lazy dynamic imports
 
 It would be possible to add a ``lazy=True`` or similar option to
 ``__import__()`` and/or ``importlib.import_module()``, to enable them to
-perform lazy imports.  That idea is rejected in this PEP for lack of a clear
+perform lazy imports. That idea is rejected in this PEP for lack of a clear
 use case. Dynamic imports are already far outside the :pep:`8` code style
 recommendations for imports, and can easily be made precisely as lazy as
 desired by placing them at the desired point in the code flow. These aren't
@@ -787,8 +877,9 @@ commonly used at module top level, which is where lazy imports applies.
 Deep eager-imports override
 ---------------------------
 
-The proposed ``importlib.eager_imports()`` context manager and
-``importlib.set_lazy_imports(excluding=...)`` override both have shallow
+The proposed ``importlib.enable_lazy_imports_in_module()``,
+``importlib.eager_imports()`` context manager, and excluded modules in the
+``importlib.set_lazy_imports(excluding=...)`` override all have shallow
 effects: they only force eagerness for the location they are applied to, not
 transitively. It would be possible (although not simple) to provide a
 deep/transitive version of one or both. That idea is rejected in this PEP
