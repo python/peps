@@ -50,5 +50,10 @@ A PEP is written to specify the release cycle for each feature release of Python
 See the `developer's guide`_ for more information.
 
 .. _developer's guide: https://devguide.python.org/devcycle/
+""",
+    "typing": """\
+Many recent PEPs propose changes to Python's static type system
+or otherwise relate to type annotations.
+They are listed here for reference.
 """
 }
