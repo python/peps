@@ -45,6 +45,12 @@ They are used to propose major additions or changes to the PyPA specifications.
 .. _specifications: https://packaging.python.org/en/latest/specifications/
 .. _PyPA specification update process: https://www.pypa.io/en/latest/specifications/#specification-update-process
 """,
+    "release": """\
+A PEP is written to specify the release cycle for each feature release of Python.
+See the `developer's guide`_ for more information.
+
+.. _developer's guide: https://devguide.python.org/devcycle/
+""",
     "typing": """\
 Many recent PEPs propose changes to Python's static type system
 or otherwise relate to type annotations.
