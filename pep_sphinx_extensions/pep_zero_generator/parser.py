@@ -12,9 +12,17 @@ from pep_sphinx_extensions.pep_zero_generator.author import parse_author_email
 from pep_sphinx_extensions.pep_zero_generator.constants import ACTIVE_ALLOWED
 from pep_sphinx_extensions.pep_zero_generator.constants import HIDE_STATUS
 from pep_sphinx_extensions.pep_zero_generator.constants import SPECIAL_STATUSES
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_ACCEPTED
 from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_ACTIVE
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_DEFERRED
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_FINAL
 from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_PROVISIONAL
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_REJECTED
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_SUPERSEDED
 from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_VALUES
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_WITHDRAWN
+from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_INFO
+from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_PROCESS
 from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_STANDARDS
 from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_VALUES
 from pep_sphinx_extensions.pep_zero_generator.errors import PEPError
@@ -129,13 +137,13 @@ class PEP:
     @property
     def details(self) -> dict[str, str | int]:
         """Return the line entry for the PEP."""
+        type_ = self.pep_type[0].upper()
+        status = " " if self.status in HIDE_STATUS else self.status[0].upper()
         return {
-            # how the type is to be represented in the index
-            "type": self.pep_type[0].upper(),
             "number": self.number,
             "title": self.title,
-            # how the status should be represented in the index
-            "status": " " if self.status in HIDE_STATUS else self.status[0].upper(),
+            # a tooltip representing the type and status
+            "shorthand": _abbreviate_type_status(type_, status),
             # the author list as a comma-separated with only last names
             "authors": ", ".join(author.nick for author in self.authors),
         }
@@ -205,3 +213,39 @@ def _parse_author(data: str) -> list[tuple[str, str]]:
         if author_list:
             break
     return author_list
+
+
+def _abbreviate_type_status(type_: str, status: str) -> str:
+    """Add tooltip for the PEP type and status"""
+    type_tip = None
+    if type_ == "I":
+        type_tip = TYPE_INFO
+    elif type_ == "P":
+        type_tip = TYPE_PROCESS
+    elif type_ == "S":
+        type_tip = TYPE_STANDARDS
+
+    status_tip = None
+    if status == "A":
+        if type_ == "S":
+            status_tip = STATUS_ACCEPTED
+        else:
+            status_tip = STATUS_ACTIVE
+    elif status == "D":
+        status_tip = STATUS_DEFERRED
+    elif status == "F":
+        status_tip = STATUS_FINAL
+    elif status == "P":
+        status_tip = STATUS_PROVISIONAL
+    elif status == "R":
+        status_tip = STATUS_REJECTED
+    elif status == "S":
+        status_tip = STATUS_SUPERSEDED
+    elif status == "W":
+        status_tip = STATUS_WITHDRAWN
+
+    if type_tip and status_tip:
+        return f":abbr:`{type_} {status} ({type_tip}, {status_tip})`"
+    if type_tip:
+        return f":abbr:`{type_} ({type_tip})`"
+    return ""

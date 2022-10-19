@@ -76,8 +76,10 @@ class PEPZeroWriter:
         author_table_separator = "=" * max_name_len + "  " + "=" * len("email address")
         self.output.append(author_table_separator)
 
-    def emit_pep_row(self, *, type: str, status: str, number: int, title: str, authors: str) -> None:
-        self.emit_text(f"   * - {_abbreviate_type_status(type, status)}")
+    def emit_pep_row(
+        self, *, shorthand: str, number: int, title: str, authors: str
+    ) -> None:
+        self.emit_text(f"   * - {shorthand}")
         self.emit_text(f"     - :pep:`{number} <{number}>`")
         self.emit_text(f"     - :pep:`{title.replace('`', '')} <{number}>`")
         self.emit_text(f"     - {authors}")
@@ -163,7 +165,9 @@ class PEPZeroWriter:
             self.emit_title("Reserved PEP Numbers")
             self.emit_column_headers()
             for number, claimants in sorted(self.RESERVED.items()):
-                self.emit_pep_row(type="", status="", number=number, title="RESERVED", authors=claimants)
+                self.emit_pep_row(
+                    shorthand="", number=number, title="RESERVED", authors=claimants
+                )
 
             self.emit_newline()
 
@@ -304,39 +308,3 @@ def _author_sort_by(author_name: str) -> str:
             return unicodedata.normalize("NFKD", base)
     # If no capitals, use the whole string
     return unicodedata.normalize("NFKD", surname.lower())
-
-
-def _abbreviate_type_status(type_: str, status: str) -> str:
-    """Add tooltip for the PEP type and status"""
-    type_tip = None
-    if type_ == "I":
-        type_tip = TYPE_INFO
-    elif type_ == "P":
-        type_tip = TYPE_PROCESS
-    elif type_ == "S":
-        type_tip = TYPE_STANDARDS
-
-    status_tip = None
-    if status == "A":
-        if type_ == "S":
-            status_tip = STATUS_ACCEPTED
-        else:
-            status_tip = STATUS_ACTIVE
-    elif status == "D":
-        status_tip = STATUS_DEFERRED
-    elif status == "F":
-        status_tip = STATUS_FINAL
-    elif status == "P":
-        status_tip = STATUS_PROVISIONAL
-    elif status == "R":
-        status_tip = STATUS_REJECTED
-    elif status == "S":
-        status_tip = STATUS_SUPERSEDED
-    elif status == "W":
-        status_tip = STATUS_WITHDRAWN
-
-    if type_tip and status_tip:
-        return f":abbr:`{type_} {status} ({type_tip}, {status_tip})`"
-    if type_tip:
-        return f":abbr:`{type_} ({type_tip})`"
-    return ""

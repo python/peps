@@ -34,9 +34,8 @@ def test_pep_details(monkeypatch):
     assert pep8.details == {
         "authors": "GvR, Warsaw, Coghlan",
         "number": 8,
-        "status": " ",
+        "shorthand": ":abbr:`P (Process)`",
         "title": "Style Guide for Python Code",
-        "type": "P",
     }
 
 
@@ -79,3 +78,22 @@ def test_parse_authors_invalid():
 
     with pytest.raises(PEPError, match="no authors found"):
         parser._parse_authors(pep, "", AUTHORS_OVERRIDES)
+
+
+@pytest.mark.parametrize(
+    "test_type, test_status, expected",
+    [
+        ("", "", ""),
+        ("I", " ", ":abbr:`I (Informational)`"),
+        ("I", "A", ":abbr:`I A (Informational, Active)`"),
+        ("I", "D", ":abbr:`I D (Informational, Deferred)`"),
+        ("P", "F", ":abbr:`P F (Process, Final)`"),
+        ("P", "S", ":abbr:`P S (Process, Superseded)`"),
+        ("P", "W", ":abbr:`P W (Process, Withdrawn)`"),
+        ("S", "A", ":abbr:`S A (Standards Track, Accepted)`"),
+        ("S", "R", ":abbr:`S R (Standards Track, Rejected)`"),
+        ("S", "P", ":abbr:`S P (Standards Track, Provisional)`"),
+    ],
+)
+def test_abbreviate_type_status(test_type, test_status, expected):
+    assert parser._abbreviate_type_status(test_type, test_status) == expected
