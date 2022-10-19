@@ -69,3 +69,22 @@ def test_sort_authors():
 
     # Assert
     assert out == ["Aardvark, Alfred", "lowercase, laurence", "Zebra, Zoë"]
+
+
+@pytest.mark.parametrize(
+    "test_type, test_status, expected",
+    [
+        ("", "", ""),
+        ("I", " ", ":abbr:`I (Informational)`"),
+        ("I", "A", ":abbr:`I A (Informational, Active)`"),
+        ("I", "D", ":abbr:`I D (Informational, Deferred)`"),
+        ("P", "F", ":abbr:`P F (Process, Final)`"),
+        ("P", "S", ":abbr:`P S (Process, Superseded)`"),
+        ("P", "W", ":abbr:`P W (Process, Withdrawn)`"),
+        ("S", "A", ":abbr:`S A (Standards Track, Accepted)`"),
+        ("S", "R", ":abbr:`S R (Standards Track, Rejected)`"),
+        ("S", "P", ":abbr:`S P (Standards Track, Provisional)`"),
+    ],
+)
+def test_abbreviate_type_status(test_type, test_status, expected):
+    assert writer._abbreviate_type_status(test_type, test_status) == expected
