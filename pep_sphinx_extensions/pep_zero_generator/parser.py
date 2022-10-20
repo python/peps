@@ -216,7 +216,7 @@ def _parse_author(data: str) -> list[tuple[str, str]]:
 
 
 def _abbreviate_type_status(type_: str, status: str) -> str:
-    """Add tooltip for the PEP type and status"""
+    """Add tooltip for the PEP type and status."""
     type_tip = None
     if type_ == "I":
         type_tip = TYPE_INFO
