@@ -6,6 +6,24 @@ from pep_sphinx_extensions.pep_zero_generator import parser
 from pep_sphinx_extensions.pep_zero_generator.author import Author
 from pep_sphinx_extensions.pep_zero_generator.errors import PEPError
 from pep_sphinx_extensions.tests.utils import AUTHORS_OVERRIDES
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_ACTIVE
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_SUPERSEDED
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_WITHDRAWN
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_ACCEPTED
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_DRAFT
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_FINAL
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_PROVISIONAL
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_DEFERRED
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_REJECTED
+from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_VALUES
+from pep_sphinx_extensions.pep_zero_generator.constants import SPECIAL_STATUSES
+from pep_sphinx_extensions.pep_zero_generator.constants import HIDE_STATUS
+from pep_sphinx_extensions.pep_zero_generator.constants import DEAD_STATUSES
+from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_INFO
+from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_PROCESS
+from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_STANDARDS
+from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_VALUES
+from pep_sphinx_extensions.pep_zero_generator.constants import ACTIVE_ALLOWED
 
 
 def test_pep_repr():
@@ -83,17 +101,24 @@ def test_parse_authors_invalid():
 @pytest.mark.parametrize(
     "test_type, test_status, expected",
     [
-        ("", "", ""),
-        ("I", " ", ":abbr:`I (Informational)`"),
-        ("I", "A", ":abbr:`I A (Informational, Active)`"),
-        ("I", "D", ":abbr:`I D (Informational, Deferred)`"),
-        ("P", "F", ":abbr:`P F (Process, Final)`"),
-        ("P", "S", ":abbr:`P S (Process, Superseded)`"),
-        ("P", "W", ":abbr:`P W (Process, Withdrawn)`"),
-        ("S", "A", ":abbr:`S A (Standards Track, Accepted)`"),
-        ("S", "R", ":abbr:`S R (Standards Track, Rejected)`"),
-        ("S", "P", ":abbr:`S P (Standards Track, Provisional)`"),
+        (TYPE_INFO, STATUS_DRAFT, ":abbr:`I (Informational)`"),
+        (TYPE_INFO, STATUS_ACTIVE, ":abbr:`I (Informational)`"),
+        (TYPE_INFO, STATUS_ACCEPTED, ":abbr:`IA (Informational, Accepted)`"),
+        (TYPE_INFO, STATUS_DEFERRED, ":abbr:`ID (Informational, Deferred)`"),
+        (TYPE_PROCESS, STATUS_ACCEPTED, ":abbr:`PA (Process, Accepted)`"),
+        (TYPE_PROCESS, STATUS_ACTIVE, ":abbr:`P (Process)`"),
+        (TYPE_PROCESS, STATUS_FINAL, ":abbr:`PF (Process, Final)`"),
+        (TYPE_PROCESS, STATUS_SUPERSEDED, ":abbr:`PS (Process, Superseded)`"),
+        (TYPE_PROCESS, STATUS_WITHDRAWN, ":abbr:`PW (Process, Withdrawn)`"),
+        (TYPE_STANDARDS, STATUS_ACCEPTED, ":abbr:`SA (Standards Track, Accepted)`"),
+        (TYPE_STANDARDS, STATUS_REJECTED, ":abbr:`SR (Standards Track, Rejected)`"),
+        (TYPE_STANDARDS, STATUS_PROVISIONAL, ":abbr:`SP (Standards Track, Provisional)`"),
     ],
 )
 def test_abbreviate_type_status(test_type, test_status, expected):
-    assert parser._abbreviate_type_status(test_type, test_status) == expected
+    # set up dummy PEP object and monkeypatch attributes
+    pep = parser.PEP(Path("pep-0008.txt"))
+    pep.pep_type = test_type
+    pep.status = test_status
+
+    assert pep.shorthand == expected
