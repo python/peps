@@ -15,12 +15,10 @@ from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_DRAFT
 from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_FINAL
 from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_PROVISIONAL
 from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_REJECTED
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_SUPERSEDED
 from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_VALUES
 from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_WITHDRAWN
 from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_INFO
 from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_PROCESS
-from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_STANDARDS
 from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_VALUES
 from pep_sphinx_extensions.pep_zero_generator.errors import PEPError
 
