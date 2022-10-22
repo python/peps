@@ -144,9 +144,14 @@ class PEPZeroWriter:
         ]
         for (category, peps_in_category) in pep_categories:
             # For sub-indices, only emit categories with entries.
-            # For PEP 0, emit every category
-            if is_pep0 or len(peps_in_category) > 0:
+            # For PEP 0, emit every category, but only with a table when it has entries.
+            if len(peps_in_category) > 0:
                 self.emit_pep_category(category, peps_in_category)
+            elif is_pep0:
+                # emit the category with no table
+                self.emit_subtitle(category)
+                self.emit_text("None.")
+                self.emit_newline()
 
         self.emit_newline()
 
