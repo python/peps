@@ -1,7 +1,6 @@
 from pathlib import Path
 
-from pep_sphinx_extensions.pep_zero_generator import parser
-from pep_sphinx_extensions.pep_zero_generator import pep_index_generator
+from pep_sphinx_extensions.pep_zero_generator import parser, pep_index_generator
 
 
 def test_create_pep_json():

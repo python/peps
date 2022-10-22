@@ -2,8 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from pep_sphinx_extensions.pep_zero_generator import parser
-from pep_sphinx_extensions.pep_zero_generator import writer
+from pep_sphinx_extensions.pep_zero_generator import parser, writer
 
 
 def test_pep_zero_writer_emit_text_newline():

@@ -4,18 +4,20 @@ import pytest
 
 from pep_sphinx_extensions.pep_zero_generator import parser
 from pep_sphinx_extensions.pep_zero_generator.author import Author
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_ACCEPTED
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_ACTIVE
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_DEFERRED
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_DRAFT
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_FINAL
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_PROVISIONAL
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_REJECTED
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_SUPERSEDED
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_WITHDRAWN
-from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_INFO
-from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_PROCESS
-from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_STANDARDS
+from pep_sphinx_extensions.pep_zero_generator.constants import (
+    STATUS_ACCEPTED,
+    STATUS_ACTIVE,
+    STATUS_DEFERRED,
+    STATUS_DRAFT,
+    STATUS_FINAL,
+    STATUS_PROVISIONAL,
+    STATUS_REJECTED,
+    STATUS_SUPERSEDED,
+    STATUS_WITHDRAWN,
+    TYPE_INFO,
+    TYPE_PROCESS,
+    TYPE_STANDARDS,
+)
 from pep_sphinx_extensions.pep_zero_generator.errors import PEPError
 from pep_sphinx_extensions.tests.utils import AUTHORS_OVERRIDES
 
