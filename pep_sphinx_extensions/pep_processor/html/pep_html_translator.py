@@ -74,7 +74,7 @@ class PEPTranslator(html5.HTML5Translator):
         back_refs = node.parent["backrefs"]
         if self.settings.footnote_backlinks and len(back_refs) == 1:
             self.body.append(f'<a href="#{back_refs[0]}">')
-            self.context.append(f"</a>]")
+            self.context.append("</a>]")
         else:
             self.context.append("]")
 

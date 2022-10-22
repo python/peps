@@ -127,15 +127,22 @@ class PEP:
         return self.number == other.number
 
     @property
+    def shorthand(self) -> str:
+        """Return reStructuredText tooltip for the PEP type and status."""
+        type_code = self.pep_type[0].upper()
+        if self.status in HIDE_STATUS:
+            return f":abbr:`{type_code} ({self.pep_type})`"
+        status_code = self.status[0].upper()
+        return f":abbr:`{type_code}{status_code} ({self.pep_type}, {self.status})`"
+
+    @property
     def details(self) -> dict[str, str | int]:
         """Return the line entry for the PEP."""
         return {
-            # how the type is to be represented in the index
-            "type": self.pep_type[0].upper(),
             "number": self.number,
             "title": self.title,
-            # how the status should be represented in the index
-            "status": " " if self.status in HIDE_STATUS else self.status[0].upper(),
+            # a tooltip representing the type and status
+            "shorthand": self.shorthand,
             # the author list as a comma-separated with only last names
             "authors": ", ".join(author.nick for author in self.authors),
         }

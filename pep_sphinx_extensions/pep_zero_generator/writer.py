@@ -74,8 +74,10 @@ class PEPZeroWriter:
         author_table_separator = "=" * max_name_len + "  " + "=" * len("email address")
         self.output.append(author_table_separator)
 
-    def emit_pep_row(self, *, type: str, status: str, number: int, title: str, authors: str) -> None:
-        self.emit_text(f"   * - {type}{status}")
+    def emit_pep_row(
+        self, *, shorthand: str, number: int, title: str, authors: str
+    ) -> None:
+        self.emit_text(f"   * - {shorthand}")
         self.emit_text(f"     - :pep:`{number} <{number}>`")
         self.emit_text(f"     - :pep:`{title.replace('`', '')} <{number}>`")
         self.emit_text(f"     - {authors}")
@@ -161,8 +163,9 @@ class PEPZeroWriter:
             self.emit_title("Reserved PEP Numbers")
             self.emit_column_headers()
             for number, claimants in sorted(self.RESERVED.items()):
-                self.emit_pep_row(type="", status="", number=number, title="RESERVED", authors=claimants)
-
+                self.emit_pep_row(
+                    shorthand="", number=number, title="RESERVED", authors=claimants
+                )
 
             self.emit_newline()
 
