@@ -56,7 +56,7 @@ the PEP index.
 
 
 def generate_topic_contents(docnames: list[str], env: BuildEnvironment):
-    update_sphinx(f"topic/index", """\
+    update_sphinx("topic/index", """\
 Topic Index
 ***********
 

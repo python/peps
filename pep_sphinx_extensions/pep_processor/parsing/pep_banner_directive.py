@@ -84,12 +84,12 @@ class CanonicalPyPASpecBanner(PEPBanner):
 
     admonition_pre_template = (
         "This PEP is a historical document. "
-        "the up-to-date, canonical spec, {link_content}, is maintained on "
+        "The up-to-date, canonical spec, {link_content}, is maintained on "
         f"the `PyPA specs page <{PYPA_SPEC_BASE_URL}>`__."
     )
     admonition_pre_text = (
         "This PEP is a historical document. "
-        "The up-to-date, canonical specification is maintained on "
+        "The up-to-date, canonical specifications are maintained on "
         f"the `PyPA specs page <{PYPA_SPEC_BASE_URL}>`__."
     )
     admonition_post_text = (
