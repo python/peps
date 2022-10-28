@@ -410,24 +410,17 @@ multiple interpreters at once.  This includes dealing with their globals.
 
 If an extension implements multi-phase init (see :pep:`489`) it is
 considered compatible with multiple interpreters.  All other extensions
-are considered incompatible.
-
-If a module supports use with multiple interpreters, that mostly implies
-it will work even if those interpreters do not share the GIL.  The one
-caveat is where a module links against a library with internal global
-state that isn't thread-safe.  With a shared GIL, that state is protected.
-Without one, such modules must wrap any use of that state (e.g. through
-calls) with a lock.
-
-.. XXX How big a problem is this?  How can we help extensions deal with it?
-
-.. XXX Add a moduledef slot for opting out of per-interpreter GIL?
+are considered incompatible.  (See `Extension Module Thread Safety`_
+for more details about how a per-interpreter GIL may affect that
+classification.)
 
 If an incompatible extension is imported and the current
 "PyInterpreterState.strict_extension_compat" value is ``true`` then the import
 system will raise ``ImportError``.  (For ``false`` it simply doesn't check.)
 This will be done through
-``importlib._bootstrap_external.ExtensionFileLoader``.
+``importlib._bootstrap_external.ExtensionFileLoader`` (really, through
+``_imp.create_dynamic()``, ``_PyImport_LoadDynamicModuleWithSpec()``, and
+``PyModule_FromDefAndSpec2()``).
 
 Such imports will never fail in the main interpreter (or in interpreters
 created through ``Py_NewInterpreter()``) since
@@ -442,10 +435,10 @@ Extension Module Compatibility
 ''''''''''''''''''''''''''''''
 
 As noted in `Extension Modules`_, many extensions work fine in multiple
-interpreters without needing any changes.  The import system will still
-fail if such a module doesn't explicitly indicate support.  At first,
-not many extension modules will, so this is a potential source
-of frustration.
+interpreters (and under a per-interpreter GIL) without needing any
+changes.  The import system will still fail if such a module doesn't
+explicitly indicate support.  At first, not many extension modules
+will, so this is a potential source of frustration.
 
 We will address this by adding a context manager to temporarily disable
 the check on multiple interpreter support:
@@ -453,11 +446,60 @@ the check on multiple interpreter support:
 the current "PyInterpreterState.strict_extension_compat" value (e.g. through
 a private ``sys`` function).
 
+Extension Module Thread Safety
+''''''''''''''''''''''''''''''
+
+If a module supports use with multiple interpreters, that mostly implies
+it will work even if those interpreters do not share the GIL.  The one
+caveat is where a module links against a library with internal global
+state that isn't thread-safe.  (Even something as innocuous as a static
+local variable as a temporary buffer can be a problem.)  With a shared
+GIL, that state is protected.  Without one, such modules must wrap any
+use of that state (e.g. through calls) with a lock.
+
+Currently, it isn't clear whether or not supports-multiple-interpreters
+is sufficiently equivalent to supports-per-interpreter-gil, such that
+we can avoid any special accommodations.  This is still a point of
+meaningful discussion and investigation.  The practical distinction
+between the two (in the Python community, e.g. PyPI) is not yet
+understood well enough to settle the matter.  Likewise, it isn't clear
+what we might be able to do to help extension maintainers mitigate
+the problem (assuming it is one).
+
+In the meantime, we must proceed as though the difference would be
+large enough to cause problems for enough extension modules out there.
+The solution we would apply is:
+
+* add a ``PyModuleDef`` slot that indicates an extension can be imported
+  under a per-interpreter GIL (i.e. opt in)
+* add that slot as part of the definition of a "compatible" extension,
+  as discussed earlier
+
+The downside is that not a single extension module will be able to take
+advantage of the per-interpreter GIL without extra effort by the module
+maintainer, regardless of how minor that effort.  This compounds the
+problem described in `Extension Module Compatibility`_ and the same
+workaround applies.  Ideally, we would determine that there isn't enough
+difference to matter.
+
+If we do end up requiring an opt-in for imports under a per-interpreter
+GIL, and later determine it isn't necessary, then we can switch the
+default at that point, make the old opt-in slot a noop, and add a new
+``PyModuleDef`` slot for explicitly opting *out*.  In fact, it makes
+sense to add that opt-out slot from the beginning.
+
+
 Documentation
 -------------
 
-The "Sub-interpreter support" section of ``Doc/c-api/init.rst`` will be
-updated with the added API.
+* C-API: the "Sub-interpreter support" section of ``Doc/c-api/init.rst``
+  will detail the updated API
+* C-API: that section will explain about the consequences of
+  a per-interpreter GIL
+* importlib: the ``ExtensionFileLoader`` entry will note import
+  may fail in subinterpreters
+* importlib: there will be a new entry about
+  ``importlib.util.allow_all_extensions()``
 
 
 Impact
@@ -494,24 +536,26 @@ situation nor a consequence of this proposal.
 .. _internal state of linked libraries: https://github.com/pyca/cryptography/issues/2299
 
 In contrast, when the `proposed API <proposed capi_>`_ is used to
-create multiple interpreters, the default behavior will change for
-some extensions.  In that case, importing an extension will fail
-(outside the main interpreter) if it doesn't indicate support for
-multiple interpreters.  For extensions that already break in
-multiple interpreters, this will be an improvement.
+create multiple interpreters, with the appropriate settings,
+the behavior will change for incompatible extensions.  In that case,
+importing such an extension will fail (outside the main interpreter),
+as explained in `Restricting Extension Modules`_.  For extensions that
+already break in multiple interpreters, this will be an improvement.
 
 Additionally, some extension modules link against libraries with
 thread-unsafe internal global state.
-(See `Restricting Extension Modules`_ above.)
+(See `Extension Module Thread Safety`_.)
 Such modules will have to start wrapping any direct or indirect use
-of that state in a lock.
+of that state in a lock.  This is the key difference from other modules
+that also implement multi-phase init and thus indicate support for
+multiple interpreters (i.e. isolation).
 
 Now we get to the break in compatibility mentioned above.  Some
-extensions are safe under multiple interpreters, even though they
-haven't indicated that.  Unfortunately, there is no reliable way for
-the import system to infer that such an extension is safe, so
-importing them will still fail.  This case is addressed in
-`Extension Module Compatibility`_ above.
+extensions are safe under multiple interpreters (and a per-interpreter
+GIL), even though they haven't indicated that.  Unfortunately, there is
+no reliable way for the import system to infer that such an extension
+is safe, so importing them will still fail.  This case is addressed
+in `Extension Module Compatibility`_ above.
 
 Extension Module Maintainers
 ----------------------------
@@ -523,20 +567,20 @@ concern about the increased burden they anticipate due to increased
 use of multiple interpreters.
 
 Specifically, enabling support for multiple interpreters will require
-substantial work for some extension modules.  To add that support,
-the maintainer(s) of such a module (often volunteers) would have to
-set aside their normal priorities and interests to focus on
-compatibility (see :pep:`630`).
+substantial work for some extension modules (albeit likely not many).
+To add that support, the maintainer(s) of such a module (often
+volunteers) would have to set aside their normal priorities and
+interests to focus on compatibility (see :pep:`630`).
 
 Of course, extension maintainers are free to not add support for use
 in multiple interpreters.  However, users will increasingly demand
-such support, especially if the feature grows
-in popularity.
+such support, especially if the feature grows in popularity.
 
 Either way, the situation can be stressful for maintainers of such
 extensions, particularly when they are doing the work in their spare
 time.  The concerns they have expressed are understandable, and we address
-the partial solution in `Restricting Extension Modules`_ below.
+the partial solution in the `Restricting Extension Modules`_ and
+`Extension Module Compatibility`_ sections.
 
 Alternate Python Implementations
 --------------------------------
@@ -602,9 +646,11 @@ Open Issues
   interpreters (protected by a granular lock)?
 * Split out an informational PEP with all the relevant info,
   based on the "Consolidating Runtime Global State" section?
-* Is the question of supports-multiple-interpreters vs.
-  supports-per-interpreter-gil settled?
-* How to reduce the burden for extensions that must add locks?
+* How likely is it that a module works under multiple interpreters
+  (isolation) but doesn't work under a per-interpreter GIL?
+  (See `Extension Module Thread Safety`_.)
+* If it is likely enough, what can we do to help extension maintainers
+  mitigate the problem and enjoy use under a per-intepreter GIL?
 * What would be a better (scarier-sounding) name
   for ``allow_all_extensions``?
 
