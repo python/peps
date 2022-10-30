@@ -180,7 +180,7 @@ class PEPZeroWriter:
             self.emit_text(f"* {type_[0]} - {type_} PEP")
             self.emit_newline()
 
-        self.emit_text("More info in :pep:`PEP 1 § PEP Types <1#pep-types>`.")
+        self.emit_text("More info in :pep:`PEP 1 <1#pep-types>`.")
         self.emit_newline()
 
         # PEP status key
@@ -196,9 +196,7 @@ class PEPZeroWriter:
             self.emit_text(msg)
             self.emit_newline()
 
-        self.emit_text(
-            "More info in :pep:`PEP 1 § PEP Review & Resolution <1#pep-review-resolution>`."
-        )
+        self.emit_text("More info in :pep:`PEP 1 <1#pep-review-resolution>`.")
         self.emit_newline()
 
         if is_pep0:
