@@ -7,6 +7,21 @@ from sphinx import errors
 
 from pep_sphinx_extensions.pep_processor.transforms import pep_zero
 from pep_sphinx_extensions.pep_processor.transforms.pep_zero import _mask_email
+from pep_sphinx_extensions.pep_zero_generator.constants import (
+    SPECIAL_STATUSES,
+    STATUS_ACCEPTED,
+    STATUS_ACTIVE,
+    STATUS_DEFERRED,
+    STATUS_DRAFT,
+    STATUS_FINAL,
+    STATUS_PROVISIONAL,
+    STATUS_REJECTED,
+    STATUS_SUPERSEDED,
+    STATUS_WITHDRAWN,
+    TYPE_INFO,
+    TYPE_PROCESS,
+    TYPE_STANDARDS,
+)
 
 
 class PEPParsingError(errors.SphinxError):
@@ -110,11 +125,21 @@ class PEPHeaders(transforms.Transform):
                 if new_body:
                     para[:] = new_body[:-1]  # Drop trailing space/comma
             elif name == "status":
-                target = self.document.settings.pep_url.format(1) + "#pep-review-resolution"
-                para[:] = [nodes.reference("", body.astext(), internal=True, refuri=target)]
+                para[:] = [
+                    nodes.abbreviation(
+                        body.astext(),
+                        body.astext(),
+                        explanation=_abbreviate_status(body.astext()),
+                    )
+                ]
             elif name == "type":
-                target = self.document.settings.pep_url.format(1) + "#pep-types"
-                para[:] = [nodes.reference("", body.astext(), internal=True, refuri=target)]
+                para[:] = [
+                    nodes.abbreviation(
+                        body.astext(),
+                        body.astext(),
+                        explanation=_abbreviate_type(body.astext()),
+                    )
+                ]
             elif name in {"last-modified", "content-type", "version"}:
                 # Mark unneeded fields
                 fields_to_remove.append(field)
@@ -229,3 +254,47 @@ def _process_pretty_url(url: str) -> tuple[str, str]:
 def _make_link_pretty(url: str) -> str:
     item_name, item_type = _process_pretty_url(url)
     return f"{item_name} {item_type}"
+
+
+def _abbreviate_status(status: str) -> str:
+    if status in SPECIAL_STATUSES:
+        status = SPECIAL_STATUSES[status]
+
+    if status == STATUS_DRAFT:
+        return "Proposal under active discussion and revision"
+    if status == STATUS_DEFERRED:
+        return "Inactive draft that may be taken up again at a later time"
+    if status == STATUS_ACCEPTED:
+        return "Normative proposal accepted for implementation"
+    if status == STATUS_ACTIVE:
+        return "Currently valid/in-use guidance or process"
+    if status == STATUS_FINAL:
+        return "Accepted and implementation complete, or no longer active"
+    if status == STATUS_WITHDRAWN:
+        return "Removed from consideration by author(s)/sponsor"
+    if status == STATUS_REJECTED:
+        return "Formally declined and will not be accepted"
+    if status == STATUS_SUPERSEDED:
+        return "Replaced by another succeeding PEP"
+    if status == STATUS_PROVISIONAL:
+        return "Provisionally accepted but additional feedback needed"
+    raise PEPParsingError(f"Unknown status: {status}")
+
+
+def _abbreviate_type(type_: str) -> str:
+    if type_ == "Standards Track":
+        return (
+            "Normative PEP with a new feature for Python, implementation change for "
+            "CPython or interoperability standard for the ecosystem"
+        )
+    if type_ == "Informational":
+        return (
+            "Non-normative PEP containing background, guidelines or other information "
+            "relevant to the Python ecosystem"
+        )
+    if type_ == "Process":
+        return (
+            "Normative PEP describing or proposing a change to a Python community "
+            "process, workflow or governance"
+        )
+    raise PEPParsingError(f"Unknown type: {type_}")
