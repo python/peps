@@ -33,7 +33,6 @@ At a high level, this proposal changes CPython in the following ways:
 
 * stops sharing the GIL between interpreters, given sufficient isolation
 * adds several new interpreter config options for isolation settings
-* adds some public C-API for fine-grained control when creating interpreters
 * keeps incompatible extensions from causing problems
 
 The GIL
@@ -51,11 +50,11 @@ CPython Runtime State
 
 Properly isolating interpreters requires that most of CPython's
 runtime state be stored in the ``PyInterpreterState`` struct.  Currently,
-only a portion of it is; the rest is found either in global variables
+only a portion of it is; the rest is found either in C global variables
 or in ``_PyRuntimeState``.  Most of that will have to be moved.
 
 This directly coincides with an ongoing effort (of many years) to greatly
-reduce internal use of C global variables and consolidate the runtime
+reduce internal use of global variables and consolidate the runtime
 state into ``_PyRuntimeState`` and ``PyInterpreterState``.
 (See `Consolidating Runtime Global State`_ below.)  That project has
 `significant merit on its own <Benefits to Consolidation_>`_
@@ -201,7 +200,7 @@ without simple solutions:
 
 * other parallelism tools (e.g. dask, ray, MPI)
 
-  * not a fit for the stdlib
+  * not a fit for the runtime/stdlib
 
 * give up on multi-core (e.g. async, do nothing)
 
@@ -225,8 +224,8 @@ following changes, in the order they must happen:
 3. finally, move the GIL down into ``PyInterpreterState``
 4. everything else
 
-   * add to the public C-API
-   * implement restrictions in ``ExtensionFileLoader``
+   * update the C-API
+   * implement extension module restrictions
    * work with popular extension maintainers to help
      with multi-interpreter support
 
@@ -270,9 +269,11 @@ The following runtime state will not be moved:
 Memory Allocators
 '''''''''''''''''
 
-This is the highest risk part of the work to isolate interpreters
-and may require more than just moving fields down
-from ``_PyRuntimeState``.
+This is one of the most sensitive parts of the work to isolate interpreters.
+The simplest solution is to move the global state of the internal
+"small block" allocator to ``PyInterpreterState``, as we are doing with
+nearly all other runtime state.  The following elaborates on the details
+and rationale.
 
 CPython provides a memory management C-API, with `three allocator domains`_:
 "raw", "mem", and "object".  Each provides the equivalent of ``malloc()``,
@@ -329,8 +330,17 @@ Embedders would also likely have to provide a new allocator context
 for each interpreter.  On the plus side, allocator hooks (e.g. tracemalloc)
 would not be affected.
 
-This is an open issue for which this proposal has not settled
-on a solution.
+Ultimately, we will go with the simplest option:
+
+* keep the allocators in the global runtime state
+* require that they be thread-safe
+* move the state of the default object allocator (AKA "small block"
+  allocator) to ``PyInterpreterState``
+
+We experimented with `a rough implementation`_ and found it was fairly
+straightforward, and the performance penalty was essentially zero.
+
+.. _a rough implementation: https://github.com/ericsnowcurrently/cpython/tree/try-per-interpreter-alloc
 
 .. _proposed capi:
 
@@ -340,16 +350,29 @@ C-API
 Internally, the interpreter state will now track how the import system
 should handle extension modules which do not support use with multiple
 interpreters.  See `Restricting Extension Modules`_ below.  We'll refer
-to that setting here as "PyInterpreterState.strict_extensions".
+to that setting here as "PyInterpreterState.strict_extension_compat".
 
-The following public API will be added:
+The following API will be made public, if they haven't been already:
 
 * ``PyInterpreterConfig`` (struct)
-* ``PyInterpreterConfig_LEGACY_INIT`` (macro)
 * ``PyInterpreterConfig_INIT`` (macro)
-* ``PyThreadState * Py_NewInterpreterEx(PyInterpreterConfig *)``
-* ``bool PyInterpreterState_GetStrictExtensions(PyInterpreterState *)``
-* ``void PyInterpreterState_SetStrictExtensions(PyInterpreterState *, bool)``
+* ``PyInterpreterConfig_LEGACY_INIT`` (macro)
+* ``PyThreadState * Py_NewInterpreterFromConfig(PyInterpreterConfig *)``
+
+We will add two new fields to ``PyInterpreterConfig``:
+
+* ``int own_gil``
+* ``int strict_extensions_compat``
+
+We may add other fields over time, as needed (e.g. "own_initial_thread").
+
+Regarding the initializer macros, ``PyInterpreterConfig_INIT`` would
+be used to get an isolated interpreter that also avoids
+subinterpreter-unfriendly features.  It would be the default for
+interpreters created through :pep:`554`.  The unrestricted (status quo)
+will continue to be available through ``PyInterpreterConfig_LEGACY_INIT``,
+which is already used for the main interpreter and ``Py_NewInterpreter()``.
+This will not change.
 
 A note about the "main" interpreter:
 
@@ -361,83 +384,28 @@ as well as a special role during runtime initialization/finalization.
 It is also usually (for now) the only interpreter.
 (Also see https://docs.python.org/3/c-api/init.html#sub-interpreter-support.)
 
-PyInterpreterConfig
-'''''''''''''''''''
-
-This is a struct with 4 bool fields, effectively::
-
-    typedef struct {
-        /* Allow forking the process. */
-        unsigned int allow_fork_without_exec;
-        /* Allow daemon threads. */
-        unsigned int allow_daemon_threads;
-        /* Use a unique "global" interpreter lock.
-           Otherwise, use the main interpreter's GIL. */
-        unsigned int own_gil;
-        /* Only allow extension modules that support
-           use in multiple interpreters. */
-        unsigned int strict_extensions;
-    } PyInterpreterConfig;
-
-The first two fields are essentially derived from the existing
-``PyConfig._isolated_interpreter`` field.
-
-``PyInterpreterConfig.strict_extensions`` is basically the initial
-value used for "PyInterpreterState.strict_extensions".
-
-We may add other fields, as needed, over time
-(e.g. possibly "allow_subprocess", "allow_threading", "own_initial_thread").
-
-Note that a similar ``_PyInterpreterConfig`` may already exist internally,
-with similar fields.
-(See `issue #91120 <https://github.com/python/cpython/issues/91120>`__
-and `PR #31771 <https://github.com/python/cpython/pull/31771>`__.)
-If it does exist then ``PyInterpreterConfig`` would replace it.
-
 PyInterpreterConfig.own_gil
 '''''''''''''''''''''''''''
 
-If ``true`` then the new interpreter will have its own "global"
+If ``true`` (``1``) then the new interpreter will have its own "global"
 interpreter lock.  This means the new interpreter can run without
 getting interrupted by other interpreters.  This effectively unblocks
 full use of multiple cores.  That is the fundamental goal of this PEP.
 
-If ``false`` then the new interpreter will use the main interpreter's
-lock.  This is the legacy (pre-3.12)  behavior in CPython, where all
-interpreters share a single GIL.  Sharing the GIL like this may be
-desirable when using extension modules that still depend on
-the GIL for thread safety.
+If ``false`` (``0``) then the new interpreter will use the main
+interpreter's lock.  This is the legacy (pre-3.12) behavior in CPython,
+where all interpreters share a single GIL.  Sharing the GIL like this
+may be desirable when using extension modules that still depend
+on the GIL for thread safety.
 
-PyInterpreterConfig Initializer Macros
-''''''''''''''''''''''''''''''''''''''
+In ``PyInterpreterConfig_INIT``, this will be ``true``.
+In ``PyInterpreterConfig_LEGACY_INIT``, this will be ``false``.
 
-``#define PyInterpreterConfig_LEGACY_INIT {1, 1, 0, 0}``
+PyInterpreterConfig.strict_extensions_compat
+''''''''''''''''''''''''''''''''''''''''''''
 
-This initializer matches the behavior of ``Py_NewInterpreter()``.
-The main interpreter uses this.
-
-``#define PyInterpreterConfig_INIT {0, 0, 1, 1}``
-
-This initializer would be used to get an isolated interpreter that
-also avoids subinterpreter-unfriendly features.  It would be the default
-for interpreters created through :pep:`554`.  Fork (without exec) would
-be disabled by default due to the general problems of mixing threads
-with fork, coupled with the role of the main interpreter in the runtime
-lifecycle.  Daemon threads would be disabled due to their poor interaction
-with interpreter finalization.
-
-New API Functions
-'''''''''''''''''
-
-``PyThreadState * Py_NewInterpreterEx(PyInterpreterConfig *)``
-
-This is like ``Py_NewInterpreter()`` but initializes uses the granular
-config.  It will replace the "private" func ``_Py_NewInterpreter()``.
-
-``bool PyInterpreter_GetStrictExtensions(PyInterpreterState *)``
-``void PyInterpreter_SetStrictExtensions(PyInterpreterState *, bool)``
-
-Respectively, these get/set "PyInterpreterState.strict_extensions".
+``PyInterpreterConfig.strict_extension_compat`` is basically the initial
+value used for "PyInterpreterState.strict_extension_compat".
 
 Restricting Extension Modules
 -----------------------------
@@ -449,20 +417,21 @@ multiple interpreters at once.  This includes dealing with their globals.
 
 If an extension implements multi-phase init (see :pep:`489`) it is
 considered compatible with multiple interpreters.  All other extensions
-are considered incompatible.  This position is based on the premise that
-if a module supports use with multiple interpreters then it necessarily
-will work even if interpreters do not share the GIL.  This position is
-still the subject of debate.
+are considered incompatible.  (See `Extension Module Thread Safety`_
+for more details about how a per-interpreter GIL may affect that
+classification.)
 
 If an incompatible extension is imported and the current
-"PyInterpreterState.strict_extensions" value is ``true`` then the import
+"PyInterpreterState.strict_extension_compat" value is ``true`` then the import
 system will raise ``ImportError``.  (For ``false`` it simply doesn't check.)
 This will be done through
-``importlib._bootstrap_external.ExtensionFileLoader``.
+``importlib._bootstrap_external.ExtensionFileLoader`` (really, through
+``_imp.create_dynamic()``, ``_PyImport_LoadDynamicModuleWithSpec()``, and
+``PyModule_FromDefAndSpec2()``).
 
 Such imports will never fail in the main interpreter (or in interpreters
 created through ``Py_NewInterpreter()``) since
-"PyInterpreterState.strict_extensions" initializes to ``false`` in both
+"PyInterpreterState.strict_extension_compat" initializes to ``false`` in both
 cases.  Thus the legacy (pre-3.12) behavior is preserved.
 
 We will work with popular extensions to help them support use in
@@ -473,22 +442,71 @@ Extension Module Compatibility
 ''''''''''''''''''''''''''''''
 
 As noted in `Extension Modules`_, many extensions work fine in multiple
-interpreters without needing any changes.  The import system will still
-fail if such a module doesn't explicitly indicate support.  At first,
-not many extension modules will, so this is a potential source
-of frustration.
+interpreters (and under a per-interpreter GIL) without needing any
+changes.  The import system will still fail if such a module doesn't
+explicitly indicate support.  At first, not many extension modules
+will, so this is a potential source of frustration.
 
 We will address this by adding a context manager to temporarily disable
 the check on multiple interpreter support:
 ``importlib.util.allow_all_extensions()``.  More or less, it will modify
-the current "PyInterpreterState.strict_extensions" value (e.g. through
+the current "PyInterpreterState.strict_extension_compat" value (e.g. through
 a private ``sys`` function).
+
+Extension Module Thread Safety
+''''''''''''''''''''''''''''''
+
+If a module supports use with multiple interpreters, that mostly implies
+it will work even if those interpreters do not share the GIL.  The one
+caveat is where a module links against a library with internal global
+state that isn't thread-safe.  (Even something as innocuous as a static
+local variable as a temporary buffer can be a problem.)  With a shared
+GIL, that state is protected.  Without one, such modules must wrap any
+use of that state (e.g. through calls) with a lock.
+
+Currently, it isn't clear whether or not supports-multiple-interpreters
+is sufficiently equivalent to supports-per-interpreter-gil, such that
+we can avoid any special accommodations.  This is still a point of
+meaningful discussion and investigation.  The practical distinction
+between the two (in the Python community, e.g. PyPI) is not yet
+understood well enough to settle the matter.  Likewise, it isn't clear
+what we might be able to do to help extension maintainers mitigate
+the problem (assuming it is one).
+
+In the meantime, we must proceed as though the difference would be
+large enough to cause problems for enough extension modules out there.
+The solution we would apply is:
+
+* add a ``PyModuleDef`` slot that indicates an extension can be imported
+  under a per-interpreter GIL (i.e. opt in)
+* add that slot as part of the definition of a "compatible" extension,
+  as discussed earlier
+
+The downside is that not a single extension module will be able to take
+advantage of the per-interpreter GIL without extra effort by the module
+maintainer, regardless of how minor that effort.  This compounds the
+problem described in `Extension Module Compatibility`_ and the same
+workaround applies.  Ideally, we would determine that there isn't enough
+difference to matter.
+
+If we do end up requiring an opt-in for imports under a per-interpreter
+GIL, and later determine it isn't necessary, then we can switch the
+default at that point, make the old opt-in slot a noop, and add a new
+``PyModuleDef`` slot for explicitly opting *out*.  In fact, it makes
+sense to add that opt-out slot from the beginning.
+
 
 Documentation
 -------------
 
-The "Sub-interpreter support" section of ``Doc/c-api/init.rst`` will be
-updated with the added API.
+* C-API: the "Sub-interpreter support" section of ``Doc/c-api/init.rst``
+  will detail the updated API
+* C-API: that section will explain about the consequences of
+  a per-interpreter GIL
+* importlib: the ``ExtensionFileLoader`` entry will note import
+  may fail in subinterpreters
+* importlib: there will be a new entry about
+  ``importlib.util.allow_all_extensions()``
 
 
 Impact
@@ -498,7 +516,14 @@ Backwards Compatibility
 -----------------------
 
 No behavior or APIs are intended to change due to this proposal,
-with one exception noted in `the next section <Extension Modules_>`_.
+with two exceptions:
+
+* some extensions will fail to import in some subinterpreters
+  (see `the next section <Extension Modules_>`_)
+* "mem" and "object" allocators that are currently not thread-safe
+  may now be susceptible to data races when used in combination
+  with multiple interpreters
+
 The existing C-API for managing interpreters will preserve its current
 behavior, with new behavior exposed through new API.  No other API
 or runtime behavior is meant to change, including compatibility with
@@ -516,24 +541,35 @@ there is no change in behavior under multiple interpreters created
 using the existing ``Py_NewInterpreter()``.
 
 Keep in mind that some extensions already break when used in multiple
-interpreters, due to keeping module state in global variables.  They
+interpreters, due to keeping module state in global variables (or
+due to the `internal state of linked libraries`_).  They
 may crash or, worse, experience inconsistent behavior.  That was part
 of the motivation for :pep:`630` and friends, so this is not a new
 situation nor a consequence of this proposal.
 
+.. _internal state of linked libraries: https://github.com/pyca/cryptography/issues/2299
+
 In contrast, when the `proposed API <proposed capi_>`_ is used to
-create multiple interpreters, the default behavior will change for
-some extensions.  In that case, importing an extension will fail
-(outside the main interpreter) if it doesn't indicate support for
-multiple interpreters.  For extensions that already break in
-multiple interpreters, this will be an improvement.
+create multiple interpreters, with the appropriate settings,
+the behavior will change for incompatible extensions.  In that case,
+importing such an extension will fail (outside the main interpreter),
+as explained in `Restricting Extension Modules`_.  For extensions that
+already break in multiple interpreters, this will be an improvement.
+
+Additionally, some extension modules link against libraries with
+thread-unsafe internal global state.
+(See `Extension Module Thread Safety`_.)
+Such modules will have to start wrapping any direct or indirect use
+of that state in a lock.  This is the key difference from other modules
+that also implement multi-phase init and thus indicate support for
+multiple interpreters (i.e. isolation).
 
 Now we get to the break in compatibility mentioned above.  Some
-extensions are safe under multiple interpreters, even though they
-haven't indicated that.  Unfortunately, there is no reliable way for
-the import system to infer that such an extension is safe, so
-importing them will still fail.  This case is addressed in
-`Extension Module Compatibility`_ below.
+extensions are safe under multiple interpreters (and a per-interpreter
+GIL), even though they haven't indicated that.  Unfortunately, there is
+no reliable way for the import system to infer that such an extension
+is safe, so importing them will still fail.  This case is addressed
+in `Extension Module Compatibility`_ above.
 
 Extension Module Maintainers
 ----------------------------
@@ -545,20 +581,20 @@ concern about the increased burden they anticipate due to increased
 use of multiple interpreters.
 
 Specifically, enabling support for multiple interpreters will require
-substantial work for some extension modules.  To add that support,
-the maintainer(s) of such a module (often volunteers) would have to
-set aside their normal priorities and interests to focus on
-compatibility (see :pep:`630`).
+substantial work for some extension modules (albeit likely not many).
+To add that support, the maintainer(s) of such a module (often
+volunteers) would have to set aside their normal priorities and
+interests to focus on compatibility (see :pep:`630`).
 
 Of course, extension maintainers are free to not add support for use
 in multiple interpreters.  However, users will increasingly demand
-such support, especially if the feature grows
-in popularity.
+such support, especially if the feature grows in popularity.
 
 Either way, the situation can be stressful for maintainers of such
 extensions, particularly when they are doing the work in their spare
 time.  The concerns they have expressed are understandable, and we address
-the partial solution in `Restricting Extension Modules`_ below.
+the partial solution in the `Restricting Extension Modules`_ and
+`Extension Module Compatibility`_ sections.
 
 Alternate Python Implementations
 --------------------------------
@@ -587,23 +623,35 @@ Performance
 
 The work to consolidate globals has already provided a number of
 improvements to CPython's performance, both speeding it up and using
-less memory, and this should continue. Performance benefits to a
-per-interpreter GIL have not been explored.  At the very least, it is
-not expected to make CPython slower (as long as interpreters are
-sufficiently isolated).
+less memory, and this should continue. The performance benefits of a
+per-interpreter GIL specifically have not been explored.  At the very
+least, it is not expected to make CPython slower
+(as long as interpreters are sufficiently isolated).  And, obviously,
+it enable a variety of multi-core parallelism in Python code.
 
 
 How to Teach This
 =================
 
-This is an advanced feature for users of the C-API.  There is no
-expectation that this will be taught.
+Unlike :pep:`554`, this is an advanced feature meant for a narrow set
+of users of the C-API.  There is no expectation that the specifics of
+the API nor its direct application will be taught.
 
 That said, if it were taught then it would boil down to the following:
 
-    In addition to Py_NewInterpreter(), you can use Py_NewInterpreterEx()
-    to create an interpreter.  The config you pass it indicates how you
-    want that interpreter to behave.
+    In addition to Py_NewInterpreter(), you can use
+    Py_NewInterpreterFromConfig() to create an interpreter.
+    The config you pass it indicates how you want that
+    interpreter to behave.
+
+Furthermore, the maintainers of any extension modules that create
+isolated interpreters will likely need to explain the consequences
+of a per-interpreter GIL to their users.  The first thing to explain
+is what :pep:`554` teaches about the concurrency model that isolated
+interpreters enables.  That leads into the point that Python software
+written using that concurrency model can then take advantage
+of multi-core parallelism, which is currently
+prevented by the GIL.
 
 .. XXX We should add docs (a la PEP 630) that spell out how to make
    an extension compatible with per-interpreter GIL.
@@ -618,15 +666,18 @@ Reference Implementation
 Open Issues
 ===========
 
-* What to do about the allocators?
+* Are we okay to require "mem" and "object" allcoators to be thread-safe?
 * How would a per-interpreter tracemalloc module relate to global allocators?
 * Would the faulthandler module be limited to the main interpreter
   (like the signal module) or would we leak that global state between
   interpreters (protected by a granular lock)?
 * Split out an informational PEP with all the relevant info,
   based on the "Consolidating Runtime Global State" section?
-* Does supporting multiple interpreters automatically mean an extension
-  supports a per-interpreter GIL?
+* How likely is it that a module works under multiple interpreters
+  (isolation) but doesn't work under a per-interpreter GIL?
+  (See `Extension Module Thread Safety`_.)
+* If it is likely enough, what can we do to help extension maintainers
+  mitigate the problem and enjoy use under a per-intepreter GIL?
 * What would be a better (scarier-sounding) name
   for ``allow_all_extensions``?
 

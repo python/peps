@@ -4,6 +4,20 @@ import pytest
 
 from pep_sphinx_extensions.pep_zero_generator import parser
 from pep_sphinx_extensions.pep_zero_generator.author import Author
+from pep_sphinx_extensions.pep_zero_generator.constants import (
+    STATUS_ACCEPTED,
+    STATUS_ACTIVE,
+    STATUS_DEFERRED,
+    STATUS_DRAFT,
+    STATUS_FINAL,
+    STATUS_PROVISIONAL,
+    STATUS_REJECTED,
+    STATUS_SUPERSEDED,
+    STATUS_WITHDRAWN,
+    TYPE_INFO,
+    TYPE_PROCESS,
+    TYPE_STANDARDS,
+)
 from pep_sphinx_extensions.pep_zero_generator.errors import PEPError
 from pep_sphinx_extensions.tests.utils import AUTHORS_OVERRIDES
 
@@ -34,9 +48,8 @@ def test_pep_details(monkeypatch):
     assert pep8.details == {
         "authors": "GvR, Warsaw, Coghlan",
         "number": 8,
-        "status": " ",
+        "shorthand": ":abbr:`P (Process)`",
         "title": "Style Guide for Python Code",
-        "type": "P",
     }
 
 
@@ -79,3 +92,29 @@ def test_parse_authors_invalid():
 
     with pytest.raises(PEPError, match="no authors found"):
         parser._parse_authors(pep, "", AUTHORS_OVERRIDES)
+
+
+@pytest.mark.parametrize(
+    "test_type, test_status, expected",
+    [
+        (TYPE_INFO, STATUS_DRAFT, ":abbr:`I (Informational)`"),
+        (TYPE_INFO, STATUS_ACTIVE, ":abbr:`I (Informational)`"),
+        (TYPE_INFO, STATUS_ACCEPTED, ":abbr:`IA (Informational, Accepted)`"),
+        (TYPE_INFO, STATUS_DEFERRED, ":abbr:`ID (Informational, Deferred)`"),
+        (TYPE_PROCESS, STATUS_ACCEPTED, ":abbr:`PA (Process, Accepted)`"),
+        (TYPE_PROCESS, STATUS_ACTIVE, ":abbr:`P (Process)`"),
+        (TYPE_PROCESS, STATUS_FINAL, ":abbr:`PF (Process, Final)`"),
+        (TYPE_PROCESS, STATUS_SUPERSEDED, ":abbr:`PS (Process, Superseded)`"),
+        (TYPE_PROCESS, STATUS_WITHDRAWN, ":abbr:`PW (Process, Withdrawn)`"),
+        (TYPE_STANDARDS, STATUS_ACCEPTED, ":abbr:`SA (Standards Track, Accepted)`"),
+        (TYPE_STANDARDS, STATUS_REJECTED, ":abbr:`SR (Standards Track, Rejected)`"),
+        (TYPE_STANDARDS, STATUS_PROVISIONAL, ":abbr:`SP (Standards Track, Provisional)`"),  # fmt: skip
+    ],
+)
+def test_abbreviate_type_status(test_type, test_status, expected):
+    # set up dummy PEP object and monkeypatch attributes
+    pep = parser.PEP(Path("pep-0008.txt"))
+    pep.pep_type = test_type
+    pep.status = test_status
+
+    assert pep.shorthand == expected

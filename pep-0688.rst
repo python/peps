@@ -1,7 +1,7 @@
 PEP: 688
 Title: Making the buffer protocol accessible in Python
 Author: Jelle Zijlstra <jelle.zijlstra@gmail.com>
-Discussions-To: https://discuss.python.org/t/15265
+Discussions-To: https://discuss.python.org/t/19756
 Status: Draft
 Type: Standards Track
 Topic: Typing
@@ -9,7 +9,9 @@ Content-Type: text/x-rst
 Created: 23-Apr-2022
 Python-Version: 3.12
 Post-History: `23-Apr-2022 <https://mail.python.org/archives/list/typing-sig@python.org/thread/CX7GPSIYQEL23RXMYL66GAKGP4RLUD7P/>`__,
-              `25-Apr-2022 <https://discuss.python.org/t/15265>`__
+              `25-Apr-2022 <https://discuss.python.org/t/15265>`__,
+              `06-Oct-2022 <https://discuss.python.org/t/19756>`__,
+              `26-Oct-2022 <https://mail.python.org/archives/list/typing-sig@python.org/thread/XH5ZK2MSZIQLL62PYZ6I5532SQKKVCBL/>`__
 
 
 Abstract
@@ -101,13 +103,6 @@ ask for the buffer. For some types, such as ``memoryview``,
 the supported flags depend on the instance. As a result, it would
 be difficult to represent support for these flags in the type system.
 
-There is one exception: if a buffer is writable, it must define the
-``bf_releasebuffer`` slot, so that the buffer can be released when
-a consumer is done writing to it. For read-only buffers, such as
-``bytes``, there is generally no need for this slot. Therefore, the
-presence of this slot can be used to determine whether a buffer is
-writable.
-
 
 Specification
 =============
@@ -122,8 +117,9 @@ code. Conversely, classes implemented in C that support the
 buffer protocol acquire synthesized methods accessible from Python
 code.
 
-The ``__buffer__`` method corresponds to the ``bf_getbuffer`` C slot,
-which is called to create a buffer from a Python object.
+The ``__buffer__`` method is called to create a buffer from a Python
+object, for example by the ``memoryview()`` constructor.
+It corresponds to the ``bf_getbuffer`` C slot.
 The Python signature for this method is
 ``def __buffer__(self, flags: int, /) -> memoryview: ...``. The method
 must return a ``memoryview`` object. If the method is called from C
@@ -133,31 +129,33 @@ code, the interpreter extracts the underlying ``Py_buffer`` from the
 implements ``bf_getbuffer``, the returned buffer is wrapped in a
 ``memoryview`` for consumption by Python code.
 
-The ``__release_buffer__`` method corresponds to the
-``bf_releasebuffer`` C slot, which is called when a caller no
-longer needs the buffer returned by ``bf_getbuffer``. This is an
-optional part of the buffer protocol, and read-only buffers can
-generally omit it. The Python signature for this method is
+The ``__release_buffer__`` method is called when a caller no
+longer needs the buffer returned by ``__buffer__``. It corresponds to the
+``bf_releasebuffer`` C slot. This is an
+optional part of the buffer protocol.
+The Python signature for this method is
 ``def __release_buffer__(self, buffer: memoryview, /) -> None: ...``.
-The buffer to be released is wrapped in a ``memoryview``. It is
+The buffer to be released is wrapped in a ``memoryview``. When this
+method is invoked through CPython's buffer API (for example, through
+``memoryview.release``), the passed ``memoryview`` is the same object
+as was returned by ``__buffer__``. It is
 also possible to call ``__release_buffer__`` on a C class that
 implements ``bf_releasebuffer``.
 
-inspect.BufferFlags
--------------------
+``inspect.BufferFlags``
+-----------------------
 
 To help implementations of ``__buffer__``, we add ``inspect.BufferFlags``,
 a subclass of ``enum.IntFlag``. This enum contains all flags defined in the
 C buffer protocol. For example, ``inspect.BufferFlags.SIMPLE`` has the same
 value as the ``PyBUF_SIMPLE`` constant.
 
-collections.abc.Buffer and MutableBuffer
-----------------------------------------
+``collections.abc.Buffer``
+--------------------------
 
-We add two new abstract base classes, ``collections.abc.Buffer`` and
-``collections.abc.MutableBuffer``. The former requires the ``__buffer__``
-method; the latter requires both ``__buffer__`` and ``__release_buffer__``.
-These classes are intended primarily for use in type annotations:
+We add a new abstract base classes, ``collections.abc.Buffer``,
+which requires the ``__buffer__`` method.
+This class is intended primarily for use in type annotations:
 
 .. code-block:: python
 
@@ -167,15 +165,8 @@ These classes are intended primarily for use in type annotations:
    need_buffer(b"xy")  # ok
    need_buffer("xy")  # rejected by static type checkers
 
-   def need_mutable_buffer(b: MutableBuffer) -> None:
-       view = memoryview(b)
-       view[0] = 42
 
-   need_mutable_buffer(bytearray(b"xy"))  # ok
-   need_mutable_buffer(b"xy")  # rejected by static type checkers
-
-
-They can also be used in ``isinstance`` and ``issubclass`` checks:
+It can also be used in ``isinstance`` and ``issubclass`` checks:
 
 .. code-block:: pycon
 
@@ -191,7 +182,7 @@ They can also be used in ``isinstance`` and ``issubclass`` checks:
    >>> issubclass(str, Buffer)
    False
 
-In the typeshed stub files, these classes should be defined as ``Protocol``\ s,
+In the typeshed stub files, the class should be defined as a ``Protocol``,
 following the precedent of other simple ABCs in ``collections.abc`` such as
 ``collections.abc.Iterable`` or ``collections.abc.Sized``.
 
@@ -203,30 +194,43 @@ buffer protocol:
 
 .. code-block:: python
 
+   import contextlib
+   import inspect
+
    class MyBuffer:
        def __init__(self, data: bytes):
            self.data = bytearray(data)
-           self.view = memoryview(self.data)
-           self.held = False
+           self.view = None
 
        def __buffer__(self, flags: int) -> memoryview:
            if flags != inspect.BufferFlags.FULL_RO:
                raise TypeError("Only BufferFlags.FULL_RO supported")
-           if self.held:
+           if self.view is not None:
                raise RuntimeError("Buffer already held")
-           self.held = True
+           self.view = memoryview(self.data)
            return self.view
 
        def __release_buffer__(self, view: memoryview) -> None:
-           assert self.view is view
-           self.held = False
+           assert self.view is view  # guaranteed to be true
+           self.view.release()
+           self.view = None
+
+       def extend(self, b: bytes) -> None:
+           if self.view is not None:
+               raise RuntimeError("Cannot extend held buffer")
+           self.data.extend(b)
 
    buffer = MyBuffer(b"capybara")
    with memoryview(buffer) as view:
        view[0] = ord("C")
 
+       with contextlib.suppress(RuntimeError):
+           buffer.extend(b"!")  # raises RuntimeError
+
+   buffer.extend(b"!")  # ok, buffer is no longer held
+
    with memoryview(buffer) as view:
-       assert view.tobytes() == b"Capybara"
+       assert view.tobytes() == b"Capybara!"
 
 
 Equivalent for older Python versions
@@ -237,8 +241,8 @@ in the `typing_extensions <https://pypi.org/project/typing-extensions/>`_
 package. Because the buffer protocol
 is currently accessible only in C, this PEP cannot be fully implemented
 in a pure-Python package like ``typing_extensions``. As a temporary
-workaround, two abstract base classes, ``typing_extensions.Buffer``
-and ``typing_extensions.MutableBuffer``, will be provided for Python versions
+workaround, an abstract base class ``typing_extensions.Buffer``
+will be provided for Python versions
 that do not have ``collections.abc.Buffer`` available.
 
 After this PEP is implemented, inheriting from ``collections.abc.Buffer`` will
@@ -309,8 +313,8 @@ in the author's fork.
 Rejected Ideas
 ==============
 
-types.Buffer
-------------
+``types.Buffer``
+----------------
 
 An earlier version of this PEP proposed adding a new ``types.Buffer`` type with
 an ``__instancecheck__`` implemented in C so that ``isinstance()`` checks can be
@@ -341,15 +345,36 @@ not a very common type. We prefer to have users spell out accepted types
 explicitly (or use ``Protocol`` from :pep:`544` if only a specific set of
 methods is required).
 
+Distinguish between mutable and immutable buffers
+-------------------------------------------------
 
-Open Issues
-===========
+The most frequently used distinction within buffer types is
+whether or not the buffer is mutable. Some functions accept only
+mutable buffers (e.g., ``bytearray``, some ``memoryview`` objects),
+others accept all buffers.
 
-Where should the ``Buffer`` and ``MutableBuffer`` ABCs live? This PEP
-proposes putting them in ``collections.abc`` like most other ABCs,
-but buffers are not "collections" in the original sense of the word.
-Alternatively, these classes could be put in ``typing``, like
-``SupportsInt`` and several other simple protocols.
+An earlier version of this PEP proposed using the presence of the
+``bf_releasebuffer`` slot to determine whether a buffer type is mutable.
+This rule holds for most standard library buffer types, but the relationship
+between mutability and the presence of this slot is not absolute. For
+example, ``numpy`` arrays are mutable but do not have this slot.
+
+The current buffer protocol does not provide any way to reliably
+determine whether a buffer type represents a mutable or immutable
+buffer. Therefore, this PEP does not add type system support
+for this distinction.
+The question can be revisited in the future if the buffer protocol
+is enhanced to provide static introspection support.
+A `sketch <https://discuss.python.org/t/introspection-and-mutable-xor-shared-semantics-for-pybuffer/20314>`_
+for such a mechanism exists.
+
+
+Acknowledgments
+===============
+
+Many people have provided useful feedback on drafts of this PEP.
+Petr Viktorin has been particularly helpful in improving my understanding
+of the subtleties of the buffer protocol.
 
 
 Copyright
