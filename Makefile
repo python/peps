@@ -6,11 +6,6 @@ JOBS=8
 OUTPUT_DIR=build
 RENDER_COMMAND=$(VENVDIR)/bin/python3 build.py -j $(JOBS) -o $(OUTPUT_DIR)
 
-.PHONY: help
-help : Makefile
-	@echo "Please use \`make <target>' where <target> is one of"
-	@sed -n 's/^##//p' $<
-
 ## render         to render PEPs to "pep-NNNN.html" files
 .PHONY: render
 render: venv
@@ -75,3 +70,8 @@ test: venv
 spellcheck: venv
 	$(VENVDIR)/bin/python3 -m pre_commit --version > /dev/null || $(VENVDIR)/bin/python3 -m pip install pre-commit
 	$(VENVDIR)/bin/python3 -m pre_commit run --all-files --hook-stage manual codespell
+
+.PHONY: help
+help : Makefile
+	@echo "Please use \`make <target>' where <target> is one of"
+	@sed -n 's/^##//p' $<
