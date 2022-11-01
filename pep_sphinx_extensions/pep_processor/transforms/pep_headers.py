@@ -23,6 +23,26 @@ from pep_sphinx_extensions.pep_zero_generator.constants import (
     TYPE_STANDARDS,
 )
 
+ABBREVIATED_STATUSES = {
+    STATUS_DRAFT: "Proposal under active discussion and revision",
+    STATUS_DEFERRED: "Inactive draft that may be taken up again at a later time",
+    STATUS_ACCEPTED: "Normative proposal accepted for implementation",
+    STATUS_ACTIVE: "Currently valid/in-use guidance or process",
+    STATUS_FINAL: "Accepted and implementation complete, or no longer active",
+    STATUS_WITHDRAWN: "Removed from consideration by author(s)/sponsor",
+    STATUS_REJECTED: "Formally declined and will not be accepted",
+    STATUS_SUPERSEDED: "Replaced by another succeeding PEP",
+    STATUS_PROVISIONAL: "Provisionally accepted but additional feedback needed",
+}
+
+ABBREVIATED_TYPES = {
+    TYPE_STANDARDS: "Normative PEP with a new feature for Python, implementation "
+    "change for CPython or interoperability standard for the ecosystem",
+    TYPE_INFO: "Non-normative PEP containing background, guidelines or other "
+    "information relevant to the Python ecosystem",
+    TYPE_PROCESS: "Normative PEP describing or proposing a change to a Python "
+    "community process, workflow or governance",
+}
 
 class PEPParsingError(errors.SphinxError):
     pass
@@ -260,41 +280,14 @@ def _abbreviate_status(status: str) -> str:
     if status in SPECIAL_STATUSES:
         status = SPECIAL_STATUSES[status]
 
-    if status == STATUS_DRAFT:
-        return "Proposal under active discussion and revision"
-    if status == STATUS_DEFERRED:
-        return "Inactive draft that may be taken up again at a later time"
-    if status == STATUS_ACCEPTED:
-        return "Normative proposal accepted for implementation"
-    if status == STATUS_ACTIVE:
-        return "Currently valid/in-use guidance or process"
-    if status == STATUS_FINAL:
-        return "Accepted and implementation complete, or no longer active"
-    if status == STATUS_WITHDRAWN:
-        return "Removed from consideration by author(s)/sponsor"
-    if status == STATUS_REJECTED:
-        return "Formally declined and will not be accepted"
-    if status == STATUS_SUPERSEDED:
-        return "Replaced by another succeeding PEP"
-    if status == STATUS_PROVISIONAL:
-        return "Provisionally accepted but additional feedback needed"
-    raise PEPParsingError(f"Unknown status: {status}")
+    try:
+        return ABBREVIATED_STATUSES[status]
+    except KeyError:
+        raise PEPParsingError(f"Unknown status: {status}")
 
 
 def _abbreviate_type(type_: str) -> str:
-    if type_ == "Standards Track":
-        return (
-            "Normative PEP with a new feature for Python, implementation change for "
-            "CPython or interoperability standard for the ecosystem"
-        )
-    if type_ == "Informational":
-        return (
-            "Non-normative PEP containing background, guidelines or other information "
-            "relevant to the Python ecosystem"
-        )
-    if type_ == "Process":
-        return (
-            "Normative PEP describing or proposing a change to a Python community "
-            "process, workflow or governance"
-        )
-    raise PEPParsingError(f"Unknown type: {type_}")
+    try:
+        return ABBREVIATED_TYPES[type_]
+    except KeyError:
+        raise PEPParsingError(f"Unknown type: {type_}")
