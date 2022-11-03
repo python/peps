@@ -177,26 +177,27 @@ class PEPZeroWriter:
         # PEP types key
         self.emit_title("PEP Types Key")
         for type_ in sorted(TYPE_VALUES):
-            self.emit_text(f"* {type_[0]} - {type_} PEP")
+            self.emit_text(
+                f"* **{type_[0]}** --- *{type_}*: ABBREVIATED_TYPES[type_]")
             self.emit_newline()
 
-        self.emit_text("More info in :pep:`PEP 1 <1#pep-types>`.")
+        self.emit_text(":pep:`More info in PEP 1 <1#pep-types>`.")
         self.emit_newline()
 
         # PEP status key
         self.emit_title("PEP Status Key")
         for status in sorted(STATUS_VALUES):
             # Draft PEPs have no status displayed, Active shares a key with Accepted
-            if status in HIDE_STATUS:
-                continue
+            status_code = "<none>" if status == STATUS_DRAFT else status[0]
             if status == STATUS_ACCEPTED:
                 msg = "* A - Accepted (Standards Track only) or Active proposal"
             else:
                 msg = f"* {status[0]} - {status} proposal"
-            self.emit_text(msg)
+            self.emit_text(
+                f"* **{status_code}** --- *{status}*: ABBREVIATED_STATUSES[status]")
             self.emit_newline()
 
-        self.emit_text("More info in :pep:`PEP 1 <1#pep-review-resolution>`.")
+        self.emit_text(":pep:`More info in PEP 1 <1#pep-review-resolution>`.")
         self.emit_newline()
 
         if is_pep0:
