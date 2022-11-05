@@ -131,7 +131,7 @@ class PEP:
         """Return reStructuredText tooltip for the PEP type and status."""
         type_code = self.pep_type[0].upper()
         if self.status in HIDE_STATUS:
-            return f":abbr:`{type_code} ({self.pep_type})`"
+            return f":abbr:`{type_code} ({self.pep_type}, {self.status})`"
         status_code = self.status[0].upper()
         return f":abbr:`{type_code}{status_code} ({self.pep_type}, {self.status})`"
 
