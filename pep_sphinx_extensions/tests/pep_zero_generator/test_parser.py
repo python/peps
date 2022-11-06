@@ -48,7 +48,7 @@ def test_pep_details(monkeypatch):
     assert pep8.details == {
         "authors": "GvR, Warsaw, Coghlan",
         "number": 8,
-        "shorthand": ":abbr:`P (Process)`",
+        "shorthand": ":abbr:`PA (Process, Active)`",
         "title": "Style Guide for Python Code",
     }
 
@@ -97,12 +97,12 @@ def test_parse_authors_invalid():
 @pytest.mark.parametrize(
     "test_type, test_status, expected",
     [
-        (TYPE_INFO, STATUS_DRAFT, ":abbr:`I (Informational)`"),
-        (TYPE_INFO, STATUS_ACTIVE, ":abbr:`I (Informational)`"),
+        (TYPE_INFO, STATUS_DRAFT, ":abbr:`I (Informational, Draft)`"),
+        (TYPE_INFO, STATUS_ACTIVE, ":abbr:`IA (Informational, Active)`"),
         (TYPE_INFO, STATUS_ACCEPTED, ":abbr:`IA (Informational, Accepted)`"),
         (TYPE_INFO, STATUS_DEFERRED, ":abbr:`ID (Informational, Deferred)`"),
         (TYPE_PROCESS, STATUS_ACCEPTED, ":abbr:`PA (Process, Accepted)`"),
-        (TYPE_PROCESS, STATUS_ACTIVE, ":abbr:`P (Process)`"),
+        (TYPE_PROCESS, STATUS_ACTIVE, ":abbr:`PA (Process, Active)`"),
         (TYPE_PROCESS, STATUS_FINAL, ":abbr:`PF (Process, Final)`"),
         (TYPE_PROCESS, STATUS_SUPERSEDED, ":abbr:`PS (Process, Superseded)`"),
         (TYPE_PROCESS, STATUS_WITHDRAWN, ":abbr:`PW (Process, Withdrawn)`"),
