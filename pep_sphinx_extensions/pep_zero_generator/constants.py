@@ -36,10 +36,10 @@ ACTIVE_ALLOWED = {TYPE_PROCESS, TYPE_INFO}
 # map of topic -> additional description
 SUBINDICES_BY_TOPIC = {
     "packaging": """\
-The canonical, up-to-date packaging specifications can be found on the
-`Python Packaging Authority`_ (PyPA) `specifications`_ page.
 Packaging PEPs follow the `PyPA specification update process`_.
 They are used to propose major additions or changes to the PyPA specifications.
+The canonical, up-to-date packaging specifications can be found on the
+`Python Packaging Authority`_ (PyPA) `specifications`_ page.
 
 .. _Python Packaging Authority: https://www.pypa.io/
 .. _specifications: https://packaging.python.org/en/latest/specifications/
