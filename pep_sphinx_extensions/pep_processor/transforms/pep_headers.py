@@ -29,7 +29,7 @@ ABBREVIATED_STATUSES = {
     STATUS_ACCEPTED: "Normative proposal accepted for implementation",
     STATUS_ACTIVE: "Currently valid informational guidance, or an in-use process",
     STATUS_FINAL: "Accepted and implementation complete, or no longer active",
-    STATUS_WITHDRAWN: "Removed from consideration by author(s)/sponsor",
+    STATUS_WITHDRAWN: "Removed from consideration by sponsor or authors",
     STATUS_REJECTED: "Formally declined and will not be accepted",
     STATUS_SUPERSEDED: "Replaced by another succeeding PEP",
     STATUS_PROVISIONAL: "Provisionally accepted but additional feedback needed",

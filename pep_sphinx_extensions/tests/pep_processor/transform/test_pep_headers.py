@@ -132,14 +132,14 @@ def test_make_link_pretty(test_input, expected):
     "test_input, expected",
     [
         (STATUS_ACCEPTED, "Normative proposal accepted for implementation"),
-        (STATUS_ACTIVE, "Currently valid/in-use guidance or process"),
+        (STATUS_ACTIVE, "Currently valid informational guidance, or an in-use process"),
         (STATUS_DEFERRED, "Inactive draft that may be taken up again at a later time"),
         (STATUS_DRAFT, "Proposal under active discussion and revision"),
         (STATUS_FINAL, "Accepted and implementation complete, or no longer active"),
         (STATUS_REJECTED, "Formally declined and will not be accepted"),
         ("April Fool!", "Formally declined and will not be accepted"),
         (STATUS_SUPERSEDED, "Replaced by another succeeding PEP"),
-        (STATUS_WITHDRAWN, "Removed from consideration by author(s)/sponsor"),
+        (STATUS_WITHDRAWN, "Removed from consideration by sponsor or authors"),
         (STATUS_PROVISIONAL, "Provisionally accepted but additional feedback needed"),
     ],
 )
