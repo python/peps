@@ -148,9 +148,10 @@ class PEP:
         }
 
     @property
-    def full_details(self) -> dict[str, str]:
+    def full_details(self) -> dict[str, str | int]:
         """Returns all headers of the PEP as a dict."""
         return {
+            "number": self.number,
             "title": self.title,
             "authors": ", ".join(author.nick for author in self.authors),
             "discussions_to": self.discussions_to,
