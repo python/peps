@@ -192,7 +192,7 @@ class PEPZeroWriter:
         self.emit_title("PEP Status Key")
         for status in sorted(STATUS_VALUES):
             # Draft PEPs have no status displayed, Active shares a key with Accepted
-            status_code = "<none>" if status == STATUS_DRAFT else status[0]
+            status_code = "<No letter>" if status == STATUS_DRAFT else status[0]
             self.emit_text(
                 f"* **{status_code}** --- *{status}*: {ABBREVIATED_STATUSES[status]}"
             )

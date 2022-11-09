@@ -27,7 +27,7 @@ ABBREVIATED_STATUSES = {
     STATUS_DRAFT: "Proposal under active discussion and revision",
     STATUS_DEFERRED: "Inactive draft that may be taken up again at a later time",
     STATUS_ACCEPTED: "Normative proposal accepted for implementation",
-    STATUS_ACTIVE: "Currently valid/in-use guidance or process",
+    STATUS_ACTIVE: "Currently valid informational guidance, or an in-use process",
     STATUS_FINAL: "Accepted and implementation complete, or no longer active",
     STATUS_WITHDRAWN: "Removed from consideration by author(s)/sponsor",
     STATUS_REJECTED: "Formally declined and will not be accepted",
