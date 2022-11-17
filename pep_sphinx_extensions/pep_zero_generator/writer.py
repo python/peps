@@ -42,8 +42,7 @@ This PEP contains the index of all Python Enhancement Proposals,
 known as PEPs.  PEP numbers are :pep:`assigned <1#pep-editors>`
 by the PEP editors, and once assigned are never changed.  The
 `version control history <https://github.com/python/peps>`_ of
-the PEP texts represent their historical record.  The PEPs are
-:doc:`indexed by topic <topic/index>` for specialist subjects.
+the PEP texts represent their historical record.
 """
 
 
@@ -131,6 +130,8 @@ class PEPZeroWriter:
 
         # PEPs by topic
         self.emit_title("Index by Topic")
+        self.emit_text("PEPs for specialist subjects are :doc:`indexed by topic <topic/index>`.")
+        self.emit_newline()
         for subindex in SUBINDICES_BY_TOPIC:
             self.emit_text(f"* `{subindex.title()} PEPs <topic/{subindex}>`_")
             self.emit_newline()
