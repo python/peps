@@ -53,16 +53,18 @@ alterations with ``Lint:`` and other non-PEP meta changes, such as updates to
 the Readme/Contributing Guide, issue/PR template, etc., with ``Meta:``.
 
 
-Sign the CLA
-------------
+Sign the Contributor License Agreement
+--------------------------------------
 
-Before you hit "Create pull request", please take a moment to ensure that this
-project can legally accept your contribution by verifying you have signed the
+All contributors need to sign the 
 `PSF Contributor Agreement <https://www.python.org/psf/contrib/contrib-form/>`_.
+to ensure we legally accept your work.
 
-If you haven't signed the CLA before, please follow the
-`steps outlined in the CPython devguide
-<https://devguide.python.org/pullrequest/#licensing>`_ to do so.
+If you haven't signed the CLA before,
+simply submit your Pull Request and the CLA bot will reply with instructions.
+`See the CPython devguide
+<https://devguide.python.org/pullrequest/#licensing>`__
+for more information.
 
 
 Code of Conduct
