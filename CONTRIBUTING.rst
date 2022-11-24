@@ -60,8 +60,9 @@ All contributors need to sign the
 `PSF Contributor Agreement <https://www.python.org/psf/contrib/contrib-form/>`_.
 to ensure we legally accept your work.
 
-If you haven't signed the CLA before,
-simply submit your Pull Request and the CLA bot will reply with instructions.
+You don't need to do anything beforehand;
+go ahead and create your pull request,
+and our bot will ping you to sign the CLA if needed.
 `See the CPython devguide
 <https://devguide.python.org/pullrequest/#licensing>`__
 for more information.
