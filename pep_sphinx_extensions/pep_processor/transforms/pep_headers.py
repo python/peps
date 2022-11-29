@@ -7,7 +7,42 @@ from sphinx import errors
 
 from pep_sphinx_extensions.pep_processor.transforms import pep_zero
 from pep_sphinx_extensions.pep_processor.transforms.pep_zero import _mask_email
+from pep_sphinx_extensions.pep_zero_generator.constants import (
+    SPECIAL_STATUSES,
+    STATUS_ACCEPTED,
+    STATUS_ACTIVE,
+    STATUS_DEFERRED,
+    STATUS_DRAFT,
+    STATUS_FINAL,
+    STATUS_PROVISIONAL,
+    STATUS_REJECTED,
+    STATUS_SUPERSEDED,
+    STATUS_WITHDRAWN,
+    TYPE_INFO,
+    TYPE_PROCESS,
+    TYPE_STANDARDS,
+)
 
+ABBREVIATED_STATUSES = {
+    STATUS_DRAFT: "Proposal under active discussion and revision",
+    STATUS_DEFERRED: "Inactive draft that may be taken up again at a later time",
+    STATUS_ACCEPTED: "Normative proposal accepted for implementation",
+    STATUS_ACTIVE: "Currently valid informational guidance, or an in-use process",
+    STATUS_FINAL: "Accepted and implementation complete, or no longer active",
+    STATUS_WITHDRAWN: "Removed from consideration by sponsor or authors",
+    STATUS_REJECTED: "Formally declined and will not be accepted",
+    STATUS_SUPERSEDED: "Replaced by another succeeding PEP",
+    STATUS_PROVISIONAL: "Provisionally accepted but additional feedback needed",
+}
+
+ABBREVIATED_TYPES = {
+    TYPE_STANDARDS: "Normative PEP with a new feature for Python, implementation "
+    "change for CPython or interoperability standard for the ecosystem",
+    TYPE_INFO: "Non-normative PEP containing background, guidelines or other "
+    "information relevant to the Python ecosystem",
+    TYPE_PROCESS: "Normative PEP describing or proposing a change to a Python "
+    "community process, workflow or governance",
+}
 
 class PEPParsingError(errors.SphinxError):
     pass
@@ -109,6 +144,22 @@ class PEPHeaders(transforms.Transform):
                         ]
                 if new_body:
                     para[:] = new_body[:-1]  # Drop trailing space/comma
+            elif name == "status":
+                para[:] = [
+                    nodes.abbreviation(
+                        body.astext(),
+                        body.astext(),
+                        explanation=_abbreviate_status(body.astext()),
+                    )
+                ]
+            elif name == "type":
+                para[:] = [
+                    nodes.abbreviation(
+                        body.astext(),
+                        body.astext(),
+                        explanation=_abbreviate_type(body.astext()),
+                    )
+                ]
             elif name in {"last-modified", "content-type", "version"}:
                 # Mark unneeded fields
                 fields_to_remove.append(field)
@@ -223,3 +274,20 @@ def _process_pretty_url(url: str) -> tuple[str, str]:
 def _make_link_pretty(url: str) -> str:
     item_name, item_type = _process_pretty_url(url)
     return f"{item_name} {item_type}"
+
+
+def _abbreviate_status(status: str) -> str:
+    if status in SPECIAL_STATUSES:
+        status = SPECIAL_STATUSES[status]
+
+    try:
+        return ABBREVIATED_STATUSES[status]
+    except KeyError:
+        raise PEPParsingError(f"Unknown status: {status}")
+
+
+def _abbreviate_type(type_: str) -> str:
+    try:
+        return ABBREVIATED_TYPES[type_]
+    except KeyError:
+        raise PEPParsingError(f"Unknown type: {type_}")
