@@ -12,11 +12,11 @@ This document contains a list of the alternative ideas to the ones proposed
 in PEP 639 with detailed explanations why they were rejected.
 
 
-Core metadata fields
+Core Metadata fields
 --------------------
 
 Potential alternatives to the structure, content and deprecation of the
-core metadata fields specified in :pep:`639`.
+Core Metadata fields specified in :pep:`639`.
 
 
 Re-use the ``License`` field
@@ -190,7 +190,7 @@ field was separate from the existing ``License``, which would make
 validation much more challenging and backwards-incompatible, breaking
 existing packages. With that change, there was a clear consensus that
 the new field should be validated from the start, guaranteeing that all
-distributions uploaded to PyPI that declare core metadata version 2.4
+distributions uploaded to PyPI that declare Core Metadata version 2.4
 or higher and have the ``License-Expression`` field will have a valid
 expression, such that PyPI and consumers of its packages and metadata
 can rely upon to follow the specification here.
@@ -226,12 +226,12 @@ Most saliently, this means two very different types of metadata are being
 specified under the same top-level key that require very different handling,
 and furthermore, unlike the previous arrangement, the subkeys were not mutually
 exclusive and can both be specified at once, and with some subkeys potentially
-being dynamic and others static, and mapping to different core metadata fields.
+being dynamic and others static, and mapping to different Core Metadata fields.
 
 Furthermore, this leads to a conflict with marking the key as ``dynamic``
 (assuming that is intended to specify the ``[project]`` table keys,
 as that PEP seems to imprecisely imply,
-rather than core metadata fields), as either or both would have
+rather than Core Metadata fields), as either or both would have
 to be treated as ``dynamic``.
 Grouping both license expressions and license files under the same key
 forces an "all or nothing" approach, and creates ambiguity as to user intent.
@@ -241,9 +241,9 @@ keep track of which fields are mutually exclusive with which of the others,
 greatly increasing cognitive and code complexity, and in turn the probability
 of errors. Conceptually, juxtaposing so many different fields under the
 same key is rather jarring, and leads to a much more complex mapping between
-``[project]`` keys and core metadata fields, not in keeping with :pep:`621`.
+``[project]`` keys and Core Metadata fields, not in keeping with :pep:`621`.
 This causes the ``[project]`` table naming and structure to diverge further
-from both the core metadata and native formats of the various popular packaging
+from both the Core Metadata and native formats of the various popular packaging
 tools that use it. Finally, this results in the spec being significantly more
 complex and convoluted to understand and implement than the alternatives.
 
@@ -255,7 +255,7 @@ and results in a much clearer and cleaner design overall.
 It allows ``license`` and ``license-files`` to be tagged
 ``dynamic`` independently, separates two independent types of metadata
 (syntactically and semantically), restores a closer to 1:1 mapping of
-``[project]`` table keys to core metadata fields,
+``[project]`` table keys to Core Metadata fields,
 and reduces nesting by a level for both.
 Other than adding one extra key to the file, there was no significant
 apparent downside to this latter approach, so it was adopted for PEP 639.
@@ -292,10 +292,10 @@ rather than using the reserved string value of the ``license`` key.
 This was seen as clearer and more explicit for readers and writers,
 in line with the goals of PEP 639.
 
-Additionally, while differences from existing tool formats (and core metadata
+Additionally, while differences from existing tool formats (and Core Metadata
 field names) have precedent in :pep:`621`,
 using a key with an identical name as in most/all current tools
-to mean something different (and map to a different core metadata field),
+to mean something different (and map to a different Core Metadata field),
 with distinct and incompatible syntax and semantics, does not,
 and could cause confusion and ambiguity for readers and authors.
 
@@ -327,7 +327,7 @@ without deprecating the key itself,
 and makes them inherently mutually exclusive without users having to remember
 and tools having to enforce it.
 
-Finally, consistency with other tool formats and the underlying core metadata
+Finally, consistency with other tool formats and the underlying Core Metadata
 was not considered a sufficient priority
 to override the advantages of using the existing key,
 and the ``dynamic`` concerns were mostly mitigated by
@@ -356,8 +356,8 @@ alternative way that SPDX license expressions could be implemented.
 
 However, all the same downsides as in the previous item apply here,
 including greater complexity, a more complex mapping between the project
-source metadata and core metadata and inconsistency between the presentation
-in tool config, project source metadata and core metadata,
+source metadata and Core Metadata and inconsistency between the presentation
+in tool config, project source metadata and Core Metadata,
 a much less clean deprecation, further bikeshedding over what to name it,
 and inability to mark one but not the other as dynamic, among others.
 
@@ -370,7 +370,7 @@ understand that what they are entering is unambiguously a license expression,
 with all the false positive and false negative issues as above.
 
 Therefore, for these as well as the same reasons this approach was rejected
-for the core metadata in favor of a distinct ``License-Expression`` field,
+for the Core Metadata in favor of a distinct ``License-Expression`` field,
 we similarly reject this here in favor of
 the reserved string value of the ``license`` key.
 
@@ -379,7 +379,7 @@ Must be marked dynamic to back-fill
 '''''''''''''''''''''''''''''''''''
 
 The ``license`` key in the ``pyproject.toml`` could be required to be
-explicitly set to dynamic in order for the ``License`` core metadata field
+explicitly set to dynamic in order for the ``License`` Core Metadata field
 to be automatically back-filled from
 the top-level string value of the ``license`` key.
 This would be more explicit that the filling will be done,
@@ -485,7 +485,7 @@ serious limitations for many workflows, if we must assume the items
 are glob patterns rather than literal paths.
 
 This allows tools to locate them and know the exact values of the
-``License-File`` core metadata fields without having to traverse the
+``License-File`` Core Metadata fields without having to traverse the
 source tree of the project and match globs, potentially allowing easier,
 more efficient and reliable programmatic inspection and processing.
 
@@ -604,7 +604,7 @@ However, this is merely declaring a static, strictly-specified default value
 for this particular key, required to be used exactly by all conforming tools
 (so long as it is not marked ``dynamic``, negating this argument entirely),
 and is no less static than any other set of glob patterns the user themself
-may specify. Furthermore, the resulting ``License-File`` core metadata values
+may specify. Furthermore, the resulting ``License-File`` Core Metadata values
 can still be determined with only a list of files in the source, without
 installing or executing any of the code, or even inspecting file contents.
 
@@ -705,7 +705,7 @@ likely conflicts with those of license-related files. Finally,
 putting licenses into their own specified subdirectory would allow
 humans and tools to quickly, easily and correctly list, copy and manipulate
 all of them at once (such as in distro packaging, legal checks, etc)
-without having to reference each of their paths from the core metadata.
+without having to reference each of their paths from the Core Metadata.
 
 Therefore, now is a prudent time to specify an alternate approach.
 The simplest and most obvious solution, as suggested by several on the Wheel
@@ -724,7 +724,7 @@ significant problems in practice. Given this will be much harder if not
 impossible to change later, once the status quo is standardized, tools are
 relying on the current behavior and there is much greater uptake of not
 only simply including license files but potentially accessing them as well
-using the core metadata, if we're going to change it, now would be the time
+using the Core Metadata, if we're going to change it, now would be the time
 (particularly since we're already introducing an edge-case change with how
 license files in subdirs are handled, along with other refinements).
 
@@ -735,7 +735,7 @@ Add new ``licenses`` category to wheel
 ''''''''''''''''''''''''''''''''''''''
 
 Instead of defining a root license directory (``licenses``) inside
-the core metadata directory (``.dist-info``) for wheels, we could instead
+the Core Metadata directory (``.dist-info``) for wheels, we could instead
 define a new category (and, presumably, a corresponding install scheme),
 similar to the others currently included under ``.data`` in the wheel archive,
 specifically for license files, called (e.g.) ``licenses``. This was mentioned
@@ -747,7 +747,7 @@ them there.
 However, at present, PEP 639 does not implement this idea, and it is
 deferred to a future one. It would add significant complexity and friction
 to PEP 639, being primarily concerned with standardizing existing practice
-and updating the core metadata specification. Furthermore, doing so would
+and updating the Core Metadata specification. Furthermore, doing so would
 likely require modifying ``sysconfig`` and the install schemes specified
 therein, alongside Wheel, Installer and other tools, which would be a
 non-trivial undertaking. While potentially slightly more complex for
@@ -777,7 +777,7 @@ Both ``licenses`` and ``license_files`` have been suggested as potential
 names for the root license directory inside ``.dist-info`` of wheels and
 installed projects. An initial draft of the PEP specified the former
 due to being slightly clearer and consistent with the
-name of the core metadata field (``License-File``)
+name of the Core Metadata field (``License-File``)
 and the ``[project]`` table key (``license-files``).
 However, the current version of the PEP adopts the ``license`` name,
 due to a general preference by the community for its shorter length,

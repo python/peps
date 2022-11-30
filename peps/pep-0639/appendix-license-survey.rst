@@ -18,14 +18,14 @@ License Documentation in Python
 
 .. _639-license-doc-core-metadata:
 
-Core metadata
+Core Metadata
 '''''''''''''
 
-There are two overlapping core metadata fields to document a license: the
+There are two overlapping Core Metadata fields to document a license: the
 license ``Classifier`` `strings <classifiers_>`__ prefixed with ``License ::``
 and the ``License`` `field <licensefield_>`__ as free text.
 
-The core metadata ``License`` field documentation is currently:
+The Core Metadata ``License`` field documentation is currently:
 
 .. code-block:: rst
 
