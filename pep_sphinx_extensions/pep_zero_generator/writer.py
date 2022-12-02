@@ -129,7 +129,7 @@ class PEPZeroWriter:
         self.emit_newline()
 
         # PEPs by topic
-        self.emit_title("Index by Topic")
+        self.emit_title("Topics")
         self.emit_text("PEPs for specialist subjects are :doc:`indexed by topic <topic/index>`.")
         self.emit_newline()
         for subindex in SUBINDICES_BY_TOPIC:
