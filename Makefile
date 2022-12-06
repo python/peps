@@ -9,7 +9,7 @@ RENDER_COMMAND=$(VENVDIR)/bin/python3 build.py -j $(JOBS) -o $(OUTPUT_DIR)
 ## render-netlify to render PEPs to "pep-NNNN.html" files, without managing venv for netlify
 .PHONY: render-netlify
 render-netlify:
-	$(RENDER_COMMAND)
+	python3 build.py -j $(JOBS) -o $(OUTPUT_DIR)
 
 ## render         to render PEPs to "pep-NNNN.html" files
 .PHONY: render
