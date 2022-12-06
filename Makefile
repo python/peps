@@ -1,10 +1,15 @@
 # Builds PEP files to HTML using sphinx
 
 PYTHON=python3
-VENVDIR=.venv
+VENVDIR=./venv
 JOBS=8
 OUTPUT_DIR=build
 RENDER_COMMAND=$(VENVDIR)/bin/python3 build.py -j $(JOBS) -o $(OUTPUT_DIR)
+
+## render-netlify to render PEPs to "pep-NNNN.html" files, without managing venv for netlify
+.PHONY: render-netlify
+render-netlify:
+	$(RENDER_COMMAND)
 
 ## render         to render PEPs to "pep-NNNN.html" files
 .PHONY: render
