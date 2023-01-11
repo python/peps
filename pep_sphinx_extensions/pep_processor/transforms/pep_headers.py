@@ -137,7 +137,11 @@ class PEPHeaders(transforms.Transform):
                 new_body = []
                 for topic_name in body.astext().split(","):
                     if topic_name:
-                        target = f"/topic/{topic_name.lower().strip()}/"
+                        target = f"topic/{topic_name.lower().strip()}"
+                        if self.document.settings.builder == "html":
+                            target = f"{target}.html"
+                        else:
+                            target = f"../{target}/"
                         new_body += [
                             nodes.reference("", topic_name, refuri=target),
                             nodes.Text(", "),
