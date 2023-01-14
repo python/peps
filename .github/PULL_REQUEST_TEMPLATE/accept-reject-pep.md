@@ -1,6 +1,6 @@
 ---
 name: Accept/Reject PEP
-about: Mark a draft PEP as accepted or rejected
+about: Mark a draft Standards Track PEP as accepted or rejected
 ---
 
 <!--

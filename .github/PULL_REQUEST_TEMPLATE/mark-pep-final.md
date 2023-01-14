@@ -1,6 +1,6 @@
 ---
 name: Mark PEP Final
-about: Mark an Accepted PEP as Final
+about: Mark an Accepted Standards Track PEP as Final
 ---
 
 <!--
@@ -22,7 +22,7 @@ Thanks!
 
 <!--
 
-This checklist contains the key changes needed to mark a PEP as Final.
+This checklist contains the key changes needed to mark a Standards Track PEP Final.
 
 You can help complete it yourself if you like
 by ticking any boxes you're sure about, like this: [x]
@@ -31,8 +31,8 @@ If you're unsure about something, just leave it blank and we'll take a look.
 -->
 
 
-* [ ] Final implementation has been merged (including tests and documentation)
+* [ ] Final implementation has been merged (including tests and docs)
 * [ ] PEP matches the final implementation
 * [ ] Any substantial changes since the accepted version approved by the SC/PEP delegate
-* [ ] ``Status`` changed to ``Final``
+* [ ] ``Status`` changed to ``Final`` (and ``Python-Version`` is correct)
 * [ ] Canonical docs/spec linked with a ``canonical-doc`` directive (or ``pypa-spec``, for packaging PEPs)
