@@ -1,6 +1,6 @@
 ---
-name: New PEP
-about: Submit a new draft PEP for consideration
+name: New Standards Track PEP
+about: Submit a new draft Standards Track PEP for consideration
 labels: "new-pep"
 ---
 
@@ -27,21 +27,9 @@ Thanks!
 
 <!--
 
-Briefly describe your new PEP here, and anything else we should know.
-Be sure to link to any previous discussions or issues motivating/drafting it.
-
--->
-
-
-
-## Checklist
-
-<!--
-
-You should use the following as a guide when double-checking your PEP,
+You can use the following checklist when double-checking your PEP,
 and you can help complete some of it yourself if you like
 by ticking any boxes you're sure about, like this: [x]
-
 If you're unsure about anything, just leave it blank and we'll take a look.
 
 -->
@@ -50,13 +38,21 @@ If you're unsure about anything, just leave it blank and we'll take a look.
 
 ### Content requirements
 
-* [ ] PEP topic [discussed in a suitable venue](https://peps.python.org/pep-0001/#start-with-an-idea-for-python) and general agreement that a PEP is appropriate
-* [ ] Content is reasonably sound, complete and makes at least basic technical sense
-* [ ] Abstract and Copyright sections completed, with the required wording in the latter
-* [ ] [Suggested sections](https://peps.python.org/pep-0012/#suggested-sections) included (unless not applicable)
-* [ ] Title clearly, accurately and concisely describes the content
-* [ ] Prose is intelligible and generally free of basic grammar and syntax errors, at least to the degree they significantly detract from understanding
-* [ ] Code is in code blocks, well-formatted (PEP 7/PEP 8) and has the right [lexer name](https://pygments.org/docs/lexers/) if non-Python (or ``text``)
+* [ ] PEP topic [discussed in a suitable venue](https://peps.python.org/pep-0001/#start-with-an-idea-for-python) with general agreement that a PEP is appropriate
+* [ ] [Required and suggested sections](https://peps.python.org/pep-0012/#suggested-sections) included (unless not applicable)
+    * [ ] Abstract (required; first section)~
+    * [ ] Motivation
+    * [ ] Rationale
+    * [ ] Specification
+    * [ ] Backwards Compatibility
+    * [ ] Security Implications
+    * [ ] How to Teach This
+    * [ ] Reference Implementation
+    * [ ] Rejected Ideas
+    * [ ] Open Issues
+    * [ ] Copyright (required with exact wording; last section)
+* [ ] Title clearly, accurately and concisely describes the content in 79 characters or less
+* [ ] Code is well-formatted (PEP 7/PEP 8) and is in [code blocks, with the right lexer name](https://peps.python.org/pep-0012/#literal-blocks) if non-Python
 * [ ] Any project stated in the PEP as supporting/endorsing benefiting from it confirms such
 
 
@@ -64,8 +60,7 @@ If you're unsure about anything, just leave it blank and we'll take a look.
 
 * [ ] Filename in the correct format (``pep-NNNN.rst``)
 * [ ] ``PEP``, ``Title``, ``Author``, ``Status`` (``Draft``), ``Type`` and ``Created`` headers filled out correctly
-* [ ] ``PEP-Delegate``, ``Requires``, ``Python-Version`` and ``Replaces`` filled out if appropriate
-* [ ] ``Sponsor`` listed and approves if not authored by a core dev or PEP editor
+* [ ] ``Sponsor``, ``PEP-Delegate``, ``Requires``, ``Python-Version`` and ``Replaces`` completed if appropriate
 * [ ] PEP builds with no warnings, CI checks pass and content displays as intended in the rendered preview
 * [ ] PEP number assigned by the PEP editors and filename & ``PEP`` header updated accordingly
 * [ ] Sponsor/author(s) that are core devs/PEP editors added to ``.github/CODEOWNERS`` for the PEP

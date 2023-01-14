@@ -22,18 +22,7 @@ Thanks!
 
 <!--
 
-State why the PEP should be marked Final,
-linking any relevant discussions, issues or PRs.
-
--->
-
-
-
-## Checklist
-
-<!--
-
-This lists the key steps needed to mark a PEP as Final.
+This checklist contains the key changes needed to mark a PEP as Final.
 
 You can help complete it yourself if you like
 by ticking any boxes you're sure about, like this: [x]
@@ -42,7 +31,8 @@ If you're unsure about something, just leave it blank and we'll take a look.
 -->
 
 
-* [ ] Specification has been implemented in a released stable CPython version (or third-party tools, for packaging/typing topic PEPs)
+* [ ] Final implementation has been merged (including tests and documentation)
+* [ ] PEP matches the final implementation
+* [ ] Any substantial changes since the accepted version approved by the SC/PEP delegate
 * [ ] ``Status`` changed to ``Final``
-* [ ] Canonical docs/spec moved to an appropriate place, and linked with a ``canonical-doc`` directive (or ``pypa-spec``, for packaging PEPs)
-* [ ] PEP headers and content updated with any substantial changes during the implementation phase
+* [ ] Canonical docs/spec linked with a ``canonical-doc`` directive (or ``pypa-spec``, for packaging PEPs)

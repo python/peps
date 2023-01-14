@@ -22,18 +22,7 @@ Thanks!
 
 <!--
 
-Link to the official acceptance/rejection message
-by the Steering Council/PEP Delegate on the PEP's discussion thread.
-
--->
-
-
-
-## Checklist
-
-<!--
-
-This lists the key steps needed to mark a PEP as Accepted/Rejected.
+This checklist contains the key changes to mark a PEP as Accepted/Rejected.
 
 You can help complete it yourself if you like
 by ticking any boxes you're sure about, like this: [x]
@@ -46,5 +35,5 @@ If you're unsure about anything, just leave it blank and we'll take a look.
 * [ ] SC/PEP Delegate has formally accepted/rejected the PEP and posted to the ``Discussions-To`` thread
 * [ ] ``Status`` changed to ``Accepted``/``Rejected``
 * [ ] ``Resolution`` link points directly to SC/PEP Delegate official acceptance/rejected post
-* [ ] Acceptance/rejection notice added, if the SC/PEP delegate had any major conditions or critical commentary (and any changes made accordingly)
-* [ ] ``Discussions-To``, ``Post-History` and ``Python-Version`` complete and up to date
+* [ ] Acceptance/rejection notice added, if the SC/PEP delegate had major conditions or comments
+* [ ] ``Discussions-To``, ``Post-History`` and ``Python-Version`` up to date
