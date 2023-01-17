@@ -4,25 +4,6 @@ about: Submit a new draft PEP
 labels: "new-pep"
 ---
 
-<!--
-
-Please read and follow PEP 1 and PEP 12 before submitting a new PEP:
-
-https://peps.python.org/pep-0001/#submitting-a-pep
-
-https://peps.python.org/pep-0012/#how-to-use-this-template
-
-Make sure to include the PEP number in the pull request title; for example:
-
-PEP 9999: <Title of PEP>
-
-See our Contributing Guidelines (CONTRIBUTING.rst) for more information.
-
-Thanks!
-
--->
-
-
 # New PEP
 
 <!--
@@ -38,8 +19,9 @@ If your PEP is not Standards Track, remove the corresponding section.
 
 ## Basic requirements (all PEP Types)
 
+* [ ] Read and followed [PEP 1](https://peps.python.org/1) & [PEP 12](https://peps.python.org/12)
 * [ ] File created from the [latest PEP template](https://github.com/python/peps/blob/main/pep-0012/pep-NNNN.rst?plain=1)
-* [ ] PEP has next available number, with filename (``pep-NNNN.rst``) and ``PEP`` header set accordingly
+* [ ] PEP has next available number, & set in filename (``pep-NNNN.rst``), PR title (``PEP 123: <Title of PEP>``) and ``PEP`` header
 * [ ] Title clearly, accurately and concisely describes the content in 79 characters or less
 * [ ] ``PEP``, ``Title``, ``Author``, ``Status`` (``Draft``), ``Type`` and ``Created`` headers filled out correctly
 * [ ] ``Sponsor``, ``PEP-Delegate``, ``Topic``, ``Requires`` and ``Replaces`` headers completed if appropriate
