@@ -6,14 +6,14 @@ JOBS=8
 OUTPUT_DIR=build
 RENDER_COMMAND=$(VENVDIR)/bin/python3 build.py -j $(JOBS) -o $(OUTPUT_DIR)
 
-## render         to render PEPs to "pep-NNNN.html" files
-.PHONY: render
-render: venv
+## html           to render PEPs to "pep-NNNN.html" files
+.PHONY: html
+html: venv
 	$(RENDER_COMMAND)
 
-## pages          to render PEPs to "index.html" files within "pep-NNNN" directories
-.PHONY: pages
-pages: venv rss
+## dirhtml        to render PEPs to "index.html" files within "pep-NNNN" directories
+.PHONY: dirhtml
+dirhtml: venv rss
 	$(RENDER_COMMAND) --build-dirs
 
 ## fail-warning   to render PEPs to "pep-NNNN.html" files and fail the Sphinx build on any warning
@@ -70,6 +70,16 @@ test: venv
 spellcheck: venv
 	$(VENVDIR)/bin/python3 -m pre_commit --version > /dev/null || $(VENVDIR)/bin/python3 -m pip install pre-commit
 	$(VENVDIR)/bin/python3 -m pre_commit run --all-files --hook-stage manual codespell
+
+## render         (deprecated: use 'make html' alias instead)
+.PHONY: render
+render: html
+	@echo "\033[0;33mWarning:\033[0;31m 'make render' \033[0;33mis deprecated, use\033[0;32m 'make html' \033[0;33malias instead\033[0m"
+
+## pages          (deprecated: use 'make dirhtml' alias instead)
+.PHONY: pages
+pages: dirhtml
+	@echo "\033[0;33mWarning:\033[0;31m 'make pages' \033[0;33mis deprecated, use\033[0;32m 'make dirhtml' \033[0;33malias instead\033[0m"
 
 .PHONY: help
 help : Makefile
