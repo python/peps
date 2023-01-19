@@ -6,14 +6,11 @@ about: Mark a draft Standards Track PEP as accepted or rejected
 # Accept/Reject PEP
 
 <!--
-
 You can help complete the following checklist yourself if you like
 by ticking any boxes you're sure about, like this: [x]
 
 If you're unsure about anything, just leave it blank and we'll take a look.
-
 -->
-
 
 * [ ] SC/PEP Delegate has formally accepted/rejected the PEP and posted to the ``Discussions-To`` thread
 * [ ] Pull request title in appropriate format (``PEP 123: Mark as accepted``)

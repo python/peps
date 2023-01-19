@@ -7,14 +7,12 @@ labels: "new-pep"
 # New PEP
 
 <!--
-
 You can use the following checklist when double-checking your PEP,
 and you can help complete some of it yourself if you like
 by ticking any boxes you're sure about, like this: [x]
 If you're unsure about anything, just leave it blank and we'll take a look.
 
 If your PEP is not Standards Track, remove the corresponding section.
-
 -->
 
 ## Basic requirements (all PEP Types)
