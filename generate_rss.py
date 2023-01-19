@@ -4,6 +4,7 @@
 
 import datetime
 import email.utils
+from html import escape
 from pathlib import Path
 import re
 
@@ -12,19 +13,16 @@ from docutils import nodes
 from docutils import utils
 from docutils.parsers import rst
 from docutils.parsers.rst import roles
-from feedgen import entry
-from feedgen import feed
 
 # get the directory with the PEP sources
 PEP_ROOT = Path(__file__).parent
 
 
-# Monkeypatch feedgen.util.formatRFC2822
 def _format_rfc_2822(dt: datetime.datetime) -> str:
+    dt = dt.replace(tzinfo=datetime.timezone.utc)
     return email.utils.format_datetime(dt, usegmt=True)
 
 
-entry.formatRFC2822 = feed.formatRFC2822 = _format_rfc_2822
 line_cache: dict[Path, dict[str, str]] = {}
 
 # Monkeypatch PEP and RFC reference roles to match Sphinx behaviour
@@ -152,21 +150,20 @@ def main():
         author = first_line_starting_with(full_path, "Author:")
         if "@" in author or " at " in author:
             parsed_authors = email.utils.getaddresses([author])
-            # ideal would be to pass as a list of dicts with names and emails to
-            # item.author, but FeedGen's RSS <author/> output doesn't pass W3C
-            # validation (as of 12/06/2021)
             joined_authors = ", ".join(f"{name} ({email_address})" for name, email_address in parsed_authors)
         else:
             joined_authors = author
         url = f"https://peps.python.org/pep-{pep_num:0>4}/"
 
-        item = entry.FeedEntry()
-        item.title(f"PEP {pep_num}: {title}")
-        item.link(href=url)
-        item.description(pep_abstract(full_path))
-        item.guid(url, permalink=True)
-        item.published(dt.replace(tzinfo=datetime.timezone.utc))  # ensure datetime has a timezone
-        item.author(email=joined_authors)
+        item = f"""\
+    <item>
+      <title>PEP {pep_num}: {escape(title, quote=False)}</title>
+      <link>{escape(url, quote=False)}</link>
+      <description>{escape(pep_abstract(full_path), quote=False)}</description>
+      <author>{escape(joined_authors, quote=False)}</author>
+      <guid isPermaLink="true">{url}</guid>
+      <pubDate>{_format_rfc_2822(dt)}</pubDate>
+    </item>"""
         items.append(item)
 
     # The rss envelope
@@ -175,28 +172,28 @@ def main():
     language features, and some meta-information like release
     procedure and schedules.
     """
-
-    # Setup feed generator
-    fg = feed.FeedGenerator()
-    fg.language("en")
-    fg.generator("")
-    fg.docs("https://cyber.harvard.edu/rss/rss.html")
-
-    # Add metadata
-    fg.title("Newest Python PEPs")
-    fg.link(href="https://peps.python.org")
-    fg.link(href="https://peps.python.org/peps.rss", rel="self")
-    fg.description(" ".join(desc.split()))
-    fg.lastBuildDate(datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc))
-
-    # Add PEP information (ordered by newest first)
-    for item in items:
-        fg.add_entry(item)
+    last_build_date = _format_rfc_2822(datetime.datetime.utcnow())
+    items = "\n".join(reversed(items))
+    output = f"""\
+<?xml version='1.0' encoding='UTF-8'?>
+<rss xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/" version="2.0">
+  <channel>
+    <title>Newest Python PEPs</title>
+    <link>https://peps.python.org/peps.rss</link>
+    <description>{" ".join(desc.split())}</description>
+    <atom:link href="https://peps.python.org/peps.rss" rel="self"/>
+    <docs>https://cyber.harvard.edu/rss/rss.html</docs>
+    <language>en</language>
+    <lastBuildDate>{last_build_date}</lastBuildDate>
+{items}
+  </channel>
+</rss>
+"""
 
     # output directory for target HTML files
     out_dir = PEP_ROOT / "build"
     out_dir.mkdir(exist_ok=True)
-    out_dir.joinpath("peps.rss").write_bytes(fg.rss_str(pretty=True))
+    out_dir.joinpath("peps.rss").write_text(output)
 
 
 if __name__ == "__main__":
