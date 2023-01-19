@@ -29,7 +29,7 @@ check-links: venv
 ## rss            to generate the peps.rss file
 .PHONY: rss
 rss: venv
-	$(VENVDIR)/bin/python3 generate_rss.py
+	$(VENVDIR)/bin/python3 generate_rss.py -o $(OUTPUT_DIR)
 
 ## clean          to remove the venv and build files
 .PHONY: clean

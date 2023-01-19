@@ -2,6 +2,7 @@
 # This file is placed in the public domain or under the
 # CC0-1.0-Universal license, whichever is more permissive.
 
+import argparse
 import datetime
 import email.utils
 from html import escape
@@ -135,6 +136,15 @@ def pep_abstract(full_path: Path) -> str:
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Generate RSS feed")
+    parser.add_argument(
+        "-o",
+        "--output-dir",
+        default="build",  # synchronise with render.yaml -> deploy step
+        help="Output directory, relative to root. Default 'build'.",
+    )
+    args = parser.parse_args()
+
     # get list of peps with creation time (from "Created:" string in pep source)
     peps_with_dt = sorted((pep_creation(path), path) for path in PEP_ROOT.glob("pep-????.???"))
 
@@ -191,8 +201,8 @@ def main():
 """
 
     # output directory for target HTML files
-    out_dir = PEP_ROOT / "build"
-    out_dir.mkdir(exist_ok=True)
+    out_dir = PEP_ROOT / args.output_dir
+    out_dir.mkdir(exist_ok=True, parents=True)
     out_dir.joinpath("peps.rss").write_text(output)
 
 
