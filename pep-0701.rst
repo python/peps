@@ -271,17 +271,19 @@ New tokens
 ----------
 
 Three new tokens are introduced: ``FSTRING_START``, ``FSTRING_MIDDLE`` and
-``FSTRING_END``. This PEP does not mandate the precise definitions of these tokens
-as different lexers may have different implementations that may be more efficient
-than the ones proposed here given the context of the particular implementation.  However,
-the following definitions are provided as a reference so that the reader can have a
-better understanding of the proposed grammar changes and how the tokens are used:
+``FSTRING_END``.Different lexers may have different implementations that may be
+more efficient than the ones proposed here given the context of the particular
+implementation. However, the following definitions will be used as part of the
+public APIs of CPython (such as the ``tokenize`` module) and are also provided
+as a reference so that the reader can have a better understanding of the
+proposed grammar changes and how the tokens are used:
 
 * ``FSTRING_START``: This token includes f-string character (``f``/``F``) and the open quote(s).
-* ``FSTRING_MIDDLE``: This token includes the text between the opening quote
-  and the first expression brace (``{``) and the text between two expression braces (``}`` and ``{``).
-* ``FSTRING_END``: This token includes everything after the last expression brace (or the whole literal part
-  if no expression exists) until the closing quote.
+* ``FSTRING_MIDDLE``: This token includes a portion of text inside the string that's not part of the
+  expression part and isn't an opening or closing brace. This can include the text between the opening quote
+  and the first expression brace (``{``), the text between two expression braces (``}`` and ``{``) and the text
+  between the last expression brace (``}``) and the closing quote.
+* ``FSTRING_END``: This token includes the closing quote.
 
 These tokens are always string parts and they are semantically equivalent to the
 ``STRING`` token with the restrictions specified. These tokens must be produced by the lexer
@@ -292,7 +294,7 @@ differently to the one used by the PEG parser).
 
 As an example::
 
-    f'some words {a+b} more words {c+d} final words'
+    f'some words {a+b:.3f} more words {c+d=} final words'
 
 will be tokenized as::
 
@@ -302,33 +304,85 @@ will be tokenized as::
     NAME - 'a'
     PLUS - '+'
     NAME - 'b'
+    OP - ':'
+    FSTRING_MIDDLE - '.3f'
     RBRACE - '}'
     FSTRING_MIDDLE - ' more words '
     LBRACE - '{'
     NAME - 'c'
     PLUS - '+'
     NAME - 'd'
+    OP - '='
     RBRACE - '}'
-    FSTRING_END - ' final words' (without the end quote)
+    FSTRING_MIDDLE - ' final words'
+    FSTRING_END - "'"
 
 while ``f"""some words"""`` will be tokenized simply as::
 
     FSTRING_START - 'f"""'
-    FSTRING_END - 'some words'
+    FSTRING_MIDDLE - 'some words'
+    FSTRING_END - '"""'
+  
+Changes to the tokenize module
+------------------------------
 
-One way existing lexers can be adapted to emit these tokens is to incorporate a stack of "lexer modes"
-or to use a stack of different lexers. This is because the lexer needs to switch from "regular Python
-lexing" to "f-string lexing" when it encounters an f-string start token and as f-strings can be nested,
-the context needs to be preserved until the f-string closes. Also, the "lexer mode" inside an f-string
-expression part needs to behave as a "super-set" of the regular Python lexer (as it needs to be able to 
-switch back to f-string lexing when it encounters the ``}`` terminator for the expression part as well
-as handling f-string formatting and debug expressions). Of course, as mentioned before, is not possible to
-provide a precise specification of how this should be done as it will depend on the specific implementation
-and nature of the lexer to be changed.
+The ``tokenize`` module will be adapted to emit these tokens as described in the previous section
+when parsing f-strings so tools can take advantage of this new tokenization schema and avoid having
+to implement their own f-string tokenizer and parser.
 
-The specifics of how (or if) the ``tokenize`` module will emit these tokens (or others) and what
-is included in the emitted tokens are left out of this document and must be decided later in a regular
-CPython issue.
+How to produce these new tokens
+-------------------------------
+
+One way existing lexers can be adapted to emit these tokens is to incorporate a
+stack of "lexer modes" or to use a stack of different lexers. This is because
+the lexer needs to switch from "regular Python lexing" to "f-string lexing" when
+it encounters an f-string start token and as f-strings can be nested, the
+context needs to be preserved until the f-string closes. Also, the "lexer mode"
+inside an f-string expression part needs to behave as a "super-set" of the
+regular Python lexer (as it needs to be able to switch back to f-string lexing
+when it encounters the ``}`` terminator for the expression part as well as
+handling f-string formatting and debug expressions). For reference, here is a
+draft of the algorithm to modify a CPython-like tokenizer to emit these new
+tokens:
+
+1. If the lexer detects that an f-string is starting (by detecting the letter
+   'f/F' and one of the possible quotes) keep advancing until a character that is
+   not equal to the first character after the 'f/F' and emit a ``FSTRING_START`` token
+   with the contents captured (the 'f/F' and the starting quote) Push a new tokenizer
+   mode to the tokenizer mode stack for "F-string tokenization". Go to step 2.
+2. Keep consuming tokens until a one of the following is encountered:
+
+   * A closing quote equal to the opening quote.
+   * An opening brace (``{``) or a closing brace (``}``) that is not immediately
+     followed by another opening/closing brace.
+
+   In all cases, if the character buffer is not empty, emit a ``FSTRING_MIDDLE``
+   token with the contents captured so far but transform any double
+   opening/closing braces into single opening/closing braces.  Now, proceed as
+   follows depending on the character encountered:
+
+   * If a closing quote matching the opening quite is encountered go to step 4.
+   * If a opening bracket (not immediately followed by another opening bracket)
+     is encountered, go to step 3.
+   * If a closing bracket (not immediately followed by another closing bracket)
+     is encountered, emit a token for the closing bracket and go to step 2.
+
+3. Push a new tokenizer mode to the tokenizer mode stack for "Regular Python
+   tokenization withing f-string" and proceed to tokenize with it. This mode
+   tokenizes as the "Regular Python tokenization" until a ``!``, ``:``, ``=``
+   character is encountered or if a ``}`` character is encountered with the same
+   level of nesting as the opening bracket token that was pushed when we enter the
+   f-string part. Using this mode, emit tokens until one of the stop points are
+   reached. When this happens, emit the corresponding token for the stopping
+   character encountered and, pop the current tokenizer mode from the tokenizer mode
+   stack and go to step 2.
+4. Emit a ``FSTRING_END`` token with the contents captured and pop the current
+   tokenizer mode (corresponding to "F-string tokenization") and go back to
+   "Regular Python mode".
+
+Of course, as mentioned before, is not possible to provide a precise
+specification of how this should be done for an arbitrary tokenizer as it will
+depend on the specific implementation and nature of the lexer to be changed.
 
 Consequences of the new grammar
 -------------------------------
@@ -340,11 +394,22 @@ All restrictions mentioned in the PEP are lifted from f-string literals, as expl
 * Backslashes may now appear within expressions just like anywhere else in
   Python code. In case of strings nested within f-string literals, escape sequences are
   expanded when the innermost string is evaluated.
-* Comments, using the ``#`` character, are possible only in multi-line f-string literals,
-  since comments are terminated by the end of the line (which makes closing a
-  single-line f-string literal impossible). Comments in multi-line f-string literals require
-  the closing ``{`` of the expression part to be present in a different line as the one the
-  comment is in.
+* New lines are now allowed within expression brackets. This means that these are now allowed::
+
+    >>> x = 1
+    >>> f"___{
+    ...     x
+    ... }___"
+    '___1___'
+
+    >>> f"___{(
+    ...     x
+    ... )}___"
+    '___1___'
+
+* Comments, using the ``#`` character, are allowed within the expression part of an f-string.
+  Note that comments require that the closing bracket (``}``) of the expression part to be present in
+  a different line as the one the comment is in or otherwise it will be ignored as part of the comment.
 
 .. _701-considerations-of-quote-reuse:
 
@@ -498,6 +563,12 @@ Rejected Ideas
    be parenthesized if needed::
 
     >>> f'Useless use of lambdas: { (lambda x: x*2) }'
+
+#. We have decided not to allow for the time being using scaped braces (``\{`` and ``\}``)
+   in addition of the ``{{`` and ``}}`` syntax. Although the authors of the PEP believe that
+   this is a good idea, we have decided to not include it in this PEP as it is not strictly
+   necessary for the formalization of f-strings proposed here and it can be
+   added independently in a regular Python issue.
 
 Open Issues
 ===========
