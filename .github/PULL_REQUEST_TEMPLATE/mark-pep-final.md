@@ -1,6 +1,7 @@
 ---
 name: Mark PEP Final
 about: Mark an Accepted Standards Track PEP as Final
+title: PEP NNN: Mark Final
 ---
 
 # Mark PEP Final

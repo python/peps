@@ -1,6 +1,7 @@
 ---
 name: Accept/Reject PEP
 about: Mark a draft Standards Track PEP as accepted or rejected
+title: PEP NNN: Mark as Accepted
 ---
 
 # Accept/Reject PEP
@@ -13,7 +14,7 @@ If you're unsure about anything, just leave it blank and we'll take a look.
 -->
 
 * [ ] SC/PEP Delegate has formally accepted/rejected the PEP and posted to the ``Discussions-To`` thread
-* [ ] Pull request title in appropriate format (``PEP 123: Mark as accepted``)
+* [ ] Pull request title in appropriate format (``PEP 123: Mark as Accepted``)
 * [ ] ``Status`` changed to ``Accepted``/``Rejected``
 * [ ] ``Resolution`` link points directly to SC/PEP Delegate official acceptance/rejected post
 * [ ] Acceptance/rejection notice added, if the SC/PEP delegate had major conditions or comments
