@@ -1,7 +1,7 @@
 ---
 name: New PEP
 about: Submit a new draft PEP
-title: PEP NNN: Title of PEP
+title: "PEP NNN: Title of PEP"
 labels: "new-pep"
 ---
 

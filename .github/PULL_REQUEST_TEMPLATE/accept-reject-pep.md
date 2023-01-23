@@ -1,7 +1,7 @@
 ---
 name: Accept/Reject PEP
 about: Mark a draft Standards Track PEP as accepted or rejected
-title: PEP NNN: Mark as Accepted
+title: "PEP NNN: Mark as Accepted"
 ---
 
 # Accept/Reject PEP

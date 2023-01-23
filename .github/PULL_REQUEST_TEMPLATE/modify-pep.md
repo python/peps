@@ -1,7 +1,7 @@
 ---
 name: Update/modify PEP
 about: Add to or change an existing PEP
-title: PEP NNN: Description of change
+title: "PEP NNN: Description of change"
 ---
 
 <!--
