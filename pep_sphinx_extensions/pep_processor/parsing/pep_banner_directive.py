@@ -97,5 +97,6 @@ class CanonicalPyPASpecBanner(PEPBanner):
         "<https://www.pypa.io/en/latest/specifications/#handling-fixes-and-other-minor-updates>`__ "
         "for how to propose changes."
     )
+    admonition_class = nodes.attention
 
     css_classes = ["sticky-banner"]
