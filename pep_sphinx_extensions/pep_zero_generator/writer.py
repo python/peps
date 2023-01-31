@@ -253,7 +253,7 @@ def _classify_peps(peps: list[PEP]) -> tuple[list[PEP], ...]:
             # Hack until the conflict between the use of "Final"
             # for both API definition PEPs and other (actually
             # obsolete) PEPs is addressed
-            if pep.status == STATUS_ACTIVE or "Release Schedule" not in pep.title:
+            if pep.status == STATUS_ACTIVE or "release schedule" not in pep.title.lower():
                 info.append(pep)
             else:
                 historical.append(pep)
