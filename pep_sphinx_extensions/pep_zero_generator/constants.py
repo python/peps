@@ -57,7 +57,7 @@ or otherwise relate to type annotations.
 They are listed here for reference.
 """,
     "governance": """\
-These PEPs detail Python's language governance, including governance model proposals
-and  selection, and the results of the annual steering council elections.
+These PEPs detail Python's governance, including governance model proposals
+and selection, and the results of the annual steering council elections.
 """,
 }
