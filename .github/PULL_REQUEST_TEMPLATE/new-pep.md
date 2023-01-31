@@ -23,7 +23,8 @@ If your PEP is not Standards Track, remove the corresponding section.
 * [ ] PEP has next available number, & set in filename (``pep-NNNN.rst``), PR title (``PEP 123: <Title of PEP>``) and ``PEP`` header
 * [ ] Title clearly, accurately and concisely describes the content in 79 characters or less
 * [ ] ``PEP``, ``Title``, ``Author``, ``Status`` (``Draft``), ``Type`` and ``Created`` headers filled out correctly
-* [ ] ``Sponsor``, ``PEP-Delegate``, ``Topic``, ``Requires`` and ``Replaces`` headers completed if appropriate
+* [ ] ``PEP-Delegate``, ``Topic``, ``Requires`` and ``Replaces`` headers completed if appropriate
+* [ ] Core dev/PEP editor listed as author or sponsor, and formally confirmed their approval
 * [ ] Required sections included
     * [ ] Abstract (first section)
     * [ ] Copyright (last section; exact wording from template required)
