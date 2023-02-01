@@ -1,11 +1,3 @@
----
-name: Mark PEP Final
-about: Mark an Accepted Standards Track PEP as Final
-title: "PEP NNN: Mark Final"
----
-
-# Mark PEP Final
-
 <!--
 You can help complete the following checklist yourself if you like
 by ticking any boxes you're sure about, like this: [x]

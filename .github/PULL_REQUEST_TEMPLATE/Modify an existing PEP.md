@@ -1,9 +1,3 @@
----
-name: Update/modify PEP
-about: Add to or change an existing PEP
-title: "PEP NNN: Description of change"
----
-
 <!--
 **Please** read our Contributing Guidelines (CONTRIBUTING.rst)
 to make sure this repo is the right place for your proposed change. Thanks!
