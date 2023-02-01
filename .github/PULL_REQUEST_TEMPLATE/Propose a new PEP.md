@@ -1,12 +1,3 @@
----
-name: New PEP
-about: Submit a new draft PEP
-title: "PEP NNN: Title of PEP"
-labels: "new-pep"
----
-
-# New PEP
-
 <!--
 You can use the following checklist when double-checking your PEP,
 and you can help complete some of it yourself if you like

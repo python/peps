@@ -1,11 +1,3 @@
----
-name: Accept/Reject PEP
-about: Mark a draft Standards Track PEP as accepted or rejected
-title: "PEP NNN: Mark as Accepted"
----
-
-# Accept/Reject PEP
-
 <!--
 You can help complete the following checklist yourself if you like
 by ticking any boxes you're sure about, like this: [x]
