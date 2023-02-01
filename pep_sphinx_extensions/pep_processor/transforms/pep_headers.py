@@ -131,13 +131,19 @@ class PEPHeaders(transforms.Transform):
                 new_body = []
                 for pep_str in re.split(r",?\s+", body.astext()):
                     target = self.document.settings.pep_url.format(int(pep_str))
+                    if self.document.settings.builder == "dirhtml":
+                        target = f"../{target}"
                     new_body += [nodes.reference("", pep_str, refuri=target), nodes.Text(", ")]
                 para[:] = new_body[:-1]  # drop trailing space
             elif name == "topic":
                 new_body = []
                 for topic_name in body.astext().split(","):
                     if topic_name:
-                        target = f"/topic/{topic_name.lower().strip()}/"
+                        target = f"topic/{topic_name.lower().strip()}"
+                        if self.document.settings.builder == "html":
+                            target = f"{target}.html"
+                        else:
+                            target = f"../{target}/"
                         new_body += [
                             nodes.reference("", topic_name, refuri=target),
                             nodes.Text(", "),
