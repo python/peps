@@ -40,6 +40,16 @@ resource "fastly_service_vcl" "peps" {
   }
 
   snippet {
+    name    = "topics"
+    type    = "recv"
+    content = <<-EOT
+        if (req.url == "/topics") {
+          set req.url = "/topic/";
+        }
+    EOT
+  }
+
+  snippet {
     name    = "redirect"
     type    = "error"
     content = <<-EOT
