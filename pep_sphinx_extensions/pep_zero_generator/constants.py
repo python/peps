@@ -55,5 +55,9 @@ See the `developer's guide`_ for more information.
 Many recent PEPs propose changes to Python's static type system
 or otherwise relate to type annotations.
 They are listed here for reference.
-"""
+""",
+    "governance": """\
+These PEPs detail Python's governance, including governance model proposals
+and selection, and the results of the annual steering council elections.
+""",
 }
