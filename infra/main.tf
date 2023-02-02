@@ -43,8 +43,9 @@ resource "fastly_service_vcl" "peps" {
     name    = "topics"
     type    = "recv"
     content = <<-EOT
-        if (req.url == "/topics") {
-          set req.url = "/topic/";
+        if (req.url ~ "^/topics($|/)") {
+          set req.http.Location = regsub(req.http.Location, "^/topics/?", "/topic/");
+          error 618;
         }
     EOT
   }
