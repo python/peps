@@ -24,16 +24,18 @@ Make the mechanism usable with ``PyHeapTypeObject``.
 Motivation
 ==========
 
-The motivating problem this PEP solves is creating metaclasses (subclasses of
-:py:class:`python:type`) in “wrappers” – projects that expose another type
-system (e.g. C++, Java, Rust) as Python classes.
-These systems typically need to attach information about the “wrapped”
-non-Python class to the Python type object -- that is, extend
-``PyHeapTypeObject``.
+The motivating problem this PEP solves is attaching C-level state
+to custom types --- i.e. metaclasses (subclasses of
+:py:class:`python:type`).
 
-This should be possible to do in the Limited API, so that these generators
-can be used to create Stable ABI extensions. (See :pep:`652` for the benefits
-of providing a stable ABI.)
+This is often needed in “wrappers” that expose another type
+system (e.g. C++, Java, Rust) as Python classes.
+These typically need to attach information about the “wrapped” non-Python
+class to the Python type object.
+
+This should be possible to do in the Limited API, so that the language wrappers
+or code generators can be used to create Stable ABI extensions.
+(See :pep:`652` for the benefits of providing a stable ABI.)
 
 Extending ``type`` is an instance of a more general problem:
 extending a class while maintaining loose coupling – that is,
@@ -100,7 +102,7 @@ However, this has disadvantages:
   use ``PyObject_GetAttrString(obj, "__basicsize__")``.
   This is cumbersome, and unsafe in edge cases (the Python attribute can
   be overridden).
-* Variable-size types are not handled (see `var-sized`_ below).
+* Variable-size objects are not handled (see :ref:`697-var-sized` below).
 
 To make this easy (and even *best practice* for projects that choose loose
 coupling over maximum performance), this PEP proposes an API to:
@@ -115,35 +117,45 @@ coupling over maximum performance), this PEP proposes an API to:
 
 2. Given an instance, and the subclass ``PyTypeObject*``,
    get a pointer to the ``SubListState``.
-   A new function will be added for this.
+   A new function, ``PyObject_GetTypeData``, will be added for this.
 
 The base class is not limited to ``PyListObject``, of course: it can be used to
 extend any base class whose instance ``struct`` is opaque, unstable across
 releases, or not exposed at all -- including :py:class:`python:type`
-(``PyHeapTypeObject``) mentioned earlier, but also other extensions
+(``PyHeapTypeObject``) or third-party extensions
 (for example, NumPy arrays [#f1]_).
 
 For cases where no additional state is needed, a zero ``basicsize`` will be
 allowed: in that case, the base's ``tp_basicsize`` will be inherited.
-(With the current API, the base's ``basicsize`` needs to be passed in.)
+(This currently works, but lacks explicit documentation and tests.)
 
 The ``tp_basicsize`` of the new class will be set to the computed total size,
 so code that inspects classes will continue working as before.
 
 
-.. _var-sized:
+.. _697-var-sized:
 
 Extending variable-size objects
 -------------------------------
 
 Additional considerations are needed to subclass
 :external+python:c:type:`variable-sized objects <PyVarObject>`
-while maintaining loose coupling as much as possible.
+while maintaining loose coupling:
+the variable-sized data can collide with subclass data (``SubListState`` in
+the example above).
 
-Unfortunately, in this case we cannot decouple the subclass from its superclass
-entirely.
-There are two main memory layouts for variable-sized objects, and the
-subclass's author needs to know which one the superclass uses.
+Currently, CPython doesn't provide a way to prevent such collisions.
+So, the proposed mechanism of extending opaque classes (negative
+``base->tp_itemsize``) will *fail* by default.
+
+We could stop there, but since the motivating type --- ``PyHeapTypeObject`` ---
+is variable sized, we need a safe way to allow subclassing it.
+A bit of background first:
+
+Variable-size layouts
+.....................
+
+There are two main memory layouts for variable-sized objects.
 
 In types such as ``int`` or ``tuple``, the variable data is stored at a fixed
 offset.
@@ -177,56 +189,90 @@ The first layout enables fast access to the items array.
 The second allows subclasses to ignore the variable-sized array (assuming
 they use offsets from the start of the object to access their data).
 
-Which layout is used is, unfortunately, an implementation detail that the
-subclass code must take into account.
-Correspondingly, if a variable-sized type is designed to be extended in C,
-its documentation should note the mechanism used.
-Since this PEP focuses on ``PyHeapTypeObject``, it proposes API for the second
-variant.
-
-Like with fixed-size types, extending a variable-sized type is already
-possible: when creating the class, ``base->tp_itemsize`` needs to be passed
-as ``PyType_Spec.itemsize``.
-This is cumbersome in the Limited API, where one needs to resort to
-``PyObject_GetAttrString(obj, "__itemsize__")``, with the same caveats as for
-``__basicsize__`` above.
-
-This PEP proposes a mechanism to instruct the interpreter to do this on its
-own, without the extension needing to read ``base->tp_itemsize``.
-
-Several alternatives for this mechanism were rejected:
-
-* The easiest way to do this would be to allow leaving ``itemsize`` as 0 to
-  mean “inherit”.
-  However, unlike ``basicsize`` zero is a valid value for ``itemsize`` --
-  it marks fixed-sized types.
-  Also, in C, zero is the default value used when ``itemsize`` is not specified.
-  Since extending a variable-sized type requires *some* knowledge of the
-  superclass, it would be a good idea to require a more explicit way
-  to request it.
-* It would be possible to reserve a special negative value like ``itemsize=-1``
-  to mean “inherit”.
-  But this would rule out a possible future where negative ``itemsize``
-  more closely matches negative ``basicsize`` -- a request for
-  additional space.
-* A new flag would also work, but ``tp_flags`` is running out of free bits.
-  Reserving one for a flag only used in type creation seems wasteful.
-
-So, this PEP proposes a new :external+python:c:type:`PyType_Slot` to mark
-that ``tp_itemsize`` hould be inherited.
-When this flag is used, ``itemsize`` must be set to zero.
-Like with ``tp_basicsize``, ``tp_itemsize`` will be set to the computed value
-as the class is created.
+Since this PEP focuses on ``PyHeapTypeObject``, it proposes an API to allow
+subclassing for the second variant.
+Support for the first can be added later *as an API-compatible change*
+(though your PEP author doubts it'd be worth the effort).
 
 
-Normalizing the ``PyHeapTypeObject``-like layout
-''''''''''''''''''''''''''''''''''''''''''''''''
+Extending classes with the ``PyHeapTypeObject``-like layout
+...........................................................
+
+This PEP proposes a type flag, ``Py_TPFLAGS_ITEMS_AT_END``, which will indicate
+the ``PyHeapTypeObject``-like layout.
+This can be set in two ways:
+
+* the superclass can set the flag, allowing subclass authors to not care about
+  the fact that ``itemsize`` is involved, or
+* the new subclass sets the flag, asserting that the author knows the
+  superclass is suitable (but perhaps hasn't been updated to use the flag yet).
+
+This flag will be necessary to extend a variable-sized type using negative
+``basicsize``.
+
+An alternative to a flag would be to require subclass authors to know that the
+base uses a compatible layout (e.g. from documentation).
+A past version of this PEP proposed a new
+``PyType_Slot`` for it.
+This turned out to be hard to explain, and goes against the idea of decoupling
+the subclass from the base layout.
+
+The new flag will be used to allow safely extending variable-sized types:
+creating a type with ``spec->basesize < 0`` and ``base->tp_itemsize > 0``
+will require the flag.
 
 Additionally, this PEP proposes a helper function to get the variable-sized
-data of a given instance, assuming it uses the ``PyHeapTypeObject``-like layout.
-This is mainly to make it easier to define and document such types.
+data of a given instance, if it uses the new ``Py_TPFLAGS_ITEMS_AT_END`` flag.
+This hides the necessary pointer arithmetic behind an API
+that can potentially be adapted to other layouts in the future (including,
+potentially, a VM-managed layout).
 
-This function will not be exposed in the Limited API.
+Big picture
+...........
+
+To make it easier to verify that all cases are covered, here's a scary-looking
+big-picture decision tree.
+
+.. note::
+
+   The individual cases are easier to explain in isolation (see the
+   :ref:`reference implementation <697-ref-impl>` for draft docs).
+
+* ``spec->basesize > 0``: No change to the status quo. (The base
+  class layout is known.)
+
+* ``spec->basesize == 0``: (Inheriting the basicsize)
+
+  * ``base->tp_itemsize == 0``: The item size is set to ``spec->tp_itemsize``.
+    (No change to status quo.)
+  * ``base->tp_itemsize > 0``: (Extending a variable-size class)
+
+    * ``spec->itemsize == 0``: The item size is inherited.
+      (No change to status quo.)
+    * ``spec->itemsize > 0``: The item size is set. (This is hard to use safely,
+      but it's CPython's current behavior.)
+
+* ``spec->basesize < 0``: (Extending the basicsize)
+
+  * ``base->tp_itemsize == 0``: (Extending a fixed-size class)
+
+    * ``spec->itemsize == 0``: The item size is set to 0.
+    * ``spec->itemsize > 0``: Fail. (We'd need to add an ``ob_size``, which is
+      only possible for trivial types -- and the trivial layout must be known.)
+
+  * ``base->tp_itemsize > 0``: (Extending a variable-size class)
+
+    * ``spec->itemsize == 0``: (Inheriting the itemsize)
+
+      * ``Py_TPFLAGS_ITEMS_AT_END`` used: itemsize is inherited.
+      * ``Py_TPFLAGS_ITEMS_AT_END`` not used: Fail. (Possible conflict.)
+
+    * ``spec->itemsize > 0``: Fail. (Changing/extending the item size can't be
+      done safely.)
+
+Setting ``spec->itemsize < 0`` is always an error.
+This PEP does not propose any mechanism to *extend* ``tp->itemsize``
+rather than just inherit it.
 
 
 Relative member offsets
@@ -234,15 +280,15 @@ Relative member offsets
 
 One more piece of the puzzle is ``PyMemberDef.offset``.
 Extensions that use a subclass-specific ``struct`` (``SubListState`` above)
-will get a way to specify “relative” offsets -- offsets based on this ``struct``
--- rather than to “absolute” ones (based on ``PyObject*``).
+will get a way to specify “relative” offsets (offsets based from this
+``struct``) rather than “absolute” ones (based off the ``PyObject`` struct).
 
 One way to do it would be to automatically assume “relative” offsets
-if this PEP's API is used to create a class.
-However, this implicit assumption may be too surprising.
+when creating a class using the new API.
+However, this implicit assumption would be too surprising.
 
 To be more explicit, this PEP proposes a new flag for “relative” offsets.
-At least initially, this flag will serve only a check against misuse
+At least initially, this flag will serve only as a check against misuse
 (and a hint for reviewers).
 It must be present if used with the new API, and must not be used otherwise.
 
@@ -259,8 +305,9 @@ Relative ``basicsize``
 
 The ``basicsize`` member of ``PyType_Spec`` will be allowed to be zero or
 negative.
-In that case, it will specify the inverse of *extra* storage space instances of
-the new class require, in addition to the basicsize of the base class.
+In that case, its absolute value will specify how much *extra* storage space
+instances of the new class require, in addition to the basicsize of the
+base class.
 That is, the basicsize of the resulting class will be:
 
 .. code-block:: c
@@ -268,8 +315,10 @@ That is, the basicsize of the resulting class will be:
    type->tp_basicsize = _align(base->tp_basicsize) + _align(-spec->basicsize);
 
 where ``_align`` rounds up to a multiple of ``alignof(max_align_t)``.
-When ``spec->basicsize`` is zero, ``base->tp_basicsize`` will be inherited
-directly instead (i.e. set to ``base->tp_basicsize`` without aligning).
+
+When ``spec->basicsize`` is zero, basicsize will be inherited
+directly instead, i.e. set to ``base->tp_basicsize`` without aligning.
+(This already works; explicit tests and documentation will be added.)
 
 On an instance, the memory area specific to a subclass -- that is, the
 “extra space” that subclass reserves in addition its base -- will be available
@@ -288,9 +337,12 @@ Another function will be added to retreive the size of this memory area:
 .. code-block:: c
 
    Py_ssize_t
-   PyObject_GetTypeDataSize(PyTypeObject *cls) {
+   PyType_GetTypeDataSize(PyTypeObject *cls) {
        return cls->tp_basicsize - _align(cls->tp_base->tp_basicsize);
    }
+
+The result may be higher than requested by ``-basicsize``. It is safe to
+use all of it (e.g. with ``memset``).
 
 The new ``*Get*`` functions come with an important caveat, which will be
 pointed out in documentation: They may only be used for classes created using
@@ -303,40 +355,40 @@ undefined.
 Inheriting ``itemsize``
 -----------------------
 
-If a new slot, ``Py_tp_inherit_itemsize``, is present in
-``PyType_Spec.slots``, the new class will inherit
-the base's ``tp_itemsize``.
+When ``spec->itemsize`` is zero, ``tp_itemsize`` will be inherited
+from the base.
+(This already works; explicit tests and documentation will be added.)
 
-If this is the case, CPython will assert that:
+A new type flag, ``Py_TPFLAGS_ITEMS_AT_END``, will be added.
+This flag can only be set on types with non-zero ``tp_itemsize``.
+It indicates that the variable-sized portion of an instance
+is stored at the end of the instance's memory.
 
-* ``PyType_Spec.itemsize`` must be set to zero.
-* The ``Py_tp_inherit_itemsize`` slot's
-  ``~PyType_Slot.pfunc`` must be set to NULL.
+The default metatype (``PyType_Type``) will set this flag.
 
-A new function, ``PyObject_GetItemData``, will be added to safely access the
-memory reserved for items, taking subclasses that extend ``tp_basicsize``
-into account.
+A new function, ``PyObject_GetItemData``, will be added to access the
+memory reserved for variable-sized content of types with the new flag.
 In CPython it will be defined as:
 
 .. code-block:: c
 
    void *
    PyObject_GetItemData(PyObject *obj) {
+       if (!PyType_HasFeature(Py_TYPE(obj), Py_TPFLAGS_ITEMS_AT_END) {
+           <fail with TypeError>
+       }
        return (char *)obj + Py_TYPE(obj)->tp_basicsize;
    }
 
-This function will *not* be added to the Limited API.
+This function will initially *not* be added to the Limited API.
 
-Note that it **is not safe** to use **any** of the functions added in this PEP
-unless **all classes in the inheritance hierarchy** only use
-``PyObject_GetItemData`` (or an equivalent) for per-item memory, or don't
-use per-item memory at all.
-(This issue already exists for most current classes that use variable-length
-arrays in the instance struct, but it's much less obvious if the base struct
-layout is unknown.)
+Extending a class with positive ``base->itemsize`` using
+negative ``spec->basicsize`` will fail unless ``Py_TPFLAGS_ITEMS_AT_END``
+is set, either on the base or in ``spec->flags``.
+(See :ref:`697-var-sized` for a full explanation.)
 
-The documentation for all API added in this PEP will mention
-the caveat.
+Extending a class with positive ``spec->itemsize`` using negative
+``spec->basesize`` will fail.
 
 
 Relative member offsets
@@ -345,32 +397,23 @@ Relative member offsets
 In types defined using negative ``PyType_Spec.basicsize``, the offsets of
 members defined via ``Py_tp_members`` must be relative to the
 extra subclass data, rather than the full ``PyObject`` struct.
-This will be indicated by a new flag, ``PY_RELATIVE_OFFSET``.
+This will be indicated by a new flag in ``PyMemberDef.flags``:
+``Py_RELATIVE_OFFSET``.
 
 In the initial implementation, the new flag will be redundant. It only serves
 to make the offset's changed meaning clear, and to help avoid mistakes.
-It will be an error to *not* use ``PY_RELATIVE_OFFSET`` with negative
+It will be an error to *not* use ``Py_RELATIVE_OFFSET`` with negative
 ``basicsize``, and it will be an error to use it in any other context
 (i.e. direct or indirect calls to ``PyDescr_NewMember``, ``PyMember_GetOne``,
 ``PyMember_SetOne``).
 
-CPython will adjust the offset and clear the ``PY_RELATIVE_OFFSET`` flag when
+CPython will adjust the offset and clear the ``Py_RELATIVE_OFFSET`` flag when
 intitializing a type.
-This means that the created type's ``tp_members`` will not match the input
-definition's ``Py_tp_members`` slot, and that any code that reads
-``tp_members`` will not need to handle the flag.
+This means that:
 
-
-Changes to ``PyTypeObject``
----------------------------
-
-Internally in CPython, access to ``PyTypeObject`` “items”
-(``_PyHeapType_GET_MEMBERS``) will be changed to use ``PyObject_GetItemData``.
-Note that the current implementation is equivalent: it only lacks the
-alignment adjustment.
-The macro is used a few times in type creation, so no measurable
-performance impact is expected.
-Public API for this data, ``tp_members``, will not be affected.
+* the created type's ``tp_members`` will not match the input
+  definition's ``Py_tp_members`` slot, and
+* any code that reads ``tp_members`` will not need to handle the flag.
 
 
 List of new API
@@ -381,8 +424,9 @@ The following new functions/values are proposed.
 These will be added to the Limited API/Stable ABI:
 
 * ``void * PyObject_GetTypeData(PyObject *obj, PyTypeObject *cls)``
-* ``Py_ssize_t PyObject_GetTypeDataSize(PyTypeObject *cls)``
-* ``Py_tp_inherit_itemsize`` slot for ``PyType_Spec.slots``
+* ``Py_ssize_t PyType_GetTypeDataSize(PyTypeObject *cls)``
+* ``Py_TPFLAGS_ITEMS_AT_END`` flag for ``PyTypeObject.tp_flags``
+* ``Py_RELATIVE_OFFSET`` flag for ``PyMemberDef.flags``
 
 These will be added to the public C API only:
 
@@ -414,10 +458,14 @@ None known.
 Endorsements
 ============
 
-XXX: The PEP mentions wrapper libraries, so it should get review/endorsement
-from nanobind, PyO3, JPype, PySide &c.
+The author of ``pybind11`` originally requested solving the issue
+(see point 2 in `this list <https://discuss.python.org/t/15993>`__),
+and `has been verifying the implementation <https://discuss.python.org/t/19743/14>`__.
 
-XXX: HPy devs might also want to chime in.
+Florian from the HPy project `said <https://discuss.python.org/t/19743/3>`__
+that the API looks good in general.
+(See :ref:`below <697-alignment-performance>` for a possible solution to
+performance concerns.)
 
 
 How to Teach This
@@ -428,17 +476,22 @@ and a What's New entry, which should be enough for the target audience
 -- authors of C extension libraries.
 
 
+.. _697-ref-impl:
+
 Reference Implementation
 ========================
 
-XXX: Not quite ready yet
+A reference implementation is in the `extend-opaque branch <https://github.com/python/cpython/compare/main...encukou:cpython:extend-opaque>`__
+in the ``encukou/cpython`` GitHub repo.
 
 
 Possible Future Enhancements
 ============================
 
-Alignment
----------
+.. _697-alignment-performance:
+
+Alignment & Performance
+-----------------------
 
 The proposed implementation may waste some space if instance structs
 need smaller alignment than ``alignof(max_align_t)``.
@@ -457,8 +510,16 @@ without breaking the API:
   the cost of an extra pointer in the class.
 - Then, a new ``PyType_Slot`` can specify the desired alignment, to
   reduce space requirements for instances.
-- Alternatively, it might be possible to align ``tp_basicsize`` up at class
-  creation/readying time.
+
+Other layouts for variable-size types
+-------------------------------------
+
+A flag like ``Py_TPFLAGS_ITEMS_AT_END`` could be added to signal the
+“tuple-like” layout described in :ref:`697-var-sized`, and all mechanisms
+this PEP proposes could be adapted to support it.
+Other layouts could be added as well.
+However, it seems there'd be very little practical benefit,
+so it's just a theoretical possibility.
 
 
 Rejected Ideas

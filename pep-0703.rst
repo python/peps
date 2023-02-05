@@ -1,0 +1,1744 @@
+PEP: 703
+Title: Making the Global Interpreter Lock Optional in CPython
+Author: Sam Gross <colesbury at gmail.com>
+Sponsor: Łukasz Langa <lukasz at python.org>
+Discussions-To: https://discuss.python.org/t/22606
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 09-Jan-2023
+Python-Version: 3.12
+Post-History: `09-Jan-2023 <https://discuss.python.org/t/22606>`__
+Resolution:
+
+
+Abstract
+========
+
+CPython's global interpreter lock ("GIL") prevents multiple threads
+from executing Python code at the same time.  The GIL is an obstacle
+to using multi-core CPUs from Python efficiently.  This PEP proposes
+adding a build configuration (``--disable-gil``) to CPython to let it
+run Python code without the global interpreter lock and with the
+necessary changes needed to make the interpreter thread-safe.
+
+Motivation
+==========
+
+The GIL is a major obstacle to concurrency.  For scientific computing
+tasks, this lack of concurrency is often a bigger issue than speed of
+executing Python code, since most of the processor cycles are spent
+in optimized CPU or GPU kernels.  The GIL introduces a global
+bottleneck that can prevent other threads from making progress if
+they call any Python code.  There are existing ways to enable
+parallelism in CPython today, but those techniques come with
+significant limitations (see `Alternatives`_).
+
+This section focuses on the GIL's impact on scientific computing,
+particular AI/ML workloads because that is the area with which this
+author has the most experience, but the GIL also affects other users
+of Python.
+
+
+The GIL Makes Many Types of Parallelism Difficult to Express
+------------------------------------------------------------
+
+Neural network-based AI models expose multiple opportunities for
+parallelism.  For example, individual operations may be parallelized
+internally ("intra-operator"), multiple operations may be executed
+simultaneously ("inter-operator"), and requests (spanning multiple
+operations) may also be parallelized.  Efficient execution requires
+exploiting multiple types of parallelism [#yuemmwang2019]_.
+
+The GIL makes it difficult to express inter-operator parallelism, as
+well as some forms of request parallelism, efficiently in Python. In
+other programming languages, a system might use threads to run
+different parts of a neural network on separate CPU cores, but this is
+inefficient in Python due to the GIL. Similarly, latency-sensitive
+inference workloads frequently use threads to parallelize across
+requests, but face the same scaling bottlenecks in Python.
+
+The challenges the GIL poses to exploiting parallelism in Python
+frequently come up in reinforcement learning.  Heinrich Kuttler,
+author of the NetHack Learning Environment and Member of Technical
+Staff at Inflection AI, writes:
+
+  Recent breakthroughs in reinforcement learning, such as on `Dota
+  2`_, `StarCraft`_, and `NetHack`_ rely on running multiple
+  environments (simulated games) in parallel using asynchronous
+  actor-critic methods. Straightforward multithreaded implementations
+  in Python don't scale beyond more than a few parallel environments
+  due to GIL contention. Multiprocessing, with communication via
+  shared memory or UNIX sockets, adds much complexity and in effect
+  rules out interacting with CUDA from different workers, severely
+  restricting the design space.
+
+.. _Dota 2: https://openai.com/five/
+.. _StarCraft: https://www.deepmind.com/blog/alphastar-grandmaster-level-in-starcraft-ii-using-multi-agent-reinforcement-learning
+.. _NetHack: https://ai.facebook.com/blog/nethack-learning-environment-to-advance-deep-reinforcement-learning/
+
+Manuel Kroiss, software engineer at DeepMind on the reinforcement
+learning team, describes how the bottlenecks posed by the GIL lead to
+rewriting Python codebases in C++, making the code less accessible:
+
+  We frequently battle issues with the Python GIL at DeepMind. In many
+  of our applications, we would like to run on the order of 50-100
+  threads per process. However, we often see that even with fewer
+  than 10 threads the GIL becomes the bottleneck. To work around this
+  problem, we sometimes use subprocesses, but in many cases the
+  inter-process communication becomes too big of an overhead.  To
+  deal with the GIL, we usually end up translating large parts of our
+  Python codebase into C++. This is undesirable because it makes the
+  code less accessible to researchers.
+
+
+Projects that involve interfacing with multiple hardware devices face
+similar challenges: efficient communication requires use of multiple
+CPU cores.  The `Dose-3D`_ project aims to improve cancer
+radiotherapy with precise dose planning.  It uses medical phantoms
+(stand-ins for human tissue) together with custom hardware and a
+server application written in Python.  Paweł Jurgielewicz, lead
+software architect for the data acquisition system on the Dose-3D
+project, describes the scaling challenges posed by the GIL and how
+using a fork of Python without the GIL simplified the project:
+
+  In the Dose-3D project, the key challenge was to maintain a stable,
+  non-trivial concurrent communication link with hardware units while
+  utilizing a 1 Gbit/s UDP/IP connection to the maximum. Naturally,
+  we started with the multiprocessing package, but at some point, it
+  became clear that most CPU time was consumed by the data transfers
+  between the data processing stages, not by data processing itself.
+  The CPython multithreading implementation based on GIL was a dead
+  end too. When we found out about the "nogil" fork of Python it took
+  a single person less than half a working day to adjust the codebase
+  to use this fork and the results were astonishing. Now we can focus
+  on data acquisition system development rather than fine-tuning data
+  exchange algorithms.
+
+.. _Dose-3D: https://dose3d.fis.agh.edu.pl/en/projekt-dose-3d-z-programu-team-net-fnp-eng/
+
+
+Allen Goodman, author of `CellProfiler`_ and staff engineer at
+Prescient Design and Genentech, describes how the GIL makes
+biological methods research more difficult in Python:
+
+  Issues with Python's global interpreter lock are a frequent source
+  of frustration throughout biological methods research.
+
+  I wanted to better understand the current multithreading situation
+  so I reimplemented parts of `HMMER`_, a standard method for
+  multiple-sequence alignment. I chose this method because it
+  stresses both single-thread performance (scoring) and
+  multi-threaded performance (searching a database of sequences). The
+  GIL became the bottleneck when using only eight threads. This is a
+  method where the current popular implementations rely on 64 or
+  even 128 threads per process. I tried moving to subprocesses but
+  was blocked by the prohibitive IPC costs.  HMMER is a relatively
+  elementary bioinformatics method and newer methods have far bigger
+  multi-threading demands.
+
+  Method researchers are begging to use Python (myself included),
+  because of its ease of use, the Python ecosystem, and because "it's
+  what people know."  Many biologists only know a little bit of
+  programming (and that's almost always Python). Until Python's
+  multithreading situation is addressed, C and C++ will remain the
+  lingua franca of the biological methods research community.
+
+.. _CellProfiler: https://cellprofiler.org/
+.. _HMMER: http://hmmer.org/
+
+
+The GIL Affects Python Library Usability
+----------------------------------------
+
+The GIL is a CPython implementation detail that limits multithreaded
+parallelism, so it might seem unintuitive to think of it as a
+usability issue.  However, library authors frequently care a great
+deal about performance and will design APIs that support working
+around the GIL.  These workaround frequently lead to APIs that are
+more difficult to use.  Consequently, users of these APIs may
+experience the GIL as a *usability* issue and not just a performance
+issue.
+
+For example, PyTorch exposes a multiprocessing-based API called
+``DataLoader`` for building data input pipelines.  It uses ``fork()``
+on Linux because it is generally faster and uses less memory
+than ``spawn()``, but this leads to additional challenges for users:
+creating a ``DataLoader`` after accessing a GPU can lead to confusing
+CUDA errors.  Accessing GPUs within a ``DataLoader`` worker quickly
+leads to out-of-memory errors because processes do not share CUDA
+contexts (unlike threads within a process).
+
+Olivier Grisel, scikit-learn developer and software engineer at Inria,
+describes how having to work around the GIL in scikit-learn related
+libraries leads to a more complex and confusing user experience:
+
+  Over the years, scikit-learn developers have maintained ancillary
+  libraries such as ``joblib`` and ``loky`` to try to work around some
+  of the limitations of multiprocessing: extra memory usage partially
+  mitigated via semi-automated memory mapping of large data buffers,
+  slow worker startup by transparently reusing a pool of long
+  running workers, fork-safety problems of third-party native runtime
+  libraries such as GNU OpenMP by never using the fork-only
+  start-method, ability to perform parallel calls of interactively
+  defined functions in notebooks and REPLs in cross-platform manner
+  via cloudpickle. Despite our efforts, this multiprocessing-based
+  solution is still brittle, complex to maintain and confusing to
+  datascientists with limited understanding of system-level
+  constraints. Furthermore, there are still irreducible limitations
+  such as the overhead caused by the pickle-based
+  serialization/deserialization steps required for inter-process
+  communication. A lot of this extra work and complexity would not be
+  needed anymore if we could use threads without contention on
+  multicore hosts (sometimes with 64 physical cores or more) to run
+  data science pipelines that alternate between Python-level
+  operations and calls to native libraries.
+
+Ralf Gommers, co-director of Quansight Labs and NumPy and SciPy
+maintainer, describes how the GIL affects the user experience of
+NumPy and numeric Python libraries:
+
+  A key problem in NumPy and the stack of packages built around it is
+  that NumPy is still (mostly) single-threaded --- and that has shaped
+  significant parts of the user experience and projects built around
+  it. NumPy does release the GIL in its inner loops (which do the
+  heavy lifting), but that is not nearly enough. NumPy doesn't offer
+  a solution to utilize all CPU cores of a single machine well, and
+  instead leaves that to Dask and other multiprocessing solutions.
+  Those aren't very efficient and are also more clumsy to use. That
+  clumsiness comes mainly in the extra abstractions and layers the
+  users need to concern themselves with when using, e.g.,
+  ``dask.array`` which wraps ``numpy.ndarray``. It also shows up in
+  oversubscription issues that the user must explicitly be aware of
+  and manage via either environment variables or a third package,
+  ``threadpoolctl``. The main reason is that NumPy calls into BLAS
+  for linear algebra - and those calls it has no control over, they
+  do use all cores by default via either pthreads or OpenMP.
+
+  Coordinating on APIs and design decisions to control parallelism is
+  still a major amount of work, and one of the harder challenges
+  across the PyData ecosystem. It would have looked a lot different
+  (better, easier) without a GIL.
+
+
+GPU-Heavy Workloads Require Multi-Core Processing
+-------------------------------------------------
+
+Many high-performance computing (HPC) and AI workloads make heavy use
+of GPUs.  These applications frequently require efficient multi-core
+CPU execution even though the bulk of the computation runs on a GPU.
+
+Zachary DeVito, PyTorch core developer and researcher at FAIR
+(Meta AI), describes how the GIL makes multithreaded scaling
+inefficient even when the bulk of computation is performed outside of
+Python:
+
+  In PyTorch, Python is commonly used to orchestrate ~8 GPUs and ~64
+  CPU threads, growing to 4k GPUs and 32k CPU threads for big models.
+  While the heavy lifting is done outside of Python, the speed of
+  GPUs makes even just the orchestration in Python not scalable. We
+  often end up with 72 processes in place of one because of the GIL.
+  Logging, debugging, and performance tuning are orders-of-magnitude
+  more difficult in this regime, continuously causing lower developer
+  productivity.
+
+The use of many processes (instead of threads) makes common tasks more
+difficult. Zachary DeVito continues:
+
+  On three separate occasions in the past couple of months
+  (reducing redundant compute in data loaders, writing model
+  checkpoints asynchronously, and parallelizing compiler
+  optimizations), I spent an order-of-magnitude more time figuring
+  out how to work around GIL limitations than actually solving the
+  particular problem.
+
+Even GPU-heavy workloads frequently have a CPU-intensive component.
+For example, computer vision tasks typically require
+multiple "pre-processing" steps in the data input pipeline, like
+image decoding, cropping, and resizing.  These tasks are commonly
+performed on the CPU and may use Python libraries like `Pillow`_
+or `Pillow-SIMD`_.  It is necessary to run the data input pipeline
+on multiple CPU cores in order to keep the GPU "fed" with data.
+
+The increase in GPU performance compared to individual CPU cores makes
+multi-core performance more important.  It is progressively more
+difficult to keep the GPUs fully occupied.  To do so requires efficient
+use of multiple CPU cores, especially on multi-GPU systems.  For
+example, NVIDIA's DGX-A100 has 8 GPUs and two 64-core CPUs in order to
+keep the GPUs "fed" with data.
+
+.. _Pillow: https://pillow.readthedocs.io/en/stable/
+.. _Pillow-SIMD: https://github.com/uploadcare/pillow-simd
+
+
+The GIL Makes Deploying Python AI Models Difficult
+--------------------------------------------------
+
+Python is widely used to develop neural network-based AI models.  In
+PyTorch, models are frequently deployed as part of multi-threaded,
+mostly C++, environments.  Python is often viewed skeptically
+because the GIL can be a global bottleneck, preventing efficient
+scaling even though the vast majority of the computations
+occur "outside" of Python with the GIL released.  The torchdeploy
+paper [#torchdeploy]_ shows experimental evidence for these scaling
+bottlenecks in multiple model architectures.
+
+PyTorch provides a number of mechanisms for deploying Python AI
+models that avoid or work around the GIL, but they all come with
+substantial limitations.  For example, `TorchScript
+<https://pytorch.org/docs/stable/jit.html>`_ captures a
+representation of the model that can be executed from C++ without any
+Python dependencies, but it only supports a limited subset of Python
+and often requires rewriting some of the model's code.  The
+`torch::deploy <https://pytorch.org/docs/stable/package.html>`_ API
+allows multiple Python interpreters, each with its own GIL, in the
+same process(similar to :pep:`684`).  However, ``torch::deploy`` has
+limited support for Python modules that use C-API extensions.
+
+
+Motivation Summary
+------------------
+
+Python's global interpreter lock makes it difficult to use modern
+multi-core CPUs efficiently for many scientific and numeric computing
+applications.  Heinrich Kuttler, Manuel Kroiss, and Paweł
+Jurgielewicz found that multi-threaded implementations in Python did
+not scale well for their tasks and that using multiple processes
+was not a suitable alternative.
+
+The scaling bottlenecks are not solely in core numeric tasks. Both
+Zachary DeVito and Paweł Jurgielewicz described challenges with
+coordination and communication in Python.
+
+Olivier Grisel, Ralf Gommers, and Zachary DeVito described how current
+workarounds for the GIL are "complex to maintain" and cause "lower
+developer productivity."  The GIL makes it more difficult to develop
+and maintain scientific and numeric computing libraries as well
+leading to library designs that are more difficult to use.
+
+
+
+Specification
+=============
+
+Build Configuration Changes
+---------------------------
+
+The global interpreter lock will remain the default for CPython builds
+and python.org downloads. A new build configuration flag,
+``--disable-gil`` will be added to the configure script that will
+build CPython without the global interpreter lock.
+
+When built with ``--disable-gil``, CPython will define the
+``Py_NOGIL`` macro in Python/patchlevel.h. The ABI tag will include
+the letter "n" (for "nogil").
+
+Overview of CPython Changes
+---------------------------
+
+Removing the global interpreter lock requires substantial changes to
+CPython internals, but relatively few changes to the public Python
+and C APIs. This section describes the required changes to the
+CPython implementation followed by the proposed API changes.
+
+The implementation changes can be grouped into the following four
+categories:
+
+* Reference counting
+* Memory management
+* Container thread-safety
+* Locking and atomic APIs
+
+Reference Counting
+------------------
+
+Removing the GIL requires changes to CPython's
+reference counting implementation to make it thread-safe.
+Furthermore, it needs to have low execution overhead and allow for
+efficient scaling with multiple threads. This PEP proposes a
+combination of three techniques to address these constraints. The
+first is a switch from plain non-atomic reference counting to biased
+reference counting, which is a thread-safe reference counting
+technique with lower execution overhead than plain atomic reference
+counting. The other two techniques are immortalization and a limited
+form of deferred reference counting; they address some of the
+multi-threaded scalability issues with reference counting by avoiding
+some reference count modifications.
+
+Biased reference counting (BRC) is a technique first described in 2018
+by Jiho Choi, Thomas Shull, and Josep Torrellas [#brc]_. It is based on the
+observation that most objects are only accessed by a single thread,
+even in multi-threaded programs. Each object is associated with an
+owning thread (the thread that created it). Reference counting
+operations from the owning thread use non-atomic instructions to
+modify a "local" reference count. Other threads use atomic
+instructions to modify a "shared" reference count. This design avoids
+many atomic read-modify-write operations that are expensive on
+contemporary processors.
+
+The implementation of BRC proposed in this PEP largely matches the
+original description of biased reference counting, but differs in
+details like the size of reference counting fields and special bits
+in those fields. BRC requires storing three pieces of information in
+each object's header: the "local" reference count, the "shared"
+reference count, and the identifier of the owning thread.  The BRC
+paper packs these three things into a single 64-bit field.  This PEP
+proposes using three separate pointer-sized fields (i.e., three 64-bit
+fields on 64-bit platforms) in each object's header to avoid
+potential issues due to reference count overflow.
+
+The proposed ``PyObject`` struct (also called ``struct _object``) is
+below:
+
+.. code-block:: c
+
+  struct _object {
+    _PyObject_HEAD_EXTRA
+    uintptr_t ob_tid;
+    Py_ssize_t ob_ref_local;
+    Py_ssize_t ob_ref_shared;
+    PyTypeObject *ob_type;
+  };
+
+
+The details of the new fields are described in the following
+sections.
+
+
+Immortalization
+'''''''''''''''
+
+Some objects, such as interned strings, small integers, statically
+allocated PyTypeObjects, and the ``True``, ``False``, and ``None``
+objects stay alive for the lifetime of the program. These objects are
+marked as immortal by setting the local reference count field
+(``ob_ref_local``) to ``-1`` and the thread id (``ob_tid``) to the
+unsigned equivalent(``UINTPTR_MAX``).  It's sufficient to check either
+of these fields to determine if an object is immortal, which enables
+slightly more efficient ``Py_INCREF`` and ``Py_DECREF``
+implementations.
+
+The ``Py_INCREF`` and ``Py_DECREF`` macros are no-ops for immortal
+objects.  This avoids contention on the reference count fields of
+these objects when multiple threads access them concurrently.
+
+This proposed immortalization scheme is very similar to :pep:`683`,
+but with slightly different bit representation in the reference count
+fields for immortal objects in order to work with biased reference
+counting and deferred reference counting.
+
+Biased Reference Counting
+'''''''''''''''''''''''''
+
+Biased reference counting has a fast-path for objects "owned" by the
+current thread and a slow-path for other objects.  Ownership is
+indicated by the ``ob_tid`` field.  Determining the thread id
+requires platform specific code [#tid]_.  Two special values for
+``ob_tid`` are ``-1`` and ``0``.  A value of ``-1`` indicates the
+object is immortal (see `Immortalization`_) and a value of ``0``
+indicates that the object is not owned by any thread.
+
+Threads must give up ownership of an object before that object can be
+destroyed.  Ownership is most commonly given up when the local
+reference count reaches zero, but also can be requested by other
+threads.  Threads give up ownership by setting ``ob_tid`` to zero, and
+adding the local reference count to the shared reference count.  If the
+combined reference count is zero, the object can be deallocated.
+Otherwise, only the shared reference count field is used from that
+point onwards.
+
+The ``ob_ref_local`` field stores the local reference count and two
+flags.  The two most significant bits are used to indicate the object
+is immortal or uses deferred reference counting (see `Deferred
+reference counting`_).
+
+The ``ob_ref_shared`` field stores the shared reference count and two
+flags.  The two *least* significant bits are used to indicate if the
+object is "merged" or "queued."  The shared reference count is
+therefore shifted left by two.  The ``ob_ref_shared`` field uses the
+least significant bits because the shared reference count can be
+temporarily negative; increfs and decrefs may not be balanced between
+threads.
+
+If ``ob_ref_shared`` becomes negative, the current thread requests
+that the owning thread merge the two fields.  It atomically pushes
+the object to the owning thread's queue of objects to be merged and
+sets the "queued" bit on ``ob_ref_shared`` (to prevent duplicate
+queueings).  The owning thread is notified via the ``eval_breaker``
+mechanism.  In practice, this operation is rare.  Most objects are
+only accessed by a single thread and those objects accessed by
+multiple threads rarely have negative shared reference counts.
+
+The proposed ``Py_INCREF`` and ``Py_DECREF`` operation should behave
+as follows (using C-like pseudo-code):
+
+.. code-block:: c
+
+  // low two bits of "ob_ref_shared" are used for flags
+  #define _Py_SHARED_SHIFT 2
+
+  void Py_INCREF(PyObject *op)
+  {
+    Py_ssize_t new_local = op->ob_ref_local + 1;
+    if (new_local == 0)
+      return;  // object is immortal
+    if (op->ob_tid == _Py_ThreadId())
+      op->ob_ref_local = new_local;
+    else
+      atomic_add(&op->ob_ref_shared, 1 << _Py_SHARED_SHIFT);
+  }
+
+  void Py_DECREF(PyObject *op)
+  {
+    if (op->ob_tid == -1) {
+      return;  // object is immortal
+    }
+    if (op->ob_tid == _Py_ThreadId()) {
+      op->ob_ref_local -= 1;
+      if (op->ob_ref_local == 0) {
+        _Py_MergeZeroRefcount(); // merge refcount
+      }
+    }
+    else {
+      _Py_DecRefShared(); // slow path
+    }
+  }
+
+The reference implementation [#nogil]_ contains implementations of
+``_Py_MergeZeroRefcount`` and ``_Py_DecRefShared``.
+
+Note that the above is pseudocode: in practice, the implementation
+should use "relaxed atomics" to access ``ob_tid`` and
+``ob_ref_local`` to avoid undefined behavior in C and C++.
+
+
+Deferred Reference Counting
+'''''''''''''''''''''''''''
+
+A few types of objects, such as top-level functions, code objects,
+modules, and methods, tend to be frequently accessed by many threads
+concurrently.  These objects don't necessarily live for the lifetime of
+the program, so immortalization is not a good fit. This PEP proposes a
+limited form of deferred reference counting to avoid contention on
+these objects' reference count fields in multi-threaded programs.
+
+Typically, the interpreter modifies objects' reference counts as they
+are pushed to and popped from the interpreter's stack. The
+interpreter skips these reference counting operations for objects
+that use deferred reference counting.  Objects that support deferred
+reference counting are marked by setting the second-most significant
+bit in the local reference count field to one.
+
+Because some reference counting operations are skipped, the reference count fields no
+longer reflect the true number of references to these objects.  The
+true reference count is the sum of the reference count fields plus
+any skipped references from each thread's interpreter stack.  The
+true reference count can only be safely computed when all threads are
+paused during cyclic garbage collection.  Consequently, objects that
+use deferred reference counting can only be deallocated during
+garbage collection cycles.
+
+Note that the objects that use deferred reference counting already
+naturally form reference cycles in CPython, so they would typically be
+deallocated by the garbage collector even without deferred reference
+counting. For example, top-level functions and modules form a reference
+cycle as do methods and type objects.
+
+
+Garbage Collector Modifications for Deferred Reference Counting
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+The tracing garbage collector finds and deallocates unreferenced
+objects.  Currently, the tracing garbage collector only finds
+unreferenced objects that are part of a reference cycle. With
+deferred reference counting, the tracing garbage collector will also
+find and collect some unreferenced objects that may not be part of
+any reference cycle, but whose collection has been delayed due to
+deferred reference counting. This requires that all objects that
+support deferred reference counting also have a corresponding type
+object that supports tracing garbage collection (through the
+``Py_TPFLAGS_HAVE_GC`` flag). Additionally, the garbage collector
+will need to traverse each thread's stack to add references to the GC
+reference count at the start of each collection.
+
+Reference Counting Type Objects
+'''''''''''''''''''''''''''''''
+
+Type objects (``PyTypeObject``) use a mix of reference counting
+techniques. Statically allocated type objects are immortalized because
+the objects already live for the lifetime of the program.  Heap type
+objects use deferred reference counting in combination with per-thread
+reference counting.  Deferred reference counting is not sufficient to
+address the multi-threaded scaling bottlenecks with heap types because
+most references to heap types are from object instances, not references
+on the interpreter stack.
+
+To address this, heap type reference counts are partially stored in a
+distributed manner in per-thread arrays.  Every thread stores an
+array of local reference counts for each heap type object.  Heap type
+objects are assigned a unique number that determines its position in
+the local reference count arrays.  A heap type's true reference count
+is the sum of its entries in the per-thread arrays, plus the reference
+count on the ``PyTypeObject``, plus any deferred references in the
+interpreter stack.
+
+Threads may grow their own type reference count arrays as needed when
+incrementing or decrementing the local reference count of a type
+object.
+
+Use of the per-thread reference count arrays is limited to a few
+places:
+
+* ``PyType_GenericAlloc(PyTypeObject *type, Py_ssize_t nitems)``:
+  Increments the current thread's local reference count for ``type``,
+  if it is a heap type.
+* ``subtype_dealloc(PyObject *self)``: Decrements the current thread's
+  local reference count for ``self->ob_type``, if the type is a heap
+  type.
+* ``gcmodule.c``: Adds each thread's local reference counts to the
+  ``gc_refs`` count for the corresponding heap type object.
+
+Additionally, when a thread terminates, it adds any non-zero local
+reference counts to each type object's own reference count field.
+
+
+Memory Management
+-----------------
+
+CPython currently uses an internal allocator, pymalloc, which is
+optimized for small object allocation.  The pymalloc implementation is
+not thread-safe without the GIL.  This PEP proposes replacing pymalloc
+with mimalloc, a general-purpose thread-safe allocator with good
+performance, including for small allocations.
+
+Using mimalloc, with some modifications, also addresses two other
+issues related to removing the GIL.  First, traversing the internal
+mimalloc structures allows the garbage collector to find all Python
+objects without maintaining a linked list.  This is described in more
+detail in the garbage collection section.  Second, mimalloc heaps and
+allocations based on size class enable collections like dict to
+generally avoid acquiring locks during read-only operations. This is
+described in more detail in the collection thread-safety section.
+
+CPython already requires that objects that support garbage collection
+use the GC allocator APIs (typically indirectly by calling
+``PyType_GenericAlloc``). This PEP would add additional requirements
+to the use of the Python allocator APIs. First, Python objects must
+be allocated through object allocation APIs, such as
+``PyType_GenericAlloc``, ``PyObject_Malloc``, or other Python APIs
+that wrap those calls. Python objects should not be allocated through
+other APIs, such as raw calls to C's malloc or the C++ new operator.
+Additionally, ``PyObject_Malloc`` should be used only for allocating
+Python objects; it should not be used for allocating buffers,
+storages, or other data structures that are not PyObjects. 
+
+This PEP also imposes restrictions on the pluggable allocator API
+(``PyMem_SetAllocator``). When compiling without the GIL, allocators
+set using this API must eventually delegate the allocation to the
+corresponding underlying allocator, such as ``PyObject_Malloc``, for
+Python object allocations. This allows for allocators that "wrap"
+underlying allocators, such as Python's tracemalloc and debug
+allocator, but not for wholly replacing the allocator.
+
+
+CPython Free Lists
+''''''''''''''''''
+
+CPython makes use of free lists to speed up the allocation of small,
+frequently allocated objects like tuples and numbers.  These free
+lists are not thread-safe and will need to be disabled when building
+Python in the ``--disable-gil`` mode.
+
+
+
+Garbage Collection (Cycle Collection)
+-------------------------------------
+
+The CPython garbage collector requires the following changes to work
+with this proposal:
+
+* Use of "stop-the-world" to provide thread-safety guarantees that
+  were previously provided by the GIL.
+* Elimination of generational garbage collection in favor of
+  non-generational collector.
+* Integration with deferred reference counting and biased reference
+  counting.
+
+Stop-the-World
+''''''''''''''
+
+The CPython cycle garbage collector currently relies on the global
+interpreter lock to prevent other threads from accessing Python
+objects while the collector finds cycles. The GIL is never released
+during the cycle-finding routine, so the collector can rely on
+stable (i.e., unchanging) reference counts and references for the
+duration of that routine. However, following cycle detection, the GIL
+may be temporarily released while calling objects' finalizers and
+clear (``tp_clear``) functions, allowing other threads to run in an
+interleaved fashion.
+
+When running without the GIL, the implementation needs a way to ensure
+that reference counts remain stable during cycle detection. Threads
+running Python code must be paused to ensure that references and
+reference counts remain stable. Once the cycles are identified, other
+threads are resumed.
+
+The current CPython cyclic garbage collector involves two
+cycle-detection passes during each garbage collection cycle.
+Consequently, this requires two stop-the-world pauses when running the
+garbage collector without the GIL.  The first cycle-detection pass
+identifies cyclic trash. The second pass runs after finalizers to
+identify which objects still remain unreachable.  Note that other
+threads are resumed before finalizers and ``tp_clear`` functions are
+called to avoid introducing potential deadlocks that are not present in
+the current CPython behavior.
+
+Thread States
+'''''''''''''
+
+To support pausing threads for garbage collection, the PyThreadState
+gets a new "status" field. Like the other fields in PyThreadState,
+the status field is not part of the public CPython API. The status
+field may be in one of three states:
+
+* ``ATTACHED``
+* ``DETACHED``
+* ``GC``
+
+The ``ATTACHED`` and ``DETACHED`` states correspond closely to
+acquiring and releasing the global interpreter lock. When compiling
+without the GIL, functions that previously acquired the GIL instead
+transition the thread state to ``ATTACHED``, and functions that
+previously released the GIL transition the thread state
+to ``DETACHED``. Just as threads previously needed to acquire the
+GIL before accessing or modifying Python objects, they now must be in
+the ``ATTACHED`` state before accessing or modifying Python
+objects. Since the same public C-API functions "attach" the thread as
+previously acquired the GIL (e.g., ``PyEval_RestoreThread``), the
+requirements for thread initialization in extensions remain the same.
+The substantial difference is that multiple threads can be in the
+attached state simultaneously, while previously only one thread could
+acquire the GIL at a time.
+
+During stop-the-world pauses, the thread performing garbage collection
+needs to ensure that no other thread is accessing or modifying Python
+objects.  All other threads must be in the "GC" state. The garbage
+collection thread can transition other threads from the ``DETACHED``
+state to the GC state using an atomic compare-and-swap operation on
+the status field. Threads in the ``ATTACHED`` state are requested to
+pause themselves and set their status to "GC", using the
+existing "eval breaker" mechanism. At the end of the stop-the-world
+pause, all threads in the "GC" state are set to ``DETACHED`` and
+woken up if they are paused. Threads that were previously attached
+(i.e., executing Python bytecode) can re-attach (set their thread
+states to ``ATTACHED``) and resume executing Python code. Threads
+that were previously ``DETACHED`` ignore the notification.
+
+Generations
+'''''''''''
+
+The existing Python garbage collector uses three generations.  When
+compiling without the GIL, the garbage collector will only use a single
+generation (i.e., it will be non-generational).  The primary reason for
+this change is to reduce the impact of the stop-the-world pauses in
+multithreaded applications.  Frequent stop-the-world pauses for
+collecting the young generation would have more of an impact on
+multi-threaded applications than less frequent collections.
+
+
+Integration With Deferred and Biased Reference Counting
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+To find unreferenced objects, the cyclic garbage collector computes
+the difference between the number of incoming references and the
+object's reference count.  This difference is called ``gc_refs`` and
+is stored in the ``_gc_prev`` field.  If ``gc_refs`` is greater than
+zero, then the object is guaranteed to be alive (i.e., not cyclic
+trash). If ``gc_refs`` is zero, then the object is only alive if it
+is transitively referenced by another live object. When computing
+this difference, the collector should traverse each thread's stack,
+and for every deferred reference, increment the ``gc_refs`` for the
+referred object. Since generator objects also have stacks with
+deferred references, the same procedure is applied to each
+generator's stack.
+
+Python unit tests commonly use ``gc.collect()`` to ensure that any
+unreferenced objects are destructed and their finalizers run.  Since
+biased reference counting can delay the destruction of some objects
+that are referenced by multiple threads, it's convenient to ensure
+that those objects are destructed during garbage collection, even
+though they may not be part of any reference cycles.  While other
+threads are paused, the garbage collector thread should merge the
+reference counts for any queued objects, but not call any destructors
+even if the combined reference count is zero. (Calling destructors
+while other threads are paused risks introducing deadlocks.) Once
+other threads are resumed, the GC thread should call ``_Py_Dealloc``
+on those objects with a zero merged reference count.
+
+Container Thread-Safety
+-----------------------
+
+In CPython, the global interpreter lock protects against corruption of
+internal interpreter states when multiple threads concurrently access
+or modify Python objects.  For example, if multiple threads
+concurrently modify the same list, the GIL ensures that the length of
+the list (``ob_size``) accurately matches the number of elements, and
+that the reference counts of each element accurately reflect the
+number of references to those elements. Without the GIL --- and
+absent other changes --- concurrent modifications would corrupt those
+fields and likely lead to program crashes.
+
+The GIL does not necessarily ensure that operations are atomic or
+remain correct when multiple operations occur concurrently. For
+example, ``list.extend(iterable)`` may not appear atomic if the
+iterable has an iterator implemented in Python (or releases the GIL
+internally). Similarly, ``list.remove(x)`` can remove the wrong
+object if it overlaps with another operation that modifies the list,
+depending on the implementation of the equality operator.  Still, the
+GIL ensures that some operations are effectively atomic. For example,
+the constructor ``list(set)`` atomically copies the items of the set
+to a new list, and some code relies on that copy being atomic
+(i.e., having a snapshot of the items in the set). This PEP preserves
+that property.
+
+This PEP proposes using per-object locks to provide many of the same
+protections that the GIL provides.  For example, every list,
+dictionary, and set will have an associated (lightweight) lock.  All
+operations that modify the object must hold the object's lock.  Most
+operations that read from the object should acquire the object's lock
+as well; the few read operations that can proceed without holding a
+lock are described below.
+
+Not all Python objects require locks.  For example, immutable objects
+like tuples, strings, and numbers do not require a lock.
+
+Per-object locks with critical sections provide weaker protections
+than the GIL. Because the GIL doesn't necessarily ensure that
+concurrent operations are atomic or correct, the per-object locking
+scheme also cannot ensure that concurrent operations are atomic or
+correct. Instead, per-object locking aims for similar protections as
+the GIL, but with mutual exclusion limited to individual objects.
+
+Most operations on an instance of a container type require locking
+that object. For example:
+
+* ``list.append``, ``list.insert``, ``list.repeat``,
+  ``PyList_SetItem``
+* ``dict.__setitem__``, ``PyDict_SetItem``
+* ``list.clear``, ``dict.clear``
+* ``list.__repr__``, ``dict.__repr__``, etc.
+* ``list.extend(iterable)``
+* ``setiter_iternext``
+
+Some operations operate directly on two container objects, with
+knowledge about both containers' internal structure.  For example,
+there are internal specializations of ``list.extend(iterable)`` for
+specific iterable types, like ``set``. These operations need to lock
+both container objects because they access the internals of both
+objects simultaneously.  Note that the generic implementation of
+``list.extend`` only needs to lock one object (the list) because the
+other object is accessed indirectly through the thread-safe iterator
+API.  Operations that lock two containers are:
+
+* ``list.extend(list)``, ``list.extend(set)``, ``list.extend
+  (dictitems)``, and other specializations where the implementation
+  is specialized for argument type.
+* ``list.concat(list)``
+* ``list.__eq__(list)``, ``dict.__eq__(dict)``
+
+Some simple operations can be implemented directly with atomic
+accesses and do not need locks because they only access a single
+field.  These operations include:
+
+* ``len(list)`` i.e., ``list_length(PyListObject *a)``
+* ``len(dict)``
+* ``len(set)``
+
+A select few operations optimistically avoid locking to improve
+performance. These require special implementations and cooperation
+from the memory allocator:
+
+* ``list[idx]`` (``list_subscript``)
+* ``dict[key]`` (``dict_subscript``)
+* ``listiter_next``, ``dictiter_iternextkey/value/item``
+* ``list.contains``
+
+Borrowed References
+-------------------
+
+Per-object locking provides many of the important protections that the
+GIL provides, but there are a few cases where it's not sufficient.
+For example, code that relies on upgrading a borrowed reference to
+an "owned" reference may be unsafe in certain circumstances:
+
+.. code-block:: c
+
+  PyObject *item = PyList_GetItem(list, idx);
+  Py_INCREF(item);
+
+The GIL ensures that no other thread can modify the list in between
+the access and the ``Py_INCREF`` call. Without the GIL -- even with
+per-object locking -- another thread might modify the list leading to
+``item`` being freed between the access and the ``Py_INCREF`` call.
+
+The problematic borrowed reference APIs are supplemented with
+functions that return "new references" but are otherwise
+equivalent: 
+
+* ``PyList_FetchItem(list, idx)`` for ``PyList_GetItem``
+* ``PyDict_FetchItem(dict, key)`` for ``PyDict_GetItem``
+* ``PyWeakref_FetchObject`` for ``PyWeakref_GetObject``
+
+Note that some APIs that return borrowed references, such as
+``PyTuple_GetItem``, are not problematic because tuples are
+immutable. Similarly, not all uses of the above APIs are problematic.
+For example, ``PyDict_GetItem`` is often used for parsing keyword
+argument dictionaries in function calls; those keyword argument
+dictionaries are effectively private (not accessible by other
+threads).
+
+Python Critical Sections
+------------------------
+
+Straightforward per-object locking could introduce deadlocks that were
+not present when running with the GIL.  Threads may hold locks for
+multiple objects simultaneously because Python operations can nest.
+Operations on objects can invoke operations on other objects,
+acquiring multiple per-object locks.  If threads try to acquire the
+same locks in different orders, they will deadlock.
+
+This PEP proposes a scheme called "Python critical sections" to
+implicitly release per-object locks to avoid deadlocks.  To
+understand the scheme, we first introduce a general approach to avoid
+deadlocks, and then propose a refinement of that approach with better
+performance.
+
+One way to avoid deadlocks is to allow threads to hold only the lock
+(or locks) for a single operation at a time (typically a single lock,
+but some operations involve two locks as described above).  When a
+thread begins a nested operation it should suspend the locks for any
+outer operation: before beginning the nested operation, the locks for
+the outer operation are released and when the nested operation
+completes, the locks for the outer operation are reacquired.
+
+Additionally, the locks for any active operation should be suspended
+around potentially blocking operations, such as I/O (i.e., operations
+that would have released the GIL). This is because the interaction
+between locks and blocking operations can lead to deadlocks in the
+same way as the interaction between multiple locks.
+
+To improve performance, this PEP proposes a variation of the above
+scheme that still avoids deadlocks.  Instead of immediately
+suspending locks any time a nested operation begins, locks are only
+suspended if the thread would block (i.e., would have released the
+GIL).  This reduces the number of lock acquisitions and releases for
+nested operations, while avoiding deadlocks.
+
+The proposed API for Python critical sections are the following four
+macros. These are intended to be public (usable by C-API extensions),
+but not parted of the limited API:
+
+- ``Py_BEGIN_CRITICAL_SECTION(PyMutex m);``:
+  Begins a critical section by acquiring the mutex ``m``. If ``m`` is
+  already locked, then locks for any outstanding critical sections are
+  released before this thread waits for ``m`` to be unlocked.
+
+- ``Py_END_CRITICAL_SECTION(PyMutex m);``:
+  Ends the most recent operation, unlocking the mutex ``m``. The
+  most recent previous critical section (if any) is resumed if it is
+  currently suspended.
+
+- ``Py_BEGIN_CRITICAL_SECTION2(PyMutex m1, PyMutex m2);``:
+  Begins a critical section by acquiring the mutexes ``m1`` and ``m2``.
+  To ensure consistent lock ordering, the order of acquisition is
+  determined by memory address (i.e., the mutex with lower memory
+  address is acquired first). If either mutex is already locked, then
+  locks for any outstanding critical sections are released before this
+  thread waits for ``m1`` or ``m2`` to be unlocked.
+
+- ``Py_END_CRITICAL_SECTION2(PyMutex m1, PyMutex m2);``:
+  Behaves the same as ``Py_END_CRITICAL_SECTION`` but unlocks two
+  mutexes ``m1`` and ``m2``.
+
+Additionally, when a thread transitions from the ``ATTACHED`` state to
+the ``DETACHED`` state, it should suspend any active critical
+sections. When transitioning from ``DETACHED`` to ``ATTACHED``, the
+most recent suspended critical section, if any, should be resumed.
+
+Optimistically Avoiding Locking
+-------------------------------
+
+A few operations on ``dict`` and ``list`` optimistically avoid
+acquiring the per-object locks. They have a fast path operation that
+does not acquire locks, but may fall back to a slower operation that
+acquires the dictionary's or list's lock when another thread is
+concurrently modifying that container.
+
+The operations with an optimistic fast path are:
+
+* ``PyDict_FetchItem/GetItem`` and ``dict.__getitem__``
+* ``PyList_FetchItem/GetItem`` and ``list.__getitem__``
+
+Additionally, iterators for ``dict`` and ``list`` use the above
+functions so they also optimistically avoid locking when returning
+the next item.
+
+There are two motivations for avoiding lock acquisitions in these
+functions. The primary reason is that it is necessary for scalable
+multi-threaded performance even for simple applications. Dictionaries
+hold top-level functions in modules and methods for classes. These
+dictionaries are inherently highly shared by many threads in
+multi-threaded programs. Contention on these locks in multi-threaded
+programs for loading methods and functions would inhibit efficient
+scaling in many basic programs.
+
+The secondary motivation for avoiding locking is to reduce overhead
+and improve single-threaded performance.  Although lock acquisition
+has low overhead compared to most operations, accessing individual
+elements of lists and dictionaries are fast operations (so the
+locking overhead is comparatively larger) and frequent (so the
+overhead has more impact). 
+
+This section describes the challenges with implementing dictionary and
+list accesses without locking followed by a description of this PEP's
+changes to the Python interpreter required to address those
+challenges.
+
+The main challenge is that retrieving an item from a list or
+dictionary and incrementing the reference count of that item is not
+an atomic operation. In between the time the item is retrieved and
+the reference count is incremented, another thread may modify the
+list or dictionary, possibly freeing the memory for the previously
+retrieved item.
+
+A partial attempt at addressing this issue would be to convert the
+reference count increment to a conditional increment, only
+incrementing the reference count if it's not zero.  This change is
+not sufficient because when a Python object's reference count reaches
+zero, the object's destructor is called and the memory storing the
+object may be re-used for other data structures or returned to the
+operating system.  Instead, this PEP proposes a technique to ensure
+that the reference count fields remain valid for the duration of the
+access, so that the conditional reference count increment is safe.
+This technique requires cooperation from the memory allocator
+(mimalloc) as well as changes to the list and dictionary objects. The
+proposed technique is similar to read-copy update (RCU) [#rcu]_, a
+synchronization mechanism widely used in the Linux kernel.
+
+The current implementation of ``list_item`` (the C function
+implementing ``list.__getitem__``) is the following:
+
+.. code-block:: c
+
+    Py_INCREF(a->ob_item[i]);
+    return a->ob_item[i];
+
+The proposed implementation uses the conditional increment
+(``_Py_TRY_INCREF``) and has additional checks:
+
+.. code-block:: c
+
+  PyObject **ob_item = atomic_load(&a->ob_item);
+  PyObject *item = atomic_load(&ob_item[i]);
+  if (!item || !_Py_TRY_INCREF(item)) goto retry;
+  if (item != atomic_load(&ob_item[i])) {
+    Py_DECREF(item);
+    goto retry;
+  }
+  if (ob_item != atomic_load(&a->ob_item)) {
+    Py_DECREF(item);
+    goto retry;
+ }
+ return item;
+
+
+The "retry" subroutine implements the locked fallback path when
+concurrent modifications to the list cause the above fast,
+non-locking path to fail:
+
+.. code-block:: c
+
+  retry:
+    PyObject *item;
+    Py_BEGIN_CRITICAL_SECTION(a->ob_mutex);
+    item = a->ob_item[i];
+    Py_INCREF(item);
+    Py_END_CRITICAL_SECTION(a->ob_mutex);
+    return item;
+
+The modifications to the ``dict`` implementation are similar, because
+the relevant parts of both list and dictionary retrieval involve
+loading an item/value from an array at a known index.
+
+The additional checks following the conditional increment are
+necessary because the scheme allows immediate re-use of memory,
+including the memory that previously held a ``PyObject`` structure or
+``list`` or ``dict`` array.  Without these extra checks, the function
+might return a Python object that was never in the list, if the
+memory occupied by the Python object previously held a different
+``PyObject`` whose memory previously stored an item in the list.
+
+
+Mimalloc Changes for Optimistic ``list`` and ``dict`` Access
+------------------------------------------------------------
+
+The implementation requires additional constraints to the memory
+allocator, including some changes to the mimalloc code.  Some
+background on mimalloc's implementation is helpful to understand the
+required changes.  Individual allocations from mimalloc are
+called "blocks."  Mimalloc "pages" contain consecutive blocks that
+are all the same size.  A mimalloc "page" is similar to
+a "superblock" in other allocators; it is NOT an operating system
+page.  A mimalloc "heap" contains pages of various size classes; each
+page belongs to a single heap. If none of the blocks of a page are
+allocated, then mimalloc may re-use the page for a different size
+class or different heap (i.e., it might reinitialize the page).
+
+The list and dictionary access scheme works by partially restricting
+re-use of mimalloc pages so that reference count fields remains valid
+for the duration of the access.  The restricted re-use of mimalloc
+pages is enforced by having separate heaps for Python objects
+[#heaps]_.  This ensures that even if an item is freed during access
+and the memory reused for a new object, the new object's reference
+count field is placed at the same location in memory.  The reference
+count field remains valid (or zero) across allocations.
+
+Python objects that support cyclic garbage collection have two extra
+fields preceding the ``PyObject`` header, so their reference count
+fields are at a different offset from the start of their allocations.
+There are therefore two mimalloc heaps for Python objects, one for
+objects that support GC and one for objects that do not.
+
+The backing arrays for lists and the ``PyDictKeysObject`` [#dict]_ for
+dictionaries face hazards similar to those of Python objects.  Lists
+and dictionaries may be resized concurrently with accesses,
+reallocating the backing array or keys object.  Thus, there are
+two additional mimalloc heaps: one for list arrays and one for
+dictionary keys objects.  In total, there are five mimalloc heaps:
+two for Python objects (GC and non-GC), one for list arrays, one for
+dictionary keys, and the default mimalloc heap used for other
+allocations.
+
+
+Mimalloc Page Reuse
+--------------------
+
+It is beneficial to keep the restrictions on mimalloc page reuse to a
+short period of time to avoid increasing overall memory usage.
+Precisely limiting the restrictions to list and dictionary accesses
+would minimize memory usage, but would require expensive
+synchronizations.  At the other extreme, keeping the restrictions
+until the next GC cycle would avoid introducing any extra
+synchronizations, but would potentially increase memory usage.
+
+This PEP proposes a system that lies between those two extremes based
+on FreeBSD's "GUS" [#gus]_.  It uses a combination of global and
+per-thread counters (or "sequence numbers") to coordinate the
+determination of when it is safe to reuse an empty mimalloc page for
+a different heap or for a different size class, or to return it to
+the operating system:
+
+* There is a global write sequence number that monotonically
+  increases.
+* When a mimalloc page is empty, it's tagged with the current write
+  sequence number.  The thread may also atomically increment the
+  global write sequence number.
+* Each thread has a local read sequence number that records the most
+  recent write sequence number it has observed.
+* Threads may observe the write sequence number whenever they are not
+  in a list or dictionary access.  The reference implementation does
+  this in mimalloc's slow-path allocation function.  This is called
+  regularly enough to be useful, but not so frequently as to
+  introduce significant overhead.
+* There is a global read sequence number that stores the minimum of
+  all active threads' read sequence numbers.  A thread may update the
+  global read sequence number by scanning each threads' local read
+  sequence number.  The reference implementation does this before
+  allocating a fresh mimalloc page if there are restricted pages
+  that could possibly be reused.
+* An empty mimalloc page may be reused for a different heap or size
+  class when the global read sequence number is larger than the
+  page's tag number.
+
+The condition that the global read sequence number is larger than the
+page's tag is sufficient because it ensures that any thread that had
+a concurrent optimistic list or dictionary access is finished with
+that access.  In other words, there are no threads accessing the
+empty blocks in the freed page, so the page can be used for any other
+purpose or even returned to the operating system.
+
+Optimistic ``dict`` and ``list`` Access Summary
+-----------------------------------------------
+
+This PEP proposes a technique for thread-safe list and dictionary
+accesses that typically avoids acquiring locks.  This reduces
+execution overhead and avoids some multi-threaded scaling bottlenecks
+in common operations, like calling functions and methods.  The scheme
+works by placing temporary restrictions on mimalloc page reuse to
+ensure that objects' reference count fields remain valid after
+objects are freed so that conditional reference count increment
+operations are safe.  The restrictions are placed on mimalloc pages
+instead of on individual objects to improve opportunities for memory
+reuse.  The restrictions are lifted as soon as the system can
+determine that there are no outstanding accesses involving the empty
+mimalloc page.  To determine this, the system uses a combination of
+lightweight per-thread sequence counters and also tags pages when
+they are empty.  Once each thread's local counter is larger than the
+page's tag, it can be reused for any purpose or returned to the
+operating system.  The restrictions are also lifted whenever the
+cyclic garbage collector runs because the stop-the-world pause
+ensures that threads do not have any outstanding references to empty
+mimalloc pages.
+
+
+Rationale
+=========
+
+Non-Generational Garbage Collection
+-----------------------------------
+
+This PEP proposes switching from a generational cyclic garbage
+collector to a non-generational collector (when CPython is built
+without the GIL). That is equivalent to only having one generation
+(the "old" generation). There are two reasons for this proposed
+change.
+
+Cyclic garbage collection, even for just the young generation,
+requires pausing other threads in the program. The author is
+concerned that frequent collections of the young generation would
+inhibit efficient scaling in multi-threaded programs. This is a
+concern for young generations (but not the old generation) because
+the young generations are collected after a fixed number of
+allocations, while the collections for the older generation are
+scheduled in proportion to the number of live objects in the heap.
+Additionally, it is difficult to efficiently keep track of objects in
+each generation without the GIL. For example, CPython currently uses
+a linked list of objects in each generation. If CPython were to keep
+that design, those lists would need to be made thread-safe, and it's
+not clear how to do that efficiently.
+
+Generational garbage collection is used to good effect in many other
+language runtimes. For example, many of the Java HotSpot garbage
+collector implementations use multiple generations [#hotspotgc]_. In
+these runtimes, a young generation is frequently a throughput win:
+since a large percentage of the young generation is typically "dead,"
+the GC is able to reclaim a large amount memory relative to the
+amount of work performed. For example, several Java benchmarks show
+over 90% of "young" objects are typically collected [#decapo]_
+[#exploitingmemoryjava]_. This is commonly referred to as the "weak
+generational hypothesis;" the observation is that most objects die
+young. This pattern is reversed in CPython due to the use of
+reference counting. Although most objects still die young, they are
+collected when their reference counts reach zero. Objects that
+survive to a garbage collection cycle are most likely to remain
+alive [#cpythongc]_. This difference means that generational
+collection is much less effective in CPython than in many other
+language runtimes [#golangc]_.
+
+
+Optimistic Avoiding Locking in ``dict`` and ``list`` Accesses
+-------------------------------------------------------------
+
+This proposal relies on a scheme that mostly avoids acquiring locks
+when accessing individual elements in lists and dictionaries.  Note
+that this is not "lock free" in the sense of "lock-free"
+and "wait-free" algorithms that guarantee forward progress.  It
+simply avoids acquiring locks (mutexes) in the common case to improve
+parallelism and reduce overhead.
+
+A much simpler alternative would be to use reader-writer locks to
+protect dictionary and list accesses. Reader-writer locks allow
+concurrent reads, but not updates, which might seem ideal for list
+and dictionaries. The problem is that reader-writer locks have
+substantial overhead and poor scalability, particularly when the
+critical sections are small, as they are for single-element
+dictionary and list accesses [#perfbook]_. The poor reader
+scalability stems from the fact that readers must all update the same
+data structure, such as the number of readers in
+``pthread_rwlocks``.
+
+The technique described in this PEP is related to RCU
+("read-copy-update") [#rcu]_ and, to a lesser extent, hazard
+pointers, two well-known schemes for optimizing concurrent,
+read-mostly data structures. RCU is widely used in the Linux kernel
+to protect shared data structures in a scalable manner. Both the
+technique in this PEP and RCU work by deferring reclamation while
+readers may be accessing the concurrent data structure. RCU is most
+commonly used to protect individual objects (like hash tables or
+linked lists), while this PEP proposes a scheme to protect larger
+blocks of memory (mimalloc "pages") [#typesafe_rcu]_.
+
+The need for this scheme is largely due to the use of reference
+counting in CPython.  If CPython only relied on a tracing garbage
+collector, then this scheme would probably not be necessary because
+tracing garbage collectors already defer reclamation in the required
+manner.  This would not "solve" scaling issues, but would shift many
+of the challenges to the garbage collector implementation.
+
+
+Backwards Compatibility
+=======================
+
+This PEP poses a number of backwards compatibility issues when
+building CPython with the ``--disable-gil`` flag, but those issues do
+not occur when using the default build configuration.  Nearly all the
+backwards compatibility concerns involve the C-API:
+
+* CPython builds without the GIL will not be ABI compatible with the
+  standard CPython build or with the stable ABI due to changes to the
+  Python object header needed to support biased reference counting.
+  C-API extensions will need to be rebuilt specifically for this
+  version.
+* C-API extensions that rely on the GIL to protect global state or
+  object state in C code will need additional explicit locking to
+  remain thread-safe when run without the GIL.
+* C-API extensions that use borrowed references in ways that are not
+  safe without the GIL will need to use the equivalent new APIs that
+  return non-borrowed references. Note that only some uses of
+  borrowed references are a concern; only references to objects that
+  might be freed by other threads pose an issue.
+* Custom memory allocators (``PyMem_SetAllocator``) are required to
+  delegate the actual allocation to the previously set allocator. For
+  example, the Python debug allocator and tracing allocators will
+  continue to work because they delegate the allocation to the
+  underlying allocator. On the other hand, wholesale replacing of the
+  allocator (e.g., with jemalloc or tcmalloc) will not work
+  correctly.
+* Python objects must be allocated through the standard APIs, such as
+  ``PyType_GenericNew`` or ``PyObject_Malloc``. Non-Python objects
+  must **not** be allocated through those APIs. For example, it is
+  currently acceptable to allocate buffers(non-Python objects)
+  through ``PyObject_Malloc``; that will no longer be allowed and
+  buffers should instead be allocated through ``PyMem_Malloc``,
+  ``PyMem_RawMalloc``, or ``malloc``.
+
+There are fewer potential backwards compatibility issues for Python
+code:
+
+* Destructors and weak reference callbacks for code objects and
+  top-level function objects are delayed until the next cyclic
+  garbage collection due to the use of deferred reference counting.
+* Destructors for some objects accessed by multiple threads may be
+  delayed slightly due to biased reference counting. This is rare:
+  most objects, even those accessed by multiple threads, are
+  destroyed immediately as soon as their reference counts are zero.
+  Two places in the Python standard library tests required
+  ``gc.collect()`` calls to continue to pass.
+
+
+Distribution
+============
+
+This PEP poses new challenges for distributing Python.  At least for
+some time, there will be two versions of Python requiring separately
+compiled C-API extensions.  It may take some time for C-API extension
+authors to build ``--disable-gil`` compatible packages and upload
+them to PyPI.  Additionally, some authors may be hesitant to support
+the ``--disable-gil``  mode until it has wide adoption, but adoption
+will likely depend on the availability of Python's rich set of
+extensions.
+
+To mitigate this, the author will work with Anaconda to distribute
+a ``--disable-gil`` version of Python together with compatible
+packages from conda channels.  This centralizes the challenges of
+building extensions, and the author believes this will enable more
+people to use Python without the GIL sooner than they would otherwise
+be able to.
+
+
+Performance
+===========
+
+The changes to make CPython thread-safe without the GIL have a
+negative performance impact on single-threaded performance.  The
+largest impact is due to the reference counting changes, particularly
+biased reference counting and immortalization. On Python 3.11,
+implementing biased reference counting and immortalization results
+in about a 10% geomean regression on the pyperformance suite.  This
+performance impact can be partly mitigated through further interpreter
+changes.  For example, with the "nogil" proof-of-concept [#nogil]_,
+biased reference counting and immortalization together have a smaller
+5% regression on the pyperformance suite.  However, those changes
+are not part of this PEP.
+
+The other changes with significant performance impact are:
+
+* 2% - global free lists (mostly tuple and float free lists)
+* 1.5% - per-object mutexes in collections (dict, list, queue)
+
+
+How to Teach This
+=================
+
+As part of implementing the ``--disable-gil`` mode, the author will
+write a "HOWTO" guide [#howto]_ for making packages compatible when
+running Python without the GIL.
+
+
+Reference Implementation
+========================
+
+A prototype implementing this PEP is available at
+http://github.com/colesbury/nogil.
+
+
+Alternatives
+============
+
+Python currently supports a number of ways to enable parallelism, but
+the existing techniques come with significant limitations.
+
+Multiprocessing
+---------------
+
+The multiprocessing library allows Python programs to start and
+communicate with Python subprocesses.  This allows for parallelism
+because each subprocess has its own Python interpreter (i.e., there's
+one GIL per process).  Multiprocessing has a few substantial
+limitations.  Communication between processes is limited: objects
+generally need to be serialized or copied to shared memory.  This
+introduces overhead (due to serialization) and complicates building
+APIs on top of multiprocessing.  Starting a subprocess is also more
+expensive than starting a thread, especially with the "spawn"
+implementation.  Starting a thread takes ~100 µs, while spawning a
+subprocess takes ~50 ms (50,000 µs) due to Python re-initialization.
+
+Finally, many C and C++ libraries support access from multiple
+threads but do not support access or use across multiple processes.
+
+Releasing the GIL in C-API Extensions
+-------------------------------------
+
+C-API extensions can release the GIL around long running functions.
+This allows for some degree of parallelism, since multiple threads
+can run concurrently when the GIL is released, but the overhead of
+acquiring and releasing the GIL typically prevents this from scaling
+efficiently beyond a few threads.  Many scientific computing
+libraries release the GIL in computational heavy functions, and the
+CPython standard library releases the GIL around blocking I/O.
+
+Internal Parallelization
+------------------------
+
+Functions implemented in C may use multiple threads internally. For
+example, Intel's NumPy distribution, PyTorch, and TensorFlow all use
+this technique to internally parallelize individual operations. This
+works well when the basic operations are large enough to be
+parallelized efficiently, but not when there are many small
+operations or when the operations depend on some Python code. Calling
+into Python from C requires acquiring the GIL -- even short snippets
+of Python code can inhibit scaling.
+
+
+Related Work
+=============
+
+
+Per-Interpreter GIL
+-------------------
+
+:pep:`684` proposes a per-interpreter GIL to address multi-core
+parallelism.  This would allow parallelism between interpreters in
+the same process, but places substantial restrictions on sharing
+Python data between interpreters.  Both this PEP and :pep:`684`
+address the multi-core parallelism, but with different tradeoffs
+and techniques.  It is feasible to implement both PEPs in CPython at
+the same time.
+
+
+Gilectomy
+---------
+
+Gilectomy [#gilectomy]_ was a project by Larry Hastings to remove the
+GIL in CPython.  Like the design proposed by this PEP, the Gilectomy
+supported multiple threads running in parallel within the same
+interpreter (i.e., "free-threading") and made use of fine-grained
+locking.  The reference implementation in this PEP improves on
+single-threaded performance and scalability compared to the
+Gilectomy.
+
+
+PyParallel
+----------
+
+PyParallel [#pyparallel]_ was a proof-of-concept fork of Python 3.3 by
+Trent Nelson that supported multiple threads running simultaneously
+in a single Python process.  The fork introduced the concept
+of "parallel threads" -- threads that can run simultaneously while
+the main Python thread is suspended.  Parallel threads had read-only
+access to objects created by the main thread.  Objects created within
+parallel threads lived for the lifetime of the creating thread.  For
+HTTP servers, this might correspond to the lifetime of a request.
+
+
+
+python-safethread
+-----------------
+
+The python-safethread [#pythonsafethread]_ project was a patch to
+Python 3.0 by Adam Olsen to remove the GIL.  Some aspects of the
+project are similar to the design proposed by this PEP.  Both use
+fine-grained locking and optimize reference counting for cases
+where the object is created and accessed by the same thread.
+
+
+Greg Stein's Free-Threading Patch
+---------------------------------
+
+In 1996, Greg Stein published a patch against Python 1.4 that removed
+the GIL [#gsteinpatch]_.  The patch used atomic reference counting on
+Windows and a global reference count lock on Linux. List and
+dictionary accesses were protected by mutexes.  Parts of the patch
+were adopted in CPython. In particular, the patch introduced a
+PyThreadState structure and correct per-thread exception handling.
+
+
+Dave Beazley revisited the patch in a 2011 blog post [#dabeaz]_.
+
+
+Jython and IronPython
+---------------------
+
+Some alternative Python implementations like Jython [#jython]_ and
+IronPython [#ironpython]_ do not have a global interpreter lock.
+However, they do not support CPython extensions. (The implementations
+can interface with code written in Java or C#).
+
+
+PyPy-STM
+--------
+
+The pypy-stm [#pypystm]_ interpreter is a variant of PyPy that uses
+software transactional memory.  The authors report single-threaded
+performance overhead in the 20%-50% range compared to PyPy.  It is
+not compatible with CPython extensions.
+
+
+
+Rejected Ideas
+==============
+
+Why Not Use a Concurrent Garbage Collector?
+-------------------------------------------
+
+Many recent garbage collectors are mostly concurrent -- they avoid long
+stop-the-world pauses by allowing the garbage collector to run
+concurrently with the application. So why not use a concurrent
+collector?
+
+Concurrent collection requires write barriers (or read barriers).  The
+author is not aware of a way to add write barriers to CPython without
+substantially breaking the C-API.
+
+
+Why Not Deprecate ``PyDict_GetItem`` in Favor of ``PyDict_FetchItem``?
+----------------------------------------------------------------------
+
+This PEP proposes a new API ``PyDict_FetchItem`` which behaves like
+``PyDict_GetItem``, but returns a new reference instead of a borrowed
+reference.  As described in `Borrowed References`_, some uses of
+borrowed references that were safe when running with the GIL are
+unsafe when running without the GIL and need to be replaced by
+functions like ``PyDict_FetchItem`` that return new references.
+
+This PEP does *not* propose deprecating ``PyDict_GetItem`` and similar
+functions that return borrowed references for a few reasons:
+
+* Many of the uses of borrowed references are safe, even when running
+  without the GIL.  For example, C API functions often use
+  ``PyDict_GetItem`` to retrieve items from the keyword
+  argument dictionary.  These calls are safe because the keyword
+  argument dictionary is only visible to a single thread.
+* I tried this approach early on and found that wholesale replacing of
+  ``PyDict_GetItem`` with ``PyDict_FetchItem`` frequently introduced
+  new reference counting bugs.  In my opinion, the risk of
+  introducing new reference counting bugs generally outweighs the
+  risks of missing a ``PyDict_GetItem`` call that is unsafe without
+  the GIL.
+
+
+Why Not Use PEP 683 Immortalization?
+------------------------------------
+
+Like :pep:`683`, this PEP proposes an immortalization scheme for
+Python objects, but the PEPs use different bit representations to
+mark immortal objects.  The schemes cannot be identical because this
+PEP depends on biased reference counting, which has two reference
+count fields instead of one.  The schemes could be made more
+superficially similar, but it is not clear that would be worthwhile.
+PEP 683 maintains compatibility with extensions compiled to the
+stable ABI, and therefore uses the second most significant bit
+(i.e., 2^62 on 64-bit platforms) to mark immortal objects. Checking
+that bit typically requires an extra instruction on x86-64 compared
+with checking the sign bit or one of the low 32 bits.  This PEP
+cannot maintain compatibility with extensions compiled to the stable
+ABI because of the use of two reference count fields, and so this PEP
+is free to propose a representation that allows slightly more
+efficient checks for immortality on x86-64.
+
+
+Open Issues
+===========
+
+Quickening and Specialization
+-----------------------------
+
+The Python 3.11 release introduced quickening and specialization as
+part of the faster CPython project, substantially improving
+performance.  Quickening and specialization replaces slow bytecode
+instructions with faster variants [#pep659]_.  Some of these
+optimizations are not thread-safe without the GIL, and it remains an
+open issue how to implement them efficiently in a thread-safe
+manner.
+
+Python Build Modes
+------------------
+
+This PEP introduces a new build mode (``--disable-gil``) that is not
+ABI compatible with the standard build mode.  The additional build
+mode adds complexity for both Python core developers and extension
+developers.  The author believes a worthwhile goal is to combine
+these build modes and have the global interpreter lock controlled at
+runtime, possibly disabled by default.  The path to this goal remains
+an open issue, but a possible path might look like the following:
+
+#. In 2024, CPython 3.13 is released with support for a
+   ``--disable-gil`` build time flag.  There are two ABIs for
+   CPython, one with the GIL and one without.  Extension authors
+   target both ABIs.
+#. After 2--3 releases, (i.e., in 2026--2027), CPython is released
+   with with the GIL controlled by a runtime environment variable or
+   flag. The GIL is enabled by default.  There is only a single ABI.
+#. After another 2--3 release (i.e., 2028--2030), CPython switches to
+   the GIL being disabled by default.  The GIL can still be enabled
+   at runtime via an environment variable or command line flag.
+
+This PEP covers the first step, with the remaining steps left as open
+issues.  In this scenario, there would be a two to three year period
+where extension authors would target an extra CPython build per
+supported CPU architecture and OS.
+
+
+Mitigations for Single-Threaded Performance
+-------------------------------------------
+
+The changes proposed in the PEP will increase execution overhead for
+``--disable-gil`` builds compared to Python builds with the GIL.  In
+other words, it will have slower single-threaded performance.  There
+are some possible optimizations to reduce execution overhead,
+especially for ``--disable-gil`` builds that only use a single
+thread.  These may be worthwhile if a longer term goal is to have a
+single build mode, but the choice of optimizations and their
+trade-offs remain an open issue.
+
+
+References
+==========
+
+.. [#yuemmwang2019] "Exploiting Parallelism Opportunities with Deep Learning Frameworks."
+   Yu Emma Wang, Carole-Jean Wu, Xiaodong Wang, Kim Hazelwood, David Brooks. 2019.
+   https://arxiv.org/abs/1908.04705.
+
+.. [#torchdeploy] "Using Python for Model Inference in Deep Learning."
+   Zachary DeVito, Jason Ansel, Will Constable, Michael Suo, Ailing Zhang, Kim Hazelwood. 2021.
+   https://arxiv.org/abs/2104.00254. See Figure 5.
+
+.. [#brc] "Biased reference counting: minimizing atomic operations in garbage collection".
+   Jiho Choi, Thomas Shull, and Josep Torrellas. PACT 2018.
+   https://dl.acm.org/doi/abs/10.1145/3243176.3243195.
+
+.. [#pep683] :pep:`683` -- Immortal Objects, Using a Fixed Refcount.
+
+.. [#tid] https://github.com/colesbury/nogil/blob/f7e45d6bfbbd48c8d5cf851c116b73b85add9fc6/Include/object.h#L428-L455.
+
+.. [#rcu] "What is RCU, Fundamentally?"
+   Paul E. McKenney, Jonathan Walpole. 2017.
+   https://lwn.net/Articles/262464/
+
+.. [#heaps] There are two heaps for Python objects because PyObjects
+   that support cyclic garbage collection have extra fields preceding
+   the PyObject struct.
+
+.. [#dict] ``PyDictKeysObject`` serves as the backing array for dictionaries
+
+.. [#gus] "Global Unbounded Sequences (GUS)"
+   https://github.com/freebsd/freebsd-src/blob/9408f36627b74a472dc82f7a43320235c0c9055a/sys/kern/subr_smr.c#L44.
+   See also https://people.kernel.org/joelfernandes/gus-vs-rcu.
+
+.. [#perfbook] "Is Parallel Programming Hard, And, If So, What Can You Do About It?"
+   Paul E. McKenney. 2022.
+   https://mirrors.edge.kernel.org/pub/linux/kernel/people/paulmck/perfbook/perfbook.html.
+
+.. [#typesafe_rcu] ``SLAB_TYPESAFE_BY_RCU`` is an example in which RCU
+   protects blocks of memory and not any individual object.  See
+   https://www.kernel.org/doc/html/latest/RCU/whatisRCU.html#analogy-with-reference-counting.
+
+.. [#hotspotgc] "HotSpot Virtual Machine Garbage Collection Tuning Guide."
+   https://docs.oracle.com/en/java/javase/12/gctuning/hotspot-virtual-machine-garbage-collection-tuning-guide.pdf.
+   Most of the hotspot garbage collectors are generational, with the
+   notable exception of ZGC, although there is ongoing work to make
+   that generational.
+
+.. [#decapo] `The DaCapo Benchmarks: Java Benchmarking Development and
+   Analysis
+   <https://openresearch-repository.anu.edu.au/bitstream/1885/33723/2/01_Blackburn_The_DaCapo_Benchmarks:_Java_2006.pdf>`_.
+   See column "Nursery Survival" in Table 4.
+
+.. [#exploitingmemoryjava] "Exploiting memory usage patterns to improve garbage collections in Java."
+   https://dl.acm.org/doi/abs/10.1145/1852761.1852768.
+
+.. [#cpythongc] "most things usually turn out to be reachable"
+    https://github.com/python/cpython/blob/cd6655a8589e99ae4088b3bed4a692a19ed48779/Modules/gcmodule.c#L1106.
+
+.. [#golangc] The Go team observed something similar in Go, but due to
+   escape analysis and pass-by-value instead of reference
+   counting. Recent versions of Go use a non-generational garbage
+   collector. https://go.dev/blog/ismmkeynote.
+
+.. [#nogil] https://github.com/colesbury/nogil.
+
+.. [#howto] Python HOWTOs.
+   https://docs.python.org/3/howto/index.html.
+
+.. [#pep659] :pep:`659` -- Specializing Adaptive Interpreter.
+
+.. [#gilectomy] Gilectomy.
+   Larry Hastings. 2016.
+   https://github.com/larryhastings/gilectomy/tree/gilectomy.
+
+.. [#pyparallel] PyParallel.
+   Trent Nelson. 2016.
+   http://pyparallel.org/.
+
+.. [#pythonsafethread] python-safethread.
+   Adam Olsen. 2008.
+   https://launchpad.net/python-safethread
+
+.. [#gsteinpatch] https://www.python.org/ftp/python/contrib-09-Dec-1999/System/threading.tar.gz.
+
+.. [#dabeaz] An Inside Look at the GIL Removal Patch of Lore.
+   David Beazley. 2011.
+   https://dabeaz.blogspot.com/2011/08/inside-look-at-gil-removal-patch-of.html.
+
+.. [#jython] Jython.
+   https://www.jython.org/
+
+.. [#ironpython] IronPython.
+   https://ironpython.net/
+
+.. [#pypystm] PyPy: Software Transactional Memory.
+   https://doc.pypy.org/en/latest/stm.html
+
+
+
+Acknowledgments
+===============
+
+Thanks to Hugh Leather, Łukasz Langa, and Eric Snow for providing
+feedback on drafts of this PEP.
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
