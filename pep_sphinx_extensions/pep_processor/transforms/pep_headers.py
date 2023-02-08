@@ -250,7 +250,7 @@ def _process_discourse_url(parts: list[str]) -> tuple[str, str]:
     has_title = not first_subpart.isnumeric()
 
     if "t" in parts:
-        item_type = "post" if len(parts) > (5 + has_title) else "thread"
+        item_type = "message" if len(parts) > (5 + has_title) else "thread"
     elif "c" in parts:
         item_type = "category"
         if has_title:
