@@ -21,9 +21,6 @@ These can be used as-is, or serve as a base for custom filters.
 
 After a deprecation period, a strict (but safer) filter will become the default.
 
-The API is meant to set a precedent for other archive libraries, such as
-``zipfile``.
-
 
 Motivation
 ==========
@@ -102,8 +99,10 @@ Superficially, the following looks like a reasonable way to do this today:
 
 However, there are some issues with this approach:
 
-- ``TarInfo`` does not officially allow modification. You can modify it, but you
-  can get surprising results since ``TarInfo`` objects are cached/shared.
+- It's possible to modify ``TarInfo`` objects, but the changes to them
+  affect all subsequent operations on the same ``TarFile`` object.
+  This behavior is fine for most uses, but despite that, it would be very
+  surprising if ``TarFile.extractall`` did this by default.
 - Calling ``getmembers`` can be expensive and it 
   `requires a seekable archive <https://github.com/python/cpython/issues/45385#issuecomment-1255615199>`__.
 - When verifying members in advance, it may be necessary to track how each
@@ -112,8 +111,7 @@ However, there are some issues with this approach:
 
 To solve these issues we'll:
 
-- Provide a supported way to modify ``TarInfo`` when needed,
-  without unnecessary work when not.
+- Provide a supported way to “clone” and modify ``TarInfo`` objects.
   A ``replace`` method, similar to :func:`dataclasses.replace`
   or :func:`namedtuple._replace <collections.namedtuple._replace>`
   should do the trick.
@@ -174,7 +172,7 @@ Modifying and forgetting member metadata
 
 The ``TarInfo`` class will gain a new method, ``replace()``,
 which will work similarly to ``dataclasses.replace``.
-It will return a *deep* copy of the ``TarInfo`` object with attributes
+It will return a copy of the ``TarInfo`` object with attributes
 replaced as specified by keyword-only arguments:
 
 * ``name``
@@ -189,10 +187,12 @@ replaced as specified by keyword-only arguments:
 Any of these, except ``name`` and ``linkname``, will be allowed to be set
 to ``None``.
 When ``extract`` or ``extractall`` encounters such a ``None``, it will not
-set that piece of metadata, leaving it as if the file was created by ``open()``.
-When ``addfile`` encounters such a ``None``, it will raise an error.
-(It could also not store the attribute, if the format allows it,
-but that's a possible future enhancement.)
+set that piece of metadata.
+(If ``uname`` or ``gname`` is ``None``, it will fall back to ``uid`` or ``gid``
+as if the name wasn't found.)
+When ``addfile`` or ``tobuf`` encounters such a ``None``, it will raise a
+``ValueError``.
+When ``list`` encounters such a ``None``, it will print a placeholder string.
 
 The documentation will mention why the method is there:
 ``TarInfo`` objects retrieved from ``TarFile.getmembers()`` are “live”;
@@ -203,9 +203,12 @@ Filters
 -------
 
 ``TarFile.extract`` and ``TarFile.extractall`` methods will grow a ``filter``
-parameter, which takes a function with the signature::
+keyword-only parameter, which takes a function with the signature::
 
-    filter(member: TarInfo) -> TarInfo|None
+    filter(/, member: TarInfo, path: str) -> TarInfo|None
+
+where `member` is the member to be extracted, and `path` is the path to where
+the archive is extracted (i.e., it'll be the same for every member).
 
 When used it will be called on each member as it is extracted,
 and extraction will work with the result.
@@ -225,8 +228,9 @@ of the following strings:
 * ``'tar'``: Roughly follow defaults of the GNU ``tar`` command
   (when run as a normal user):
 
-  * Strip leading ``/`` from filenames
-  * Refuse to extract files with a ``..`` component in the filename
+  * Strip leading ``'/'`` and ``os.sep`` from filenames
+  * Refuse to extract files with absolute paths (after the ``/`` stripping
+    above, e.g. ``C:/foo`` on Windows).
   * Refuse to extract files whose absolute path (after following symlinks)
     would end up outside the destination.
     (Note that GNU ``tar`` instead delays creating some links.)
@@ -242,6 +246,7 @@ of the following strings:
   filter for cross-platform archives.
   In addition to ``tar``:
 
+  * Refuse to extract links (hard or soft) that link to absolute paths.
   * Refuse to extract links (hard or soft) which end up linking to a path
     outside of the destination.
     (On systems that don't support links, ``tarfile`` will, in most cases,
@@ -250,27 +255,56 @@ of the following strings:
   * Refuse to extract device files (including pipes).
   * For regular files and hard links:
 
-    * Set the owner read and write permissions (``S_IRUSR|S_IWUSR``).
-      (By now only the *executable* bits depend on information in the archive.)
-    * Remove the group & other *executable* permission (``S_IXGRP|S_IXOTH``)
-      if the user doesn't have it (``S_IXUSR``).
+     * Set the owner read and write permissions (``S_IRUSR|S_IWUSR``).
+     * Remove the group & other *executable* permission (``S_IXGRP|S_IXOTH``)
+      if the owner doesn't have it (``S_IXUSR``).
+     * Remove the group & other *read* permission (``S_IRGRP|S_IROTH``)
+      if the owner doesn't have it (``S_IRUSR``).
 
   * For other files (directories), ignore mode entirely (set it to ``None``).
   * Ignore user and group info (set ``uid``, ``gid``, ``uname``, ``gname``
     to ``None``).
 
-* ``'legacy_warning'``: Like ``'fully_trusted'``, but emit a 
-  ``DeprecationWarning`` for each member that would be changed or removed under
-  ``'data'``.
-
 The corresponding filter functions will be available as
 ``tarfile.fully_trusted_filter()``, ``tarfile.tar_filter()``, etc., so
 they can be easily used in custom policies.
 
+Note that these filters never return `None`.
+Skipping members this way is a feature for user-defined filters.
+
+Defaults and their configuration
+--------------------------------
+
+``TarFile`` will gain a new attribute, ``extraction_filter``, to allow
+configuring the default filter.
+By default it will be ``None``, but users can set it to a callable
+that will be used if the ``filter`` argument is missing or ``None``.
+
+.. note::
+
+  String names won't be accepted here. That would encourage code like
+  ``my_tarfile.extraction_filter = 'data'``.
+  On Python versions without this feature, this would do nothing,
+  silently ignoring a security-related request.
+
+If both the argument and attribute are ``None``:
+
+  * In Python 3.12-3.13, a ``DeprecationWarning`` will be emitted and
+    extraction will use the ``'fully_trusted'`` filter.
+  * In Python 3.14+, it will use the ``'data'`` filter.
+
+Applications and system integrators may wish to change ``extraction_filter``
+of the ``TarFile`` class itself to set a global default.
+When using a function, they will generally want to wrap it in ``staticmethod()``
+to prevent injection of a ``self`` argument.
+
+Subclasses of ``TarFile`` can also override ``extraction_filter``.
+
+
 FilterError
 -----------
 
-A new exception, ``FilterError``, will be added.
+A new exception, ``FilterError``, will be added to the ``tarfile`` module.
 It'll have several new subclasses, one for each of the refusal reasons above.
 ``FilterError``'s ``member`` attribute will contain the relevant ``TarInfo``.
 
@@ -281,28 +315,6 @@ this will abort the extraction; with ``errorlevel=0`` the error will be
 logged and the member will be ignored, but extraction will continue.
 Note that ``extractall()`` may leave the archive partially extracted;
 it is the user's responsibility to clean up.
-
-
-Defaults and their configuration
---------------------------------
-
-``TarFile`` will get a new class member ``extraction_filter``, with the
-default filter.
-This will be ``tarfile.legacy_warning_filter`` in Python 3.12 and 3.13,
-and ``tarfile.data_filter`` from Python 3.14 on.
-
-Applications and system integrators may wish to change ``extraction_filter``
-to suit their requirements.
-Users may also assign the ``extraction_filter`` attribute of an individual
-``TarFile`` instance to specify the default filter.
-Note that the attribute should be set to a filter function, not a string name.
-
-.. note::
-
-  Allowing strings would encourage code like
-  ``my_tarfile.extraction_filter = 'data'``.
-  On Python versions without this feature, this would do nothing,
-  silently ignoring a security-related request.
 
 
 Hints for further verification
@@ -317,13 +329,14 @@ Users should do additional checks.
 New docs will tell users to consider:
 
 * extracting to a new empty directory,
+* using external (e.g. OS-level) limits on disk, memory and CPU usage,
 * checking filenames against an allow-list of characters (to filter out control
   characters, confusables, etc.),
 * checking that filenames have expected extensions (discouraging files that
   execute when you “click on them”, or extension-less files like Windows
   special device names),
-* limiting the total size of extracted data, size of individual files,
-  and number of files,
+* limiting the number of extracted, files total size of extracted data,
+  and size of individual files,
 * checking for files that would be shadowed on case-insensitive filesystems.
 
 Also, the docs will note that:
@@ -342,15 +355,46 @@ be consolidated with ``zipfile`` or ``shutil`` (which is out of scope for
 this proposal).
 
 
+.. _706-offset:
+
+TarInfo identity, and ``offset``
+--------------------------------
+
+With filters that use ``replace()``, the ``TarInfo`` objects handled
+by the extraction machinery will not necessarily be the same objects
+as those present in ``members``.
+This may affect ``TarInfo`` subclasses that override methods like
+``makelink`` and rely on object identity.
+
+Such code can switch to comparing ``offset``, the position of the member
+header inside the file.
+
+Note that both the overridable methods and ``offset`` are only
+documented in source comments.
+
+
+tarfile CLI
+-----------
+
+The CLI (``python -m tarfile``) will gain a ``--filter`` option
+that will take the nams of one of the provided default filters.
+It won't be possible to specify a custom filter function.
+
+If ``--filter`` is not given, the CLI will use the default filter
+(``'legacy_warning'`` for a deprecation period, then ``'data'``).
+
+There will be no short option. (``-f`` would be confusingly similar to
+the filename option of GNU ``tar``.)
+
+
 Other archive libraries
 -----------------------
 
-This PEP is meant to set a precedent.
-
 If and when other archive libraries, such as ``zipfile``, grow similar
 functionality, their extraction functions should use a ``filter`` argument
-that takes, at least, the strings ``'fully_trusted'`` and ``'data'``, with
-semantics similar to the ones in ``tarfile``.
+that takes, at least, the strings ``'fully_trusted'`` (which should disable
+any security precautions) and ``'data'`` (which should avoid features that
+might surprise users).
 
 Standardizing a function-based filter API is out of scope of this PEP.
 
@@ -361,19 +405,37 @@ Shutil
 ``shutil.unpack_archive`` will gain a ``filter`` argument.
 If it's given, it will be passed to the underlying extraction function.
 Passing it for a ``zip`` archive will fail for now (until ``zipfile`` gains a
-``filter`` argument).
+``filter`` argument, if it ever does).
 
 If ``filter`` is not specified (or left as ``None``), it won't be passed
 on, so extracting a tarball will use the default filter
 (``'legacy_warning'`` for a deprecation period, then ``'data'``).
 
+Complex filters
+---------------
+
+Note that some user-defined filters need, for example,
+to count extracted members of do post-processing.
+This requires a more complex API than a ``filter`` callable.
+However, that complex API need not be exposed to ``tarfile``.
+For example, with a hypothetical ``StatefulFilter`` users would write::
+
+    with StatefulFilter() as filter_func:
+        my_tar.extract(path, filter=filter_func)
+
+A simple ``StatefulFilter`` example will be added to the docs.
+
 
 Backwards Compatibility
 =======================
 
-The proposal follows Python's :pep:`backwards compatibility policy <387>`,
-using the shortest allowed deprecation period (two years) for the
-incompatible change.
+The default behavior of ``TarFile.extract`` and ``TarFile.extactall``
+will change, after raising ``DeprecationWarning`` for 2 releases
+(shortest deprecation period allowed in Python's
+:pep:`backwards compatibility policy <387>`).
+
+Additionally, code that relies on ``TarInfo`` object identity may break,
+see :ref:`706-offset`.
 
 
 Backporting & Forward Compatibility
@@ -404,13 +466,14 @@ will affect subsequent operations.
 
 * Fully trusted archive::
 
-    my_tarfile.extraction_filter = (lambda member: member)
+    my_tarfile.extraction_filter = (lambda member, path: member)
     my_tarfile.extractall()
 
 * Use the ``'data'`` filter if available, but revert to Python 3.11 behavior
   (``'fully_trusted'``) if this feature is not available::
 
-    my_tarfile.extraction_filter = getattr(tarfile, 'data_filter', lambda member: member)
+    my_tarfile.extraction_filter = getattr(tarfile, 'data_filter',
+                                           (lambda member, path: member))
     my_tarfile.extractall()
 
   (This is an unsafe operation, so it should be spelled out explicitly,
@@ -447,15 +510,14 @@ How to Teach This
 
 The API, usage notes and tips for further verification will be added to
 the documentation.
-These should be usable for users who know how to extract an archive, but are
-not familiar with the specifics of UNIX filesystems nor the related security
-issues.
+These should be usable for users who are familiar wth archives in general, but
+not with the specifics of UNIX filesystems nor the related security issues.
 
 
 Reference Implementation
 ========================
 
-XXX None yet.
+Draft implementation: https://github.com/python/cpython/compare/main...encukou:cpython:tarfile-dir-traversal-sq
 
 
 Rejected Ideas
@@ -477,8 +539,20 @@ However, many of the ideas behind SafeTarFile were reused in this PEP.
 Add absolute_path option to tarfile
 -----------------------------------
 
-A minimal change to check the “CVE resolved” box doesn't go far enough to
-protect the unaware, nor to empower the diligent and curious.
+Issue `gh-73974`_ asks for adding an ``absolute_path`` option to extraction
+methods. This would be a minimal change to formally resolve `CVE-2007-4559`_.
+It doesn't go far enough to protect the unaware, nor to empower the dilligent
+and curious.
+
+Other names for the ``'tar'`` filter
+------------------------------------
+
+The ``'tar'`` filter exposes features specific to UNIX-like filesystems,
+so it could be named ``'unix'``.
+Or ``'unix-like'``, ``'nix'``, ``'*nix'``, ``'posix'``?
+
+Fetaure-wise, *tar format* and *UNIX-like filesystem* are essentially
+equivalent, so ``tar`` is a good name.
 
 
 Open Issues
@@ -501,6 +575,8 @@ References
 .. _CVE-2007-4559: https://nvd.nist.gov/vuln/detail/CVE-2007-4559
 
 .. _gh-65308: https://github.com/python/cpython/issues/65308
+
+.. _gh-73974: https://github.com/python/cpython/issues/73974
 
 Copyright
 =========
