@@ -1,0 +1,358 @@
+PEP: 9999
+Title: A simplified signature for __exit__ and __aexit__
+Author: Irit Katriel <iritkatriel@gmail.com>
+Discussions-To:
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 20-Feb-2023
+Python-Version: 3.12
+Post-History:
+Resolution:
+
+
+Abstract
+========
+
+This PEP proposes to make the intrpreter accept context managers whose
+``__exit__``/``__aexit__`` method takes only a single exception instance,
+while continuing to support also the current ``(typ, exc, tb)`` signature
+for backwards compatibility.
+
+This change would remove a redundancy in the language which is
+confusing for those learning and using it. In addition, it will remove
+some of the overhead of supporting context mamangers in the interpreter:
+micro-benchmarks showed a 13% speedup for entering and exiting a context
+manager with an empty body.
+
+The proposed implementation uses introspection, which is tailored to the
+requirements of this use case. The solution ensures the safety of the new
+feature by supporting it only in non-ambiguous cases. In particular, any
+signature that *could* accept three arguments, is assumed to expect them.
+
+
+Motivation
+==========
+
+In the past, an exception was represented in many parts of Python by a
+tuple of three elements: the type of the exception, its value, and its
+traceback.  While there were good reasons for this design at the time,
+they no longer hold because the type and traceback can now be reliably
+deduced from the exception instance. Over the last few years we saw
+several efforts to simplify the representation of exceptions.
+
+Since 3.10, the ``traceback`` module's functions accept either a 3-tuple
+as described above, or just an exception instance as a single argument
+[https://github.com/python/cpython/issues/70577].
+
+Internally, the interpreter no longer represents exceptions as a triplet.
+This was removed for the handled exception in 3.11 
+[https://github.com/python/cpython/pull/30122] and
+for the raised exception in 3.12
+[https://github.com/python/cpython/pull/101607]. As a consequence,
+several APIs that expose the triplet were deprecated in favour of
+simpler alternatives:
+
+list-table:: Exception Related APIs
+   :widths: 50 25 25
+   :header-rows: 1
+
+   * - 
+     - Deprecated
+     - Alternative
+
+   * - Get handled exception (Python)
+     - ``sys.exc_info()``
+     - ``sys.exception()``
+
+   * - Get handled exception (C)
+     - ``PyErr_GetExcInfo()``
+     - ``PyErr_GetHandledException()``
+
+   * - Set handled exception (C)
+     - ``PyErr_SetExcInfo()``
+     - ``PyErr_SetHandledException()``
+   
+   * - Get raised exception (C)
+     - ``PyErr_Fetch``
+     - ``PyErr_GetRaisedException``
+
+   * - Set raised exception (C)
+     - ``PyErr_Restore``
+     - ``PyErr_SetRaisedException``
+
+   * - Construct an exception instance from the 3-tuple (C)
+     - ``PyErr_NormalizeException``
+     - N/A
+
+
+The current proposal is a step in this process, and presents a way forward
+for one more case in which the 3-tuple representation has leaked to the
+lanaguage. The motivation for all this work is twofold.
+
+Simplify the implementation of the language
+-------------------------------------------
+
+The simplification gained by reducing the handled exception to a single
+object was significant. Previously, the interpreter needed to push onto/pop
+from the stack three items whenever it did anything with exceptions.
+This increased stack depth (adding pressure on caches and registers) and
+complicated some of the bytecodes. Reducing this to one item reduced the
+code of ceval.c (the interpreter's eval loop implementation) by about 100
+lines [https://github.com/python/cpython/pull/30122], and it was later
+followed by the removal of the ``POP_EXCEPT_AND_RERAISE`` opcode which has
+become simple enough to be replaced by generic stack manipulation instructions
+[https://github.com/python/cpython/issues/90360].  Micro-bencmarks showed
+a speedup of about 10% for catching and raising an exception, as well as
+for creating generators
+[https://github.com/faster-cpython/ideas/issues/106#issuecomment-990172363].
+To summarize, removing this redundancy in Python's internals simplified the
+interpreter and made it faster.
+
+The performance of invoking ``__exit__``/``__aexit__`` when leaving
+a context manager can be also improved by replacing a multi-arg function
+call by a single-arg one. Micro-benchmarks showed that entering and exiting
+a context manager with single-arg ``__exit__`` is about 13% faster.
+
+Simplify the lanaguage itself
+------------------------------
+
+One of the reasons for the popularity of Python is its simplicity. The
+``sys.exc_info()`` triplet is cryptic for new learners, and the redundancy
+in it is confusing for those who do understand it.
+
+The only reason to object today to the removal of the last remaining
+appearances of the 3-tuple from the language is the concerns about
+disrution that such changes can bring. The goal of this PEP is to propose
+a safe, gradual and minimally disruptive way to make this change in the
+case of ``__exit__``.
+
+It will take multiple releases to get to a point where we can think of
+deprecating ``sys.exc_info()``. However, we can relatively quickly reach a
+stage where new learners do not need to know about it, or about the 3-tuple
+representation, at least until they are maintaining legacy code.
+
+
+Specification
+=============
+
+A context manager's ``__exit__``/``__aexit__`` method can have a single-arg
+signature, in which case it is invoked by the interpreter with the argument
+equal to an exception instance or ``None``:
+
+.. code-block::
+
+   >>> class C:
+   ...     def __enter__(self):
+   ...         return self
+   ...     def __exit__(self, exc):
+   ...         print('__exit__ called with:', repr(exc))
+   ... 
+   >>> with C():
+   ...     pass
+   ... 
+   __exit__ called with: None
+   >>> with C():
+   ...     1/0
+   ... 
+   __exit__ called with: ZeroDivisionError('division by zero')
+   Traceback (most recent call last):
+     File "<stdin>", line 2, in <module>
+   ZeroDivisionError: division by zero
+   >>> 
+
+
+If ``__exit__``/``__aexit__`` has any other signature, it is invoked with
+the 3-tuple ``(typ, exc, tb)`` as happens now:
+
+.. code-block::
+
+   >>> class C:
+   ...     def __enter__(self):
+   ...         return self
+   ...     def __exit__(self, *exc):
+   ...         print('__exit__ called with:', repr(exc))
+   ... 
+   >>> with C():
+   ...     pass
+   ... 
+   __exit__ called with: (None, None, None)
+   >>> with C():
+   ...     1/0
+   ... 
+   __exit__ called with: (<class 'ZeroDivisionError'>, ZeroDivisionError('division by zero'), <traceback object at 0x1039cb570>)
+   Traceback (most recent call last):
+     File "<stdin>", line 2, in <module>
+   ZeroDivisionError: division by zero
+
+
+These ``__exit__`` methods will also be called with a 3-tuple:
+
+.. code-block::
+
+   ...     def __exit__(self, typ, *exc):
+   ...         print('__exit__ called with:', repr(typ, exc))
+   ...
+   ...     def __exit__(self, typ, exc, tb):
+   ...         print('__exit__ called with:', repr(type, exc, tb))
+
+
+A reference implementation is provided at [https://github.com/python/cpython/pull/101995].
+
+When the interpreter reaches the end of the scope of a context manager,
+and it is about to call the relevant ``__exit__`` or ``__aexit__`` function,
+it instrospects this function to determine whether it is the single-arg
+or the legacy 3-arg version. In the draft PR, this introspection is performed
+by ``is_legacy___exit__``, whose code is included below.
+
+It is important to note that this is not a generic introspection function, but
+rather one which is specifically designed for our use case. We know that
+``exit_func`` is an attribute of the context manager class (taken from the
+type of the object that provided ``__enter__``), so it is an unbound method.
+Furthermore, for this to be useful we need to identify enough single-arg forms,
+but not necesarily all of them.  What is critical for backwards compatibility is
+that we will never misidentify a legacy ``exit_func`` as a single-arg one. So,
+for example, ``__exit__(self, *args)`` and ``__exit__(self, exc_type, *args)``
+both have the legacy form, even though they *could* be invoked with one arg.
+
+In summary, an ``exit_func`` will be invoke with a single arg if:
+(1) it is a PyMethod with argcount 2 (to count self) and no vararg, or
+(2) it is a PyCFunction with the METH_O flag.
+
+.. code-block:: c
+
+    static int is_legacy___exit__(PyObject *exit_func) {
+        if (PyMethod_Check(exit_func)) {
+            PyObject *func = PyMethod_GET_FUNCTION(exit_func);
+            if (PyFunction_Check(func)) {
+                PyCodeObject *code = (PyCodeObject*)PyFunction_GetCode(func);
+                if (code->co_argcount == 2 && !(code->co_flags & CO_VARARGS)) {
+                    /* Python method that expects self + one more arg */
+                    return false;
+                }
+            }
+        }
+        else if (PyCFunction_Check(exit_func)) {
+            if (PyCFunction_GET_FLAGS(exit_func) == METH_O) {
+                /* C function declared as single-arg */
+                return false;
+             }
+        }
+        return true;
+    }
+
+
+Note that any performance cost of the introspection can be mitigated via
+specialization, so it won't be a problem if we need to make it more
+sophisticated than this for some reason [:pep:`654`].
+
+
+Backwards Compatibility
+=======================
+
+All context managers that previously worked, will continue to work in the
+same way because the interpreter will call them with three args whenever
+they can accept three args. There may be context managers that previously
+did not work because their ``exit_func`` expected one argument. The call
+to ``__exit__`` would have caused a ``TypeError`` exception to be raised,
+and now the call would succeed. This could theoretically change the
+behaviour of existing code, but it is unlikely to be a problem in practice.
+
+The backwards compatibility concerns will show up in some cases when libraries
+try to migrate their context managers from the multi-arg to the single-arg
+signature. If ``__exit__`` or ``__aexit__`` is called by any code other than
+the interpreter's eval loop, the introspection does not automatically happen.
+For example, this will occur where a context manager is subclassed and its
+``__exit__`` method is called directly from the derived ``__exit__``. Such
+context managers will need to migrate to the single-arg version with their
+users, and may choose to offer a parallel API rather than breaking the
+existing one. Alternatively, a superclass can stay with the signature
+``__exit__(self, *args)``, and support both one and three args.
+
+
+How to Teach This
+=================
+
+The language tutorial will present the single-arg version, and the documentation
+for context managers will include a section on the legacy signatures of
+``__exit__`` and ``__aexit__``.
+
+
+Reference Implementation
+========================
+
+`CPython PR #101995 <https://github.com/python/cpython/pull/101995>`_
+implements the proposal of this PEP.
+
+
+Rejected Ideas
+==============
+
+Support ``__leave__(self, exc)``
+----------------------------------
+
+It was considered to support a method by a new name, such as ``__leave__``,
+with the new signature. This basically makes the programmer explicitly declare
+which signature they are intending to use, and avoid the need for introspection.
+I don't think this solution has benefits that justify the addition of a new
+dunder name.
+
+Support ``__leave__(self, exc)``, with trampolines
+----------------------------------------------------
+
+An enhancement of the previous idea that seems to promise a smoother migration
+was to add ``__leave__``, and make sure that any type that defines ``__leave__``
+or ``__exit__`` is augmented with a builtin version of the other. The builtin
+``__leave__`` calls ``__exit__``, and the builtin ``__exit__`` calls ``__leave__``.
+
+This became very complicated when it came to making it work for direct calls to
+a superclass::
+
+.. code-block:: python
+
+   class B:
+      def __enter__(self):
+         pass
+
+      def __leave__(self, exc):
+       print('B.__leave__:', repr(exc), type(exc))
+
+   class D(B):
+      def __exit__(self, typ, val, tb):
+         print('D.__exit__:', type, val, tb)
+         B.__exit__(self, type, val, tb)
+
+   e = TypeError(42)
+   D().__exit__(type(e), e, e.__traceback__)
+
+
+To make this work, the automatically added methods need to be returned as
+decorators that freeze the type from which the method is to be looked up
+(we want ``B.__exit__`` to call ``B.__leave__``, not ``D.__leave__``).
+This solution seems much more complicated to implement than the introspection
+proposed in this PEP.
+
+
+References
+==========
+
+.. [1] 
+.. [2] 
+.. [3] 
+
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
+
+
+..
+    Local Variables:
+    mode: indented-text
+    indent-tabs-mode: nil
+    sentence-end-double-space: t
+    fill-column: 70
+    coding: utf-8
+    End:
