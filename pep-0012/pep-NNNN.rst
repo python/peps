@@ -6,6 +6,7 @@ PEP-Delegate: <PEP delegate's real name>
 Discussions-To: <REQUIRED: URL of current canonical discussion thread>
 Status: <REQUIRED: Draft | Active | Accepted | Provisional | Deferred | Rejected | Withdrawn | Final | Superseded>
 Type: <REQUIRED: Standards Track | Informational | Process>
+Topic: <Governance | Packaging | Release | Typing>
 Content-Type: text/x-rst
 Requires: <pep numbers>
 Created: <date created on, in dd-mmm-yyyy format>

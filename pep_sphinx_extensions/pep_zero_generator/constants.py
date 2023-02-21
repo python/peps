@@ -19,8 +19,8 @@ STATUS_VALUES = {
 SPECIAL_STATUSES = {
     "April Fool!": STATUS_REJECTED,  # See PEP 401 :)
 }
-# Draft PEPs have no status displayed, Active shares a key with Accepted
-HIDE_STATUS = {STATUS_DRAFT, STATUS_ACTIVE}
+# Draft PEPs have no status displayed
+HIDE_STATUS = {STATUS_DRAFT}
 # Dead PEP statuses
 DEAD_STATUSES = {STATUS_REJECTED, STATUS_WITHDRAWN, STATUS_SUPERSEDED}
 
@@ -55,5 +55,9 @@ See the `developer's guide`_ for more information.
 Many recent PEPs propose changes to Python's static type system
 or otherwise relate to type annotations.
 They are listed here for reference.
-"""
+""",
+    "governance": """\
+These PEPs detail Python's governance, including governance model proposals
+and selection, and the results of the annual steering council elections.
+""",
 }

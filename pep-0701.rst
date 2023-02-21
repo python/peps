@@ -1,0 +1,606 @@
+PEP: 701
+Title: Syntactic formalization of f-strings
+Author: Pablo Galindo <pablogsal@python.org>,
+        Batuhan Taskaya <batuhan@python.org>,
+        Lysandros Nikolaou <lisandrosnik@gmail.com>
+Discussions-To: https://discuss.python.org/t/pep-701-syntactic-formalization-of-f-strings/22046
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 15-Nov-2022
+Python-Version: 3.12
+
+
+Abstract
+========
+
+This document proposes to lift some of the restrictions originally formulated in
+:pep:`498` and to provide a formalized grammar for f-strings that can be
+integrated into the parser directly. The proposed syntactic formalization of
+f-strings will have some small side-effects on how f-strings are parsed and
+interpreted, allowing for a considerable number of advantages for end users and
+library developers, while also dramatically reducing the maintenance cost of
+the code dedicated to parsing f-strings.
+
+
+Motivation
+==========
+
+When f-strings were originally introduced in :pep:`498`, the specification was
+provided without providing a formal grammar for f-strings. Additionally, the
+specification contains several restrictions that are imposed so the parsing of
+f-strings could be implemented into CPython without modifying the existing
+lexer. These limitations have been recognized previously and previous attempts
+have been made to lift them in :pep:`536`, but `none of this work was ever implemented`_.
+Some of these limitations (collected originally by :pep:`536`) are:
+
+#. It is impossible to use the quote character delimiting the f-string
+   within the expression portion::
+
+    >>> f'Magic wand: { bag['wand'] }'
+                                 ^
+    SyntaxError: invalid syntax
+
+#. A previously considered way around it would lead to escape sequences
+   in executed code and is prohibited in f-strings::
+
+    >>> f'Magic wand { bag[\'wand\'] } string'
+    SyntaxError: f-string expression portion cannot include a backslash
+
+#. Comments are forbidden even in multi-line f-strings::
+
+    >>> f'''A complex trick: {
+    ... bag['bag']  # recursive bags!
+    ... }'''
+    SyntaxError: f-string expression part cannot include '#'
+
+#. Arbitrary nesting of expressions without expansion of escape sequences is
+   available in many other languages that employ a string interpolation
+   method that uses expressions instead of just variable names. Some examples:
+
+   .. code-block:: text
+
+      # Ruby
+      "#{ "#{1+2}" }"
+
+      # JavaScript
+      `${`${1+2}`}`
+
+      # Swift
+      "\("\(1+2)")"
+
+      # C#
+      $"{$"{1+2}"}"
+
+These limitations serve no purpose from a language user perspective and
+can be lifted by giving f-string literals a regular grammar without exceptions
+and implementing it using dedicated parse code.
+
+The other issue that f-strings have is that the current implementation in
+CPython relies on tokenising f-strings as ``STRING`` tokens and a post processing of
+these tokens. This has the following problems:
+
+#. It adds a considerable maintenance cost to the CPython parser. This is because
+   the parsing code needs to be written by hand, which has historically led to a
+   considerable number of inconsistencies and bugs. Writing and maintaining parsing
+   code by hand in C has always been considered error prone and dangerous as it needs
+   to deal with a lot of manual memory management over the original lexer buffers.
+
+#. The f-string parsing code is not able to use the new improved error message mechanisms
+   that the new PEG parser, originally introduced in :pep:`617`, has allowed. The
+   improvements that these error messages brought has been greatly celebrated but
+   unfortunately f-strings cannot benefit from them because they are parsed in a
+   separate piece of the parsing machinery. This is especially unfortunate, since
+   there are several syntactical features of f-strings that can be confusing due
+   to the different implicit tokenization that happens inside the expression
+   part (for instance ``f"{y:=3}"`` is not an assignment expression).
+
+#. Other Python implementations have no way to know if they have implemented
+   f-strings correctly because contrary to other language features, they are not
+   part of the :ref:`official Python grammar <f-strings>`.
+   This is important because several prominent
+   alternative implementations are using CPython's PEG parser, `such as PyPy`_,
+   and/or are basing their grammars on the official PEG grammar. The
+   fact that f-strings use a separate parser prevents these alternative implementations
+   from leveraging the official grammar and benefiting from improvements in error messages derived
+   from the grammar.
+
+
+A version of this proposal was originally `discussed on Python-Dev`_  and
+`presented at the Python Language Summit 2022`_ where it was enthusiastically
+received.
+
+Rationale
+=========
+
+By building on top of the new Python PEG Parser (:pep:`617`), this PEP proposes
+to redefine “f-strings”, especially emphasizing the clear separation of the
+string component and the expression (or replacement, ``{...}``) component. :pep:`498`
+summarizes the syntactical part of “f-strings” as the following:
+
+    In Python source code, an f-string is a literal string, prefixed with ‘f’, which
+    contains expressions inside braces. The expressions are replaced with their values.
+
+However, :pep:`498` also contained a formal list of exclusions on what
+can or cannot be contained inside the expression component (primarily due to the
+limitations of the existing parser). By clearly establishing the formal grammar, we
+now also have the ability to define the expression component of an f-string as truly "any
+applicable Python expression" (in that particular context) without being bound
+by the limitations imposed by the details of our implementation.
+
+The formalization effort and the premise above also has a significant benefit for
+Python programmers due to its ability to simplify and eliminate the obscure
+limitations. This reduces the mental burden and the cognitive complexity of
+f-string literals (as well as the Python language in general).
+
+#. The expression component can include any string literal that a normal Python expression
+   can include. This opens up the possibility of nesting string literals (formatted or
+   not) inside the expression component of an f-string with the same quote type (and length)::
+
+    >>> f"These are the things: {", ".join(things)}"
+
+    >>> f"{source.removesuffix(".py")}.c: $(srcdir)/{source}"
+
+    >>> f"{f"{f"infinite"}"}" + " " + f"{f"nesting!!!"}"
+
+   This "feature" is not universally agreed to be desirable, and some users find this unreadable.
+   For a discussion on the different views on this, see the :ref:`701-considerations-of-quote-reuse` section.
+
+#. Another issue that has felt unintuitive to most is the lack of support for backslashes
+   within the expression component of an f-string. One example that keeps coming up is including
+   a newline character in the expression part for joining containers. For example::
+
+    >>> a = ["hello", "world"]
+    >>> f"{'\n'.join(a)}"
+    File "<stdin>", line 1
+        f"{'\n'.join(a)}"
+                        ^
+    SyntaxError: f-string expression part cannot include a backslash
+
+   A common work-around for this was to either assign the newline to an intermediate variable or
+   pre-create the whole string prior to creating the f-string::
+
+    >>> a = ["hello", "world"]
+    >>> joined = '\n'.join(a)
+    >>> f"{joined}"
+    'hello\nworld'
+
+   It only feels natural to allow backslashes in the expression part now that the new PEG parser
+   can easily support it.
+
+    >>> a = ["hello", "world"]
+    >>> f"{'\n'.join(a)}"
+    'hello\nworld'
+
+#. Before the changes proposed in this document, there was no explicit limit in
+   how f-strings can be nested, but the fact that string quotes cannot be reused
+   inside the expression component of f-strings made it impossible to nest
+   f-strings arbitrarily. In fact, this is the most nested-fstring that can be
+   written::
+
+    >>> f"""{f'''{f'{f"{1+1}"}'}'''}"""
+    '2'
+
+   As this PEP allows placing **any** valid Python expression inside the
+   expression component of the f-strings, it is now possible to reuse quotes and
+   therefore is possible to nest f-strings arbitrarily::
+
+    >>> f"{f"{f"{f"{f"{f"{1+1}"}"}"}"}"}"
+    '2'
+   
+   Although this is just a consequence of allowing arbitrary expressions, the
+   authors of this PEP do not believe that this is a fundamental benefit and we
+   have decided that the language specification will not explicitly mandate that
+   this nesting can be arbitrary. This is because allowing arbitrarily-deep
+   nesting imposes a lot of extra complexity to the lexer implementation
+   (particularly as lexer/parser pipelines need to allow "untokenizing" to
+   support the 'f-string debugging expressions' and this is especially taxing when
+   arbitrary nesting is allowed). Implementations are therefore free to impose a
+   limit on the nesting depth if they need to. Note that this is not an uncommon
+   situation, as the CPython implementation already imposes several limits all
+   over the place, including a limit on the nesting depth of parentheses and
+   brackets, a limit on the nesting of the blocks, a limit in the number of
+   branches in ``if`` statements, a limit on the number of expressions in
+   star-unpacking, etc.
+
+Specification
+=============
+
+The formal proposed PEG grammar specification for f-strings is (see :pep:`617`
+for details on the syntax):
+
+.. code-block:: peg
+
+    fstring
+        | FSTRING_START fstring_middle* FSTRING_END
+    fstring_middle
+        | fstring_replacement_field
+        | FSTRING_MIDDLE
+    fstring_replacement_field
+        | '{' (yield_expr | star_expressions) "="? [ "!" NAME ] [ ':' fstring_format_spec* ] '}'
+    fstring_format_spec:
+        | FSTRING_MIDDLE
+        | fstring_replacement_field
+
+The new tokens (``FSTRING_START``, ``FSTRING_MIDDLE``, ``FSTRING_END``) are defined
+:ref:`later in this document <701-new-tokens>`.
+
+This PEP leaves up to the implementation the level of f-string nesting allowed.
+This means that limiting nesting is **not part of the language specification**
+but also the language specification **doesn't mandate arbitrary nesting**. 
+
+The new grammar will preserve the Abstract Syntax Tree (AST) of the current
+implementation. This means that no semantic changes will be introduced by this
+PEP on existing code that uses f-strings.
+
+Handling of f-string debug expressions
+--------------------------------------
+
+Since Python 3.8, f-strings can be used to debug expressions by using the
+``=`` operator. For example::
+
+    >>> a = 1
+    >>> f"{1+1=}"
+    '1+1=2'
+
+This semantics were not introduced formally in a PEP and they were implemented
+in the current string parser as a special case in `bpo-36817
+<https://bugs.python.org/issue?@action=redirect&bpo=36817>`_ and documented in
+`the f-string lexical analysis section
+<https://docs.python.org/3/reference/lexical_analysis.html#f-strings>`_.
+
+This feature is not affected by the changes proposed in this PEP but is
+important to specify that the formal handling of this feature requires the lexer
+to be able to "untokenize" the expression part of the f-string. This is not a
+problem for the current string parser as it can operate directly on the string
+token contents. However, incorporating this feature into a given parser
+implementation requires the lexer to keep track of the raw string contents of
+the expression part of the f-string and make them available to the parser when
+the parse tree is constructed for f-string nodes. A pure "untokenization" is not
+enough because as specified currently, f-string debug expressions preserve whitespace in the expression,
+including spaces after the ``{`` and the ``=`` characters. This means that the
+raw string contents of the expression part of the f-string must be kept intact
+and not just the associated tokens.
+
+How parser/lexer implementations deal with this problem is of course up to the
+implementation.
+
+.. _701-new-tokens:
+
+New tokens
+----------
+
+Three new tokens are introduced: ``FSTRING_START``, ``FSTRING_MIDDLE`` and
+``FSTRING_END``. Different lexers may have different implementations that may be
+more efficient than the ones proposed here given the context of the particular
+implementation. However, the following definitions will be used as part of the
+public APIs of CPython (such as the ``tokenize`` module) and are also provided
+as a reference so that the reader can have a better understanding of the
+proposed grammar changes and how the tokens are used:
+
+* ``FSTRING_START``: This token includes the f-string prefix (``f``/``F``/``fr``) and the opening quote(s).
+* ``FSTRING_MIDDLE``: This token includes a portion of text inside the string that's not part of the
+  expression part and isn't an opening or closing brace. This can include the text between the opening quote
+  and the first expression brace (``{``), the text between two expression braces (``}`` and ``{``) and the text
+  between the last expression brace (``}``) and the closing quote.
+* ``FSTRING_END``: This token includes the closing quote.
+
+These tokens are always string parts and they are semantically equivalent to the
+``STRING`` token with the restrictions specified. These tokens must be produced by the lexer
+when lexing f-strings.  This means that **the tokenizer cannot produce a single token for f-strings anymore**.
+How the lexer emits this token is **not specified** as this will heavily depend on every
+implementation (even the Python version of the lexer in the standard library is implemented
+differently to the one used by the PEG parser).
+
+As an example::
+
+    f'some words {a+b:.3f} more words {c+d=} final words'
+
+will be tokenized as::
+
+    FSTRING_START - "f'"
+    FSTRING_MIDDLE - 'some words '
+    LBRACE - '{'
+    NAME - 'a'
+    PLUS - '+'
+    NAME - 'b'
+    OP - ':'
+    FSTRING_MIDDLE - '.3f'
+    RBRACE - '}'
+    FSTRING_MIDDLE - ' more words '
+    LBRACE - '{'
+    NAME - 'c'
+    PLUS - '+'
+    NAME - 'd'
+    OP - '='
+    RBRACE - '}'
+    FSTRING_MIDDLE - ' final words'
+    FSTRING_END - "'"
+
+while ``f"""some words"""`` will be tokenized simply as::
+
+    FSTRING_START - 'f"""'
+    FSTRING_MIDDLE - 'some words'
+    FSTRING_END - '"""'
+
+.. _701-tokenize-changes:
+
+Changes to the tokenize module
+------------------------------
+
+The :mod:`tokenize` module will be adapted to emit these tokens as described in the previous section
+when parsing f-strings so tools can take advantage of this new tokenization schema and avoid having
+to implement their own f-string tokenizer and parser.
+
+How to produce these new tokens
+-------------------------------
+
+One way existing lexers can be adapted to emit these tokens is to incorporate a
+stack of "lexer modes" or to use a stack of different lexers. This is because
+the lexer needs to switch from "regular Python lexing" to "f-string lexing" when
+it encounters an f-string start token and as f-strings can be nested, the
+context needs to be preserved until the f-string closes. Also, the "lexer mode"
+inside an f-string expression part needs to behave as a "super-set" of the
+regular Python lexer (as it needs to be able to switch back to f-string lexing
+when it encounters the ``}`` terminator for the expression part as well as
+handling f-string formatting and debug expressions). For reference, here is a
+draft of the algorithm to modify a CPython-like tokenizer to emit these new
+tokens:
+
+1. If the lexer detects that an f-string is starting (by detecting the letter
+   'f/F' and one of the possible quotes) keep advancing until a valid quote is
+   detected (one of ``"``, ``"""``, ``'`` or ``'''``) and emit a
+   ``FSTRING_START`` token with the contents captured (the 'f/F' and the
+   starting quote). Push a new tokenizer mode to the tokenizer mode stack for
+   "F-string tokenization". Go to step 2.
+2. Keep consuming tokens until a one of the following is encountered:
+
+   * A closing quote equal to the opening quote.
+   * An opening brace (``{``) or a closing brace (``}``) that is not immediately
+     followed by another opening/closing brace.
+
+   In all cases, if the character buffer is not empty, emit a ``FSTRING_MIDDLE``
+   token with the contents captured so far but transform any double
+   opening/closing braces into single opening/closing braces.  Now, proceed as
+   follows depending on the character encountered:
+
+   * If a closing quote matching the opening quite is encountered go to step 4.
+   * If an opening bracket (not immediately followed by another opening bracket)
+     is encountered, go to step 3.
+   * If a closing bracket (not immediately followed by another closing bracket)
+     is encountered, emit a token for the closing bracket and go to step 2.
+
+3. Push a new tokenizer mode to the tokenizer mode stack for "Regular Python
+   tokenization withing f-string" and proceed to tokenize with it. This mode
+   tokenizes as the "Regular Python tokenization" until a ``!``, ``:``, ``=``
+   character is encountered or if a ``}`` character is encountered with the same
+   level of nesting as the opening bracket token that was pushed when we enter the
+   f-string part. Using this mode, emit tokens until one of the stop points are
+   reached. When this happens, emit the corresponding token for the stopping
+   character encountered and, pop the current tokenizer mode from the tokenizer mode
+   stack and go to step 2.
+4. Emit a ``FSTRING_END`` token with the contents captured and pop the current
+   tokenizer mode (corresponding to "F-string tokenization") and go back to
+   "Regular Python mode".
+
+Of course, as mentioned before, it is not possible to provide a precise
+specification of how this should be done for an arbitrary tokenizer as it will
+depend on the specific implementation and nature of the lexer to be changed.
+
+Consequences of the new grammar
+-------------------------------
+
+All restrictions mentioned in the PEP are lifted from f-string literals, as explained below:
+
+* Expression portions may now contain strings delimited with the same kind of
+  quote that is used to delimit the f-string literal.
+* Backslashes may now appear within expressions just like anywhere else in
+  Python code. In case of strings nested within f-string literals, escape sequences are
+  expanded when the innermost string is evaluated.
+* New lines are now allowed within expression brackets. This means that these are now allowed::
+
+    >>> x = 1
+    >>> f"___{
+    ...     x
+    ... }___"
+    '___1___'
+
+    >>> f"___{(
+    ...     x
+    ... )}___"
+    '___1___'
+
+* Comments, using the ``#`` character, are allowed within the expression part of an f-string.
+  Note that comments require that the closing bracket (``}``) of the expression part to be present in
+  a different line as the one the comment is in or otherwise it will be ignored as part of the comment.
+
+.. _701-considerations-of-quote-reuse:
+
+Considerations regarding quote reuse
+------------------------------------
+
+One of the consequences of the grammar proposed here is that, as mentioned above,
+f-string expressions can now contain strings delimited with the same kind of quote
+that is used to delimit the external f-string literal. For example:
+
+    >>> f" something { my_dict["key"] } something else "
+
+In the `discussion thread for this PEP <https://discuss.python.org/t/pep-701-syntactic-formalization-of-f-strings/22046>`_,
+several concerns have been raised regarding this aspect and we want to collect them here,
+as these should be taken into consideration when accepting or rejecting this PEP.
+
+Some of these objections include:
+
+* Many people find quote reuse withing the same string confusing and hard to read. This is because
+  allowing quote reuse will violate a current property of Python as it stands today: the fact that
+  strings are fully delimited by two consecutive pairs of the same kind of quote, which by itself is a very simple rule.
+  One of the reasons quote reuse may be harder for humans to parse, leading to less readable
+  code, is that the quote character is the same for both start and
+  end (as opposed to other delimiters). 
+
+* Some users have raised concerns that quote reuse may break some lexer and syntax highlighting tools that rely
+  on simple mechanisms to detect strings and f-strings, such as regular expressions or simple delimiter
+  matching tools. Introducing quote reuse in f-strings will either make it trickier to keep these tools
+  working or will break the tools altogether (as, for instance, regular expressions cannot parse arbitrary nested
+  structures with delimiters). The IDLE editor, included in the standard library, is an example of a
+  tool which may need some work to correctly apply syntax highlighting to f-strings.
+
+Here are some of the arguments in favour:
+
+* Many languages that allow similar syntactic constructs (normally called "string interpolation") allow quote
+  reuse and arbitrary nesting. These languages include JavaScript, Ruby, C#, Bash, Swift and many others.
+  The fact that many languages allow quote reuse can be a compelling argument in favour of allowing it in Python. This
+  is because it will make the language more familiar to users coming from other languages. 
+
+* As many other popular languages allow quote reuse in string interpolation constructs, this means that editors
+  that support syntax highlighting for these languages will already have the necessary tools to support syntax
+  highlighting for f-strings with quote reuse in Python. This means that although the files that handle syntax
+  highlighting for Python will need to be updated to support this new feature, is not expected to be impossible
+  or very hard to do.
+
+* One advantage of allowing quote reuse is that it composes cleanly with other syntax. Sometimes this is referred to
+  as "referential transparency". An example of this is that if we have ``f(x+1)``, assuming ``a`` is a brand new variable, it
+  should behave the same as ``a = x+1; f(a)``. And vice versa.  So if we have::
+
+    def py2c(source):
+        prefix = source.removesuffix(".py")
+        return f"{prefix}.c"
+
+  It should be expected that if we replace the variable ``prefix`` with its definition, the answer should be the same::
+
+    def py2c(source):
+        return f"{source.removesuffix(".py")}.c"
+
+* Code generators (like `ast.unparse <https://docs.python.org/3/library/ast.html#ast.unparse>`_ from standard library) in their
+  current form rely on complicated algorithms to ensure expressions within an f-string are properly suited for the context in
+  which they are being used. These non-trivial algorithms come with challanges such as finding an unused quote type (by tracking
+  the outer quotes), and generating string representations which would not include backslashes if possible. Allowing quote reuse
+  and backslashes would simplify the code generators which deals with f-strings considerably, as the regular Python expression logic
+  can be used inside and outside of f-strings without any special treatment.
+
+* Limiting quote reuse will considerably increase the complexity of the implementation of the proposed changes. This is because
+  it will force the parser to have the context that is parsing an expression part of an f-string with a given quote in order
+  to know if it needs to reject an expression that reuses the quote. Carrying this context around is not trivial in parsers that
+  can backtrack arbitrarily (such as the PEG parser). The issue becomes even more complex if we consider that f-strings can be
+  arbitrarily nested and therefore several quote types may need to be rejected.
+
+  To gather feedback from the community,
+  `a poll <https://discuss.python.org/t/pep-701-syntactic-formalization-of-f-strings/22046/24>`__
+  has been initiated to get a sense of how the community feels about this aspect of the PEP.
+
+Backwards Compatibility
+=======================
+
+This PEP does not introduce any backwards incompatible syntactic or semantic changes
+to the Python language. However, the :mod:`tokenize` module (a quasi-public part of the standard
+library) will need to be updated to support the new f-string tokens (to allow tool authors
+to correctly tokenize f-strings). See :ref:`701-tokenize-changes` for more details regarding
+how the public API of ``tokenize`` will be affected.
+
+How to Teach This
+=================
+
+As the concept of f-strings is already ubiquitous in the Python community, there is
+no fundamental need for users to learn anything new. However, as the formalized grammar
+allows some new possibilities, it is important that the formal grammar is added to the
+documentation and explained in detail, explicitly mentioning what constructs are possible
+since this PEP is aiming to avoid confusion.
+
+It is also beneficial to provide users with a simple framework for understanding what can
+be placed inside an f-string expression. In this case the authors think that this work will
+make it even simpler to explain this aspect of the language, since it can be summarized as:
+
+    You can place any valid Python expression inside an f-string expression.
+
+With the changes in this PEP, there is no need to clarify that string quotes are
+limited to be different from the quotes of the enclosing string, because this is
+now allowed: as an arbitrary Python string can contain any possible choice of
+quotes, so can any f-string expression. Additionally there is no need to clarify
+that certain things are not allowed in the expression part because of
+implementation restrictions such as comments, new line characters or
+backslashes. 
+
+The only "surprising" difference is that as f-strings allow specifying a
+format, expressions that allow a ``:`` character at the top level still need to be
+enclosed in parenthesis. This is not new to this work, but it is important to
+emphasize that this restriction is still in place. This allows for an easier
+modification of the summary:
+
+    You can place any valid Python expression inside
+    an f-string expression, and everything after a ``:`` character at the top level will
+    be identified as a format specification.
+
+
+Reference Implementation
+========================
+
+A reference implementation can be found in the implementation_ fork.
+
+Rejected Ideas
+==============
+
+#. Although we think the readability arguments that have been raised against
+   allowing quote reuse in f-string expressions are valid and very important,
+   we have decided to propose not rejecting quote reuse in f-strings at the parser
+   level. The reason is that one of the cornerstones of this PEP is to reduce the
+   complexity and maintenance of parsing f-strings in CPython and this will not
+   only work against that goal, but it may even make the implementation even more
+   complex than the current one. We believe that forbidding quote reuse should be
+   done in linters and code style tools and not in the parser, the same way other
+   confusing or hard-to-read constructs in the language are handled today.
+
+#. We have decided not to lift the restriction that some expression portions
+   need to wrap ``':'`` and ``'!'`` in parentheses at the top level, e.g.::
+
+    >>> f'Useless use of lambdas: { lambda x: x*2 }'
+    SyntaxError: unexpected EOF while parsing
+   
+   The reason is that this would this will introduce a considerable amount of
+   complexity for no real benefit. This is due to the fact that the ``:`` character
+   normally separates the f-string format specification. This format specification
+   is currently tokenized as a string. As the tokenizer MUST tokenize what's on the
+   right of the ``:`` as either a string or a stream of tokens, this won't allow the
+   parser to differentiate between the different semantics as that would require the
+   tokenizer to backtrack and produce a different set of tokens (this is, first try
+   as a stream of tokens, and if it fails, try as a string for a format specifier).
+
+   As there is no fundamental advantage in being able to allow lambdas and similar
+   expressions at the top level, we have decided to keep the restriction that these must
+   be parenthesized if needed::
+
+    >>> f'Useless use of lambdas: { (lambda x: x*2) }'
+
+#. We have decided to disallow (for the time being) using escaped braces (``\{`` and ``\}``)
+   in addition to the ``{{`` and ``}}`` syntax. Although the authors of the PEP believe that
+   allowing escaped braces is a good idea, we have decided to not include it in this PEP, as it is not strictly
+   necessary for the formalization of f-strings proposed here, and it can be
+   added independently in a regular CPython issue.
+
+Open Issues
+===========
+
+None yet
+
+
+Footnotes
+=========
+
+
+.. _official Python grammar: https://docs.python.org/3/reference/lexical_analysis.html#formatted-string-literals
+
+.. _none of this work was ever implemented: https://mail.python.org/archives/list/python-dev@python.org/thread/N43O4KNLZW4U7YZC4NVPCETZIVRDUVU2/#NM2A37THVIXXEYR4J5ZPTNLXGGUNFRLZ
+
+.. _such as PyPy: https://foss.heptapod.net/pypy/pypy/-/commit/fe120f89bf07e64a41de62b224e4a3d80e0fe0d4/pipelines?ref=branch%2Fpy3.9
+
+.. _discussed on Python-Dev: https://mail.python.org/archives/list/python-dev@python.org/thread/54N3MOYVBDSJQZTU6MTCPLUPIFSDN5IS/#SAYU6SMP4KT7G7AQ6WVQYUDOSZPKHJMS
+
+.. _presented at the Python Language Summit 2022: https://pyfound.blogspot.com/2022/05/the-2022-python-language-summit-f.html
+
+.. _implementation: https://github.com/we-like-parsers/cpython/tree/fstring-grammar
+
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
