@@ -13,9 +13,9 @@ If your PEP is not Standards Track, remove the corresponding section.
 * [ ] File created from the [latest PEP template](https://github.com/python/peps/blob/main/pep-0012/pep-NNNN.rst?plain=1)
 * [ ] PEP has next available number, & set in filename (``pep-NNNN.rst``), PR title (``PEP 123: <Title of PEP>``) and ``PEP`` header
 * [ ] Title clearly, accurately and concisely describes the content in 79 characters or less
-* [ ] ``PEP``, ``Title``, ``Author``, ``Status`` (``Draft``), ``Type`` and ``Created`` headers filled out correctly
+* [ ] Core dev/PEP editor listed as ``Author`` or ``Sponsor``, and formally confirmed their approval
+* [ ] ``Author``, ``Status`` (``Draft``), ``Type`` and ``Created`` headers filled out correctly
 * [ ] ``PEP-Delegate``, ``Topic``, ``Requires`` and ``Replaces`` headers completed if appropriate
-* [ ] Core dev/PEP editor listed as author or sponsor, and formally confirmed their approval
 * [ ] Required sections included
     * [ ] Abstract (first section)
     * [ ] Copyright (last section; exact wording from template required)
@@ -37,6 +37,6 @@ If your PEP is not Standards Track, remove the corresponding section.
     * [ ] Reference Implementation
     * [ ] Rejected Ideas
     * [ ] Open Issues
-* [ ] ``Python-Version`` set to valid (pre-beta) future Python version
-* [ ] Any project stated in the PEP as supporting/endorsing/benefiting from it confirms such
+* [ ] ``Python-Version`` set to valid (pre-beta) future Python version, if relevant
+* [ ] Any project stated in the PEP as supporting/endorsing/benefiting from the PEP formally confirmed such
 * [ ] Right before or after initial merging, [PEP discussion thread](https://peps.python.org/pep-0001/#discussing-a-pep) created and linked to in ``Discussions-To`` and ``Post-History``
