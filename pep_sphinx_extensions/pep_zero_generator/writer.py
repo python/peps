@@ -118,7 +118,14 @@ class PEPZeroWriter:
             self.emit_text("     -")
         self.emit_newline()
 
-    def write_pep0(self, peps: list[PEP], header: str = HEADER, intro: str = INTRO, is_pep0: bool = True):
+    def write_pep0(
+        self,
+        peps: list[PEP],
+        header: str = HEADER,
+        intro: str = INTRO,
+        is_pep0: bool = True,
+        builder: str = None,
+    ):
         if len(peps) == 0:
             return ""
 
@@ -132,13 +139,21 @@ class PEPZeroWriter:
         self.emit_newline()
 
         # PEPs by topic
-        self.emit_title("Topics")
-        self.emit_text("PEPs for specialist subjects are :doc:`indexed by topic <topic/index>`.")
-        self.emit_newline()
-        for subindex in SUBINDICES_BY_TOPIC:
-            self.emit_text(f"* `{subindex.title()} PEPs <topic/{subindex}>`_")
+        if is_pep0:
+            self.emit_title("Topics")
+            self.emit_text(
+                "PEPs for specialist subjects are :doc:`indexed by topic <topic/index>`."
+            )
             self.emit_newline()
-        self.emit_newline()
+            for subindex in SUBINDICES_BY_TOPIC:
+                target = (
+                    f"topic/{subindex}.html"
+                    if builder == "html"
+                    else f"topic/{subindex}"
+                )
+                self.emit_text(f"* `{subindex.title()} PEPs <{target}>`_")
+                self.emit_newline()
+            self.emit_newline()
 
         # PEPs by category
         self.emit_title("Index by Category")
