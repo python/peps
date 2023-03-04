@@ -118,7 +118,14 @@ class PEPZeroWriter:
             self.emit_text("     -")
         self.emit_newline()
 
-    def write_pep0(self, peps: list[PEP], header: str = HEADER, intro: str = INTRO, is_pep0: bool = True):
+    def write_pep0(
+        self,
+        peps: list[PEP],
+        header: str = HEADER,
+        intro: str = INTRO,
+        is_pep0: bool = True,
+        builder: str = None,
+    ):
         if len(peps) == 0:
             return ""
 
@@ -139,7 +146,12 @@ class PEPZeroWriter:
             )
             self.emit_newline()
             for subindex in SUBINDICES_BY_TOPIC:
-                self.emit_text(f"* `{subindex.title()} PEPs <topic/{subindex}>`_")
+                target = (
+                    f"topic/{subindex}.html"
+                    if builder == "html"
+                    else f"topic/{subindex}"
+                )
+                self.emit_text(f"* `{subindex.title()} PEPs <{target}>`_")
                 self.emit_newline()
             self.emit_newline()
 
