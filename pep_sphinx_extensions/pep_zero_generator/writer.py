@@ -20,6 +20,7 @@ from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_PROVISIONA
 from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_REJECTED
 from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_VALUES
 from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_WITHDRAWN
+from pep_sphinx_extensions.pep_zero_generator.constants import SUBINDICES_BY_TOPIC
 from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_INFO
 from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_PROCESS
 from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_VALUES
@@ -44,8 +45,7 @@ This PEP contains the index of all Python Enhancement Proposals,
 known as PEPs.  PEP numbers are :pep:`assigned <1#pep-editors>`
 by the PEP editors, and once assigned are never changed.  The
 `version control history <https://github.com/python/peps>`_ of
-the PEP texts represent their historical record.  The PEPs are
-:doc:`indexed by topic <topic/index>` for specialist subjects.
+the PEP texts represent their historical record.
 """
 
 
@@ -129,6 +129,15 @@ class PEPZeroWriter:
         # Introduction
         self.emit_title("Introduction")
         self.emit_text(intro)
+        self.emit_newline()
+
+        # PEPs by topic
+        self.emit_title("Topics")
+        self.emit_text("PEPs for specialist subjects are :doc:`indexed by topic <topic/index>`.")
+        self.emit_newline()
+        for subindex in SUBINDICES_BY_TOPIC:
+            self.emit_text(f"* `{subindex.title()} PEPs <topic/{subindex}>`_")
+            self.emit_newline()
         self.emit_newline()
 
         # PEPs by category
