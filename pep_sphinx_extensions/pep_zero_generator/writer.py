@@ -20,6 +20,7 @@ from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_PROVISIONA
 from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_REJECTED
 from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_VALUES
 from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_WITHDRAWN
+from pep_sphinx_extensions.pep_zero_generator.constants import SUBINDICES_BY_TOPIC
 from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_INFO
 from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_PROCESS
 from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_VALUES
@@ -44,8 +45,7 @@ This PEP contains the index of all Python Enhancement Proposals,
 known as PEPs.  PEP numbers are :pep:`assigned <1#pep-editors>`
 by the PEP editors, and once assigned are never changed.  The
 `version control history <https://github.com/python/peps>`_ of
-the PEP texts represent their historical record.  The PEPs are
-:doc:`indexed by topic <topic/index>` for specialist subjects.
+the PEP texts represent their historical record.
 """
 
 
@@ -118,7 +118,14 @@ class PEPZeroWriter:
             self.emit_text("     -")
         self.emit_newline()
 
-    def write_pep0(self, peps: list[PEP], header: str = HEADER, intro: str = INTRO, is_pep0: bool = True):
+    def write_pep0(
+        self,
+        peps: list[PEP],
+        header: str = HEADER,
+        intro: str = INTRO,
+        is_pep0: bool = True,
+        builder: str = None,
+    ):
         if len(peps) == 0:
             return ""
 
@@ -130,6 +137,23 @@ class PEPZeroWriter:
         self.emit_title("Introduction")
         self.emit_text(intro)
         self.emit_newline()
+
+        # PEPs by topic
+        if is_pep0:
+            self.emit_title("Topics")
+            self.emit_text(
+                "PEPs for specialist subjects are :doc:`indexed by topic <topic/index>`."
+            )
+            self.emit_newline()
+            for subindex in SUBINDICES_BY_TOPIC:
+                target = (
+                    f"topic/{subindex}.html"
+                    if builder == "html"
+                    else f"topic/{subindex}"
+                )
+                self.emit_text(f"* `{subindex.title()} PEPs <{target}>`_")
+                self.emit_newline()
+            self.emit_newline()
 
         # PEPs by category
         self.emit_title("Index by Category")
