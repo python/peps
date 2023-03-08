@@ -14,10 +14,10 @@ Canonical links
 ===============
 
 The canonical form of PEP links are zero-padded, such as
-https://peps.python.org/pep-0008/
+``https://peps.python.org/pep-0008/``
 
 Shortcut redirects are also available.
-For example, https://peps.python.org/8 redirects to the canonical form.
+For example, ``https://peps.python.org/8`` redirects to the canonical link.
 
 
 Contributing to PEPs
