@@ -75,7 +75,7 @@ class CanonicalDocBanner(PEPBanner):
         "See :pep:`1` for how to propose changes."
     )
 
-    css_classes = ["sticky-banner"]
+    css_classes = ["canonical-doc"]
 
 
 
@@ -99,4 +99,4 @@ class CanonicalPyPASpecBanner(PEPBanner):
     )
     admonition_class = nodes.attention
 
-    css_classes = ["sticky-banner"]
+    css_classes = ["canonical-pypa-spec"]
