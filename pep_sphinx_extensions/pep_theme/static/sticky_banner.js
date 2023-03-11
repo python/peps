@@ -5,13 +5,24 @@
 // when clicking on a link to an element with an id attribute. The offset is
 // equal to the height of the sticky banner.
 document.addEventListener("DOMContentLoaded", () => {
-    let stickyBanners = document.getElementsByClassName("sticky-banner");
-    if (!stickyBanners) {
-        return;
-    }
-    let stickyBanner = stickyBanners[0];
-    let node = document.createElement("style");
-    let text = document.createTextNode(":target { scroll-margin-top: " + stickyBanner.offsetHeight + "px; }")
-    node.appendChild(text);
-    document.head.appendChild(node);
+  const stickyBanners = document.getElementsByClassName("sticky-banner");
+  if (!stickyBanners) {
+    return;
+  }
+
+  const stickyBanner = stickyBanners[0];
+  const node = document.createElement("style");
+  node.id = "sticky-banner-style";
+  document.head.appendChild(node);
+
+  function adjustBannerMargin() {
+    const text = document.createTextNode(
+      ":target { scroll-margin-top: " + stickyBanner.offsetHeight + "px; }"
+    );
+    node.replaceChildren(text);
+  }
+
+  adjustBannerMargin();
+  document.addEventListener("resize", adjustBannerMargin);
+  document.addEventListener("load", adjustBannerMargin);
 });
