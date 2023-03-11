@@ -1,0 +1,882 @@
+PEP: 708
+Title: Extending the Repository API to Mitigate Dependency Confusion Attacks
+Author: Donald Stufft <donald@stufft.io>
+PEP-Delegate: Paul Moore <p.f.moore@gmail.com>
+Discussions-To: https://discuss.python.org/t/24179
+Status: Draft
+Type: Standards Track
+Topic: Packaging
+Content-Type: text/x-rst
+Created: 20-Feb-2023
+Post-History: `01-Feb-2023 <https://discuss.python.org/t/23414/>`__,
+              `23-Feb-2023 <https://discuss.python.org/t/24179>`__
+
+
+Abstract
+========
+
+Dependency confusion attacks, in which a malicious package is installed instead
+of the one the user expected, are an `increasingly common supply chain threat
+<https://medium.com/@alex.birsan/dependency-confusion-4a5d60fec610>`__.
+Most such attacks against Python dependencies, including the
+`recent PyTorch incident <https://pytorch.org/blog/compromised-nightly-dependency/>`_,
+occur with multiple package repositories, where a dependency expected to come
+from one repository (e.g. a custom index) is installed from another (e.g. PyPI).
+
+To help address this problem, this PEP proposes extending the
+:ref:`Simple Repository API <packaging:simple-repository-api>`
+to allow repository operators to indicate that a project found on their
+repository "tracks" a project on a different repository, and allows projects to
+extend their namespaces across multiple repositories.
+
+These features will allow installers to determine when a project being made
+available from a particular mix of repositories is expected and should be
+allowed, and when it is not and should halt the install with an error to protect
+the user.
+
+
+Motivation
+===========
+
+There is a long-standing class of attacks that are called "dependency confusion"
+attacks, which roughly boil down to an individual user expected to get package
+``A``, but instead they got ``B``. In Python, this almost always happens due to
+the configuration of multiple repositories (possibly including the default of
+PyPI), where they expected package ``A`` to come from repository ``X``, but
+someone is able to publish package ``B`` to repository ``Y`` under the same
+name.
+
+Dependency Confusion attacks have long been possible, but they've recently
+gained press with
+`public examples of cases where these attacks were successfully executed <https://medium.com/@alex.birsan/dependency-confusion-4a5d60fec610>`__.
+
+A specific example of this is the recent case where the PyTorch project had an
+internal package named ``torchtriton`` which was only ever intended to be
+installed from their repositories located at ``https://download.pytorch.org/``,
+but that repository was designed to be used in conjunction with PyPI, and
+the name of ``torchtriton`` was not claimed on PyPI, which allowed the attacker
+to use that name and publish a malicious version.
+
+There are a number of ways to mitigate against these attacks today, but they all
+require that the end user go out of their way to protect themselves, rather than
+being protected by default. This means that for the vast bulk of users, they are
+likely to remain vulnerable, even if they are ultimately aware of these types of
+attacks.
+
+Ultimately the underlying cause of these attacks come from the fact that there
+is no globally unique namespace that all Python package names come from.
+Instead, each repository is its own distinct namespace, and when given an
+"abstract" name such as ``spam`` to install, an installer has to implicitly turn
+that into a "concrete" name such as ``pypi.org:spam`` or ``example.com:spam``.
+Currently the standard behavior in Python installation tools is to implicitly
+flatten these multiple namespaces into one that contains the files from all
+namespaces.
+
+This assumption that collapsing the namespaces is what was expected means that
+when packages with the same name in different repositories
+are authored by different parties (such as in the ``torchtriton`` case)
+dependency confusion attacks become possible.
+
+This is made particularly tricky in that there is no "right" answer; there are
+valid use cases both for wanting two repositories merged into one namespace
+*and* for wanting two repositories to be treated as distinct namespaces. This
+means that an installer needs some mechanism by which to determine when it
+should merge the namespaces of multiple repositories and when it should not,
+rather than a blanket always merge or never merge rule.
+
+This functionality could be pushed directly to the end user, since ultimately
+the end user is the person whose expectations of what gets installed from what
+repository actually matters. However, by extending the repository specification
+to allow a repository to indicate when it is safe, we can enable individual
+projects and repositories to "work by default", even when their
+project naturally spans multiple distinct namespaces, while maintaining the
+ability for an installer to be secure by default.
+
+On its own, this PEP does not solve dependency confusion attacks, but what it
+does do is provide enough information so that installers can prevent them
+without causing too much collateral damage to otherwise valid and safe use
+cases.
+
+
+Rationale
+=========
+
+There are two broad use cases for merging names across repositories that this
+PEP seeks to enable.
+
+The first use case is when one repository is not defining its own names, but
+rather is extending names defined in another repository. This commonly happens
+in cases where a project is being mirrored from one repository to another (see
+`Bandersnatch <https://pypi.org/project/bandersnatch/>`__) or when a repository
+is providing supplementary artifacts for a specific platform (see
+`Piwheels <https://www.piwheels.org/>`__).
+
+In this case neither the repository nor the projects that are being extended
+may have any knowledge that they are being extended or by whom, so this cannot
+rely on any information that isn't present in the "extending" repository itself.
+
+The second use case is when the project wants to publish to one "main"
+repository, but then have additional repositories that provide binaries for
+additional platforms, GPUs, CPUs, etc. Currently wheel tags are not sufficiently
+able to express these types of binary compatibility, so projects that wish to
+rely on them are forced to set up multiple repositories and have their users
+manually configure them to get the correct binaries for their platform, GPU,
+CPU, etc.
+
+This use case is similiar to the first, but the important difference that makes
+it a distinct use case on it's own is who is providing the information and what
+their level of trust is.
+
+When a user configures a specific repository (or relies on the default) there
+is no ambiguity as to what repository they mean. A repository is identified by
+an URL, and through the domain system, URLs are globally unique identifiers.
+This lack of ambiguity means that an installer can assume that the repository
+operator is trustworthy and can trust metadata that they provide without needing
+to validate it.
+
+On the flip side, given an installer finds a name in multiple repositories it is
+ambiguous which of them the installer should trust. This ambiguity means that an
+installer cannot assume that the project owner on either repository is
+trustworthy and needs to validate that they are indeed the same project and that
+one isn't a dependency confusion attack.
+
+Without some way for the installer to validate the metadata between multiple
+repositories, projects would be forced into becoming repository operators to
+safely support this use case. That wouldn't be a particularly wrong choice to
+make; however, there is a danger that if we don't provide a way for repositories
+to let project owners express this relationship safely, they will be
+incentivized to let them use the repository operator's metadata instead which
+would reintroduce the original insecurity.
+
+
+Specification
+=============
+
+This specification defines the changes in version 1.2 of the simple repository
+API, adding new two new metadata items: Repository "Tracks" and "Alternate
+Locations".
+
+
+Repository "Tracks" Metadata
+----------------------------
+
+To enable one repository to extend another, this PEP allows the extending
+repository to declare that it "tracks" another repository by adding the URL
+of the repository that it is extending. This is exposed in JSON as the key
+``meta.tracks`` and in HTML as a meta element named ``pypi:tracks``.
+
+There are a few key properties that **MUST** be preserved when using this
+metadata:
+
+- It **MUST** be under the control of the repository operators themselves, not
+  any individual publisher using that repository.
+
+- It **MUST** represent the same "project" as the project at the referenced URL.
+
+  - This does not mean that it needs to serve the same files. It is valid for it
+    to include binaries built on different platforms, copies with local patches
+    being applied, etc. This is purposefully left vague as it's ultimately up to
+    the expectations that the users have of the repository and its operators
+    what exactly constitutes the "same" project.
+
+- It **MUST** point to the repository that "owns" the namespace, not another
+  repository that is also tracking that namespace.
+
+- It **MUST** point to a project with the exact same name (after normalization).
+
+- It **MUST** point to the actual URL for that project, not the base URL for the
+  extended repository.
+
+It is **NOT** required that every name in a repository tracks the same
+repository, or that they all track a repository at all. Mixed use repositories
+where some names track a repository and some names do not are explicitly
+allowed.
+
+
+JSON
+~~~~
+
+.. code-block:: JSON
+
+    {
+      "meta": {
+        "api-version": "1.2",
+        "tracks": "https://pypi.org/simple/holygrail/"
+      },
+      "name": "holygrail",
+      "files": [
+        {
+          "filename": "holygrail-1.0.tar.gz",
+          "url": "https://example.com/files/holygrail-1.0.tar.gz",
+          "hashes": {"sha256": "...", "blake2b": "..."},
+          "requires-python": ">=3.7",
+          "yanked": "Had a vulnerability"
+        },
+        {
+          "filename": "holygrail-1.0-py3-none-any.whl",
+          "url": "https://example.com/files/holygrail-1.0-py3-none-any.whl",
+          "hashes": {"sha256": "...", "blake2b": "..."},
+          "requires-python": ">=3.7",
+          "dist-info-metadata": true
+        }
+      ]
+    }
+
+
+HTML
+~~~~
+
+.. code-block:: HTML
+
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta name="pypi:repository-version" content="1.2">
+        <meta name="pypi:tracks" content="https://pypi.org/simple/holygrail/">
+      </head>
+      <body>
+        <a href="https://example.com/files/holygrail-1.0.tar.gz#sha256=...">
+        <a href="https://example.com/files/holygrail-1.0-py3-none-any.whl#sha256=...">
+      </body>
+    </html>
+
+
+"Alternate Locations" Metadata
+------------------------------
+
+To enable a project to extend its namespace across multiple repositories, this
+PEP allows a project owner to declare a list of "alternate locations" for their
+project. This is exposed in JSON as the key ``alternate-locations`` and in HTML
+as a meta element named ``pypi-alternate-locations``, which may be used multiple
+times.
+
+There are a few key properties that **MUST** be observed when using this
+metadata:
+
+- In order for this metadata to be trusted, there **MUST** be agreement between
+  all locations where that project is found as to what the alternate locations
+  are.
+- When using alternate locations, clients **MUST** implicitly assume that the
+  url the response was fetched from was included in the list. This means that
+  if you fetch from ``https://pypi.org/simple/foo/`` and it has an
+  ``alternate-locations`` metadata that has the value
+  ``["https://example.com/simple/foo/"]``, then you **MUST** treat it as if it
+  had the value
+  ``["https://example.com/simple/foo/", "https://pypi.org/simple/foo/"]``.
+- Order of the elements within the array does not have any particular meaning.
+
+When an installer encounters a project that is using the alternate locations
+metadata it **SHOULD** consider that all repositories named are extending the
+same namespace across multiple repositories.
+
+
+JSON
+~~~~
+
+.. code-block:: JSON
+
+    {
+      "meta": {
+        "api-version": "1.2"
+      },
+      "name": "holygrail",
+      "alternate-locations": ["https://pypi.org/simple/holygrail/", "https://test.pypi.org/simple/holygrail/"],
+      "files": [
+        {
+          "filename": "holygrail-1.0.tar.gz",
+          "url": "https://example.com/files/holygrail-1.0.tar.gz",
+          "hashes": {"sha256": "...", "blake2b": "..."},
+          "requires-python": ">=3.7",
+          "yanked": "Had a vulnerability"
+        },
+        {
+          "filename": "holygrail-1.0-py3-none-any.whl",
+          "url": "https://example.com/files/holygrail-1.0-py3-none-any.whl",
+          "hashes": {"sha256": "...", "blake2b": "..."},
+          "requires-python": ">=3.7",
+          "dist-info-metadata": true
+        }
+      ]
+    }
+
+
+HTML
+~~~~
+
+.. code-block:: HTML
+
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta name="pypi:repository-version" content="1.2">
+        <meta name="pypi:alternate-locations" content="https://pypi.org/simple/holygrail/">
+        <meta name="pypi:alternate-locations" content="https://test.pypi.org/simple/holygrail/">
+      </head>
+      <body>
+        <a href="https://example.com/files/holygrail-1.0.tar.gz#sha256=...">
+        <a href="https://example.com/files/holygrail-1.0-py3-none-any.whl#sha256=...">
+      </body>
+    </html>
+
+
+Recommendations
+===============
+
+This section is non-normative; it provides recommendations to installers in how
+to interpret this metadata that this PEP feels provides the best tradeoff
+between protecting users by default and minimizing breakages to existing
+workflows. These recommendations are not binding, and installers are free to
+ignore them, or apply them selectively as they make sense in their specific
+situations.
+
+
+File Discovery Algorithm
+------------------------
+
+.. note::
+
+  This algorithm is written based on how pip currently discovers files;
+  other installers may adapt this based on their own discovery procedures.
+
+Currently the "standard" file discovery algorithm looks something like this:
+
+1. Generate a list of all files across all configured repositories.
+2. Filter out any files that do not match known hashes from a lockfile or
+   requirements file.
+3. Filter out any files that do not match the current platform, Python version,
+   etc.
+4. Pass that list of files into the resolver where it will attempt to resolve
+   the "best" match out of those files, irrespective of which repository it came
+   from.
+
+It is recommended that installers change their file discovery algorithm to take
+into account the new metadata, and instead do:
+
+1. Generate a list of all files across all configured repositories.
+
+2. Filter out any files that do not match known hashes from a lockfile or
+   requirements file.
+
+3. If the end user has explicitly told the installer to fetch the project from
+   specific repositories, filter out all other repositories and skip to 5.
+
+4. Look to see if the discovered files span multiple repositories; if they do
+   then determine if either "Tracks" or "Alternate Locations" metadata allows
+   safely merging *ALL* of the repositories where files were discovered
+   together. If that metadata does **NOT** allow that, then generate an error,
+   otherwise continue.
+
+   - **Note:** This only applies to *remote* repositories; repositories that
+     exist on the local filesystem **SHOULD** always be implicitly allowed to be
+     merged to any remote repository.
+
+5. Filter out any files that do not match the current platform, Python version,
+   etc.
+
+6. Pass that list of files into the resolver where it will attempt to resolve
+   the "best" match out of those files, irrespective of what repository it came
+   from.
+
+This is somewhat subtle, but the key things in the recommendation are:
+
+- Users who are using lock files or requirements files that include specific
+  hashes of artifacts that are "valid" are assumed to be protected by nature of
+  those hashes, since the rest of these recommendations would apply during
+  hash generation. Thus, we filter out unknown hashes up front.
+- If the user has explicitly told the installer that it wants to fetch a project
+  from a certain set of repositories, then there is no reason to question that
+  and we assume that they've made sure it is safe to merge those namespaces.
+- If the project in question only comes from a single repository, then there is
+  no chance of dependency confusion, so there's no reason to do anything but
+  allow.
+- We check for the metadata in this PEP before filtering out based on platform,
+  Python version, etc., because we don't want errors that only show up on
+  certain platforms, Python versions, etc.
+- If nothing tells us merging the namespaces is safe, we refuse to implicitly
+  assume it is, and generate an error instead.
+- Otherwise we merge the namespaces, and continue on.
+
+This algorithm ensures that an installer never assumes that two disparate
+namespaces can be flattened into one, which for all practical purposes
+eliminates the possibility of any kind of dependency confusion attack, while
+still giving power throughout the stack in a safe way to allow people to
+explicitly declare when those disparate namespaces are actually one logical
+namespace that can be safely merged.
+
+The above algorithm is mostly a conceptual model. In reality the algorithm may
+end up being slightly different in order to be more privacy preserving and
+faster, or even just adapted to fit a specific installer better.
+
+
+Explicit Configuration for End Users
+------------------------------------
+
+This PEP avoids dictating or recommending a specific mechanism by which an
+installer allows an end user to configure exactly what repositories they want a
+specific package to be installed from. However, it does recommend that
+installers do provide *some* mechanism for end users to provide that
+configuration, as without it users can end up in a DoS situation in cases
+like ``torchtriton`` where they're just completely broken unless they resolve
+the namespace collision externally (get the name taken down on one repository,
+stand up a personal repository that handles the merging, etc).
+
+This configuration also allows end users to pre-emptively secure themselves
+during what is likely to be a long transition until the default behavior is
+safe.
+
+
+How to Communicate This
+=======================
+
+.. note::
+
+  This example is pip specific and assumes specifics about how pip will
+  choose to implement this PEP; it's included as an example of how we can
+  communicate this change, and not intended to constrain pip or any other
+  installer in how they implement this. This may ultimately be the actual basis
+  for communication, and if so will need be edited for accuracy and clarity.
+
+  This section should be read as if it were an entire "post" to communicate this
+  change that could be used for a blog post, email, or discourse post.
+
+There's a long-standing class of attacks that are called "dependency confusion"
+attacks, which roughly boil down to an individual expected to get package ``A``,
+but instead they got ``B``. In Python, this almost always happens due to the end
+user having configured multiple repositories, where they expect package ``A`` to
+come from repository ``X``, but someone is able to publish package ``B`` with
+the same name as package ``A`` in repository ``Y``.
+
+There are a number of ways to mitigate against these attacks today, but they all
+require that the end user explicitly go out of their way to protect themselves,
+rather than it being inherently safe.
+
+In an effort to secure pip's users and protect them from these types of attacks,
+we will be changing how pip discovers packages to install.
+
+
+What is Changing?
+-----------------
+
+When pip discovers that the same project is available from multiple remote
+repositories, by default it will generate an error and refuse to proceed rather
+than make a guess about which repository was the correct one to install from.
+
+Projects that natively publish to multiple repositories will be given the
+ability to safely "link" their repositories together so that pip does not error
+when those repositories are used together.
+
+End users of pip will be given the ability to explicitly define one or more
+repositories that are valid for a specific project, causing pip to only consider
+those repositories for that project, and avoiding generating an error
+altogether.
+
+See TBD for more information.
+
+
+Who is Affected?
+----------------
+
+Users who are installing from multiple remote (e.g. not present on the local
+filesystem) repositories may be affected by having pip error instead of
+successfully install if:
+
+- They install a project where the same "name" is being served by multiple
+  remote repositories.
+- The project name that is available from multiple remote repositories has not
+  used one of the defined mechanisms to link those repositories together.
+- The user invoking pip has not used the defined mechanism to explicitly control
+  what repositories are valid for a particular project.
+
+Users who are not using multiple remote repositories will not be affected at
+all, which includes users who are only using a single remote repository, plus a
+local filesystem "wheel house".
+
+
+What do I need to do?
+---------------------
+
+As a pip User?
+~~~~~~~~~~~~~~
+
+If you're using only a single remote repository you do not have to do anything.
+
+If you're using multiple remote repositories, you can opt into the new behavior
+by adding ``--use-feature=TBD`` to your pip invocation to see if any of your
+dependencies are being served from multiple remote repositories. If they are,
+you should audit them to determine why they are, and what the best remediation
+step will be for you.
+
+Once this behavior becomes the default, you can opt out of it temporarily by
+adding ``--use-deprecated=TBD`` to your pip invocation.
+
+If you're using projects that are not hosted on a public repository, but you
+still have the public repository as a fallback, consider configuring pip with a
+repository file to be explicit where that dependency is meant to come from to
+prevent registration of that name in a public repository to cause pip to error
+for you.
+
+
+As a Project Owner?
+~~~~~~~~~~~~~~~~~~~
+
+If you only publish your project to a single repository, then you do not have to
+do anything.
+
+If you publish your project to multiple repositories that are intended to be
+used together at the same time, configure all repositories to serve the
+alternate repository metadata to prevent breakages for your end users.
+
+If you publish your project to a single repository, but it is commonly used in
+conjunction with other repositories, consider preemptively registering your
+names with those repositories to prevent a third party from being able to cause
+your users ``pip install`` invocations to start failing. This may not be
+available if your project name is too generic or if the repositories have
+policies that prevent defensive name squatting.
+
+
+As a Repository Operator?
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+You'll need to decide how you intend for your repository to be used by your end
+users and how you want them to use it.
+
+For private repositories that host private projects, it is recommended that you
+mirror the public projects that your users depend on into your own repository,
+taking care not to let a public project merge with a private project, and tell
+your users to use the ``--index-url`` option to use only your repository.
+
+For public repositories that host public projects, you should implement the
+alternate repository mechanism and enable the owners of those projects to
+configure the list of repositories that their project is available from if they
+make it available from more than one repository.
+
+For public repositories that "track" another repository, but provide
+supplemental artifacts such as wheels built for a specific platform, you should
+implement the "tracks" metadata for your repository. However, this information
+**MUST NOT** be settable by end users who are publishing projects to your
+repository. See TBD for more information.
+
+
+Rejected Ideas
+==============
+
+*Note: Some of these are somewhat specific to pip, but any solution that doesn't
+work for pip isn't a particularly useful solution.*
+
+
+Implicitly allow mirrors when the list of files are the same
+------------------------------------------------------------
+
+If every repository returns the exact same list of files, then it is safe to
+consider those repositories to be the same namespace and implicitly merge them.
+This would possibly mean that mirrors would be automatically allowed without any
+work on any user or repository operator's part.
+
+Unfortunately, this has two failings that make it undesirable:
+
+- It only solves the case of mirrors that are exact copies of each other, but
+  not repositories that "track" another one, which ends up being a more generic
+  solution.
+- Even in the case of exact mirrors, multiple repositories mirroring each other
+  is a distributed system will not always be fully consistent with each
+  other, effectively an eventually consistent system. This means that
+  repositories that relied on this implicit heuristic to work would have
+  sporadic failures due to drift between the source repository and the mirror
+  repositories.
+
+
+Provide a mechanism to order the repositories
+---------------------------------------------
+
+Providing some mechanism to give the repositories an order, and then short
+circuiting the discovery algorithm when it finds the first repository that
+provides files for that project is another workable solution that is safe if the
+order is specified correctly.
+
+However, this has been rejected for a number of reasons:
+
+- We've spent 15+ years educating users that the ordering of repositories being
+  specified is not meaningful, and they effectively have an undefined order. It
+  would be difficult to backpedal on that and start saying that now order
+  matters.
+- Users can easily rearrange the order that they specify their repositories in
+  within a single location, but when loading repositories from multiple
+  locations (env var, conf file, requirements file, cli arguments) the order is
+  hard coded into pip. While it would be a deterministic and documented order,
+  there's no reason to assume it's the order that the user wants their
+  repositories to be defined in, forcing them to contort how they configure pip
+  so that the implicit ordering ends up being the correct one.
+- The above can be mitigated by providing a way to explicitly declare the order
+  rather than by implicitly using the order they were defined in; however, that
+  then means that the protections are not provided unless the user does some
+  explicit configuration.
+- Ordering assumes that one repository is *always* preferred over another
+  repository without any way to decide on a project by project basis.
+- Relying on ordering is subtle; if I look at an ordering of repositories, I
+  have no way of knowing or ensuring in advance what names are going
+  to come from what repositories. I can only know in that moment what names are
+  provided by which repositories.
+- Relying on ordering is fragile. There's no reason to assume that two disparate
+  repositories are not going to have random naming collisions—what happens if
+  I'm using a library from a lower priority repository and then a higher
+  priority repository happens to start having a colliding name?
+- In cases where ordering does the wrong thing, it does so silently, with no
+  feedback given to the user. This is by design because it doesn't actually know
+  what the wrong or right thing is, it's just hoping that order will give the
+  right thing, and if it does then users are protected without any breakage.
+  However, when it does the wrong thing, users are left with a very confusing
+  behavior coming from pip, where it's just silently installing the wrong thing.
+
+There is a variant of this idea which effectively says that it's really just
+PyPI's nature of open registration that causes the real problems, so if we treat
+all repositories but the "default" one as equal priority, and then treat the
+default one as a lower priority then we'll fix things.
+
+That is true in that it does improve things, but it has many of the same
+problems as the general ordering idea (though not all of them).
+
+It also assumes that PyPI, or whatever repository is configured as the
+"default", is the only repository with open registration of names.
+However, projects like `Piwheels <https://www.piwheels.org/>`_ exist
+which users are expected to use in addition to PyPI,
+which also effectively have open registration of names
+since it tracks whatever names are registered on PyPI.
+
+
+Rely on repository proxies
+--------------------------
+
+One possible solution is to instead of having the installer have to solve this,
+to instead depend on repository proxies that can intelligently merge multiple
+repositories safely. This could provide a better experience for people with
+complex needs because they can have configuration and features that are
+dedicated to the problem space.
+
+However, that has been rejected because:
+
+- It requires users to opt into using them, unless we also remove the facilities
+  to have more than one repository in installers to force users into using a
+  repository proxy when they need multiple repositories.
+
+  - Removing facilities to have more than one repository configured has been
+    rejected because it would be too disruptive to end users.
+
+- A user may need different outcomes of merging multiple repositories in
+  different contexts, or may need to merge different, mutually exclusive
+  repositories. This means they'll need to actually set up multiple repository
+  proxies for each unique set of options.
+
+- It requires users to maintain infrastructure or it requires adding features in
+  installers to automatically spin up a repository for each invocation.
+
+- It doesn't actually change the requirement to need to have a solution to these
+  problems, it just shifts the responsibility of implementation from installers
+  to some repository proxy, but in either case we still need something that
+  figures out how to merge these disparate namespaces.
+
+- Ultimately, most users do not want to have to stand up a repository proxy just
+  to safely interact with multiple repositories.
+
+
+Rely only on hash checking
+--------------------------
+
+Another possible solution is to rely on hash checking, since with hash checking
+enabled users cannot get an artifact that they didn't expect; it doesn't matter
+if the namespaces are incorrectly merged or not.
+
+This is certainly a solution; unfortunately it also suffers from problems that
+make it unworkable:
+
+- It requires users to opt in to it, so users are still unprotected by default.
+- It requires users to do a bunch of labor to manage their hashes, which is
+  something that most users are unlikely to be willing to do.
+- It is difficult and verbose to get the protection when users are not using a
+  ``requirements.txt`` file as the source of their dependencies (this affects
+  build time dependencies, and dependencies provided at the command line).
+- It only sort of solves the problem, in a way it just shifts the responsibility
+  of the problem to be whatever system is generating the hashes that the
+  installer would use. If that system isn't a human manually validating hashes,
+  which it's unlikely it would be, then we've just shifted the question of how
+  to merge these namespaces to whatever tool implements the maintenance of the
+  hashes.
+
+
+Require all projects to exist in the "default" repository
+---------------------------------------------------------
+
+Another idea is that we can narrow the scope of ``--extra-index-url`` such that
+its only supported use is to refer to supplemental repositories to the default
+repository, effectively saying that the default repository defines the
+namespace, and every additional repository just extends it with extra packages.
+
+The implementation of this would roughly be to require that the project **MUST**
+be registered with the default repository in order for any additional
+repositories to work.
+
+This sort of works if you successfully narrow the scope in that way, but
+ultimately it has been rejected because:
+
+- Users are unlikely to understand or accept this reduced scope, and thus are
+  likely to attempt to continue to use it in the now unsupported fashion.
+
+  - This is complicated by the fact that with the scope now narrowed, users who
+    have the excluded workflow no longer have any alternative besides setting up
+    a repository proxy, which takes infrastructure and effort that they
+    previously didn't have to do.
+
+- It assumes that just because a name in an "extra" repository is the same as in
+  the default repository, that they are the same project. If we were starting
+  from scratch in a brand new ecosystem then maybe we could make this assumption
+  from the start and make it stick, but it's going to be incredibly difficult to
+  get the ecosystem to adjust to that change.
+
+  - This is a fundamental issue with this approach; the underlying problem that
+    drives dependency confusion is that we're taking disparate namespaces and
+    flattening them into one. This approach essentially just declares that OK,
+    and attempts to mitigate it by requiring everyone to register their names.
+
+- Because of the above assumption, in cases where a name in an extra repository
+  collides by accident with the default repository, it's going to appear to work
+  for those users, but they are going to be silently in a state of dependency
+  confusion.
+
+  - This is made worse by the fact that the person who owns the name that is
+    allowing this to work is going to be completely unaware of the role that
+    they're playing for that user, and might possibly delete their project or
+    hand it off to someone else, potentially allowing them to inadvertently
+    allow a malicious user to take it over.
+
+- Users are likely to attempt to get back to a working state by registering
+  their names in their default repository as a defensive name squat. Their
+  ability to do this will depend on the specific policies of their default
+  repository, whether someone already has that name, whether it's too generic,
+  etc. As a best case scenario it will cause needless placeholder projects that
+  serve no purpose other than to secure some internal use of a name.
+
+
+Move to Globally Unique Names
+-----------------------------
+
+The main reason this problem exists is that we don't have globally unique names,
+we have locally unique names that exist under multiple namespaces that we are
+attempting to merge into a single flat namespace. If we could instead come up
+with a way to have globally unique names, we could sidestep the entire issue.
+
+This idea has been rejected because:
+
+- Generating globally unique but secure names that are also meaningful to humans
+  is a nearly impossible feat without piggybacking off of some kind of
+  centralized database. To my knowledge the only systems that have managed to do
+  this end up piggybacking off of the domain system and refer to packages by
+  URLs with domains etc.
+- Even if we come up with a mechanism to get globally unique names, our ability
+  to retrofit that into our decades old system is practically zero without
+  burning it all to the ground and starting over. The best we could probably do
+  is declare that all non globally unique names are implicitly names on the PyPI
+  domain name, and force everyone with a non PyPI package to rename their
+  package.
+- This would upend so many core assumptions and fundamental parts of our current
+  system it's hard to even know where to start to list them.
+
+
+Only recommend that installers offer explicit configuration
+-----------------------------------------------------------
+
+One idea that has come up is to essentially just implement the explicit
+configuration and don't make any other changes to anything else. The specific
+proposal for a mapping policy is what actually inspired the explicit
+configuration option, and created a file that looked something like:
+
+.. code-block:: JSON
+
+    {
+      "repositories": {
+        "PyTorch": ["https://download.pytorch.org/whl/nightly"],
+        "PyPI": ["https://pypi.org/simple"]
+      },
+      "mapping": [
+        {
+          "paths": ["torch*"],
+          "repositories": ["PyTorch"],
+          "terminating": true
+        },
+        {
+          "paths": ["*"],
+          "repositories": ["PyPI"]
+        }
+      ]
+    }
+
+The recommendation to have explicit configuration pushes the decision on how to
+implement that onto each installer, allowing them to choose what works best for
+their users.
+
+Ultimately only implementing some kind of explicit configuration was rejected
+because by its nature it's opt in, so it doesn't protect average users who are
+least capable to solve the problem with the existing tools; by adding additional
+protections alongside the explicit configuration, we are able to protect all
+users by default.
+
+Additionally, relying on only explicit configuration also means that every end
+user has to resolve the same problem over and over again, even in cases like
+mirrors of PyPI, Piwheels, PyTorch, etc. In each and every case they have to sit
+there and make decisions (or find some example to cargo cult) in order to be
+secure. Adding extra features into the mix allows us to centralize those
+protections where we can, while still giving advanced end users the ability to
+completely control their own destiny.
+
+
+Scopes à la npm
+---------------
+
+There's been some suggestion that
+`scopes similar to how npm has implemented them <https://docs.npmjs.com/cli/v9/using-npm/scope>`__
+may ultimately solve this. Ultimately scopes do not change anything about this
+problem. As far as I know scopes in npm are not globally unique, they're tied to
+a specific registry just like unscoped names are. However what scopes do enable
+is an obvious mechanism for grouping related projects and the ability for a user
+or organization on npm.org to claim an entire scope, which makes explicit
+configuration significantly easier to handle because you can be assured that
+there's a whole little slice of the namespace that wholly belongs to you, and
+you can easily write a rule that assigns an entire scope to a specific non
+public registry.
+
+Unfortunately, it basically ends up being an easier version of the idea to only
+use explicit configuration, which works ok in npm because its not particularly
+common for people to use their own registries, but in Python we encourage you to
+do just that.
+
+
+Open Questions
+==============
+
+*  The `original proposal document <https://docs.google.com/document/d/184fQkb6NggVQfYmjTDA7p_U3iWDKk6grc2DigT1X3Es/>`__
+   was targeted more specifically to a change to pip, and went into more
+   specific details as to what we expected from pip. Since dictating UX to
+   installers isn't something that we do in PEPs, I've rewritten those parts to
+   be more generic; however, that means that we lose the information on
+   repository files. Is that fine? Or should we standardize what a repository
+   file looks like so the same file can be given to multiple installers instead
+   of hand waving around the specific mechanism installers would use for
+   explicit configuration?
+
+
+Acknowledgements
+================
+
+Thanks to Trishank Kuppusamy for kick starting the discussion that lead to this
+PEP with his `proposal <https://discuss.python.org/t/proposal-preventing-dependency-confusion-attacks-with-the-map-file/23414>`__.
+
+Thanks to Paul Moore, Pradyun Gedam, Steve Dower, and Trishank Kuppusamy for
+providing early feedback and discussion on the ideas in this PEP.
+
+Thanks to Jelle Zijlstra, C.A.M. Gerlach, Hugo van Kemenade, and Stefano Rivera
+for copy editing and improving the structure and quality of this PEP.
+
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.

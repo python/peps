@@ -49,6 +49,8 @@ exclude_patterns = [
 intersphinx_mapping = {
     'python': ('https://docs.python.org/3/', None),
     'packaging': ('https://packaging.python.org/en/latest/', None),
+    'py3.11': ('https://docs.python.org/3.11/', None),
+    'py3.12': ('https://docs.python.org/3.12/', None),
 }
 intersphinx_disabled_reftypes = []
 

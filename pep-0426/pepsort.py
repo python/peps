@@ -17,10 +17,10 @@ from distlib.version import suggest_normalized_version, legacy_key, normalized_k
 
 logger = logging.getLogger(__name__)
 
-PEP426_VERSION_RE = re.compile('^(\d+(\.\d+)*)((a|b|c|rc)(\d+))?'
-                               '(\.(post)(\d+))?(\.(dev)(\d+))?$')
+PEP426_VERSION_RE = re.compile(r'^(\d+(\.\d+)*)((a|b|c|rc)(\d+))?'
+                               r'(\.(post)(\d+))?(\.(dev)(\d+))?$')
 
-PEP426_PRERELEASE_RE = re.compile('(a|b|c|rc|dev)\d+')
+PEP426_PRERELEASE_RE = re.compile(r'(a|b|c|rc|dev)\d+')
 
 def pep426_key(s):
     s = s.strip()
