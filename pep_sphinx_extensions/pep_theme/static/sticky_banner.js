@@ -6,7 +6,7 @@
 // equal to the height of the sticky banner.
 document.addEventListener("DOMContentLoaded", () => {
   const stickyBanners = document.getElementsByClassName("sticky-banner");
-  if (!stickyBanners) {
+  if (!stickyBanners.length) {
     return;
   }
 
