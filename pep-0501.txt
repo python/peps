@@ -15,6 +15,21 @@ Post-History: `08-Aug-2015 <https://mail.python.org/archives/list/python-dev@pyt
 Abstract
 ========
 
+Though easy and elegant to use, Python :term:`f-string`\s
+can be vulnerable to injection attacks when used to construct
+shell commands, SQL queries, HTML snippets and similar
+(for example, ``os.system(f"echo {message_from_user}")``).
+This PEP introduces template literal strings (or "t-strings"),
+which have the same syntax and semantics but with rendering deferred
+until :func:`format` or another builder function is called on them.
+This will allow standard library calls, helper functions
+and third party tools to safety and intelligently perform
+appropriate escaping and other string processing on inputs
+while retaining the usability and convenience of f-strings.
+
+
+Motivation
+==========
 :pep:`498` added new syntactic support for string interpolation that is
 transparent to the compiler, allowing name references from the interpolation
 operation full access to containing namespaces (as with any other expression),
@@ -39,19 +54,9 @@ the complementary introduction of "t-strings" (a mnemonic for "template literal 
 where ``f"Message with {data}"`` would produce the same
 result as ``format(t"Message with {data}")``.
 
-Some possible examples of the proposed syntax::
-
-    mycommand = sh(t"cat {filename}")
-    myquery = sql(t"SELECT {column} FROM {table} WHERE column={value};")
-    myresponse = html(t"<html><body>{response.body}</body></html>")
-    logging.debug(t"Message with {detailed} {debugging} {info}")
-
 
 While this PEP and :pep:`675` are similar in their goals, neither one competes with the other,
 and can instead be used together.
-
-History
-=======
 
 This PEP was previously in deferred status, pending further experience with :pep:`498`'s
 simpler approach of only supporting eager rendering without the additional
@@ -153,31 +158,45 @@ as described for f-strings in :pep:`498` and :pep:`701`. Conversion specifiers a
 by the compiler, and appear as part of the field text in interpolation
 templates.
 
-However, rather than being rendered directly into a formatted strings, these
+However, rather than being rendered directly into a formatted string, these
 components are instead organised into an instance of a new type with the
 following semantics::
 
     class TemplateLiteral:
-        __slots__ = ("raw_template", "parsed_template",
-                     "field_values", "format_specifiers")
+        __slots__ = ("raw_template", "parsed_template", "field_values", "format_specifiers")
 
-        def __new__(cls, raw_template, parsed_template,
-                         field_values, format_specifiers):
+        def __new__(cls, raw_template, parsed_template, field_values, format_specifiers):
             self = super().__new__(cls)
             self.raw_template = raw_template
+            if len(parsed_template) == 0:
+                raise ValueError("'parsed_template' must contain at least one value")
             self.parsed_template = parsed_template
             self.field_values = field_values
             self.format_specifiers = format_specifiers
             return self
 
+        def __bool__(self):
+            return bool(self.raw_template)
+
         def __add__(self, other):
             if isinstance(other, TemplateLiteral):
-                if self.parsed_template and self.parsed_template[-1][1] is None and other.parsed_template:
+                if (
+                    self.parsed_template
+                    and self.parsed_template[-1][1] is None
+                    and other.parsed_template
+                ):
                     # merge the last string of self with the first string of other
                     content = self.parsed_template[-1][0]
-                    new_parsed_template = self.parsed_template[:-1]
-                            + ((content + other.parsed_template[0][0], other.parsed_template[0][1]),)
-                            + other.parsed_template[1:]
+                    new_parsed_template = (
+                        self.parsed_template[:-1]
+                        + (
+                            (
+                                content + other.parsed_template[0][0],
+                                other.parsed_template[0][1],
+                            ),
+                        )
+                        + other.parsed_template[1:]
+                    )
 
                 else:
                     new_parsed_template = self.parsed_template + other.parsed_template
@@ -186,15 +205,15 @@ following semantics::
                     self.raw_template + other.raw_template,
                     new_parsed_template,
                     self.field_values + other.field_values,
-                    self.format_specifiers + other.format_specifiers
+                    self.format_specifiers + other.format_specifiers,
                 )
 
             if isinstance(other, str):
                 if self.parsed_template and self.parsed_template[-1][1] is None:
                     # merge string with last value
-                    content = self.parsed_template[-1][0]
-                    new_parsed_template = self.parsed_template[:-1]
-                                         + ((self.parsed_template[-1][0] + other, None),)
+                    new_parsed_template = self.parsed_template[:-1] + (
+                        (self.parsed_template[-1][0] + other, None),
+                    )
                 else:
                     new_parsed_template = self.parsed_template + ((other, None),)
 
@@ -202,16 +221,19 @@ following semantics::
                     self.raw_template + other,
                     new_parsed_template,
                     self.field_values,
-                    self.format_specifiers)
+                    self.format_specifiers,
                 )
             else:
-                raise TypeError(f"unsupported operand type(s) for +: '{type(self)}' and '{type(other)}'")
+                raise TypeError(
+                    f"unsupported operand type(s) for +: '{type(self)}' and '{type(other)}'"
+                )
 
         def __radd__(self, other):
             if isinstance(other, str):
                 if self.parsed_template:
                     new_parsed_template = (
-                        ((other + self.parsed_template[0][0], self.parsed_template[0][1]),) + self.parsed_template[1:])
+                        (other + self.parsed_template[0][0], self.parsed_template[0][1]),
+                    ) + self.parsed_template[1:]
                 else:
                     new_parsed_template = ((other, None),)
 
@@ -219,39 +241,77 @@ following semantics::
                     other + self.raw_template,
                     new_parsed_template,
                     self.field_values,
-                    self.format_specifiers)
+                    self.format_specifiers,
                 )
             else:
-                raise TypeError(f"unsupported operand type(s) for +: '{type(other)}' and '{type(self)}'")
+                raise TypeError(
+                    f"unsupported operand type(s) for +: '{type(other)}' and '{type(self)}'"
+                )
 
         def __mul__(self, other):
             if isinstance(other, int):
+                if not self.raw_template or other == 1:
+                    return self
                 if other < 1:
-                    return TemplateLiteral("", (), (), ())
-                final = self
-                for _ in range(1, other):
-                    final = final + self
-                return final
+                    return TemplateLiteral("", ("", None), (), ())
+                parsed_template = self.parsed_template
+                last_node = parsed_template[-1]
+                trailing_field = last_node[1]
+                if trailing_field is not None:
+                    # With a trailing field, everything can just be repeated the requested number of times
+                    new_parsed_template = parsed_template * other
+                else:
+                    # Without a trailing field, need to amend the parsed template repetitions to merge
+                    # the trailing text from each repetition with the leading text of the next
+                    first_node = parsed_template[0]
+                    merged_node = (last_node[0] + first_node[0], first_node[1])
+                    repeating_pattern = parsed_template[1:-1] + merged_node
+                    new_parsed_template = (
+                        parsed_template[:-1]
+                        + (repeating_pattern * (other - 1))[:-1]
+                        + last_node
+                    )
+                return TemplateLiteral(
+                    self.raw_template * other,
+                    new_parsed_template,
+                    self.field_values * other,
+                    self.format_specifiers * other,
+                )
             else:
-                raise TypeError(f"unsupported operand type(s) for *: '{type(self)}' and '{type(other)}'")
+                raise TypeError(
+                    f"unsupported operand type(s) for *: '{type(self)}' and '{type(other)}'"
+                )
 
         def __rmul__(self, other):
             if isinstance(other, int):
                 return self * other
             else:
-                raise TypeError(f"unsupported operand type(s) for *: '{type(other)}' and '{type(self)}'")
+                raise TypeError(
+                    f"unsupported operand type(s) for *: '{type(other)}' and '{type(self)}'"
+                )
+
+        def __eq__(self, other):
+            if not isinstance(other, TemplateLiteral):
+                return False
+            return (
+                self.raw_template == other.raw_template
+                and self.parsed_template == other.parsed_template
+                and self.field_values == other.field_values
+                and self.format_specifiers == other.format_specifiers
+            )
 
         def __repr__(self):
-            return (f"<{type(self).__qualname__} {repr(self._raw_template)} "
-                    f"at {id(self):#x}>")
+            return (
+                f"<{type(self).__qualname__} {repr(self.raw_template)} "
+                f"at {id(self):#x}>"
+            )
 
         def __format__(self, format_specifier):
             # When formatted, render to a string, and use string formatting
             return format(self.render(), format_specifier)
 
-        def render(self, *, render_template=''.join,
-                            render_field=format):
-            # See definition of the template rendering semantics below
+        def render(self, *, render_template="".join, render_field=format):
+            ...  # See definition of the template rendering semantics below
 
 The result of a template literal expression is an instance of this
 type, rather than an already rendered string — rendering only takes
@@ -323,18 +383,6 @@ to the following::
 
 Conversion specifiers
 ---------------------
-
-NOTE:
-
-   Appropriate handling of conversion specifiers is currently an open question.
-   Exposing them more directly to custom renderers would increase the
-   complexity of the ``TemplateLiteral`` definition without providing an
-   increase in expressiveness (since they're redundant with calling the builtins
-   directly). At the same time, they *are* made available as arbitrary strings
-   when writing custom ``string.Formatter`` implementations, so it may be
-   desirable to offer similar levels of flexibility of interpretation in
-   template literals.
-
 The ``!a``, ``!r`` and ``!s`` conversion specifiers supported by ``str.format``
 and hence :pep:`498` are handled in template literals as follows:
 
@@ -435,7 +483,8 @@ APIs, which will provide an interface for running external programs inspired by 
 offered by the
 `Julia programming language <https://docs.julialang.org/en/v1/manual/running-external-programs/>`__,
 only with the backtick based ``\`cat $filename\``` syntax replaced by
-``t"cat {filename}"`` style template literals. (see more below)
+``t"cat {filename}"`` style template literals.
+See more in the :ref:`501-Shlex-Module` section.
 
 Format specifiers
 -----------------
@@ -479,6 +528,7 @@ Different renderers may also impose additional runtime
 constraints on acceptable interpolated expressions and other formatting
 details, which will be reported as runtime exceptions.
 
+.. _501-Shlex-Module:
 
 Renderer for shell escaping added to shlex
 ==========================================
@@ -529,7 +579,11 @@ subprocess with a more ergonomic syntax. For example::
 
 would be equivalent to::
 
-  subprocess.run(['cat', shlex.quote(myfile), '--flag', shlex.quote(value)])
+  subprocess.run(['cat', myfile, '--flag', value])
+
+or, more accurately::
+
+  subprocess.run(shlex.split(f'cat {shlex.quote(myfile)} --flag {shlex.quote(value)}'))
 
 It would do this by first using the ``shlex.sh`` renderer, as above, then using ``shlex.split`` on the result.
 
@@ -751,4 +805,5 @@ References
 Copyright
 =========
 
-This document has been placed in the public domain.
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
