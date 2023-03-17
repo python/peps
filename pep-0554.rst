@@ -109,8 +109,8 @@ For creating and using interpreters:
 +----------------------------------+---------------------------------------------------+
 | ``.close()``                     | Finalize and destroy the interpreter.             |
 +----------------------------------+---------------------------------------------------+
-| ``.run(src_str, /) -> Status``   | | Run the given source code in the interpreter    |
-|                                  | | (in its own thread).                            |
+| ``.run(src_str, /)``             | | Run the given source code in the interpreter    |
+|                                  | | (in the current thread).                        |
 +----------------------------------+---------------------------------------------------+
 
 .. XXX Support blocking interp.run() until the interpreter
@@ -125,26 +125,6 @@ For creating and using interpreters:
 +--------------------+------------------+------------------------------------------------------+
 
 .. XXX Add "InterpreterAlreadyRunningError"?
-
-Asynchronous results:
-
-+--------------------------------------------------+---------------------------------------------------+
-| signature                                        | description                                       |
-+==================================================+===================================================+
-| ``class Status``                                 | Tracks if a request is complete.                  |
-+--------------------------------------------------+---------------------------------------------------+
-| ``.wait(timeout=None)``                          | Block until the requested work is done.           |
-+--------------------------------------------------+---------------------------------------------------+
-| ``.done() -> bool``                              | Has the requested work completed (or failed)?     |
-+--------------------------------------------------+---------------------------------------------------+
-| ``.exception() -> Exception | None``             | Return any exception from the requested work.     |
-+--------------------------------------------------+---------------------------------------------------+
-
-+--------------------------+------------------------+------------------------------------------------+
-| exception                | base                   | description                                    |
-+==========================+========================+================================================+
-| ``NotFinishedError``     | ``Exception``          | The request has not completed yet.             |
-+--------------------------+------------------------+------------------------------------------------+
 
 Help for Extension Module Maintainers
 -------------------------------------
@@ -181,7 +161,21 @@ Run isolated code
 
    interp = interpreters.create()
    print('before')
-   interp.run('print("during")').wait()
+   interp.run('print("during")')
+   print('after')
+
+Run in a thread
+---------------
+
+::
+
+   interp = interpreters.create()
+   def run():
+       interp.run('print("during")')
+   t = threading.Thread(target=run)
+   print('before')
+   t.start()
+   t.join()
    print('after')
 
 Pre-populate an interpreter
@@ -190,13 +184,12 @@ Pre-populate an interpreter
 ::
 
    interp = interpreters.create()
-   st = interp.run(tw.dedent("""
+   interp.run(tw.dedent("""
        import some_lib
        import an_expensive_module
        some_lib.set_up()
        """))
    wait_for_request()
-   st.wait()
    interp.run(tw.dedent("""
        some_lib.handle_request()
        """))
@@ -210,7 +203,7 @@ Handling an exception
    try:
        interp.run(tw.dedent("""
            raise KeyError
-           """)).wait()
+           """))
    except interpreters.RunFailedError as exc:
        print(f"got the error from the subinterpreter: {exc}")
 
@@ -224,7 +217,7 @@ Re-raising an exception
        try:
            interp.run(tw.dedent("""
                raise KeyError
-               """)).wait()
+               """))
        except interpreters.RunFailedError as exc:
            raise exc.__cause__
    except KeyError:
@@ -280,7 +273,7 @@ Passing objects via pickle
        import os
        import pickle
        reader = {r}
-       """)).wait()
+       """))
    interp.run(tw.dedent("""
            data = b''
            c = os.read(reader, 1)
@@ -621,9 +614,9 @@ The module also provides the following classes::
 
       is_running() -> bool:
 
-         Return whether or not the interpreter is currently executing
-         code.  Calling this on the current interpreter will always
-         return True.
+         Return whether or not the interpreter's "run()" is currently
+         executing code.  Code running in subthreads is ignored.
+         Calling this on the current interpreter will always return True.
 
       close():
 
@@ -632,26 +625,44 @@ The module also provides the following classes::
          This may not be called on an already running interpreter.
          Doing so results in a RuntimeError.
 
-      run(source_str, /) -> Status:
+      run(source_str, /):
 
-         Run the provided Python source code in the interpreter and
-         return a Status object that tracks when it finishes.
+         Run the provided Python source code in the interpreter,
+         in its __main__ module.
 
          This may not be called on an already running interpreter.
          Doing so results in a RuntimeError.
 
-         A "run()" call is similar to a Thread.start() call.  That code
-         starts running in a background thread and "run()" returns.  At
-         that point, the code that called "run()" continues executing
-         (in the original interpreter).  If any "return" value is
-         needed, pass it out via a pipe (os.pipe()).  If there is any
-         uncaught exception then the returned Status object will expose it.
+         A "run()" call is similar to an exec() call (or calling
+         a function that returns None).  Once "run()" completes,
+         the code that called "run()" continues executing (in the
+         original interpreter).  Likewise, if there is any uncaught
+         exception then it effectively (see below) propagates into
+         the code where ``run()`` was called.  Like exec() (and threads),
+         but unlike function calls, there is no return value.  If any
+         "return" value from the code is needed, send the data out
+         via a pipe (os.pipe()).
 
-         The big difference from functions or threading.Thread is that
-         "run()" executes the code in an entirely different interpreter,
-         with entirely separate state.  The state of the current
-         interpreter in the original OS thread does not affect that of
-         the target interpreter (the one that will execute the code).
+         The big difference from exec() or functions is that "run()"
+         executes the code in an entirely different interpreter,
+         with entirely separate state.  The interpreters are completely
+         isolated from each other, so the state of the original interpreter
+         (including the code it was executing in the current OS thread)
+         does not affect the state of the target interpreter
+         (the one that will execute the code).  Likewise, the target
+         does not affect the original, nor any of its other threads.
+
+         Instead, the state of the original interpreter (for this thread)
+         is frozen, and the code it's executing code completely blocks.
+         At that point, the target interpreter is given control of the
+         OS thread.  Then, when it finishes executing, the original
+         interpreter gets control back and continues executing.
+
+         So calling "run()" will effectively cause the current Python
+         thread to completely pause.  Sometimes you won't want that pause,
+         in which case you should make the "run()" call in another thread.
+         To do so, add a function that calls "run()" and then run that
+         function in a normal "threading.Thread".
 
          Note that the interpreter's state is never reset, neither
          before "run()" executes the code nor after.  Thus the
@@ -668,37 +679,18 @@ The module also provides the following classes::
 
          Supported code: source text.
 
-   class Status:
-
-      # This is similar to concurrent.futures.Future.
-
-      wait(timeout=None):
-
-         Block until the requested work has finished. 
-
-      done() -> bool:
-
-         Has the requested work completed (or failed)?
-
-      exception() -> Exception | None:
-
-         Return the exception raised by the requested work, if any.
-         If the work has not completed yet then ``NotFinishedError``
-         is raised.
-
 Uncaught Exceptions
 -------------------
 
 Regarding uncaught exceptions in ``Interpreter.run()``, we noted that
-they are exposed via the returned ``Status`` object.  To prevent leaking
-exceptions (and tracebacks) between interpreters, we create a surrogate
-of the exception and its traceback
-(see ``traceback.TracebackException``).  This is returned by
-``Status.exception()``.  ``Status.wait()`` set it to ``__cause__``
-on a new ``RunFailedError``, and raise that.
+they are "effectively" propagated into the code where ``run()`` was
+called.  To prevent leaking exceptions (and tracebacks) between
+interpreters, we create a surrogate of the exception and its traceback
+(see ``traceback.TracebackException``), set it to ``__cause__`` on a
+new ``RunFailedError``, and raise that.
 
-Raising (a proxy of) the exception directly is problematic since it's
-harder to distinguish between an error in the ``wait()`` call and an
+Directly raising (a proxy of) the exception is problematic since it's
+harder to distinguish between an error in the ``run()`` call and an
 uncaught exception from the subinterpreter.
 
 API For Sharing Data
