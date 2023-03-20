@@ -15,6 +15,7 @@ document.addEventListener("DOMContentLoaded", () => {
   node.id = "sticky-banner-style";
   document.head.appendChild(node);
 
+  // Handle changes in banner height
   function adjustBannerMargin() {
     const text = document.createTextNode(
       ":target { scroll-margin-top: " + stickyBanner.offsetHeight + "px; }"
@@ -22,7 +23,16 @@ document.addEventListener("DOMContentLoaded", () => {
     node.replaceChildren(text);
   }
 
-  adjustBannerMargin();
   document.addEventListener("resize", adjustBannerMargin);
-  document.addEventListener("load", adjustBannerMargin);
+
+  // Handle on-load banner height and scrolling to anchor
+  function adjustBannerMarginAndScroll() {
+    adjustBannerMargin();
+    if (location.hash.length > 1) {
+      document.getElementById(location.hash.substring(1)).scrollIntoView();
+    }
+  }
+
+  adjustBannerMarginAndScroll();
+  document.addEventListener("load", adjustBannerMarginAndScroll);
 });
