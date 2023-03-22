@@ -106,6 +106,59 @@ in virtually every package management system. Virtual packages are a concept
 also present in a number of packaging systems - but not always, and the details
 of their implementation varies. 
 
+
+Cross compilation
+-----------------
+
+Cross compilation is not yet (as of April 2023) well-supported by stdlib
+modules and ``pyproject.toml`` metadata. It is however important when
+translating external dependencies to those of other packaging systems (with
+tools like ``pyp2rpm``). Introducing support for cross compilation immediately
+in this PEP is much easier than extending ``[external-dependencies]`` in the
+future, hence the authors choose to include this now.
+
+Terminology
+'''''''''''
+
+This PEP uses the following terminology:
+
+- *build machine*: the machine on which the package build is being executed
+- *host machine*: the machine on which the produced artifact will be installed
+  and run
+- *build dependency*: dependency for building the package that needs to be
+  present on the build machne
+- *host dependency*: dependency for building the package that needs to be
+  present on the host machne
+
+Note that this terminology is not consistent across build and packaging tools,
+so care must be taken when comparing build/host dependencies in
+``pyproject.toml`` to dependencies from other package managers.
+
+Note that "target machine" or "target dependency" is not used in this PEP. That
+is typically only relevant for cross-compiling compilers or other such advanced
+scenarios - this is out of scope for this PEP.
+
+Build and host dependencies
+'''''''''''''''''''''''''''
+
+Build dependencies are needed during the build process - they may be compilers,
+code generators, or other such tools. In case the use of a build dependency
+implies a runtime dependency, that runtime dependency should not be declared
+explicitly. For example, when compiling Fortran code with ``gfortran`` into a
+Python extension module, the package likely incurs a dependency on the
+``libgfortran`` runtime library. *Rationale for not explicitly listing such
+runtime dependencies: (a) it may depend on compiler/linker flags or details of
+the build environment whether the dependency is present, and (b) these runtime
+dependencies can be detected and handled automatically by tools like
+``auditwheel``.*
+
+When host dependencies are declared and a tool is not cross-compilation aware
+and has to do something with external dependencies, the tool may merge the
+``host-requires`` list into ``build-requires``. This may for example happen if
+an installer like ``pip`` starts reporting external dependencies as a likely
+cause of a build failure when a package fails to build from an sdist.
+
+
 Specifying external dependencies
 --------------------------------
 
@@ -154,7 +207,11 @@ Dependency specifiers
 '''''''''''''''''''''
 
 *TODO: do we allow dependency specifier like ``; platform_system=='Linux'`
-behind PURLs? Gut feel: no.*
+behind PURLs? On the one hand: perhaps not, because PURL has its own qualifiers
+with ``?`` and the accepted ones depend on the PURL type. On the other hand,
+we'll need something that maps to many other package managers, so then it's
+best to have a uniform system for this. And the semantics for doing this the
+regular Python packaging way are well-understood.*
 
 
 Specification
@@ -184,9 +241,20 @@ present on the system already.
 ``build-requires``/``optional-build-requires``
 ''''''''''''''''''''''''''''''''''''''''''''''
 
-- Format: Array of PURL_ strings (``dependencies``) and a table
-  with values of arrays of PURL_ strings (``optional-dependencies``)
+- Format: Array of PURL_ strings (``build-requires``) and a table
+  with values of arrays of PURL_ strings (``optional-build-requires``)
 - `Core metadata`_: TODO
+
+TODO
+
+``host-requires``/``optional-host-requires``
+''''''''''''''''''''''''''''''''''''''''''''
+
+- Format: Array of PURL_ strings (``host-requires``) and a table
+  with values of arrays of PURL_ strings (``optional-host-requires``)
+- `Core metadata`_: TODO
+
+TODO
 
 ``dependencies``/``optional-dependencies``
 ''''''''''''''''''''''''''''''''''''''''''
@@ -208,18 +276,26 @@ for the ``TODO`` `core metadata`_. Each value in the array
 thus becomes a corresponding ``TODO`` entry for the matching
 ``TODO`` metadata.
 
+Temporary notes on cross-compiling
+----------------------------------
 
-Example
--------
+E.g., conda-forge uses ``build``, ``host`` and ``run`` keys; for
+non-cross-compiling jobs ``host`` dependencies equal ``build`` dependencies.
+Spack has this too, in a similar form: dependencies have a keyword ``type``
+which can be a string or tuple of strings - "build", "link", "run".
+``type="build"`` are build systems and code generators, a header-only library
+like ``pybind11`` is ``("build", "link")`` while the likes of python and numpy
+are ``("build", "link", "run")``. Void Linux has this for its ``python3-scipy``
+package::
 
-*TODO: should we get this right at once for cross-compiling?* E.g., conda-forge
-uses ``build``, ``host`` and ``run`` keys; for non-cross-compiling jobs
-``host`` dependencies equal ``build`` dependencies. Spack has this too, in a
-similar form: dependencies have a keyword ``type`` which can be a string or
-tuple of strings - "build", "link", "run". ``type="build"`` are build systems
-and code generators, a header-only library like ``pybind11`` is ``("build",
-"link")`` while the likes of python and numpy are ``("build", "link", "run")``.
+    hostmakedepends="gcc-fortran python3-setuptools pythran python3-Cython python3-pybind11 pkg-config"
+    makedepends="python3-devel python3-pybind11 pythran $(vopt_if openblas openblas-devel lapack-devel)"
+    depends="python3-numpy"
 
+So that is similar to Conda (note that host has the opposite meaning).
+
+Examples
+--------
 
 cryptography:
 
@@ -228,7 +304,9 @@ cryptography:
     [external-dependencies]
     build-requires = [
       "virtual:compiler{'rust'}",  # TODO: syntax? `compiler-c`, or ...?
-      "virtual:ssl",
+    ]
+    host-requires = [
+      virtual:ssl,
     ]
 
 SciPy:
@@ -240,12 +318,15 @@ SciPy:
       "virtual:compiler{'c'}",
       "virtual:compiler{'c++'}",
       "virtual:compiler{'fortran'}",
-      "virtual:blas",
-      "virtual:lapack>=3.7.1",
       "pkg:generic/ninja",
     ]
+    host-requires = [
+      "virtual:blas",
+      "virtual:lapack",  # must be LAPACK >=3.7.1 (can't express version ranges with PURL yet)
+    ]
 
-    optional-build-requires = [
+    [external-dependencies.optional-host-requires]
+    dependency_detection = [
       "pkg:generic/pkg-config",
       "pkg:generic/cmake",
     ]
@@ -257,29 +338,39 @@ pygraphviz:
     [external-dependencies]
     build-requires = [
       "virtual:compiler{'c'}",
+    ]
+    host-requires = [
       "pkg:generic/graphviz",
     ]
-
-*TODO: for packages that are build dependencies to link against, like graphviz,
-openssl or OpenBLAS, is there a need to list them also as runtime dependencies?
-Probably not, seems obvious - it seems like the packaging system should get
-this right automatically.*
 
 NAVis:
 
 .. code:: toml
 
     [project]
-    optional-dependencies = "rpy2"
+    optional-dependencies = ["rpy2"]
 
     [external-dependencies]
     build-requires = [
-      "pkg:generic/XCB; platform_system=='Linux'",
+      "pkg:generic/XCB?os=Linux",  # ? is the PURL qualifier
+      "pkg:generic/XCB; platform_system=='Linux'",  # the alternative
     ]
 
-    optional-dependencies = [
+    [external-dependencies.optional-dependencies]
+    nat = [
       "pkg:cran/nat",
       "pkg:cran/nat.nblast",
+    ]
+
+Spyder (dependencies in progress of being added):
+
+.. code:: toml
+
+    [external-dependencies]
+    dependencies = [
+      "pkg:cargo/ripgrep",
+      "pkg:cargo/tree-sitter-cli",
+      "pkg:golang/github.com/junegunn/fzf,
     ]
 
 jupyterlab-git:
@@ -287,19 +378,14 @@ jupyterlab-git:
 .. code:: toml
 
     [external-dependencies]
-    build-requires = [
-      "pkg:generic/nodejs",
-    ]
     dependencies = [
       "pkg:generic/git",
     ]
 
-*TODO: jupyterlab-git has many JS dependencies (see
-https://github.com/jupyterlab/jupyterlab-git/blob/master/package.json), but
-it's not clear whether it's desirable to list all those as external
-dependencies. Technically yes, but pragmatically .... not sure. JS packages are
-a bit special, because they're so granular."*
-
+    [external-dependencies.optional-build-requires]
+    dev = [
+      "pkg:generic/nodejs",
+    ]
 
 Backwards Compatibility
 =======================
