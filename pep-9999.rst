@@ -1,0 +1,267 @@
+PEP: 9999
+Title: Adding "converter" dataclasses field specifier parameter
+Author: Joshua Cannon <joshdcannon@gmail.com>
+Sponsor: Eric V. Smith <eric at trueblade.com>
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 01-Jan-2023
+
+
+Abstract
+========
+
+:pep:`557` added dataclasses to the Python stdlib. :pep:`681` added
+``dataclass_transform`` to help type checkers understand several common
+dataclass-like libraries, such as ``attrs``, ``pydantic``, and object
+relational mapper (ORM) packages such as SQLAlchemy and Django.
+
+A common feature these libraries provide over the standard library
+implementation is the ability for the library to convert arguments given at
+initialization time into the types expected for each field using a
+user-provided conversion function.
+
+Motivation
+==========
+
+There is no existing, standard way for ``dataclass`` or third-party
+dataclass-like libraries to support argument conversion in a type-checkable
+way. To workaround this limitation, library authors/users are forced to choose
+to:
+
+* Opt-in to a custom Mypy plugin. These plugins help Mypy understand the
+conversion semantics, but not other tools.
+* Shuck conversion responsibility onto the caller of the ``dataclass``
+constructor. This can make constructing certain ``dataclasses`` unnecessarily
+verbose and repetitive.
+* Provide a custom ``__init__`` and which declares "wider" parameter types and
+converts them when setting the appropriate attribute. This not only duplicates
+the typing annotations between the converter and ``__init__``, but also opts
+the user out of many of the features ``dataclass`` provides.
+* Not rely on, or ignore type-checking.
+
+None of these choices are ideal.
+
+Rationale
+=========
+
+Adding argument conversion semantics is useful and beneficial enough that most
+dataclass-like libraries provide support. Adding this feature to the standard
+library means more users are able to opt-in to these benefits without requiring
+third-party libraries. Additionally third-party libraries are able to clue
+type-checkers into their own conversion semantics through added support in
+``dataclass_transform``, meaning users of those libraries benefit as well.
+
+Specification
+=============
+
+New ``converter`` parameter
+---------------------------
+
+This specification introduces a new parameter named ``converter`` to
+``dataclasses.field`` function. When an ``__init__`` method is synthesized by
+``dataclass``-like semantics, if an argument is provided for the field, the
+``dataclass`` object's attribute will be assigned the result of calling the
+converter with a single argument: the provided argument. If no argument is
+given, the normal ``dataclass`` semantics for defaulting the attribute value
+is used and conversion is not applied to the default value.
+
+Adding this parameter also implies the following changes:
+
+* A ``converter`` attribute will be added to ``dataclasses.Field``.
+* Adds ``converter`` to the field specifier parameters of arguments provided to
+``typing.dataclass_transform``'s ``field`` parameter.
+
+Example
+'''''''
+
+.. code-block:: python
+
+  @dataclasses.dataclass
+  class InventoryItem:
+      # `converter` as a type
+      id: int = dataclasses.field(converter=int)
+      skus: tuple[int] = dataclasses.field(converter=tuple[int])
+      # `converter` as a callable
+      names: tuple[str] = dataclasses.field(
+        converter=lambda names: tuple(map(str.lower, names))
+      )
+
+      # Since the value is not converted, type checkers should flag the default
+      # as having the wrong type.
+      # There is no error at runtime however, and `quantity_on_hand` will be
+      # `"0"` if no value is provided.
+      quantity_on_hand: int = dataclasses.field(converter=int, default="0")
+
+  item1 = InventoryItem("1", [234, 765], ["PYTHON PLUSHIE", "FLUFFY SNAKE"])
+  # `item1` would have the following values:
+  #   id=1
+  #   skus=(234, 765)
+  #   names=('python plushie', 'fluffy snake')
+  #   quantity_on_hand='0'
+
+Impact on typing
+----------------
+
+``converter`` arguments are expected to be callable objects which accept a
+unary argument and return a type compatible with the field's annotated type.
+The callable's unary argument's type is used as the type of the parameter in
+the synthesized ``__init__`` method.
+
+Type-narrowing the argument type
+''''''''''''''''''''''''''''''''
+
+For the purpose of deducing the type of the argument in the synthesized
+``__init__`` method, the ``converter`` argument's type can be "narrowed" using
+the following rules:
+
+* If the ``converter`` is of type ``Any``, it is assumed to be callable with a
+unary ``Any`` typed-argument.
+* All keyword-only parameters can be ignored.
+* ``**kwargs`` can be ignored.
+* ``*args`` can be ignored if any parameters precede it. Otherwise if ``*args``
+is the only non-ignored parameter, the type it accepts for each positional
+argument is the type of the unary argument. E.g. given params
+``(x: str, *args: str)``, ``*args`` can be ignored. However, given params
+``(*args: str)``, the callable type can be narrowed to ``(__x: str, /)``.
+* Parameters with default values that aren't the first parameter can be
+ignored. E.g. given params ``(x: str = "0", y: int = 1)``, parameter ``y`` can
+be ignored and the type can be assumed to be ``(x: str)``.
+
+Type-checking the return type
+'''''''''''''''''''''''''''''
+
+The return type of the callable must be a type that's compatible with the
+field's declared type. This includes the field's type exactly, but can also be
+a type that's more specialized (such as a converter returning a ``list[int]``
+for a field annotated as ``list``, or a converter returning an ``int`` for a
+field annotated as ``int | str``).
+
+Overloads
+'''''''''
+
+The above rules should be applied to each ``@overload`` for overloaded
+functions. If after these rules are applied an overload is invalid (either
+because there is no overload that would accept a unary argument, or because
+there is no overload that returns an acceptable type) it should be ignored.
+If multiple overloads are valid after these rules are applied, the
+type-checker can assume the converter's unary argument type is the union of
+each overload's unary argument type. If no overloads are valid, it is a type
+error.
+
+Example
+'''''''
+
+.. code-block:: python
+
+  # The following are valid converter types, with a comment containing the
+  # synthesized __init__ argument's type.
+  converter: Any  # Any
+  def converter(x: int): ...  # int
+  def converter(x: int | str): ...  # int | str
+  def converter(x: int, y: str = "a"): ...  # int
+  def converter(x: int, *args: str): ...  # int
+  def converter(*args: str): ...  # str
+  def converter(*args: str, x: int = 0): ...  # str
+
+  @overload
+  def converter(x: int): ...  # <- valid
+  @overload
+  def converter(x: int, y: str): ...  # <- ignored
+  @overload
+  def converter(x: list): ... # <- valid
+  def converter(x, y = ...): ... # int | list
+
+  # The following are valid converter types for a field annotated as type `list`.
+  def converter(x) -> list: ...
+  def converter(x) -> Any: ...
+  def converter(x) -> list[int]: ...
+
+  @overload
+  def converter(x: int) -> tuple: ... # <- ignored
+  @overload
+  def converter(x: str) -> list: ... # <- valid
+  @overload
+  def converter(x: bytes) -> list: ... # <- valid
+  def converter(x): ... # __init__ would use argument type `str | bytes`.
+
+  # The following are invalid converter types.
+  def converter(): ...
+  def converter(**kwargs): ...
+  def converter(x, y): ...
+  def converter(*, x): ...
+  def converter(*args, x): ...
+
+  @overload
+  def converter(): ...
+  @overload
+  def converter(x: int, y: str): ...
+  def converter(x=..., y = ...): ...
+
+  # The following are invalid converter types for a field annotated as type `list`.
+  def converter(x) -> tuple: ...
+  def converter(x) -> Sequence: ...
+
+  @overload
+  def converter(x) -> tuple: ...
+  @overload
+  def converter(x: int, y: str) -> list: ...
+  def converter(x=..., y = ...): ...
+
+
+Reference Implementation
+========================
+
+The `attrs <#attrs-converters>`_ library already includes a ``converter``
+parameter matching these
+semantics.
+
+The reference implementation
+
+Rejected Ideas
+==============
+
+Just adding "converter" to ``dataclass_transform``'s ``field_specifiers``
+-------------------------------------------------------------------------
+
+The idea of isolating this addition to ``dataclass_transform`` was briefly
+discussed in `Typing-sig <#only-dataclass-transform>`_ where it was suggested
+to open this to ``dataclasses``.
+
+Additionally, adding this to ``dataclasses`` ensures anyone can reap the
+benefits without requiring additional libraries.
+
+Automatic conversion using the field's type
+-------------------------------------------
+
+One idea could be to allow the type of the field specified (e.g. ``str`` or
+``int``) to be used as a converter for each argument provided.
+`Pydantic's data conversion <#pydantic-data-conversion>`_ has semantics which
+appear to be similar to this approach.
+
+This works well for fairly simple types, but leads to ambiguity in expected
+behavior for complex types such as generics. E.g. For ``tuple[int]`` it is
+ambiguous if the converter is supposed to simply convert an iterable to a tuple,
+or if it is additionally supposed to convert each element type to ``int``.
+
+Converting the default values
+-----------------------------
+
+Having the synthesized ``__init__`` also convert the default values (such as
+``default`` or the return type of ``default_factory``) when the would make the
+expected type of these parameters complex for type-checkers, and does not add
+significant value.
+
+References
+==========
+.. _#typeshed: https://github.com/python/typeshed
+.. _#attrs-converters: https://www.attrs.org/en/21.2.0/examples.html#conversion
+.. _#only-dataclass-transform: https://mail.python.org/archives/list/typing-sig@python.org/thread/NWZQIINJQZDOCZGO6TGCUP2PNW4PEKNY/
+.. _#pydantic-data-conversion: https://docs.pydantic.dev/usage/models/#data-conversion
+
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
