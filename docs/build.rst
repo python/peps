@@ -43,7 +43,7 @@ Render PEPs locally
 
    .. code-block:: shell
 
-      make render
+      make html
 
    If you don't have access to ``make``, run:
 

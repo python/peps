@@ -153,7 +153,7 @@ the footer (source link and last modified timestamp).
 3.5 Prepare for writing
 ''''''''''''''''''''''''
 
-``pep_html_builder.FileBuilder.prepare_writing`` initialises the bare miniumum
+``pep_html_builder.FileBuilder.prepare_writing`` initialises the bare minimum
 of the Docutils writer and the settings for writing documents.
 This provides a significant speed-up over the base Sphinx implementation, as
 most of the data automatically initialised was unused.

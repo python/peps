@@ -40,7 +40,7 @@ class PEPFooter(transforms.Transform):
                     types.add(type(node))
                     if isinstance(node, nodes.target):
                         to_hoist.append(node)
-                if types <= {nodes.title, nodes.target}:
+                if types <= {nodes.title, nodes.target, nodes.system_message}:
                     section.parent.extend(to_hoist)
                     section.parent.remove(section)
 
