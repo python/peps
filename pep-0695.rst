@@ -225,10 +225,10 @@ requirement that parameter names within a function signature must be unique.
     def func1[T, **T](): ... # Syntax Error
 
 
-Class type parameter names are not mangled if they begin with a double
-underscore. Mangling would not make sense because type parameters, unlike other
-class-scoped variables, cannot be accessed through the class dictionary, and
-the notion of a "private" type parameter doesn't make sense.
+Class type parameter names are mangled if they begin with a double
+underscore, to avoid complicating the name lookup mechanism for names used
+within the class. However, the ``__name__`` attribute of the type parameter
+will hold the non-mangled name.
 
 
 Upper Bound Specification
@@ -302,6 +302,14 @@ the existing rules enforced by type checkers for a ``TypeVar`` constructor call.
     class ClassG[T: (list[S], str)]: ...  # Type checker error: generic type
 
 
+Runtime Representation of Bounds and Constraints
+------------------------------------------------
+
+The upper bounds and constraints of ``TypeVar`` objects are accessible at
+runtime through the ``__bound__`` and ``__constraints__`` attributes.
+For ``TypeVar`` objects defined through the new syntax, these attributes
+become lazily evaluated, as discussed under :ref:`695-lazy-evaluation` below.
+
 
 Generic Type Alias
 ------------------
@@ -365,13 +373,13 @@ At runtime, a ``type`` statement will generate an instance of
 include:
 
 * ``__name__`` is a str representing the name of the type alias
-* ``__parameters__`` is a tuple of ``TypeVar``, ``TypeVarTuple``, or
+* ``__type_params__`` is a tuple of ``TypeVar``, ``TypeVarTuple``, or
   ``ParamSpec`` objects that parameterize the type alias if it is generic
 * ``__value__`` is the evaluated value of the type alias
 
-The ``__value__`` attribute initially has a value of ``None`` while the type
-alias expression is evaluated. It is then updated after a successful evaluation.
-This allows for self-referential type aliases.
+All of these attributes are read-only.
+
+The value of the type alias is evaluated lazily (see :ref:`695-lazy-evaluation` below).
 
 
 Type Parameter Scopes
@@ -381,10 +389,13 @@ When the new syntax is used, a new lexical scope is introduced, and this scope
 includes the type parameters. Type parameters can be accessed by name
 within inner scopes. As with other symbols in Python, an inner scope can
 define its own symbol that overrides an outer-scope symbol of the same name.
+This section provides a verbal description of the new scoping rules.
+The :ref:`695-scoping-behavior` section below specifies the behavior in terms
+of a translation to near-equivalent existing Python code.
 
-Type parameters declared earlier in a type parameter list are visible to
-type parameters declared later in the list. This allows later type parameters
-to use earlier type parameters within their definition. While there is currently
+Type parameters are visible to other
+type parameters declared elsewhere in the list. This allows type parameters
+to use other type parameters within their definition. While there is currently
 no use for this capability, it preserves the ability in the future to support
 upper bound expressions or type argument defaults that depend on earlier
 type parameters.
@@ -401,11 +412,9 @@ defined in an outer scope.
     # eliminate this limitation.
     class ClassA[S, T: Sequence[S]]: ...
 
-    # The following generates a compiler error or runtime exception because T
-    # is referenced before it is defined. This occurs even though T is defined
-    # in the outer scope.
-    T = 0
-    class ClassB[S: Sequence[T], T]: ...  # Compiler error: T is not defined
+    # The following generates no compiler error, because the bound for ``S``
+    # is lazily evaluated. However, type checkers should generate an error.
+    class ClassB[S: Sequence[T], T]: ...
 
 
 A type parameter declared as part of a generic class is valid within the
@@ -475,7 +484,7 @@ Type parameter symbols defined in outer scopes cannot be bound with
 The lexical scope introduced by the new type parameter syntax is unlike
 traditional scopes introduced by a ``def`` or ``class`` statement. A type
 parameter scope acts more like a temporary "overlay" to the containing scope.
-It does not capture variables from outer scopes, and the only symbols contained
+The only new symbols contained
 within its symbol table are the type parameters defined using the new syntax.
 References to all other symbols are treated as though they were found within
 the containing scope. This allows base class lists (in class definitions) and
@@ -570,11 +579,14 @@ When the new type parameter syntax is used for a generic class, assignment
 expressions are not allowed within the argument list for the class definition.
 Likewise, with functions that use the new type parameter syntax, assignment
 expressions are not allowed within parameter or return type annotations, nor
-are they allowed within the expression that defines a type alias.
+are they allowed within the expression that defines a type alias, or within
+the bounds and constraints of a ``TypeVar``. Similarly, ``yield``, ``yield from``,
+and ``await`` expressions are disallowed in these contexts.
 
 This restriction is necessary because expressions evaluated within the
 new lexical scope should not introduce symbols within that scope other than
-the defined type parameters.
+the defined type parameters, and should not affect whether the enclosing function
+is a generator or coroutine.
 
 ::
 
@@ -590,15 +602,10 @@ the defined type parameters.
 Accessing Type Parameters at Runtime
 ------------------------------------
 
-A new read-only attribute called ``__type_variables__`` is available on class,
-function, and type alias objects. This attribute is a tuple of the active
-type variables that are visible within the scope of that class, function,
-or type alias. This attribute is needed for runtime evaluation of stringified
-(forward referenced) type annotations that include references to type
-parameters. Functions like ``typing.get_type_hints`` can use this attribute
-to populate the ``locals`` dictionary with values for type parameters that
-are in scope when calling ``eval`` to evaluate the stringified expression.
-The tuple contains ``TypeVar`` instances.
+A new read-only attribute called ``__type_params__`` is available on generic classes,
+functions, and type aliases. This attribute is a tuple of the
+type parameters that parameterize the class, function, or alias.
+The tuple contains ``TypeVar``, ``ParamSpec``, and ``TypeVarTuple`` instances.
 
 Type parameters declared using the new syntax will not appear within the
 dictionary returned by ``globals()`` or ``locals()``.
@@ -799,7 +806,7 @@ This PEP introduces a new AST node type called ``TypeAlias``.
 
 ::
 
-    TypeAlias(identifier name, typeparam* typeparams, expr value)
+    TypeAlias(expr name, typeparam* typeparams, expr value)
 
 It also adds an AST node type that represents a type parameter.
 
@@ -809,30 +816,276 @@ It also adds an AST node type that represents a type parameter.
         | ParamSpec(identifier name)
         | TypeVarTuple(identifier name)
 
+Bounds and constraints are represented identically in the AST. In the implementation,
+any expression that is a ``Tuple`` AST node is treated as a constraint, and any other
+expression is treated as a bound.
+
 It also modifies existing AST node types ``FunctionDef``, ``AsyncFunctionDef``
 and ``ClassDef`` to include an additional optional attribute called
-``typeparam*`` that includes a list of type parameters associated with the
+``typeparams`` that includes a list of type parameters associated with the
 function or class.
+
+.. _695-lazy-evaluation:
+
+Lazy Evaluation
+---------------
+
+This PEP introduces three new contexts where expressions may occur that represent
+static types: ``TypeVar`` bounds, ``TypeVar`` constraints, and the value of type
+aliases. These expressions may contain references to names
+that are not yet defined. For example, type aliases may be recursive, or even mutually
+recursive, and type variable bounds may refer back to the current class. If these
+expressions were evaluated eagerly, users would need to enclose such expressions in
+quotes to prevent runtime errors. :pep:`563` and :pep:`649` detail the problems with
+this situation for type annotations.
+
+To prevent a similar situation with the new syntax proposed in this PEP, we propose
+to use lazy evaluation for these expressions, similar to the approach in :pep:`649`.
+Specifically, each expression will be saved in a code object, and the code object
+is evaluated only when the corresponding attribute is accessed (``TypeVar.__bound__``,
+``TypeVar.__constraints__``, or ``TypeAlias.__value__``). After the value is
+successfully evaluated, the value is saved and later calls will return the same value
+without re-evaluating the code object.
+
+If :pep:`649` is implemented, additional evaluation mechanisms should be added to
+mirror the options that PEP provides for annotations. In the current version of the
+PEP, that might include adding an ``__evaluate_bound__`` method to ``TypeVar`` taking
+a ``format`` parameter with the same meaning as in PEP 649's ``__annotate__`` method
+(and a similar ``__evaluate_constraints__`` method, as well as an ``__evaluate_value__``
+method on ``TypeAliasType``).
+However, until PEP 649 is accepted and implemented, only the default evaluation format
+(PEP 649's "VALUE" format) will be supported.
+
+As a consequence of lazy evaluation, the value observed for an attribute may
+depend on the time the attribute is accessed.
+
+::
+
+   X = int
+
+   class Foo[T: X, U: X]:
+       t, u = T, U
+
+   print(Foo.t.__bound__)  # prints "int"
+   X = str
+   print(Foo.u.__bound__)  # prints "str"
+
+Similar examples affecting type annotations can be constructed using the
+semantics of PEP 563 or PEP 649.
+
+A naive implementation of lazy evaluation would handle class namespaces
+incorrectly, because functions within a class do not normally have access to
+the enclosing class namespace. The implementation will retain a reference to
+the class namespace so that class-scoped names are resolved correctly.
+
+.. _695-scoping-behavior:
+
+Scoping Behavior
+----------------
+
+The new syntax requires a new kind of scope that behaves differently
+from existing scopes in Python. Thus, the new syntax cannot be described exactly in terms of
+existing Python scoping behavior. This section specifies these scopes
+further by reference to existing scoping behavior: the new scopes behave
+like function scopes, except for a number of minor differences listed below.
+
+All examples include functions introduced with the pseudo-keyword ``def695``.
+This keyword will not exist in the actual language; it is used to
+clarify that the new scopes are for the most part like function scopes.
+
+``def695`` scopes differ from regular function scopes in the following ways:
+
+- If a ``def695`` scope is immediately within a class scope, or within another
+  ``def695`` scope that is immediately within a class scope, then names defined
+  in that class scope can be accessed within the ``def695`` scope. (Regular functions,
+  by contrast, cannot access names defined within an enclosing class scope.)
+- The following constructs are disallowed directly within a ``def695`` scope, though
+  they may be used within other scopes nested inside a ``def695`` scope:
+
+  - ``yield``
+  - ``yield from``
+  - ``await``
+  - ``:=`` (walrus operator)
+
+- The qualified name (``__qualname__``) of objects (classes and functions) defined within ``def695`` scopes
+  is as if the objects were defined within the closest enclosing scope.
+- Names bound within ``def695`` scopes cannot be rebound with a ``nonlocal`` statement in nested scopes.
+
+``def695`` scopes are used for the evaluation of several new syntactic constructs proposed
+in this PEP. Some are evaluated eagerly (when a type alias, function, or class is defined); others are
+evaluated lazily (only when evaluation is specifically requested). In all cases, the scoping semantics are identical:
+
+- Eagerly evaluated values:
+
+  - The type parameters of generic type aliases
+  - The type parameters and annotations of generic functions
+  - The type parameters and base class expressions of generic classes
+- Lazily evaluated values:
+
+  - The value of generic type aliases
+  - The bounds of type variables
+  - The constraints of type variables
+
+In the below translations, names that start with two underscores are internal to the implementation
+and not visible to actual Python code. We use the following intrinsic functions, which in the real
+implementation are defined directly in the interpreter:
+
+- ``__make_typealias(*, name, type_params=(), evaluate_value)``: Creates a new ``typing.TypeAlias`` object with the given
+  name, type parameters, and lazily evaluated value. The value is not evaluated until the ``__value__`` attribute
+  is accessed.
+- ``__make_typevar_with_bound(*, name, evaluate_bound)``: Creates a new ``typing.TypeVar`` object with the given
+  name and lazily evaluated bound. The bound is not evaluated until the ``__bound__`` attribute is accessed.
+- ``__make_typevar_with_constraints(*, name, evaluate_constraints)``: Creates a new ``typing.TypeVar`` object with the given
+  name and lazily evaluated constraints. The constraints are not evaluated until the ``__constraints__`` attribute
+  is accessed.
+
+Non-generic type aliases are translated as follows::
+
+   type Alias = int
+
+Equivalent to::
+
+   def695 __evaluate_Alias():
+       return int
+
+   Alias = __make_typealias(name='Alias', evaluate_value=__evaluate_Alias)
+
+Generic type aliases::
+
+   type Alias[T: int] = list[T]
+
+Equivalent to::
+
+   def695 __generic_parameters_of_Alias():
+       def695 __evaluate_T_bound():
+           return int
+       T = __make_typevar_with_bound(name='T', evaluate_bound=__evaluate_T_bound)
+
+       def695 __evaluate_Alias():
+           return list[T]
+       return __make_typealias(name='Alias', type_params=(T,), evaluate_value=__evaluate_Alias)
+
+   Alias = __generic_parameters_of_Alias()
+
+Generic functions::
+
+   def f[T](x: T) -> T:
+       return x
+
+Equivalent to::
+
+   def695 __generic_parameters_of_f():
+       T = typing.TypeVar(name='T')
+
+       def f(x: T) -> T:
+           return x
+       f.__type_params__ = (T,)
+       return f
+
+   f = __generic_parameters_of_f()
+
+A fuller example of generic functions, illustrating the scoping behavior of defaults, decorators, and bounds.
+Note that this example does not use ``ParamSpec`` correctly, so it should be rejected by a static type checker.
+It is however valid at runtime, and it us used here to illustrate the runtime semantics.
+
+::
+
+   @decorator
+   def f[T: int, U: (int, str), *V, **P](
+       x: T = SOME_CONSTANT,
+       y: U,
+       *args: *Ts,
+       **kwargs: P.kwargs,
+   ) -> T:
+       return x
+
+Equivalent to::
+
+   __default_of_x = SOME_CONSTANT  # evaluated outside the def695 scope
+   def695 __generic_parameters_of_f():
+       def695 __evaluate_T_bound():
+           return int
+       T = __make_typevar_with_bound(name='T', evaluate_bound=__evaluate_T_bound)
+
+       def695 __evaluate_U_constraints():
+           return (int, str)
+       U = __make_typevar_with_constraints(name='U', evaluate_constraints=__evaluate_U_constraints)
+
+       Ts = typing.TypeVarTuple("Ts")
+       P = typing.ParamSpec("P")
+
+       def f(x: T = __default_of_x, y: U, *args: *Ts, **kwargs: P.kwargs) -> T:
+           return x
+       f.__type_params__ = (T, U, Ts, P)
+       return f
+
+   f = decorator(__generic_parameters_of_f())
+
+Generic classes::
+
+   class C[T](Base):
+       def __init__(self, x: T):
+           self.x = x
+
+Equivalent to::
+
+   def695 __generic_parameters_of_C():
+       T = typing.TypeVar('T')
+       class C(Base):
+           __type_params__ = (T,)
+           def __init__(self, x: T):
+               self.x = x
+      return C
+
+   C = __generic_parameters_of_C()
+
+The biggest divergence from existing behavior for ``def695`` scopes
+is the behavior within class scopes. This divergence is necessary
+so that generics defined within classes behave in an intuitive way::
+
+   class C:
+       class Nested: ...
+       def generic_method[T](self, x: T, y: Nested) -> T: ...
+
+Equivalent to::
+
+   class C:
+       class Nested: ...
+
+       def695 __generic_parameters_of_generic_method():
+           T = typing.TypeVar('T')
+
+           def generic_method(self, x: T, y: Nested) -> T: ...
+           return generic_method
+
+       generic_method = __generic_parameters_of_generic_method()
+
+In this example, the annotations for ``x`` and ``y`` are evaluated within
+a ``def695`` scope, because they need access to the type parameter ``T``
+for the generic method. However, they also need access to the ``Nested``
+name defined within the class namespace. If ``def695`` scopes behaved
+like regular function scopes, ``Nested`` would not be visible within the
+function scope. Therefore, ``def695`` scopes that are immediately within
+class scopes have access to that class scope, as described above.
 
 
 Library Changes
 ---------------
 
 Several classes in the ``typing`` module that are currently implemented in
-Python must be reimplemented in C. This includes: ``TypeVar``,
-``TypeVarTuple``, ``ParamSpec``, ``Generic``, and ``Union``. The new class
-``TypeAliasType`` (described above) also must be implemented in C. The
+Python must be partially implemented in C. This includes ``TypeVar``,
+``TypeVarTuple``, ``ParamSpec``, and ``Generic``, and the new class
+``TypeAliasType`` (described above). The implementation may delegate to the
+Python version of ``typing.py`` for some behaviors that interact heavily with
+the rest of the module. The
 documented behaviors of these classes should not change.
-
-The ``typing.get_type_hints`` must be updated to use the new
-``__type_variables__`` attribute.
 
 
 Reference Implementation
 ========================
 
-This proposal is partially prototyped in the CPython code base in
-`this fork <https://github.com/erictraut/cpython/tree/type_param_syntax2>`_.
+This proposal is prototyped in
+`CPython PR #103764 <https://github.com/python/cpython/pull/103764>`_.
 
 The Pyright type checker supports the behavior described in this PEP.
 
@@ -915,17 +1168,6 @@ was rejected because qualified names are not necessarily unique, which means
 the mangled name would need to be based on some other randomized value.
 Furthermore, this approach is not compatible with techniques used for
 evaluating quoted (forward referenced) type annotations.
-
-
-Lambda Lifting
---------------
-When considering implementation options, we considered introducing a new
-scope and executing the ``class``, ``def``, or ``type`` statement within
-a lambda -- a technique that is sometimes referred to as "lambda lifting".
-We ultimately rejected this idea because it did not work well for statements
-within a class body (because class-scoped symbols cannot be accessed by
-inner scopes). It also introduced many odd behaviors for scopes that were
-further nested within the lambda.
 
 
 Appendix A: Survey of Type Parameter Syntax
