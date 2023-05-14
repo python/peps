@@ -7,8 +7,9 @@ Status: Draft
 Type: Standards Track
 Content-Type: text/x-rst
 Created: 09-Jan-2023
-Python-Version: 3.12
-Post-History: `09-Jan-2023 <https://discuss.python.org/t/22606>`__
+Python-Version: 3.13
+Post-History: `09-Jan-2023 <https://discuss.python.org/t/22606>`__,
+              `04-May-2023 <https://discuss.python.org/t/26503>`__
 Resolution:
 
 
@@ -326,12 +327,16 @@ Build Configuration Changes
 
 The global interpreter lock will remain the default for CPython builds
 and python.org downloads. A new build configuration flag,
-``--disable-gil`` will be added to the configure script that will
-build CPython without the global interpreter lock.
+``--disable-gil`` will be added to the configure script that will build
+CPython with support for running without the global interpreter lock.
 
-When built with ``--disable-gil``, CPython will define the
-``Py_NOGIL`` macro in Python/patchlevel.h. The ABI tag will include
-the letter "n" (for "nogil").
+When built with ``--disable-gil``, CPython will define the ``Py_NOGIL``
+macro in Python/patchlevel.h.  The ABI tag will include the letter "n"
+(for "nogil").
+
+The ``--disable-gil`` builds of CPython will still support optionally
+running with the GIL enabled at runtime (see `PYTHONGIL Environment
+Variable`_ and `Py_mod_gil Slot`_).
 
 Overview of CPython Changes
 ---------------------------
@@ -378,14 +383,15 @@ contemporary processors.
 
 The implementation of BRC proposed in this PEP largely matches the
 original description of biased reference counting, but differs in
-details like the size of reference counting fields and special bits
-in those fields. BRC requires storing three pieces of information in
-each object's header: the "local" reference count, the "shared"
-reference count, and the identifier of the owning thread.  The BRC
-paper packs these three things into a single 64-bit field.  This PEP
-proposes using three separate pointer-sized fields (i.e., three 64-bit
-fields on 64-bit platforms) in each object's header to avoid
-potential issues due to reference count overflow.
+details like the size of reference counting fields and special bits in
+those fields. BRC requires storing three pieces of information in each
+object's header: the "local" reference count, the "shared" reference
+count, and the identifier of the owning thread.  The BRC paper packs
+these three things into a single 64-bit field.  This PEP proposes using
+three separate fields in each object's header to avoid potential issues
+due to reference count overflow.  Additionally, the PEP supports a
+faster deallocation path that avoids an atomic operation in the common
+case.
 
 The proposed ``PyObject`` struct (also called ``struct _object``) is
 below:
@@ -394,15 +400,21 @@ below:
 
   struct _object {
     _PyObject_HEAD_EXTRA
-    uintptr_t ob_tid;
-    Py_ssize_t ob_ref_local;
-    Py_ssize_t ob_ref_shared;
+    uintptr_t ob_tid;         // owning thread id (4-8 bytes)
+    uint16_t __padding;       // reserved for future use (2 bytes)
+    PyMutex ob_mutex;         // per-object mutex (1 byte)
+    uint8_t ob_gc_bits;       // GC fields (1 byte)
+    uint32_t ob_ref_local;    // local reference count (4 bytes)
+    Py_ssize_t ob_ref_shared; // shared reference count and state bits (4-8 bytes)
     PyTypeObject *ob_type;
   };
 
+The ``ob_tid``, ``ob_ref_local``, and ``ob_ref_shared`` are used by
+the biased reference counting implementation.  The ``ob_gc_bits`` field
+is used store garbage collection flags that were previously stored in
+``PyGC_Head`` (see `Garbage Collection (Cycle Collection)`_).  The
+``ob_mutex`` field provides a per-object lock in a single byte.
 
-The details of the new fields are described in the following
-sections.
 
 
 Immortalization
@@ -412,62 +424,114 @@ Some objects, such as interned strings, small integers, statically
 allocated PyTypeObjects, and the ``True``, ``False``, and ``None``
 objects stay alive for the lifetime of the program. These objects are
 marked as immortal by setting the local reference count field
-(``ob_ref_local``) to ``-1`` and the thread id (``ob_tid``) to the
-unsigned equivalent(``UINTPTR_MAX``).  It's sufficient to check either
-of these fields to determine if an object is immortal, which enables
-slightly more efficient ``Py_INCREF`` and ``Py_DECREF``
-implementations.
+(``ob_ref_local``) to ``UINT32_MAX``.
 
 The ``Py_INCREF`` and ``Py_DECREF`` macros are no-ops for immortal
 objects.  This avoids contention on the reference count fields of
 these objects when multiple threads access them concurrently.
 
 This proposed immortalization scheme is very similar to :pep:`683`,
-but with slightly different bit representation in the reference count
-fields for immortal objects in order to work with biased reference
-counting and deferred reference counting.
+adopted in Python 3.12, but with slightly different bit representation
+in the reference count fields for immortal objects in order to work
+with biased reference counting and deferred reference counting.  See
+also `Why Not Use PEP 683 Immortalization?`_.
 
 Biased Reference Counting
 '''''''''''''''''''''''''
 
 Biased reference counting has a fast-path for objects "owned" by the
 current thread and a slow-path for other objects.  Ownership is
-indicated by the ``ob_tid`` field.  Determining the thread id
-requires platform specific code [#tid]_.  Two special values for
-``ob_tid`` are ``-1`` and ``0``.  A value of ``-1`` indicates the
-object is immortal (see `Immortalization`_) and a value of ``0``
+indicated by the ``ob_tid`` field.  Determining the thread id requires
+platform specific code [#tid]_.  A value of ``0`` in ``ob_tid``
 indicates that the object is not owned by any thread.
-
-Threads must give up ownership of an object before that object can be
-destroyed.  Ownership is most commonly given up when the local
-reference count reaches zero, but also can be requested by other
-threads.  Threads give up ownership by setting ``ob_tid`` to zero, and
-adding the local reference count to the shared reference count.  If the
-combined reference count is zero, the object can be deallocated.
-Otherwise, only the shared reference count field is used from that
-point onwards.
 
 The ``ob_ref_local`` field stores the local reference count and two
 flags.  The two most significant bits are used to indicate the object
 is immortal or uses deferred reference counting (see `Deferred
 reference counting`_).
 
-The ``ob_ref_shared`` field stores the shared reference count and two
-flags.  The two *least* significant bits are used to indicate if the
-object is "merged" or "queued."  The shared reference count is
-therefore shifted left by two.  The ``ob_ref_shared`` field uses the
-least significant bits because the shared reference count can be
-temporarily negative; increfs and decrefs may not be balanced between
-threads.
+The ``ob_ref_shared`` field stores the shared reference count.  The
+two *least* significant bits are used to store the reference
+counting state.  The shared reference count is therefore shifted left by
+two.  The ``ob_ref_shared`` field uses the least significant bits
+because the shared reference count can be temporarily negative; increfs
+and decrefs may not be balanced between threads.
 
-If ``ob_ref_shared`` becomes negative, the current thread requests
-that the owning thread merge the two fields.  It atomically pushes
-the object to the owning thread's queue of objects to be merged and
-sets the "queued" bit on ``ob_ref_shared`` (to prevent duplicate
-queueings).  The owning thread is notified via the ``eval_breaker``
-mechanism.  In practice, this operation is rare.  Most objects are
-only accessed by a single thread and those objects accessed by
-multiple threads rarely have negative shared reference counts.
+The possible reference counting states are listed below:
+
+* ``0b00`` - default
+* ``0b01`` - weakrefs
+* ``0b10`` - queued
+* ``0b11`` - merged
+
+The states form a progression: during their lifecycle, objects may
+transition to any numerically higher state.  Objects can only be
+deallocated from the "default" and "merged" states.  Other states must
+transition to the "merged" state before deallocation.  Transitioning
+states requires an atomic compare-and-swap on the ``ob_ref_shared``
+field.
+
+Default (``0b00``)
+""""""""""""""""""
+
+Objects are intitially created in the default state.  This is the only
+state that allows for the quick deallocation code path.  Otherwise, the
+thread must merge the local and shared reference count fields, which
+requires an atomic compare-and-swap.
+
+This quick deallocation code path would not be thread-safe with
+concurrent dereferencing of weakrefs, so the first time a weak
+reference is created, the object is transitioned to the "weakrefs"
+state if it is currently in the "default" state.
+
+Similarly, the quick deallocation code path would not be thread-safe
+with the lockless list and dictionary accesses (see `Optimistically
+Avoiding Locking`_), so the first time a non-owning thread thread
+attempts to retrieve an object in the "default" state it falls back to
+the slower locking code path and transitions the object to
+the "weakrefs" state.
+
+
+Weakrefs (``0b01``)
+"""""""""""""""""""
+
+Objects in weakref and higher states support dereferencing weakrefs
+as well as the lockless list and dictionary access by non-owning
+threads.  They require transitioning to the merged state before
+deallocation, which is more expensive than the quick deallocation code
+path supported by the "default" state.
+
+
+Queued (``0b10``)
+""""""""""""""""""
+
+The queued state indicates that the a non-owning thread has requested
+that the reference count fields be merged.  This can happen when the
+shared reference count becomes negative (due to an imbalance between
+increfs and decrefs between threads).  The object is inserted into the
+owning thread's queue of objects to be merged.  The owning thread is
+notified via the ``eval_breaker`` mechanism.  In practice, this
+operation is rare.  Most objects are only accessed by a single thread
+and those objects accessed by multiple threads rarely have negative
+shared reference counts.
+
+If the owning thread has terminated, the acting thread immediately
+merges the local and shared reference count fields and transitions to
+the merged state.
+
+
+Merged (``0b11``)
+"""""""""""""""""
+
+The merged state indicates that the object is not owned by any thread.
+The ``ob_tid`` field is zero in this state and ``ob_ref_local`` is not
+used.  Once the shared reference count reaches zero, the object can
+be deallocated from the merged state.
+
+
+Reference counting pseudo-code
+""""""""""""""""""""""""""""""
+
 
 The proposed ``Py_INCREF`` and ``Py_DECREF`` operation should behave
 as follows (using C-like pseudo-code):
@@ -479,7 +543,7 @@ as follows (using C-like pseudo-code):
 
   void Py_INCREF(PyObject *op)
   {
-    Py_ssize_t new_local = op->ob_ref_local + 1;
+    uint32_t new_local = op->ob_ref_local + 1;
     if (new_local == 0)
       return;  // object is immortal
     if (op->ob_tid == _Py_ThreadId())
@@ -490,7 +554,7 @@ as follows (using C-like pseudo-code):
 
   void Py_DECREF(PyObject *op)
   {
-    if (op->ob_tid == -1) {
+    if (op->ob_ref_local == _Py_IMMORTAL_REFCNT) {
       return;  // object is immortal
     }
     if (op->ob_tid == _Py_ThreadId()) {
@@ -504,7 +568,19 @@ as follows (using C-like pseudo-code):
     }
   }
 
-The reference implementation [#nogil]_ contains implementations of
+  void _Py_MergeZeroRefcount(PyObject *op)
+  {
+    if (op->ob_ref_shared == 0) {
+      // quick deallocation code path (common case)
+      op->ob_tid = 0;
+      _Py_Dealloc(op);
+    }
+    else {
+      // slower merging path not shown
+    }
+  }
+
+The reference implementation [#nogil312]_ contains implementations of
 ``_Py_MergeZeroRefcount`` and ``_Py_DecRefShared``.
 
 Note that the above is pseudocode: in practice, the implementation
@@ -526,17 +602,17 @@ Typically, the interpreter modifies objects' reference counts as they
 are pushed to and popped from the interpreter's stack. The
 interpreter skips these reference counting operations for objects
 that use deferred reference counting.  Objects that support deferred
-reference counting are marked by setting the second-most significant
-bit in the local reference count field to one.
+reference counting are marked by setting the two most significant
+bits in the local reference count field to one.
 
-Because some reference counting operations are skipped, the reference count fields no
-longer reflect the true number of references to these objects.  The
-true reference count is the sum of the reference count fields plus
-any skipped references from each thread's interpreter stack.  The
-true reference count can only be safely computed when all threads are
-paused during cyclic garbage collection.  Consequently, objects that
-use deferred reference counting can only be deallocated during
-garbage collection cycles.
+Because some reference counting operations are skipped, the reference
+count fields no longer reflect the true number of references to these
+objects.  The true reference count is the sum of the reference count
+fields plus any skipped references from each thread's interpreter
+stack.  The true reference count can only be safely computed when all
+threads are paused during cyclic garbage collection.  Consequently,
+objects that use deferred reference counting can only be deallocated
+during garbage collection cycles.
 
 Note that the objects that use deferred reference counting already
 naturally form reference cycles in CPython, so they would typically be
@@ -646,8 +722,7 @@ CPython Free Lists
 
 CPython makes use of free lists to speed up the allocation of small,
 frequently allocated objects like tuples and numbers.  These free
-lists are not thread-safe and will need to be disabled when building
-Python in the ``--disable-gil`` mode.
+lists are moved to ``PyThreadState`` from per-interpreter state.
 
 
 
@@ -664,12 +739,17 @@ with this proposal:
 * Integration with deferred reference counting and biased reference
   counting.
 
+Additionally, the above changes enable removing the
+``_gc_prev`` and ``_gc_next`` fields from GC objects.  The GC bits
+that stored the tracked, finalized, and unreachable states are moved
+to the ``ob_gc_bits`` field in the PyObject header.
+
 Stop-the-World
 ''''''''''''''
 
 The CPython cycle garbage collector currently relies on the global
 interpreter lock to prevent other threads from accessing Python
-objects while the collector finds cycles. The GIL is never released
+objects while the collector finds cycles.  The GIL is never released
 during the cycle-finding routine, so the collector can rely on
 stable (i.e., unchanging) reference counts and references for the
 duration of that routine. However, following cycle detection, the GIL
@@ -803,14 +883,11 @@ that property.
 
 This PEP proposes using per-object locks to provide many of the same
 protections that the GIL provides.  For example, every list,
-dictionary, and set will have an associated (lightweight) lock.  All
+dictionary, and set will have an associated lightweight lock.  All
 operations that modify the object must hold the object's lock.  Most
 operations that read from the object should acquire the object's lock
 as well; the few read operations that can proceed without holding a
 lock are described below.
-
-Not all Python objects require locks.  For example, immutable objects
-like tuples, strings, and numbers do not require a lock.
 
 Per-object locks with critical sections provide weaker protections
 than the GIL. Because the GIL doesn't necessarily ensure that
@@ -864,7 +941,7 @@ from the memory allocator:
 * ``list.contains``
 
 Borrowed References
--------------------
+'''''''''''''''''''
 
 Per-object locking provides many of the important protections that the
 GIL provides, but there are a few cases where it's not sufficient.
@@ -898,7 +975,7 @@ dictionaries are effectively private (not accessible by other
 threads).
 
 Python Critical Sections
-------------------------
+''''''''''''''''''''''''
 
 Straightforward per-object locking could introduce deadlocks that were
 not present when running with the GIL.  Threads may hold locks for
@@ -936,37 +1013,43 @@ nested operations, while avoiding deadlocks.
 
 The proposed API for Python critical sections are the following four
 macros. These are intended to be public (usable by C-API extensions),
-but not parted of the limited API:
+but not part of the limited API:
 
-- ``Py_BEGIN_CRITICAL_SECTION(PyMutex m);``:
-  Begins a critical section by acquiring the mutex ``m``. If ``m`` is
-  already locked, then locks for any outstanding critical sections are
-  released before this thread waits for ``m`` to be unlocked.
+- ``Py_BEGIN_CRITICAL_SECTION(PyObject *op);``:
+  Begins a critical section by acquiring the mutex for the referenced
+  object.  If the object is  already locked, then locks for any
+  outstanding critical sections are released before this thread waits
+  for referenced object to be unlocked.
 
-- ``Py_END_CRITICAL_SECTION(PyMutex m);``:
-  Ends the most recent operation, unlocking the mutex ``m``. The
+- ``Py_END_CRITICAL_SECTION;``:
+  Ends the most recent operation, unlocking the mutex. The next
   most recent previous critical section (if any) is resumed if it is
   currently suspended.
 
-- ``Py_BEGIN_CRITICAL_SECTION2(PyMutex m1, PyMutex m2);``:
-  Begins a critical section by acquiring the mutexes ``m1`` and ``m2``.
+- ``Py_BEGIN_CRITICAL_SECTION2(PyObject *a, PyObject *b);``:
+  Begins a critical section by acquiring the mutexes for two objects.
   To ensure consistent lock ordering, the order of acquisition is
   determined by memory address (i.e., the mutex with lower memory
   address is acquired first). If either mutex is already locked, then
   locks for any outstanding critical sections are released before this
-  thread waits for ``m1`` or ``m2`` to be unlocked.
+  thread waits for the referenced objects to be unlocked.
 
-- ``Py_END_CRITICAL_SECTION2(PyMutex m1, PyMutex m2);``:
+- ``Py_END_CRITICAL_SECTION2;``:
   Behaves the same as ``Py_END_CRITICAL_SECTION`` but unlocks two
-  mutexes ``m1`` and ``m2``.
+  objects.
 
 Additionally, when a thread transitions from the ``ATTACHED`` state to
 the ``DETACHED`` state, it should suspend any active critical
 sections. When transitioning from ``DETACHED`` to ``ATTACHED``, the
 most recent suspended critical section, if any, should be resumed.
 
+Note that operations that lock two containers simultaneously need to use
+the ``Py_BEGIN_CRITICAL_SECTION2`` macro.  It is not sufficient to nest
+two calls to ``Py_BEGIN_CRITICAL_SECTION`` because the inner critical
+section may release the locks from the outer critical section.
+
 Optimistically Avoiding Locking
--------------------------------
+'''''''''''''''''''''''''''''''
 
 A few operations on ``dict`` and ``list`` optimistically avoid
 acquiring the per-object locks. They have a fast path operation that
@@ -1080,7 +1163,7 @@ memory occupied by the Python object previously held a different
 
 
 Mimalloc Changes for Optimistic ``list`` and ``dict`` Access
-------------------------------------------------------------
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 
 The implementation requires additional constraints to the memory
 allocator, including some changes to the mimalloc code.  Some
@@ -1103,25 +1186,19 @@ and the memory reused for a new object, the new object's reference
 count field is placed at the same location in memory.  The reference
 count field remains valid (or zero) across allocations.
 
-Python objects that support cyclic garbage collection have two extra
-fields preceding the ``PyObject`` header, so their reference count
-fields are at a different offset from the start of their allocations.
-There are therefore two mimalloc heaps for Python objects, one for
-objects that support GC and one for objects that do not.
-
-The backing arrays for lists and the ``PyDictKeysObject`` [#dict]_ for
-dictionaries face hazards similar to those of Python objects.  Lists
-and dictionaries may be resized concurrently with accesses,
-reallocating the backing array or keys object.  Thus, there are
-two additional mimalloc heaps: one for list arrays and one for
-dictionary keys objects.  In total, there are five mimalloc heaps:
-two for Python objects (GC and non-GC), one for list arrays, one for
-dictionary keys, and the default mimalloc heap used for other
-allocations.
+Python objects that support ``Py_TPFLAGS_MANAGED_DICT`` have their
+dictionary and weak reference fields preceding the  ``PyObject``
+header, so their reference count fields are at a different offset from
+the start of their allocations.  They are stored in a separate mimalloc
+heap.  Additionally, non-GC objects are stored in their own heap so
+that the GC only has to look at GC objects.  There are therefore three
+mimalloc heaps for Python objects, one for non-GC objects, one for GC
+objects with managed dictionaries, and one for GC objects without
+managed dictionaries.
 
 
 Mimalloc Page Reuse
---------------------
+'''''''''''''''''''
 
 It is beneficial to keep the restrictions on mimalloc page reuse to a
 short period of time to avoid increasing overall memory usage.
@@ -1168,7 +1245,7 @@ empty blocks in the freed page, so the page can be used for any other
 purpose or even returned to the operating system.
 
 Optimistic ``dict`` and ``list`` Access Summary
------------------------------------------------
+'''''''''''''''''''''''''''''''''''''''''''''''
 
 This PEP proposes a technique for thread-safe list and dictionary
 accesses that typically avoids acquiring locks.  This reduces
@@ -1189,6 +1266,55 @@ operating system.  The restrictions are also lifted whenever the
 cyclic garbage collector runs because the stop-the-world pause
 ensures that threads do not have any outstanding references to empty
 mimalloc pages.
+
+
+Specializing Interpreter
+------------------------
+
+The specializing interpreter requires some changes to be thread-safe
+when running without the GIL:
+
+* Concurrent specializations are prevented by using a mutex.  This
+  prevents multiple threads writing to the same inline cache.
+* In multi-threaded programs running without the GIL, each bytecode is
+  only specialized once.  This prevents a thread from reading a
+  partially written inline cache.
+* Locking also ensures that cached values of ``tp_version_tag`` and
+  ``keys_version`` are consistent with the cached descriptors and other
+  values.
+* Modifications to inline counters use "relaxed atomics".  In other
+  words, some counter decrements may be missed or overwritten, but that
+  does not affect correctness.
+
+
+``Py_mod_gil`` Slot
+-------------------
+
+In ``--disable-gil`` builds, when loading an extension, CPython will
+check for a new :pep:`489`-style ``Py_mod_gil`` slot.  If the slot is
+set to ``Py_mod_gil_not_used``, then extension loading proceeds as
+normal. If the slot is not set, the interpreter pauses all threads and
+enables the GIL before continuing.  Additionally, the interpreter will
+issue a visible warning naming the extension, that the GIL was enabled
+(and why) and the steps the user can take to override it.
+
+
+``PYTHONGIL`` Environment Variable
+----------------------------------
+
+In ``--disable-gil`` builds, the user can also override the behavior at
+runtime by setting the ``PYTHONGIL`` environment variable. Setting
+``PYTHONGIL=0``, forces the GIL to be disabled, overriding the module
+slot logic.  Setting ``PYTHONGIL=1``, forces the GIL to be enabled.
+
+The ``PYTHONGIL=0`` override is important because extensions that are
+not thread-safe can still be useful in multi-threaded applications. For
+example, one may want to use the extension from only a single thread or
+guard access by locks.  For context, there are already some extensions
+that aren not thread-safe even with the GIL, and users already have to
+take these sorts of steps.
+
+The ``PYTHONGIL=1`` override is sometimes useful for debugging.
 
 
 Rationale
@@ -1218,7 +1344,7 @@ that design, those lists would need to be made thread-safe, and it's
 not clear how to do that efficiently.
 
 Generational garbage collection is used to good effect in many other
-language runtimes. For example, many of the Java HotSpot garbage
+language runtimes.  For example, many of the Java HotSpot garbage
 collector implementations use multiple generations [#hotspotgc]_. In
 these runtimes, a young generation is frequently a throughput win:
 since a large percentage of the young generation is typically "dead,"
@@ -1228,7 +1354,7 @@ over 90% of "young" objects are typically collected [#decapo]_
 [#exploitingmemoryjava]_. This is commonly referred to as the "weak
 generational hypothesis;" the observation is that most objects die
 young. This pattern is reversed in CPython due to the use of
-reference counting. Although most objects still die young, they are
+reference counting.  Although most objects still die young, they are
 collected when their reference counts reach zero. Objects that
 survive to a garbage collection cycle are most likely to remain
 alive [#cpythongc]_. This difference means that generational
@@ -1349,22 +1475,47 @@ be able to.
 Performance
 ===========
 
-The changes to make CPython thread-safe without the GIL have a
-negative performance impact on single-threaded performance.  The
-largest impact is due to the reference counting changes, particularly
-biased reference counting and immortalization. On Python 3.11,
-implementing biased reference counting and immortalization results
-in about a 10% geomean regression on the pyperformance suite.  This
-performance impact can be partly mitigated through further interpreter
-changes.  For example, with the "nogil" proof-of-concept [#nogil]_,
-biased reference counting and immortalization together have a smaller
-5% regression on the pyperformance suite.  However, those changes
-are not part of this PEP.
+The changes to make CPython thread-safe without the GIL increase
+execution overhead for ``--disable-gil`` builds.  The performance
+impact is different for programs that use only a single thread compared
+to programs that use multiple threads, so the table below reports
+execution overhead separately for these types of programs separately.
 
-The other changes with significant performance impact are:
 
-* 2% - global free lists (mostly tuple and float free lists)
-* 1.5% - per-object mutexes in collections (dict, list, queue)
+.. list-table:: Execution Overhead on pyperformance 1.0.6
+   :header-rows: 1
+   :widths: auto
+
+   * -
+     - Intel Skylake
+     - AMD Zen 3
+   * - One thread
+     - 6%
+     - 5%
+   * - Multiple threads
+     - 8%
+     - 7%
+
+The baseline used to measure overhead is ``018be4c`` from `PR 19474`_,
+which implements immortal objects for Python 3.12.  The largest
+contribution to execution overhead is biased reference counting
+followed by per-object locking.  For thread-safety reasons, an
+application running with multiple threads will only specialize a given
+bytecode once; this is why the overhead for programs that use multiple
+threads is larger compared to programs that only use one thread.
+However, with the GIL disabled, programs that use multiple threads
+should also be able to more effectively use multiple CPU cores.
+
+Note that this PEP would not affect the performance of the default
+(non ``--disable-gil``) builds of CPython.
+
+.. _PR 19474: https://github.com/python/cpython/pull/19474
+
+
+Build Bots
+==========
+
+The stable build bots will also include ``--disable-gil`` builds.
 
 
 How to Teach This
@@ -1378,9 +1529,27 @@ running Python without the GIL.
 Reference Implementation
 ========================
 
-A prototype implementing this PEP is available at
-http://github.com/colesbury/nogil.
+There are two GitHub repositories implementing versions of CPython
+without the GIL:
 
+* https://github.com/colesbury/nogil-3.12
+* https://github.com/colesbury/nogil
+
+The ``nogil-3.12`` is based on Python 3.12.0a4.  It is useful for
+evaluating single-threaded execution overhead and as a reference
+implementation for this PEP.  It is less useful for evaluating C-API
+extension compatibility because many extensions are not currently
+compatible with Python 3.12.  Due to limited time for the 3.12 port,
+the ``nogil-3.12`` implementation does not skip all deferred reference
+counts.  As a temporary work around, the implementation immortalizes
+objects that use deferred reference counting in programs that spawn
+multiple threads.
+
+
+The ``nogil`` repository is based on Python 3.9.10.  It is useful for
+evaluating multi-threading scaling in real world applications and
+extension compatibility.  It is more stable and well tested than the
+``nogil-3.12`` repository.
 
 Alternatives
 ============
@@ -1437,13 +1606,13 @@ Related Work
 Per-Interpreter GIL
 -------------------
 
-:pep:`684` proposes a per-interpreter GIL to address multi-core
-parallelism.  This would allow parallelism between interpreters in
-the same process, but places substantial restrictions on sharing
-Python data between interpreters.  Both this PEP and :pep:`684`
-address the multi-core parallelism, but with different tradeoffs
-and techniques.  It is feasible to implement both PEPs in CPython at
-the same time.
+The recently accepted :pep:`684` proposes a per-interpreter GIL to
+address multi-core parallelism.  This would allow parallelism between
+interpreters in the same process, but places substantial restrictions
+on sharing Python data between interpreters.  Both this PEP
+and :pep:`684` address the multi-core parallelism, but with different
+tradeoffs and techniques.  It is feasible to implement both PEPs in
+CPython at the same time.
 
 
 Gilectomy
@@ -1564,32 +1733,24 @@ Like :pep:`683`, this PEP proposes an immortalization scheme for
 Python objects, but the PEPs use different bit representations to
 mark immortal objects.  The schemes cannot be identical because this
 PEP depends on biased reference counting, which has two reference
-count fields instead of one.  The schemes could be made more
-superficially similar, but it is not clear that would be worthwhile.
-PEP 683 maintains compatibility with extensions compiled to the
-stable ABI, and therefore uses the second most significant bit
-(i.e., 2^62 on 64-bit platforms) to mark immortal objects. Checking
-that bit typically requires an extra instruction on x86-64 compared
-with checking the sign bit or one of the low 32 bits.  This PEP
-cannot maintain compatibility with extensions compiled to the stable
-ABI because of the use of two reference count fields, and so this PEP
-is free to propose a representation that allows slightly more
-efficient checks for immortality on x86-64.
+count fields instead of one.
 
 
 Open Issues
 ===========
 
-Quickening and Specialization
------------------------------
+Improved Specialization
+-----------------------
 
-The Python 3.11 release introduced quickening and specialization as
-part of the faster CPython project, substantially improving
-performance.  Quickening and specialization replaces slow bytecode
-instructions with faster variants [#pep659]_.  Some of these
-optimizations are not thread-safe without the GIL, and it remains an
-open issue how to implement them efficiently in a thread-safe
-manner.
+The Python 3.11 release introduced quickening and specialization as part
+of the faster CPython project, substantially improving performance.
+Specialization replaces slow bytecode instructions with faster
+variants [#pep659]_.  To maintain thread-safety, applications that use
+multiple threads (and run without the GIL) will only specialize each
+bytecode once, which can lower performance on some programs.  It is
+possible to support specializing multiple times, but that requires more
+investigation and is not part of this PEP.
+
 
 Python Build Modes
 ------------------
@@ -1617,6 +1778,17 @@ This PEP covers the first step, with the remaining steps left as open
 issues.  In this scenario, there would be a two to three year period
 where extension authors would target an extra CPython build per
 supported CPU architecture and OS.
+
+Integration
+-----------
+
+The reference implementation changes approximately 15,000 lines of code
+in CPython and includes mimalloc, which is also approximately 15,000
+lines of code.  Most changes are not performance sensitive and can be
+included in both ``--disable-gil`` and the default builds.  Some
+macros, like ``Py_BEGIN_CRITICAL_SECTION`` will be no-ops in the
+default build.  Thee author does not expect a huge number of ``#ifdef``
+statements to support the ``--disable-gil`` builds.
 
 
 Mitigations for Single-Threaded Performance
@@ -1659,8 +1831,6 @@ References
    that support cyclic garbage collection have extra fields preceding
    the PyObject struct.
 
-.. [#dict] ``PyDictKeysObject`` serves as the backing array for dictionaries
-
 .. [#gus] "Global Unbounded Sequences (GUS)"
    https://github.com/freebsd/freebsd-src/blob/9408f36627b74a472dc82f7a43320235c0c9055a/sys/kern/subr_smr.c#L44.
    See also https://people.kernel.org/joelfernandes/gus-vs-rcu.
@@ -1696,6 +1866,8 @@ References
    collector. https://go.dev/blog/ismmkeynote.
 
 .. [#nogil] https://github.com/colesbury/nogil.
+
+.. [#nogil312] https://github.com/colesbury/nogil-3.12.
 
 .. [#howto] Python HOWTOs.
    https://docs.python.org/3/howto/index.html.
