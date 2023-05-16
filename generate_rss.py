@@ -182,7 +182,7 @@ def main():
     language features, and some meta-information like release
     procedure and schedules.
     """
-    last_build_date = _format_rfc_2822(datetime.datetime.utcnow())
+    last_build_date = _format_rfc_2822(datetime.datetime.now(datetime.timezone.utc))
     items = "\n".join(reversed(items))
     output = f"""\
 <?xml version='1.0' encoding='UTF-8'?>

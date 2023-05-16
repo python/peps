@@ -1,4 +1,4 @@
-import datetime
+import datetime as dt
 from pathlib import Path
 import subprocess
 
@@ -66,7 +66,7 @@ def _add_commit_history_info(pep_source_path: Path) -> nodes.paragraph:
     except KeyError:
         return nodes.paragraph()
 
-    iso_time = datetime.datetime.utcfromtimestamp(since_epoch).isoformat(sep=" ")
+    iso_time = dt.datetime.fromtimestamp(since_epoch, dt.timezone.utc).isoformat(sep=" ")
     commit_link = f"https://github.com/python/peps/commits/main/{pep_source_path.name}"
     link_node = nodes.reference("", f"{iso_time} GMT", refuri=commit_link)
     return nodes.paragraph("", "Last modified: ", link_node)
