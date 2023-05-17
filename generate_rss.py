@@ -3,7 +3,7 @@
 # CC0-1.0-Universal license, whichever is more permissive.
 
 import argparse
-import datetime
+import datetime as dt
 import email.utils
 from html import escape
 from pathlib import Path
@@ -19,9 +19,9 @@ from docutils.parsers.rst import roles
 PEP_ROOT = Path(__file__).parent
 
 
-def _format_rfc_2822(dt: datetime.datetime) -> str:
-    dt = dt.replace(tzinfo=datetime.timezone.utc)
-    return email.utils.format_datetime(dt, usegmt=True)
+def _format_rfc_2822(datetime: dt.datetime) -> str:
+    datetime = datetime.replace(tzinfo=dt.timezone.utc)
+    return email.utils.format_datetime(datetime, usegmt=True)
 
 
 line_cache: dict[Path, dict[str, str]] = {}
@@ -111,12 +111,12 @@ def first_line_starting_with(full_path: Path, text: str) -> str:
     return path_cache.get(text, "")
 
 
-def pep_creation(full_path: Path) -> datetime.datetime:
+def pep_creation(full_path: Path) -> dt.datetime:
     created_str = first_line_starting_with(full_path, "Created:")
     if full_path.stem == "pep-0102":
         # remove additional content on the Created line
         created_str = created_str.split(" ", 1)[0]
-    return datetime.datetime.strptime(created_str, "%d-%b-%Y")
+    return dt.datetime.strptime(created_str, "%d-%b-%Y")
 
 
 def parse_rst(full_path: Path) -> nodes.document:
@@ -150,7 +150,7 @@ def main():
 
     # generate rss items for 10 most recent peps
     items = []
-    for dt, full_path in peps_with_dt[-10:]:
+    for datetime, full_path in peps_with_dt[-10:]:
         try:
             pep_num = int(full_path.stem.split("-")[-1])
         except ValueError:
@@ -172,7 +172,7 @@ def main():
       <description>{escape(pep_abstract(full_path), quote=False)}</description>
       <author>{escape(joined_authors, quote=False)}</author>
       <guid isPermaLink="true">{url}</guid>
-      <pubDate>{_format_rfc_2822(dt)}</pubDate>
+      <pubDate>{_format_rfc_2822(datetime)}</pubDate>
     </item>"""
         items.append(item)
 
@@ -182,7 +182,7 @@ def main():
     language features, and some meta-information like release
     procedure and schedules.
     """
-    last_build_date = _format_rfc_2822(datetime.datetime.now(datetime.timezone.utc))
+    last_build_date = _format_rfc_2822(dt.datetime.now(dt.timezone.utc))
     items = "\n".join(reversed(items))
     output = f"""\
 <?xml version='1.0' encoding='UTF-8'?>
