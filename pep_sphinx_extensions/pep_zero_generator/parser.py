@@ -131,7 +131,7 @@ class PEP:
         """Return reStructuredText tooltip for the PEP type and status."""
         type_code = self.pep_type[0].upper()
         if self.status in HIDE_STATUS:
-            return f":abbr:`{type_code} ({self.pep_type})`"
+            return f":abbr:`{type_code} ({self.pep_type}, {self.status})`"
         status_code = self.status[0].upper()
         return f":abbr:`{type_code}{status_code} ({self.pep_type}, {self.status})`"
 
@@ -148,9 +148,10 @@ class PEP:
         }
 
     @property
-    def full_details(self) -> dict[str, str]:
+    def full_details(self) -> dict[str, str | int]:
         """Returns all headers of the PEP as a dict."""
         return {
+            "number": self.number,
             "title": self.title,
             "authors": ", ".join(author.nick for author in self.authors),
             "discussions_to": self.discussions_to,

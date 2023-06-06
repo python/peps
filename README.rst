@@ -10,6 +10,16 @@ about writing one, please start reading at :pep:`1`. Note that the PEP Index
 (:pep:`0`) is automatically generated based on the metadata headers in other PEPs.
 
 
+Canonical links
+===============
+
+The canonical form of PEP links are zero-padded, such as
+``https://peps.python.org/pep-0008/``
+
+Shortcut redirects are also available.
+For example, ``https://peps.python.org/8`` redirects to the canonical link.
+
+
 Contributing to PEPs
 ====================
 
@@ -48,8 +58,8 @@ In summary, run the following in a fresh, activated virtual environment:
     # Install requirements
     python -m pip install -U -r requirements.txt
 
-    # Render the PEPs
-    make render
+    # Build the PEPs
+    make html
 
     # Or, if you don't have 'make':
     python build.py

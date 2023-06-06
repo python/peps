@@ -23,7 +23,7 @@ class PEPBanner(rst.Directive):
     admonition_post_text = ""
 
     admonition_class = nodes.important
-    css_classes = ["pep-banner"]
+    css_classes = []
 
 
     def run(self) -> list[nodes.admonition]:
@@ -48,7 +48,7 @@ class PEPBanner(rst.Directive):
 
         source_lines = [pre_text] + list(self.content or []) + [post_text]
         admonition_node = self.admonition_class(
-            "\n".join(source_lines), classes=self.css_classes)
+            "\n".join(source_lines), classes=["pep-banner"] + self.css_classes)
 
         admonition_node.append(pre_text_node)
         if self.content:
@@ -75,7 +75,7 @@ class CanonicalDocBanner(PEPBanner):
         "See :pep:`1` for how to propose changes."
     )
 
-    css_classes = [*PEPBanner.css_classes, "canonical-doc"]
+    css_classes = ["canonical-doc", "sticky-banner"]
 
 
 
@@ -97,5 +97,6 @@ class CanonicalPyPASpecBanner(PEPBanner):
         "<https://www.pypa.io/en/latest/specifications/#handling-fixes-and-other-minor-updates>`__ "
         "for how to propose changes."
     )
+    admonition_class = nodes.attention
 
-    css_classes = [*PEPBanner.css_classes, "canonical-pypa-spec"]
+    css_classes = ["canonical-pypa-spec", "sticky-banner"]
