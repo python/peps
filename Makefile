@@ -10,14 +10,13 @@ SOURCES      =
 OUTPUT_DIR   = build
 SPHINXERRORHANDLING =
 
-ALLSPHINXOPTS = -b $(BUILDER) -t internal_builder -j $(JOBS) \
+ALLSPHINXOPTS = -b $(BUILDER) -j $(JOBS) \
                 $(SPHINXOPTS) $(SPHINXERRORHANDLING) . $(OUTPUT_DIR) $(SOURCES)
 
 ## html           to render PEPs to "pep-NNNN.html" files
 .PHONY: html
 html: venv
 	$(SPHINXBUILD) $(ALLSPHINXOPTS)
-	$(VENVDIR)/bin/python3 -c "import build; from pathlib import Path; build.create_index_file(Path('$(OUTPUT_DIR)'), '$(BUILDER)')"
 
 ## htmlview       to open the index page built by the html target in your browser
 .PHONY: htmlview
@@ -29,13 +28,11 @@ htmlview: html
 dirhtml: BUILDER = dirhtml
 dirhtml: venv rss
 	$(SPHINXBUILD) $(ALLSPHINXOPTS)
-	$(VENVDIR)/bin/python3 -c "import build; from pathlib import Path; build.create_index_file(Path('$(OUTPUT_DIR)'), '$(BUILDER)')"
 
 ## fail-warning   to render PEPs to "pep-NNNN.html" files and fail the Sphinx build on any warning
 .PHONY: fail-warning
 fail-warning: venv
 	$(SPHINXBUILD) $(ALLSPHINXOPTS) -W
-	$(VENVDIR)/bin/python3 -c "import build; from pathlib import Path; build.create_index_file(Path('$(OUTPUT_DIR)'), '$(BUILDER)')"
 
 ## check-links    to check validity of links within PEP sources
 .PHONY: check-links
