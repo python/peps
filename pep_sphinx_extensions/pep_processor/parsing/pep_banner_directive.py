@@ -94,7 +94,7 @@ class CanonicalPyPASpecBanner(PEPBanner):
     )
     admonition_post_text = (
         "See the `PyPA specification update process "
-        "<https://www.pypa.io/en/latest/specifications/#handling-fixes-and-other-minor-updates>`__ "
+        "<https://www.pypa.io/en/latest/specifications.html#handling-fixes-and-other-minor-updates>`__ "
         "for how to propose changes."
     )
     admonition_class = nodes.attention
