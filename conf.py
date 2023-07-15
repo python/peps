@@ -6,7 +6,7 @@
 from pathlib import Path
 import sys
 
-sys.path.append(str(Path("pep_sphinx_extensions").absolute()))
+sys.path.append(str(Path(".").absolute()))
 
 # -- Project information -----------------------------------------------------
 

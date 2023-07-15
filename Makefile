@@ -1,15 +1,22 @@
 # Builds PEP files to HTML using sphinx
 
-PYTHON=python3
-VENVDIR=.venv
-JOBS=8
-OUTPUT_DIR=build
-RENDER_COMMAND=$(VENVDIR)/bin/python3 build.py -j $(JOBS) -o $(OUTPUT_DIR)
+# You can set these variables from the command line.
+PYTHON       = python3
+VENVDIR      = .venv
+SPHINXBUILD  = PATH=$(VENVDIR)/bin:$$PATH sphinx-build
+BUILDER      = html
+JOBS         = 8
+SOURCES      =
+OUTPUT_DIR   = build
+SPHINXERRORHANDLING =
+
+ALLSPHINXOPTS = -b $(BUILDER) -j $(JOBS) \
+                $(SPHINXOPTS) $(SPHINXERRORHANDLING) . $(OUTPUT_DIR) $(SOURCES)
 
 ## html           to render PEPs to "pep-NNNN.html" files
 .PHONY: html
 html: venv
-	$(RENDER_COMMAND)
+	$(SPHINXBUILD) $(ALLSPHINXOPTS)
 
 ## htmlview       to open the index page built by the html target in your browser
 .PHONY: htmlview
@@ -18,18 +25,20 @@ htmlview: html
 
 ## dirhtml        to render PEPs to "index.html" files within "pep-NNNN" directories
 .PHONY: dirhtml
+dirhtml: BUILDER = dirhtml
 dirhtml: venv rss
-	$(RENDER_COMMAND) --build-dirs
+	$(SPHINXBUILD) $(ALLSPHINXOPTS)
 
 ## fail-warning   to render PEPs to "pep-NNNN.html" files and fail the Sphinx build on any warning
 .PHONY: fail-warning
 fail-warning: venv
-	$(RENDER_COMMAND) --fail-on-warning
+	$(SPHINXBUILD) $(ALLSPHINXOPTS) -W
 
 ## check-links    to check validity of links within PEP sources
 .PHONY: check-links
+check-links: BUILDER = linkcheck
 check-links: venv
-	$(RENDER_COMMAND) --check-links
+	$(SPHINXBUILD) $(ALLSPHINXOPTS)
 
 ## rss            to generate the peps.rss file
 .PHONY: rss
