@@ -1,54 +1,44 @@
-from pathlib import Path
 import re
+from pathlib import Path
 
-from docutils import nodes
-from docutils import transforms
+from docutils import nodes, transforms
 from sphinx import errors
 
 from pep_sphinx_extensions.pep_processor.transforms import pep_zero
 from pep_sphinx_extensions.pep_processor.transforms.pep_zero import _mask_email
 from pep_sphinx_extensions.pep_zero_generator.constants import (
     SPECIAL_STATUSES,
-    STATUS_ACCEPTED,
-    STATUS_ACTIVE,
-    STATUS_DEFERRED,
-    STATUS_DRAFT,
-    STATUS_FINAL,
-    STATUS_PROVISIONAL,
-    STATUS_REJECTED,
-    STATUS_SUPERSEDED,
-    STATUS_WITHDRAWN,
-    TYPE_INFO,
-    TYPE_PROCESS,
-    TYPE_STANDARDS,
+    PEPStatus,
+    PEPType,
 )
 
 ABBREVIATED_STATUSES = {
-    STATUS_DRAFT: "Proposal under active discussion and revision",
-    STATUS_DEFERRED: "Inactive draft that may be taken up again at a later time",
-    STATUS_ACCEPTED: "Normative proposal accepted for implementation",
-    STATUS_ACTIVE: "Currently valid informational guidance, or an in-use process",
-    STATUS_FINAL: "Accepted and implementation complete, or no longer active",
-    STATUS_WITHDRAWN: "Removed from consideration by sponsor or authors",
-    STATUS_REJECTED: "Formally declined and will not be accepted",
-    STATUS_SUPERSEDED: "Replaced by another succeeding PEP",
-    STATUS_PROVISIONAL: "Provisionally accepted but additional feedback needed",
+    PEPStatus.DRAFT.value: "Proposal under active discussion and revision",
+    PEPStatus.DEFERRED.value: "Inactive draft that may be taken up again at a later time",
+    PEPStatus.ACCEPTED.value: "Normative proposal accepted for implementation",
+    PEPStatus.ACTIVE.value: "Currently valid informational guidance, or an in-use process",
+    PEPStatus.FINAL.value: "Accepted and implementation complete, or no longer active",
+    PEPStatus.WITHDRAWN.value: "Removed from consideration by sponsor or authors",
+    PEPStatus.REJECTED.value: "Formally declined and will not be accepted",
+    PEPStatus.SUPERSEDED.value: "Replaced by another succeeding PEP",
+    PEPStatus.PROVISIONAL.value: "Provisionally accepted but additional feedback needed",
 }
 
 ABBREVIATED_TYPES = {
-    TYPE_STANDARDS: "Normative PEP with a new feature for Python, implementation "
+    PEPType.STANDARDS.value: "Normative PEP with a new feature for Python, implementation "
     "change for CPython or interoperability standard for the ecosystem",
-    TYPE_INFO: "Non-normative PEP containing background, guidelines or other "
+    PEPType.INFO.value: "Non-normative PEP containing background, guidelines or other "
     "information relevant to the Python ecosystem",
-    TYPE_PROCESS: "Normative PEP describing or proposing a change to a Python "
+    PEPType.PROCESS.value: "Normative PEP describing or proposing a change to a Python "
     "community process, workflow or governance",
 }
+
 
 class PEPParsingError(errors.SphinxError):
     pass
 
 
-# PEPHeaders is identical to docutils.transforms.peps.Headers excepting bdfl-delegate, sponsor & superseeded-by
+# PEPHeaders is identical to docutils.transforms.peps.Headers excepting bdfl-delegate, sponsor & superseded-by
 class PEPHeaders(transforms.Transform):
     """Process fields in a PEP's initial RFC-2822 header."""
 
@@ -63,8 +53,13 @@ class PEPHeaders(transforms.Transform):
             raise PEPParsingError("Document tree is empty.")
 
         header = self.document[0]
-        if not isinstance(header, nodes.field_list) or "rfc2822" not in header["classes"]:
-            raise PEPParsingError("Document does not begin with an RFC-2822 header; it is not a PEP.")
+        if (
+            not isinstance(header, nodes.field_list)
+            or "rfc2822" not in header["classes"]
+        ):
+            raise PEPParsingError(
+                "Document does not begin with an RFC-2822 header; it is not a PEP."
+            )
 
         # PEP number should be the first field
         pep_field = header[0]
@@ -76,7 +71,9 @@ class PEPHeaders(transforms.Transform):
         try:
             pep_num = int(value)
         except ValueError:
-            raise PEPParsingError(f"'PEP' header must contain an integer. '{value}' is invalid!")
+            raise PEPParsingError(
+                f"'PEP' header must contain an integer. '{value}' is invalid!"
+            )
 
         # Special processing for PEP 0.
         if pep_num == 0:
@@ -112,8 +109,7 @@ class PEPHeaders(transforms.Transform):
             elif name in {"discussions-to", "resolution", "post-history"}:
                 # Prettify mailing list and Discourse links
                 for node in para:
-                    if (not isinstance(node, nodes.reference)
-                            or not node["refuri"]):
+                    if not isinstance(node, nodes.reference) or not node["refuri"]:
                         continue
                     # Have known mailto links link to their main list pages
                     if node["refuri"].lower().startswith("mailto:"):
@@ -133,7 +129,10 @@ class PEPHeaders(transforms.Transform):
                     target = self.document.settings.pep_url.format(int(pep_str))
                     if self.document.settings.builder == "dirhtml":
                         target = f"../{target}"
-                    new_body += [nodes.reference("", pep_str, refuri=target), nodes.Text(", ")]
+                    new_body += [
+                        nodes.reference("", pep_str, refuri=target),
+                        nodes.Text(", "),
+                    ]
                 para[:] = new_body[:-1]  # drop trailing space
             elif name == "topic":
                 new_body = []
@@ -209,16 +208,14 @@ def _process_list_url(parts: list[str]) -> tuple[str, str]:
     # HyperKitty (Mailman3) archive structure is
     # https://mail.python.org/archives/list/<list_name>/thread/<id>
     if "archives" in parts:
-        list_name = (
-            parts[parts.index("archives") + 2].removesuffix("@python.org"))
+        list_name = parts[parts.index("archives") + 2].removesuffix("@python.org")
         if len(parts) > 6 and parts[6] in {"message", "thread"}:
             item_type = parts[6]
 
     # Mailman3 list info structure is
     # https://mail.python.org/mailman3/lists/<list_name>.python.org/
     elif "mailman3" in parts:
-        list_name = (
-            parts[parts.index("mailman3") + 2].removesuffix(".python.org"))
+        list_name = parts[parts.index("mailman3") + 2].removesuffix(".python.org")
 
     # Pipermail (Mailman) archive structure is
     # https://mail.python.org/pipermail/<list_name>/<month>-<year>/<id>
@@ -233,8 +230,7 @@ def _process_list_url(parts: list[str]) -> tuple[str, str]:
 
     # Not a link to a mailing list, message or thread
     else:
-        raise ValueError(
-            f"{'/'.join(parts)} not a link to a list, message or thread")
+        raise ValueError(f"{'/'.join(parts)} not a link to a list, message or thread")
 
     return list_name, item_type
 
@@ -244,7 +240,8 @@ def _process_discourse_url(parts: list[str]) -> tuple[str, str]:
 
     if len(parts) < 5 or ("t" not in parts and "c" not in parts):
         raise ValueError(
-            f"{'/'.join(parts)} not a link to a Discourse thread or category")
+            f"{'/'.join(parts)} not a link to a Discourse thread or category"
+        )
 
     first_subpart = parts[4]
     has_title = not first_subpart.isnumeric()
@@ -272,7 +269,8 @@ def _process_pretty_url(url: str) -> tuple[str, str]:
         item_name, item_type = LINK_PRETTIFIERS[parts[2]](parts)
     except KeyError as error:
         raise ValueError(
-            f"{url} not a link to a recognized domain to prettify") from error
+            f"{url} not a link to a recognized domain to prettify"
+        ) from error
     item_name = item_name.title().replace("Sig", "SIG").replace("Pep", "PEP")
     return item_name, item_type
 

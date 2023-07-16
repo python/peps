@@ -21,10 +21,8 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from pep_sphinx_extensions.pep_zero_generator import parser, subindices, writer
 from pep_sphinx_extensions.pep_zero_generator.constants import SUBINDICES_BY_TOPIC
-from pep_sphinx_extensions.pep_zero_generator import parser
-from pep_sphinx_extensions.pep_zero_generator import subindices
-from pep_sphinx_extensions.pep_zero_generator import writer
 
 if TYPE_CHECKING:
     from sphinx.application import Sphinx
@@ -32,7 +30,7 @@ if TYPE_CHECKING:
 
 
 def _parse_peps() -> list[parser.PEP]:
-    # Read from root directory
+    # Read from root directory.
     path = Path(".")
     peps: list[parser.PEP] = []
 
@@ -40,7 +38,7 @@ def _parse_peps() -> list[parser.PEP]:
         if not file_path.is_file():
             continue  # Skip directories etc.
         if file_path.match("pep-0000*"):
-            continue  # Skip pre-existing PEP 0 files
+            continue  # Skip pre-existing PEP 0 files.
         if file_path.match("pep-????.???") and file_path.suffix in {".txt", ".rst"}:
             pep = parser.PEP(path.joinpath(file_path).absolute())
             peps.append(pep)
@@ -61,7 +59,7 @@ def create_pep_zero(app: Sphinx, env: BuildEnvironment, docnames: list[str]) -> 
 
     subindices.generate_subindices(SUBINDICES_BY_TOPIC, peps, docnames, env)
 
-    # Create peps.json
+    # Create peps.json.
     json_path = Path(app.outdir, "api", "peps.json").resolve()
     json_path.parent.mkdir(exist_ok=True)
     json_path.write_text(create_pep_json(peps), encoding="utf-8")

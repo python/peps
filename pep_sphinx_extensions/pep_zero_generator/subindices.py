@@ -13,14 +13,16 @@ if TYPE_CHECKING:
     from pep_sphinx_extensions.pep_zero_generator.parser import PEP
 
 
-def update_sphinx(filename: str, text: str, docnames: list[str], env: BuildEnvironment) -> Path:
+def update_sphinx(
+    filename: str, text: str, docnames: list[str], env: BuildEnvironment
+) -> Path:
     file_path = Path(f"{filename}.rst").resolve()
     file_path.parent.mkdir(parents=True, exist_ok=True)
     file_path.write_text(text, encoding="utf-8")
 
-    # Add to files for builder
+    # Add to files for builder.
     docnames.append(filename)
-    # Add to files for writer
+    # Add to files for writer.
     env.found_docs.add(filename)
 
     return file_path
@@ -32,7 +34,7 @@ def generate_subindices(
     docnames: list[str],
     env: BuildEnvironment,
 ) -> None:
-    # Create sub index page
+    # Create sub index page.
     generate_topic_contents(docnames, env)
 
     for subindex, additional_description in subindices.items():
@@ -50,13 +52,18 @@ the PEP index.
 {additional_description}
 """
         subindex_text = writer.PEPZeroWriter().write_pep0(
-            filtered_peps, header, subindex_intro, is_pep0=False,
+            filtered_peps,
+            header,
+            subindex_intro,
+            is_pep0=False,
         )
         update_sphinx(f"topic/{subindex}", subindex_text, docnames, env)
 
 
 def generate_topic_contents(docnames: list[str], env: BuildEnvironment):
-    update_sphinx("topic/index", """\
+    update_sphinx(
+        "topic/index",
+        """\
 .. _topic-index:
 
 Topic Index
@@ -70,4 +77,7 @@ PEPs are indexed by topic on the pages below:
    :glob:
 
    *
-""", docnames, env)
+""",
+        docnames,
+        env,
+    )

@@ -3,27 +3,21 @@
 from __future__ import annotations
 
 import datetime as dt
-from typing import TYPE_CHECKING
 import unicodedata
+from typing import TYPE_CHECKING
 
 from pep_sphinx_extensions.pep_processor.transforms.pep_headers import (
     ABBREVIATED_STATUSES,
     ABBREVIATED_TYPES,
 )
-from pep_sphinx_extensions.pep_zero_generator.constants import DEAD_STATUSES
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_ACCEPTED
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_ACTIVE
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_DEFERRED
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_DRAFT
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_FINAL
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_PROVISIONAL
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_REJECTED
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_VALUES
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_WITHDRAWN
-from pep_sphinx_extensions.pep_zero_generator.constants import SUBINDICES_BY_TOPIC
-from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_INFO
-from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_PROCESS
-from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_VALUES
+from pep_sphinx_extensions.pep_zero_generator.constants import (
+    DEAD_STATUSES,
+    STATUS_VALUES,
+    SUBINDICES_BY_TOPIC,
+    TYPE_VALUES,
+    PEPStatus,
+    PEPType,
+)
 from pep_sphinx_extensions.pep_zero_generator.errors import PEPError
 
 if TYPE_CHECKING:
@@ -67,7 +61,7 @@ class PEPZeroWriter:
         self.output: list[str] = []
 
     def emit_text(self, content: str) -> None:
-        # Appends content argument to the output list
+        # Appends content argument to the output list.
         self.output.append(content)
 
     def emit_newline(self) -> None:
@@ -110,7 +104,7 @@ class PEPZeroWriter:
         self.emit_column_headers()
         for pep in peps:
             self.emit_pep_row(**pep.details)
-        # list-table must have at least one body row
+        # List-table must have at least one body row.
         if len(peps) == 0:
             self.emit_text("   * -")
             self.emit_text("     -")
@@ -129,16 +123,16 @@ class PEPZeroWriter:
         if len(peps) == 0:
             return ""
 
-        # PEP metadata
+        # PEP metadata.
         self.emit_text(header)
         self.emit_newline()
 
-        # Introduction
+        # Introduction.
         self.emit_title("Introduction")
         self.emit_text(intro)
         self.emit_newline()
 
-        # PEPs by topic
+        # PEPs by topic.
         if is_pep0:
             self.emit_title("Topics")
             self.emit_text(
@@ -155,13 +149,26 @@ class PEPZeroWriter:
                 self.emit_newline()
             self.emit_newline()
 
-        # PEPs by category
+        # PEPs by category.
         self.emit_title("Index by Category")
-        meta, info, provisional, accepted, open_, finished, historical, deferred, dead = _classify_peps(peps)
+        (
+            meta,
+            info,
+            provisional,
+            accepted,
+            open_,
+            finished,
+            historical,
+            deferred,
+            dead,
+        ) = _classify_peps(peps)
         pep_categories = [
             ("Meta-PEPs (PEPs about PEPs or Processes)", meta),
             ("Other Informational PEPs", info),
-            ("Provisional PEPs (provisionally accepted; interface may still change)", provisional),
+            (
+                "Provisional PEPs (provisionally accepted; interface may still change)",
+                provisional,
+            ),
             ("Accepted PEPs (accepted; may not be implemented yet)", accepted),
             ("Open PEPs (under consideration)", open_),
             ("Finished PEPs (done, with a stable interface)", finished),
@@ -182,7 +189,7 @@ class PEPZeroWriter:
 
         self.emit_newline()
 
-        # PEPs by number
+        # PEPs by number.
         self.emit_title("Numerical Index")
         self.emit_column_headers()
         for pep in peps:
@@ -190,7 +197,7 @@ class PEPZeroWriter:
 
         self.emit_newline()
 
-        # Reserved PEP numbers
+        # Reserved PEP numbers.
         if is_pep0:
             self.emit_title("Reserved PEP Numbers")
             self.emit_column_headers()
@@ -201,7 +208,7 @@ class PEPZeroWriter:
 
             self.emit_newline()
 
-        # PEP types key
+        # PEP types key.
         self.emit_title("PEP Types Key")
         for type_ in sorted(TYPE_VALUES):
             self.emit_text(
@@ -212,11 +219,11 @@ class PEPZeroWriter:
         self.emit_text(":pep:`More info in PEP 1 <1#pep-types>`.")
         self.emit_newline()
 
-        # PEP status key
+        # PEP status key.
         self.emit_title("PEP Status Key")
         for status in sorted(STATUS_VALUES):
-            # Draft PEPs have no status displayed, Active shares a key with Accepted
-            status_code = "<No letter>" if status == STATUS_DRAFT else status[0]
+            # Draft PEPs have no status displayed, Active shares a key with Accepted.
+            status_code = "<No letter>" if status == PEPStatus.DRAFT else status[0]
             self.emit_text(
                 f"* **{status_code}** --- *{status}*: {ABBREVIATED_STATUSES[status]}"
             )
@@ -226,7 +233,7 @@ class PEPZeroWriter:
         self.emit_newline()
 
         if is_pep0:
-            # PEP owners
+            # PEP owners.
             authors_dict = _verify_email_addresses(peps)
             max_name_len = max(len(author_name) for author_name in authors_dict)
             self.emit_title("Authors/Owners")
@@ -236,7 +243,9 @@ class PEPZeroWriter:
             for author_name in _sort_authors(authors_dict):
                 # Use the email from authors_dict instead of the one from "author" as
                 # the author instance may have an empty email.
-                self.emit_text(f"{author_name:{max_name_len}}  {authors_dict[author_name]}")
+                self.emit_text(
+                    f"{author_name:{max_name_len}}  {authors_dict[author_name]}"
+                )
             self.emit_author_table_separator(max_name_len)
             self.emit_newline()
             self.emit_newline()
@@ -260,36 +269,51 @@ def _classify_peps(peps: list[PEP]) -> tuple[list[PEP], ...]:
     for pep in peps:
         # Order of 'if' statement important.  Key Status values take precedence
         # over Type value, and vice-versa.
-        if pep.status == STATUS_DRAFT:
+        if pep.status == PEPStatus.DRAFT:
             open_.append(pep)
-        elif pep.status == STATUS_DEFERRED:
+        elif pep.status == PEPStatus.DEFERRED:
             deferred.append(pep)
-        elif pep.pep_type == TYPE_PROCESS:
-            if pep.status in {STATUS_ACCEPTED, STATUS_ACTIVE}:
+        elif pep.pep_type == PEPType.PROCESS:
+            if pep.status in {PEPStatus.ACCEPTED, PEPStatus.ACTIVE}:
                 meta.append(pep)
-            elif pep.status in {STATUS_WITHDRAWN, STATUS_REJECTED}:
+            elif pep.status in {PEPStatus.WITHDRAWN, PEPStatus.REJECTED}:
                 dead.append(pep)
             else:
                 historical.append(pep)
         elif pep.status in DEAD_STATUSES:
             dead.append(pep)
-        elif pep.pep_type == TYPE_INFO:
+        elif pep.pep_type == PEPType.INFO:
             # Hack until the conflict between the use of "Final"
             # for both API definition PEPs and other (actually
-            # obsolete) PEPs is addressed
-            if pep.status == STATUS_ACTIVE or "release schedule" not in pep.title.lower():
+            # obsolete) PEPs is addressed.
+            if (
+                pep.status == PEPStatus.ACTIVE
+                or "release schedule" not in pep.title.lower()
+            ):
                 info.append(pep)
             else:
                 historical.append(pep)
-        elif pep.status == STATUS_PROVISIONAL:
+        elif pep.status == PEPStatus.PROVISIONAL:
             provisional.append(pep)
-        elif pep.status in {STATUS_ACCEPTED, STATUS_ACTIVE}:
+        elif pep.status in {PEPStatus.ACCEPTED, PEPStatus.ACTIVE}:
             accepted.append(pep)
-        elif pep.status == STATUS_FINAL:
+        elif pep.status == PEPStatus.FINAL:
             finished.append(pep)
         else:
-            raise PEPError(f"Unsorted ({pep.pep_type}/{pep.status})", pep.filename, pep.number)
-    return meta, info, provisional, accepted, open_, finished, historical, deferred, dead
+            raise PEPError(
+                f"Unsorted ({pep.pep_type}/{pep.status})", pep.filename, pep.number
+            )
+    return (
+        meta,
+        info,
+        provisional,
+        accepted,
+        open_,
+        finished,
+        historical,
+        deferred,
+        dead,
+    )
 
 
 def _verify_email_addresses(peps: list[PEP]) -> dict[str, str]:
@@ -337,5 +361,5 @@ def _author_sort_by(author_name: str) -> str:
         if part[0].isupper():
             base = " ".join(surname_parts[i:]).lower()
             return unicodedata.normalize("NFKD", base)
-    # If no capitals, use the whole string
+    # If no capitals, use the whole string.
     return unicodedata.normalize("NFKD", surname.lower())

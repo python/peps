@@ -1,9 +1,8 @@
 import datetime as dt
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
-from docutils import nodes
-from docutils import transforms
+from docutils import nodes, transforms
 
 
 class PEPFooter(transforms.Transform):
@@ -83,7 +82,9 @@ def _get_last_modified_timestamps():
             return {}
 
     # set up the dictionary with the *current* files
-    last_modified = {path.name: 0 for path in Path().glob("pep-*") if path.suffix in {".txt", ".rst"}}
+    last_modified = {
+        path.name: 0 for path in Path().glob("pep-*") if path.suffix in {".txt", ".rst"}
+    }
 
     # iterate through newest to oldest, updating per file timestamps
     change_sets = all_modified.removeprefix("#").split("#")

@@ -9,8 +9,7 @@ class PEPError(Exception):
         self.filename = pep_file
         self.number = pep_number
 
-    def __str__(self):
-        error_msg = super(PEPError, self).__str__()
-        error_msg = f"({self.filename}): {error_msg}"
+    def __str__(self) -> str:
+        error_msg = f"({self.filename}): {super().__str__()}"
         pep_str = f"PEP {self.number}"
         return f"{pep_str} {error_msg}" if self.number is not None else error_msg

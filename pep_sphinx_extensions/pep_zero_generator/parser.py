@@ -3,27 +3,28 @@
 from __future__ import annotations
 
 import csv
+import re
 from email.parser import HeaderParser
 from pathlib import Path
-import re
 from typing import TYPE_CHECKING
 
 from pep_sphinx_extensions.pep_zero_generator.author import parse_author_email
-from pep_sphinx_extensions.pep_zero_generator.constants import ACTIVE_ALLOWED
-from pep_sphinx_extensions.pep_zero_generator.constants import HIDE_STATUS
-from pep_sphinx_extensions.pep_zero_generator.constants import SPECIAL_STATUSES
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_ACTIVE
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_PROVISIONAL
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_VALUES
-from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_STANDARDS
-from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_VALUES
+from pep_sphinx_extensions.pep_zero_generator.constants import (
+    ACTIVE_ALLOWED,
+    HIDE_STATUS,
+    SPECIAL_STATUSES,
+    STATUS_VALUES,
+    TYPE_VALUES,
+    PEPStatus,
+    PEPType,
+)
 from pep_sphinx_extensions.pep_zero_generator.errors import PEPError
 
 if TYPE_CHECKING:
     from pep_sphinx_extensions.pep_zero_generator.author import Author
 
 
-# AUTHOR_OVERRIDES.csv is an exception file for PEP 0 name parsing
+# AUTHOR_OVERRIDES.csv is an exception file for PEP 0 name parsing.
 AUTHOR_OVERRIDES: dict[str, dict[str, str]] = {}
 with open("AUTHOR_OVERRIDES.csv", "r", encoding="utf-8") as f:
     for line in csv.DictReader(f):
@@ -59,51 +60,63 @@ class PEP:
         metadata = HeaderParser().parsestr(pep_text)
         required_header_misses = PEP.required_headers - set(metadata.keys())
         if required_header_misses:
-            _raise_pep_error(self, f"PEP is missing required headers {required_header_misses}")
+            _raise_pep_error(
+                self, f"PEP is missing required headers {required_header_misses}"
+            )
 
         try:
             self.number = int(metadata["PEP"])
         except ValueError:
             _raise_pep_error(self, "PEP number isn't an integer")
 
-        # Check PEP number matches filename
+        # Check PEP number matches filename.
         if self.number != int(filename.stem[4:]):
-            _raise_pep_error(self, f"PEP number does not match file name ({filename})", pep_num=True)
+            _raise_pep_error(
+                self, f"PEP number does not match file name ({filename})", pep_num=True
+            )
 
-        # Title
+        # Title.
         self.title: str = metadata["Title"]
 
-        # Type
+        # Type.
         self.pep_type: str = metadata["Type"]
         if self.pep_type not in TYPE_VALUES:
-            _raise_pep_error(self, f"{self.pep_type} is not a valid Type value", pep_num=True)
+            _raise_pep_error(
+                self, f"{self.pep_type} is not a valid Type value", pep_num=True
+            )
 
-        # Status
+        # Status.
         status = metadata["Status"]
         if status in SPECIAL_STATUSES:
             status = SPECIAL_STATUSES[status]
         if status not in STATUS_VALUES:
-            _raise_pep_error(self, f"{status} is not a valid Status value", pep_num=True)
+            _raise_pep_error(
+                self, f"{status} is not a valid Status value", pep_num=True
+            )
 
         # Special case for Active PEPs.
-        if status == STATUS_ACTIVE and self.pep_type not in ACTIVE_ALLOWED:
+        if status == PEPStatus.ACTIVE and self.pep_type not in ACTIVE_ALLOWED:
             msg = "Only Process and Informational PEPs may have an Active status"
             _raise_pep_error(self, msg, pep_num=True)
 
         # Special case for Provisional PEPs.
-        if status == STATUS_PROVISIONAL and self.pep_type != TYPE_STANDARDS:
+        if status == PEPStatus.PROVISIONAL and self.pep_type != PEPType.STANDARDS:
             msg = "Only Standards Track PEPs may have a Provisional status"
             _raise_pep_error(self, msg, pep_num=True)
         self.status: str = status
 
-        # Parse PEP authors
-        self.authors: list[Author] = _parse_authors(self, metadata["Author"], AUTHOR_OVERRIDES)
+        # Parse PEP authors.
+        self.authors: list[Author] = _parse_authors(
+            self, metadata["Author"], AUTHOR_OVERRIDES
+        )
 
-        # Topic (for sub-indices)
+        # Topic (for sub-indices).
         _topic = metadata.get("Topic", "").lower().split(",")
-        self.topic: set[str] = {topic for topic_raw in _topic if (topic := topic_raw.strip())}
+        self.topic: set[str] = {
+            topic for topic_raw in _topic if (topic := topic_raw.strip())
+        }
 
-        # Other headers
+        # Other headers.
         self.created = metadata["Created"]
         self.discussions_to = metadata["Discussions-To"]
         self.python_version = metadata["Python-Version"]
@@ -112,7 +125,7 @@ class PEP:
         self.resolution = metadata["Resolution"]
         self.superseded_by = metadata["Superseded-By"]
         if metadata["Post-History"]:
-            # Squash duplicate whitespace
+            # Squash duplicate whitespace.
             self.post_history = " ".join(metadata["Post-History"].split())
         else:
             self.post_history = None
@@ -123,7 +136,7 @@ class PEP:
     def __lt__(self, other: PEP) -> bool:
         return self.number < other.number
 
-    def __eq__(self, other):
+    def __eq__(self, other: PEP) -> bool:
         return self.number == other.number
 
     @property
@@ -141,9 +154,9 @@ class PEP:
         return {
             "number": self.number,
             "title": self.title,
-            # a tooltip representing the type and status
+            # A tooltip representing the type and status.
             "shorthand": self.shorthand,
-            # the author list as a comma-separated with only last names
+            # The author list as a comma-separated with only last names.
             "authors": ", ".join(author.nick for author in self.authors),
         }
 
@@ -175,24 +188,29 @@ def _raise_pep_error(pep: PEP, msg: str, pep_num: bool = False) -> None:
     raise PEPError(msg, pep.filename)
 
 
-def _parse_authors(pep: PEP, author_header: str, authors_overrides: dict) -> list[Author]:
+def _parse_authors(
+    pep: PEP, author_header: str, authors_overrides: dict
+) -> list[Author]:
     """Parse Author header line"""
     authors_and_emails = _parse_author(author_header)
     if not authors_and_emails:
         raise _raise_pep_error(pep, "no authors found", pep_num=True)
-    return [parse_author_email(author_tuple, authors_overrides) for author_tuple in authors_and_emails]
+    return [
+        parse_author_email(author_tuple, authors_overrides)
+        for author_tuple in authors_and_emails
+    ]
 
 
-author_angled = re.compile(r"(?P<author>.+?) <(?P<email>.+?)>(,\s*)?")
-author_paren = re.compile(r"(?P<email>.+?) \((?P<author>.+?)\)(,\s*)?")
-author_simple = re.compile(r"(?P<author>[^,]+)(,\s*)?")
+_AUTHOR_ANGLED = re.compile(r"(?P<author>.+?) <(?P<email>.+?)>(,\s*)?")
+_AUTHOR_PAREN = re.compile(r"(?P<email>.+?) \((?P<author>.+?)\)(,\s*)?")
+_AUTHOR_SIMPLE = re.compile(r"(?P<author>[^,]+)(,\s*)?")
 
 
 def _parse_author(data: str) -> list[tuple[str, str]]:
     """Return a list of author names and emails."""
 
     author_list = []
-    for regex in (author_angled, author_paren, author_simple):
+    for regex in (_AUTHOR_ANGLED, _AUTHOR_PAREN, _AUTHOR_SIMPLE):
         for match in regex.finditer(data):
             # Watch out for suffixes like 'Jr.' when they are comma-separated
             # from the name and thus cause issues when *all* names are only
@@ -202,10 +220,7 @@ def _parse_author(data: str) -> list[tuple[str, str]]:
             if not author.partition(" ")[1] and author.endswith("."):
                 prev_author = author_list.pop()
                 author = ", ".join([prev_author, author])
-            if "email" not in match_dict:
-                email = ""
-            else:
-                email = match_dict["email"]
+            email = match_dict.get("email", "")
             author_list.append((author, email))
 
         # If authors were found then stop searching as only expect one

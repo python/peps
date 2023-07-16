@@ -12,12 +12,18 @@ class _Name(NamedTuple):
 
 class Author(NamedTuple):
     """Represent PEP authors."""
+
     last_first: str  # The author's name in Surname, Forename, Suffix order.
     nick: str  # Author's nickname for PEP tables. Defaults to surname.
     email: str  # The author's email address.
 
 
-def parse_author_email(author_email_tuple: tuple[str, str], authors_overrides: dict[str, dict[str, str]]) -> Author:
+_POSSIBLE_SUFFIXES = frozenset({"Jr", "Jr.", "II", "III"})
+
+
+def parse_author_email(
+    author_email_tuple: tuple[str, str], authors_overrides: dict[str, dict[str, str]]
+) -> Author:
     """Parse the name and email address of an author."""
     name, email = author_email_tuple
     _first_last = name.strip()
@@ -52,8 +58,6 @@ def _parse_name(full_name: str) -> _Name:
     'von') then include it in the surname.
 
     """
-    possible_suffixes = {"Jr", "Jr.", "II", "III"}
-
     pre_suffix, _, raw_suffix = full_name.partition(",")
     name_parts = pre_suffix.strip().split(" ")
     num_parts = len(name_parts)
@@ -61,29 +65,32 @@ def _parse_name(full_name: str) -> _Name:
 
     if name_parts == [""]:
         raise ValueError("Name is empty!")
-    elif num_parts == 1:
+    if num_parts == 1:
         return _Name(mononym=name_parts[0], suffix=suffix)
-    elif num_parts == 2:
-        return _Name(forename=name_parts[0].strip(), surname=name_parts[1], suffix=suffix)
+    if num_parts == 2:
+        return _Name(
+            forename=name_parts[0].strip(), surname=name_parts[1], suffix=suffix
+        )
 
-    # handles rogue uncaught suffixes
-    if name_parts[-1] in possible_suffixes:
+    # Handles rogue uncaught suffixes.
+    if name_parts[-1] in _POSSIBLE_SUFFIXES:
         suffix = f"{name_parts.pop(-1)} {suffix}".strip()
 
-    # handles von, van, v. etc.
+    # Handles von, van, v. etc.
     if name_parts[-2].islower():
         forename = " ".join(name_parts[:-2]).strip()
         surname = " ".join(name_parts[-2:])
         return _Name(forename=forename, surname=surname, suffix=suffix)
 
-    # handles double surnames after a middle initial (e.g. N. Vander Weele)
-    elif any(s.endswith(".") for s in name_parts):
-        split_position = [i for i, x in enumerate(name_parts) if x.endswith(".")][-1] + 1
+    # Handles double surnames after a middle initial (e.g. N. Vander Weele).
+    if any(s.endswith(".") for s in name_parts):
+        split_position = [i for i, x in enumerate(name_parts) if x.endswith(".")][
+            -1
+        ] + 1
         forename = " ".join(name_parts[:split_position]).strip()
         surname = " ".join(name_parts[split_position:])
         return _Name(forename=forename, surname=surname, suffix=suffix)
 
-    # default to using the last item as the surname
-    else:
-        forename = " ".join(name_parts[:-1]).strip()
-        return _Name(forename=forename, surname=name_parts[-1], suffix=suffix)
+    # Default to using the last item as the surname.
+    forename = " ".join(name_parts[:-1]).strip()
+    return _Name(forename=forename, surname=name_parts[-1], suffix=suffix)

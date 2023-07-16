@@ -1,10 +1,7 @@
 from pathlib import Path
 
-from docutils import nodes
-from docutils import transforms
-from docutils import utils
-from docutils.parsers.rst import roles
-from docutils.parsers.rst import states
+from docutils import nodes, transforms, utils
+from docutils.parsers.rst import roles, states
 
 
 class PEPTitle(transforms.Transform):
@@ -27,7 +24,9 @@ class PEPTitle(transforms.Transform):
         for field in self.document[0]:
             # Hold details of the attribute's tag against its details
             row_attributes = {sub.tagname: sub.rawsource for sub in field}
-            pep_header_details[row_attributes["field_name"]] = row_attributes["field_body"]
+            pep_header_details[row_attributes["field_name"]] = row_attributes[
+                "field_body"
+            ]
 
             # Store the redundant fields in the table for removal
             if row_attributes["field_name"] in desired_fields:
@@ -40,11 +39,17 @@ class PEPTitle(transforms.Transform):
         # Create the title string for the PEP
         pep_number = int(pep_header_details["PEP"])
         pep_title = pep_header_details["Title"]
-        pep_title_string = f"PEP {pep_number} -- {pep_title}"  # double hyphen for en dash
+        pep_title_string = (
+            f"PEP {pep_number} -- {pep_title}"  # double hyphen for en dash
+        )
 
         # Generate the title section node and its properties
         title_nodes = _line_to_nodes(pep_title_string)
-        pep_title_node = nodes.section("", nodes.title("", "", *title_nodes, classes=["page-title"]), names=["pep-content"])
+        pep_title_node = nodes.section(
+            "",
+            nodes.title("", "", *title_nodes, classes=["page-title"]),
+            names=["pep-content"],
+        )
 
         # Insert the title node as the root element, move children down
         document_children = self.document.children
@@ -60,7 +65,15 @@ class PEPTitle(transforms.Transform):
 def _line_to_nodes(text: str) -> list[nodes.Node]:
     """Parse RST string to nodes."""
     document = utils.new_document("<inline-rst>")
-    document.settings.pep_references = document.settings.rfc_references = False  # patch settings
-    states.RSTStateMachine(state_classes=states.state_classes, initial_state="Body").run([text], document)  # do parsing
-    roles._roles.pop("", None)  # restore the "default" default role after parsing a document
+    document.settings.pep_references = (
+        document.settings.rfc_references
+    ) = False  # patch settings
+    states.RSTStateMachine(
+        state_classes=states.state_classes, initial_state="Body"
+    ).run(
+        [text], document
+    )  # do parsing
+    roles._roles.pop(
+        "", None
+    )  # restore the "default" default role after parsing a document
     return document[0].children

@@ -1,7 +1,6 @@
 from pathlib import Path
 
-from docutils import nodes
-from docutils import transforms
+from docutils import nodes, transforms
 
 
 class PEPReferenceRoleTitleText(transforms.Transform):

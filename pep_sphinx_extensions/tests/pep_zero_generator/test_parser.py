@@ -4,20 +4,7 @@ import pytest
 
 from pep_sphinx_extensions.pep_zero_generator import parser
 from pep_sphinx_extensions.pep_zero_generator.author import Author
-from pep_sphinx_extensions.pep_zero_generator.constants import (
-    STATUS_ACCEPTED,
-    STATUS_ACTIVE,
-    STATUS_DEFERRED,
-    STATUS_DRAFT,
-    STATUS_FINAL,
-    STATUS_PROVISIONAL,
-    STATUS_REJECTED,
-    STATUS_SUPERSEDED,
-    STATUS_WITHDRAWN,
-    TYPE_INFO,
-    TYPE_PROCESS,
-    TYPE_STANDARDS,
-)
+from pep_sphinx_extensions.pep_zero_generator.constants import PEPStatus, PEPType
 from pep_sphinx_extensions.pep_zero_generator.errors import PEPError
 from pep_sphinx_extensions.tests.utils import AUTHORS_OVERRIDES
 
@@ -97,18 +84,18 @@ def test_parse_authors_invalid():
 @pytest.mark.parametrize(
     "test_type, test_status, expected",
     [
-        (TYPE_INFO, STATUS_DRAFT, ":abbr:`I (Informational, Draft)`"),
-        (TYPE_INFO, STATUS_ACTIVE, ":abbr:`IA (Informational, Active)`"),
-        (TYPE_INFO, STATUS_ACCEPTED, ":abbr:`IA (Informational, Accepted)`"),
-        (TYPE_INFO, STATUS_DEFERRED, ":abbr:`ID (Informational, Deferred)`"),
-        (TYPE_PROCESS, STATUS_ACCEPTED, ":abbr:`PA (Process, Accepted)`"),
-        (TYPE_PROCESS, STATUS_ACTIVE, ":abbr:`PA (Process, Active)`"),
-        (TYPE_PROCESS, STATUS_FINAL, ":abbr:`PF (Process, Final)`"),
-        (TYPE_PROCESS, STATUS_SUPERSEDED, ":abbr:`PS (Process, Superseded)`"),
-        (TYPE_PROCESS, STATUS_WITHDRAWN, ":abbr:`PW (Process, Withdrawn)`"),
-        (TYPE_STANDARDS, STATUS_ACCEPTED, ":abbr:`SA (Standards Track, Accepted)`"),
-        (TYPE_STANDARDS, STATUS_REJECTED, ":abbr:`SR (Standards Track, Rejected)`"),
-        (TYPE_STANDARDS, STATUS_PROVISIONAL, ":abbr:`SP (Standards Track, Provisional)`"),  # fmt: skip
+        (PEPType.INFO.value, PEPStatus.DRAFT.value, ":abbr:`I (Informational, Draft)`"),
+        (PEPType.INFO.value, PEPStatus.ACTIVE.value, ":abbr:`IA (Informational, Active)`"),
+        (PEPType.INFO.value, PEPStatus.ACCEPTED.value, ":abbr:`IA (Informational, Accepted)`"),
+        (PEPType.INFO.value, PEPStatus.DEFERRED.value, ":abbr:`ID (Informational, Deferred)`"),
+        (PEPType.PROCESS.value, PEPStatus.ACCEPTED.value, ":abbr:`PA (Process, Accepted)`"),
+        (PEPType.PROCESS.value, PEPStatus.ACTIVE.value, ":abbr:`PA (Process, Active)`"),
+        (PEPType.PROCESS.value, PEPStatus.FINAL.value, ":abbr:`PF (Process, Final)`"),
+        (PEPType.PROCESS.value, PEPStatus.SUPERSEDED.value, ":abbr:`PS (Process, Superseded)`"),
+        (PEPType.PROCESS.value, PEPStatus.WITHDRAWN.value, ":abbr:`PW (Process, Withdrawn)`"),
+        (PEPType.STANDARDS.value, PEPStatus.ACCEPTED.value, ":abbr:`SA (Standards Track, Accepted)`"),
+        (PEPType.STANDARDS.value, PEPStatus.REJECTED.value, ":abbr:`SR (Standards Track, Rejected)`"),
+        (PEPType.STANDARDS.value, PEPStatus.PROVISIONAL.value, ":abbr:`SP (Standards Track, Provisional)`"),  # fmt: skip
     ],
 )
 def test_abbreviate_type_status(test_type, test_status, expected):

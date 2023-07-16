@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from docutils import nodes
-from docutils import transforms
+from docutils import nodes, transforms
 from docutils.transforms import parts
 
 
@@ -37,6 +36,7 @@ class PEPContents(transforms.Transform):
 
 class Contents(parts.Contents):
     """Build Table of Contents from document."""
+
     def __init__(self, document: nodes.document, startnode: nodes.Node | None = None):
         super().__init__(document, startnode)
 
@@ -45,7 +45,9 @@ class Contents(parts.Contents):
         self.backlinks = None
 
     def apply(self) -> None:
-        contents = self.build_contents(self.document[0][4:])  # skip PEP title, headers, <hr/>, and contents
+        contents = self.build_contents(
+            self.document[0][4:]
+        )  # skip PEP title, headers, <hr/>, and contents
         if contents:
             self.startnode.replace_self(contents)
         else:
@@ -65,7 +67,7 @@ class Contents(parts.Contents):
             # remove all pre-existing hyperlinks in the title (e.g. PEP references)
             while (link_node := title.next_node(nodes.reference)) is not None:
                 link_node.replace_self(link_node[0])
-            ref_id = section['ids'][0]
+            ref_id = section["ids"][0]
             title["refid"] = ref_id  # Add a link to self
             entry_text = self.copy_and_filter(title)
             reference = nodes.reference("", "", refid=ref_id, *entry_text)
@@ -74,5 +76,5 @@ class Contents(parts.Contents):
             item += self.build_contents(section)  # recurse to add sub-sections
             entries.append(item)
         if entries:
-            return nodes.bullet_list('', *entries)
+            return nodes.bullet_list("", *entries)
         return []

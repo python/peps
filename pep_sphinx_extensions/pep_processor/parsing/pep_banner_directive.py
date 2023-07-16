@@ -5,7 +5,6 @@ from __future__ import annotations
 from docutils import nodes
 from docutils.parsers import rst
 
-
 PYPA_SPEC_BASE_URL = "https://packaging.python.org/en/latest/specifications/"
 
 
@@ -25,13 +24,11 @@ class PEPBanner(rst.Directive):
     admonition_class = nodes.important
     css_classes = []
 
-
     def run(self) -> list[nodes.admonition]:
 
         if self.arguments:
             link_content = self.arguments[0]
-            pre_text = self.admonition_pre_template.format(
-                link_content=link_content)
+            pre_text = self.admonition_pre_template.format(link_content=link_content)
         else:
             pre_text = self.admonition_pre_text
 
@@ -48,12 +45,12 @@ class PEPBanner(rst.Directive):
 
         source_lines = [pre_text] + list(self.content or []) + [post_text]
         admonition_node = self.admonition_class(
-            "\n".join(source_lines), classes=["pep-banner"] + self.css_classes)
+            "\n".join(source_lines), classes=["pep-banner"] + self.css_classes
+        )
 
         admonition_node.append(pre_text_node)
         if self.content:
-            self.state.nested_parse(
-                self.content, self.content_offset, admonition_node)
+            self.state.nested_parse(self.content, self.content_offset, admonition_node)
         admonition_node.append(post_text_node)
 
         return [admonition_node]
@@ -71,12 +68,9 @@ class CanonicalDocBanner(PEPBanner):
         "This PEP is a historical document. "
         "The up-to-date, canonical documentation can now be found elsewhere."
     )
-    admonition_post_text = (
-        "See :pep:`1` for how to propose changes."
-    )
+    admonition_post_text = "See :pep:`1` for how to propose changes."
 
     css_classes = ["canonical-doc", "sticky-banner"]
-
 
 
 class CanonicalPyPASpecBanner(PEPBanner):
