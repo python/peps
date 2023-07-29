@@ -8,12 +8,6 @@ import re
 import sys
 from pathlib import Path
 
-# Exclude these whether they're dirty or clean,
-# because they trigger a rebuild of dirty files.
-EXCLUDE_FILES = {
-    "Doc/whatsnew/changelog.rst",
-}
-
 PATTERN = re.compile(r"(?P<file>[^:]+):(?P<line>\d+): WARNING: (?P<msg>.+)")
 
 
@@ -50,7 +44,7 @@ def fail_if_regression(
         for rst in Path(".").glob("pep-*.*")
         if rst.suffix in (".rst", ".txt")
     }
-    should_be_clean = all_rst - files_with_expected_nits - EXCLUDE_FILES
+    should_be_clean = all_rst - files_with_expected_nits
     problem_files = sorted(should_be_clean & files_with_nits)
     if problem_files:
         print("\nError: must not contain warnings:\n")
