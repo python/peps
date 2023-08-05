@@ -11,11 +11,11 @@ from pathlib import Path
 
 from docutils import nodes
 
-RSS_DESCRIPTION = """\
-Newest Python Enhancement Proposals (PEPs) - \
-Information on new language features, \
-and some meta-information like release procedure and schedules.\
-"""
+RSS_DESCRIPTION = (
+    "Newest Python Enhancement Proposals (PEPs): "
+    "Information on new language features "
+    "and some meta-information like release procedure and schedules."
+)
 
 # get the directory with the PEP sources
 PEP_ROOT = Path(__file__).parent
