@@ -8,7 +8,7 @@ BUILDER      = html
 JOBS         = 8
 SOURCES      =
 OUTPUT_DIR   = build
-SPHINXERRORHANDLING = -W --keep-going
+SPHINXERRORHANDLING = -W --keep-going -w sphinx-warnings.txt
 
 ALLSPHINXOPTS = -b $(BUILDER) -j $(JOBS) \
                 $(SPHINXOPTS) $(SPHINXERRORHANDLING) . $(OUTPUT_DIR) $(SOURCES)
