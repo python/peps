@@ -27,7 +27,7 @@ htmlview: html
 ## dirhtml        to render PEPs to "index.html" files within "pep-NNNN" directories
 .PHONY: dirhtml
 dirhtml: BUILDER = dirhtml
-dirhtml: venv rss
+dirhtml: venv
 	$(SPHINXBUILD) $(ALLSPHINXOPTS)
 
 ## fail-warning   to render PEPs to "pep-NNNN.html" files and fail the Sphinx build on any warning
@@ -40,11 +40,6 @@ fail-warning: venv
 check-links: BUILDER = linkcheck
 check-links: venv
 	$(SPHINXBUILD) $(ALLSPHINXOPTS)
-
-## rss            to generate the peps.rss file
-.PHONY: rss
-rss: venv
-	$(VENVDIR)/bin/python3 generate_rss.py -o $(OUTPUT_DIR)
 
 ## clean          to remove the venv and build files
 .PHONY: clean
