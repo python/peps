@@ -8,7 +8,7 @@ BUILDER      = html
 JOBS         = 8
 SOURCES      =
 OUTPUT_DIR   = build
-SPHINXERRORHANDLING =
+SPHINXERRORHANDLING = -W --keep-going
 
 ALLSPHINXOPTS = -b $(BUILDER) -j $(JOBS) \
                 $(SPHINXOPTS) $(SPHINXERRORHANDLING) . $(OUTPUT_DIR) $(SOURCES)
@@ -28,11 +28,6 @@ htmlview: html
 dirhtml: BUILDER = dirhtml
 dirhtml: venv rss
 	$(SPHINXBUILD) $(ALLSPHINXOPTS)
-
-## fail-warning   to render PEPs to "pep-NNNN.html" files and fail the Sphinx build on any warning
-.PHONY: fail-warning
-fail-warning: venv
-	$(SPHINXBUILD) $(ALLSPHINXOPTS) -W
 
 ## check-links    to check validity of links within PEP sources
 .PHONY: check-links
