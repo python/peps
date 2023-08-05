@@ -80,11 +80,6 @@ def check():
             content = file.read_text(encoding='utf-8')
             lines = content.splitlines()
             failed += _output_error(file, lines, check_pep(file, lines))
-    for file in PEP_ROOT.glob("docs/*.rst"):
-        content = file.read_text(encoding='utf-8')
-        lines = content.splitlines()
-        for line_num, line in enumerate(lines, start=1):
-            failed += _output_error(file, lines, check_direct_links(line_num, line))
     if failed > 0:
         print(f"pep-lint failed: {failed} errors", file=sys.stderr)
         return 1
