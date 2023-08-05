@@ -86,16 +86,6 @@ spellcheck: venv
 	$(VENVDIR)/bin/python3 -m pre_commit --version > /dev/null || $(VENVDIR)/bin/python3 -m pip install pre-commit
 	$(VENVDIR)/bin/python3 -m pre_commit run --all-files --hook-stage manual codespell
 
-## render         (deprecated: use 'make html' alias instead)
-.PHONY: render
-render: html
-	@echo "\033[0;33mWarning:\033[0;31m 'make render' \033[0;33mis deprecated, use\033[0;32m 'make html' \033[0;33malias instead\033[0m"
-
-## pages          (deprecated: use 'make dirhtml' alias instead)
-.PHONY: pages
-pages: dirhtml
-	@echo "\033[0;33mWarning:\033[0;31m 'make pages' \033[0;33mis deprecated, use\033[0;32m 'make dirhtml' \033[0;33malias instead\033[0m"
-
 .PHONY: help
 help : Makefile
 	@echo "Please use \`make <target>' where <target> is one of"
