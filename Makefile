@@ -7,6 +7,7 @@ SPHINXBUILD  = PATH=$(VENVDIR)/bin:$$PATH sphinx-build
 BUILDER      = html
 JOBS         = 8
 SOURCES      =
+# synchronise with render.yml -> deploy step
 OUTPUT_DIR   = build
 SPHINXERRORHANDLING =
 
