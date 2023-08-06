@@ -251,7 +251,7 @@ def _validate_discussions_to(line_num, line):
     for suffix in "@python.org", "@googlegroups.com":
         if line.endswith(suffix):
             remainder = line.removesuffix(suffix)
-            if re.fullmatch("[\w\-]+", remainder) is None:
+            if re.fullmatch(r"[\w\-]+", remainder) is None:
                 yield line_num, "Discussions-To must be a valid mailing list"
 
 
