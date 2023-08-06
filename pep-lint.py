@@ -65,11 +65,11 @@ EMAIL_PATTERN = re.compile(
     """,
     re.IGNORECASE | re.VERBOSE
 )
-DISCOURSE_THREAD_PATTERN = re.compile(r'([\w\-]+/)?\d+')
-DISCOURSE_POST_PATTERN = re.compile(r'([\w\-]+/)?\d+(/\d+)?')
-MAILMAN_2_PATTERN = re.compile(r'[\w\-]+/\d{4}-[A-Za-z]+/[A-Za-z0-9]+\.html')
-MAILMAN_3_THREAD_PATTERN = re.compile(r'[\w\-]+@python\.org/thread/[A-Za-z0-9]+/?(#[A-Za-z0-9]+)?')
-MAILMAN_3_MESSAGE_PATTERN = re.compile(r'[\w\-]+@python\.org/message/[A-Za-z0-9]+/?(#[A-Za-z0-9]+)?')
+DISCOURSE_THREAD_PATTERN = re.compile(r"([\w\-]+/)?\d+")
+DISCOURSE_POST_PATTERN = re.compile(r"([\w\-]+/)?\d+(/\d+)?")
+MAILMAN_2_PATTERN = re.compile(r"[\w\-]+/\d{4}-[A-Za-z]+/[A-Za-z0-9]+\.html")
+MAILMAN_3_THREAD_PATTERN = re.compile(r"[\w\-]+@python\.org/thread/[A-Za-z0-9]+/?(#[A-Za-z0-9]+)?")
+MAILMAN_3_MESSAGE_PATTERN = re.compile(r"[\w\-]+@python\.org/message/[A-Za-z0-9]+/?(#[A-Za-z0-9]+)?")
 
 
 def check():
@@ -77,7 +77,7 @@ def check():
     failed = 0
     for iterator in (PEP_ROOT.glob("pep-????.txt"), PEP_ROOT.glob("pep-????.rst")):
         for file in iterator:
-            content = file.read_text(encoding='utf-8')
+            content = file.read_text(encoding="utf-8")
             lines = content.splitlines()
             failed += _output_error(file, lines, check_pep(file, lines))
     if failed > 0:
@@ -251,7 +251,7 @@ def _validate_discussions_to(line_num, line):
     for suffix in "@python.org", "@googlegroups.com":
         if line.endswith(suffix):
             remainder = line.removesuffix(suffix)
-            if re.fullmatch(r'[\w\-]+', remainder) is None:
+            if re.fullmatch("[\w\-]+", remainder) is None:
                 yield line_num, "Discussions-To must be a valid mailing list"
 
 
@@ -422,5 +422,5 @@ def _date(line_num, date_str, prefix):
         yield line_num, f"{prefix} must not be in the future: {date_str}"
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     raise SystemExit(check())
