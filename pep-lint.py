@@ -3,7 +3,7 @@
 # This file is placed in the public domain or under the
 # CC0-1.0-Universal license, whichever is more permissive.
 
-import datetime
+import datetime as dt
 import re
 import sys
 from pathlib import Path
@@ -411,14 +411,14 @@ def _thread(line_num, url, prefix, allow_message=False, discussions_to=False):
 
 def _date(line_num, date_str, prefix):
     try:
-        dt = datetime.datetime.strptime(date_str, "%d-%b-%Y")
+        parsed_date = dt.datetime.strptime(date_str, "%d-%b-%Y")
     except ValueError:
         yield line_num, f"{prefix} must be a 'DD-mmm-YYYY' date: {date_str}"
         return
 
-    if dt.year < 1990:
+    if parsed_date.year < 1990:
         yield line_num, f"{prefix} must not be before Python was invented: {date_str}"
-    if dt > (datetime.datetime.now() + datetime.timedelta(days=14)):
+    if parsed_date > (dt.datetime.now() + dt.timedelta(days=14)):
         yield line_num, f"{prefix} must not be in the future: {date_str}"
 
 
