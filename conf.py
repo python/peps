@@ -45,6 +45,9 @@ exclude_patterns = [
     "pep-0012/pep-NNNN.rst",
 ]
 
+# Warn on missing references
+nitpicky = True
+
 # Intersphinx configuration
 intersphinx_mapping = {
     'python': ('https://docs.python.org/3/', None),

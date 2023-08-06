@@ -39,7 +39,7 @@ def create_parser():
     parser.add_argument(
         "-o",
         "--output-dir",
-        default="build",  # synchronise with render.yaml -> deploy step
+        default="build",
         help="Output directory, relative to root. Default 'build'.",
     )
 
