@@ -370,7 +370,8 @@ def _pep_num(line_num, pep_number, prefix):
 
 
 def _is_digits(string):
-    return all(c in "0123456789" for c in string)
+    """Match a string of ASCII digits ([0-9]+)."""
+    return string.isascii() and string.isdigit()
 
 
 def _email(line_num, author_email, prefix):
