@@ -12,26 +12,26 @@ spec.loader.exec_module(pep_lint)
 def test_header_pattern_capitalisation():
     pattern = pep_lint.HEADER_PATTERN
 
-    assert pattern.match("Header:") is not None
-    assert pattern.match("header:") is not None
-    assert pattern.match("hEADER:") is not None
-    assert pattern.match("hEaDeR:") is not None
+    assert pattern.match("Header:")[1] == "Header"
+    assert pattern.match("header:")[1] == "header"
+    assert pattern.match("hEADER:")[1] == "hEADER"
+    assert pattern.match("hEaDeR:")[1] == "hEaDeR"
 
 
 def test_header_pattern_trailing_spaces():
     pattern = pep_lint.HEADER_PATTERN
 
-    assert pattern.match("Header:") is not None
-    assert pattern.match("Header: ") is not None
-    assert pattern.match("Header:  ") is not None
+    assert pattern.match("Header:")[1] == "Header"
+    assert pattern.match("Header: ")[1] == "Header"
+    assert pattern.match("Header:  ")[1] == "Header"
 
 
 def test_header_pattern_trailing_content():
     pattern = pep_lint.HEADER_PATTERN
 
-    assert pattern.match("Header: Text") is not None
-    assert pattern.match("Header: 123") is not None
-    assert pattern.match("Header: !") is not None
+    assert pattern.match("Header: Text")[1] == "Header"
+    assert pattern.match("Header: 123")[1] == "Header"
+    assert pattern.match("Header: !")[1] == "Header"
     assert pattern.match("Header:Text") is None
     assert pattern.match("Header:123") is None
     assert pattern.match("Header:!") is None
@@ -48,6 +48,6 @@ def test_header_pattern_colon_position():
 def test_header_pattern_separators():
     pattern = pep_lint.HEADER_PATTERN
 
-    assert pattern.match("Hyphenated-Header:") is not None
+    assert pattern.match("Hyphenated-Header:")[1] == "Hyphenated-Header"
     assert pattern.match("Underscored_Header:") is None
     assert pattern.match("Spaced Header:") is None
