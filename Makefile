@@ -7,8 +7,9 @@ SPHINXBUILD  = PATH=$(VENVDIR)/bin:$$PATH sphinx-build
 BUILDER      = html
 JOBS         = 8
 SOURCES      =
+# synchronise with render.yml -> deploy step
 OUTPUT_DIR   = build
-SPHINXERRORHANDLING =
+SPHINXERRORHANDLING = -W --keep-going -w sphinx-warnings.txt
 
 ALLSPHINXOPTS = -b $(BUILDER) -j $(JOBS) \
                 $(SPHINXOPTS) $(SPHINXERRORHANDLING) . $(OUTPUT_DIR) $(SOURCES)
@@ -26,24 +27,14 @@ htmlview: html
 ## dirhtml        to render PEPs to "index.html" files within "pep-NNNN" directories
 .PHONY: dirhtml
 dirhtml: BUILDER = dirhtml
-dirhtml: venv rss
+dirhtml: venv
 	$(SPHINXBUILD) $(ALLSPHINXOPTS)
-
-## fail-warning   to render PEPs to "pep-NNNN.html" files and fail the Sphinx build on any warning
-.PHONY: fail-warning
-fail-warning: venv
-	$(SPHINXBUILD) $(ALLSPHINXOPTS) -W
 
 ## check-links    to check validity of links within PEP sources
 .PHONY: check-links
 check-links: BUILDER = linkcheck
 check-links: venv
 	$(SPHINXBUILD) $(ALLSPHINXOPTS)
-
-## rss            to generate the peps.rss file
-.PHONY: rss
-rss: venv
-	$(VENVDIR)/bin/python3 generate_rss.py -o $(OUTPUT_DIR)
 
 ## clean          to remove the venv and build files
 .PHONY: clean
@@ -84,16 +75,6 @@ test: venv
 spellcheck: venv
 	$(VENVDIR)/bin/python3 -m pre_commit --version > /dev/null || $(VENVDIR)/bin/python3 -m pip install pre-commit
 	$(VENVDIR)/bin/python3 -m pre_commit run --all-files --hook-stage manual codespell
-
-## render         (deprecated: use 'make html' alias instead)
-.PHONY: render
-render: html
-	@echo "\033[0;33mWarning:\033[0;31m 'make render' \033[0;33mis deprecated, use\033[0;32m 'make html' \033[0;33malias instead\033[0m"
-
-## pages          (deprecated: use 'make dirhtml' alias instead)
-.PHONY: pages
-pages: dirhtml
-	@echo "\033[0;33mWarning:\033[0;31m 'make pages' \033[0;33mis deprecated, use\033[0;32m 'make dirhtml' \033[0;33malias instead\033[0m"
 
 .PHONY: help
 help : Makefile
