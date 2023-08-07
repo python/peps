@@ -53,18 +53,12 @@ ALL_STATUSES = frozenset({
 # PEPs that are allowed to link directly to PEPs
 SKIP_DIRECT_PEP_LINK_CHECK = frozenset({"0009", "0287", "0676", "0684", "8001"})
 
-HEADER_PATTERN = re.compile(r"^([a-z\-]+):(?: |$)", re.IGNORECASE)
-EMAIL_PATTERN = re.compile(
-    r"""
-    ([^\W\d_]|[. ])+               # Name; any sequence of unicode letters, full stops, or spaces
-    ( <                            # Start of optional email part: ' <'
-    [a-z0-9!#$%&'*+\-/=?^_{|}~.]+  # Local part; ASCII letters, digits, and legal special characters
-    (@| at )                       # Local and domain parts separator
-    (\w+\.)+[a-z0-9-]+             # Domain, with at least two segments
-    >)?                            # End of optional email part: '>'
-    """,
-    re.IGNORECASE | re.VERBOSE
-)
+# any sequence of letters or '-', followed by a single ':' and a space or end of line
+HEADER_PATTERN = re.compile(r"^([a-z\-]+):(?: |$)", re.ASCII|re.IGNORECASE)
+# any sequence of unicode letters or legal special characters
+NAME_PATTERN = re.compile(r"([^\W\d_]|[ ',\-.])+")
+# any sequence of ASCII letters, digits, or legal special characters
+EMAIL_LOCAL_PART_PATTERN = re.compile(r"[\w!#$%&'*+\-/=?^{|}~.]+", re.ASCII)
 DISCOURSE_THREAD_PATTERN = re.compile(r"([\w\-]+/)?\d+")
 DISCOURSE_POST_PATTERN = re.compile(r"([\w\-]+/)?\d+(/\d+)?")
 MAILMAN_2_PATTERN = re.compile(r"[\w\-]+/\d{4}-[A-Za-z]+/[A-Za-z0-9]+\.html")
@@ -228,7 +222,8 @@ def _validate_author(line_num, body):
         if offset < len(lines) - 1:
             if not line.endswith(","):
                 yield line_num + offset, "Author continuation lines must end with a comma"
-        yield from _email(line_num + offset, line, "Author")
+        for part in line.removesuffix(",").split(", "):
+            yield from _email(line_num + offset, part, "Author")
 
 
 def _validate_sponsor(line_num, line):
@@ -240,8 +235,16 @@ def _validate_sponsor(line_num, line):
 def _validate_delegate(line_num, line):
     """'Delegate' must have format 'Name <email@example.com>'"""
 
-    if line.strip() != "":
-        yield from _email(line_num, line, "Delegate")
+    if line.strip() == "":
+        return
+
+    # PEP 451
+    if ", " in line:
+        for part in line.removesuffix(",").split(", "):
+            yield from _email(line_num, part, "Delegate")
+        return
+
+    yield from _email(line_num, line, "Delegate")
 
 
 def _validate_discussions_to(line_num, line):
@@ -375,8 +378,38 @@ def _is_digits(string):
 
 
 def _email(line_num, author_email, prefix):
-    if EMAIL_PATTERN.match(author_email.strip()) is None:
-        yield line_num, f"{prefix} must be a list of 'Name <email@example.com>' entries: {author_email}"
+    author_email = author_email.strip()
+
+    name_match = NAME_PATTERN.match(author_email)
+    if name_match is None:
+        yield line_num, f"{prefix} entries must begin with a valid 'Name': {author_email!r}"
+
+    email_text = author_email.removeprefix(name_match[0].rstrip())
+    if not email_text:
+        # Does not have the optional email part
+        return
+
+    if not email_text.startswith(" <") or not email_text.endswith(">"):
+        yield line_num, f"{prefix} entries must be formatted as 'Name <email@example.com>': {author_email!r}"
+    email_text = email_text.removeprefix(" <").removesuffix(">")
+
+    if "@" in email_text:
+        local, domain = email_text.split("@", 1)
+    elif " at " in email_text:
+        local, domain = email_text.split(" at ", 1)
+    else:
+        yield line_num, f"{prefix} entries must contain a valid email address: {author_email!r}"
+        return
+    if EMAIL_LOCAL_PART_PATTERN.fullmatch(local) is None or _invalid_domain(domain):
+        yield line_num, f"{prefix} entries must contain a valid email address: {author_email!r}"
+
+
+def _invalid_domain(domain_part):
+    *labels, root = domain_part.split(".")
+    for label in labels:
+        if not label.replace("-", "").isalnum():
+            return False
+    return not root.isalnum() or not root.isascii()
 
 
 def _thread(line_num, url, prefix, allow_message=False, discussions_to=False):

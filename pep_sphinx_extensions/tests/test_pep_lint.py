@@ -2,6 +2,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 # Import "pep-lint.py" as "pep_lint"
 PEP_LINT_PATH = Path(__file__).resolve().parent.parent.parent.joinpath("pep-lint.py")
 spec = importlib.util.spec_from_file_location("pep_lint", PEP_LINT_PATH)
@@ -51,3 +53,21 @@ def test_header_pattern_separators():
     assert pattern.match("Hyphenated-Header:")[1] == "Hyphenated-Header"
     assert pattern.match("Underscored_Header:") is None
     assert pattern.match("Spaced Header:") is None
+
+
+@pytest.mark.parametrize(
+    ("email", "expected_warnings"),
+    [
+        ("Cardinal Ximénez", {}),
+    ]
+)
+def test_email_checker(email, expected_warnings):
+
+    warnings = list(pep_lint._email(1, email, "<Prefix>"))
+
+    if "valid name" in expected_warnings:
+        expected_warnings.remove("valid name")
+        matching = [warning for warning in warnings
+                    if f"<Prefix> entries must begin with a valid 'Name': {email!r}" == warning]
+        assert len(matching) == 1
+
