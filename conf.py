@@ -6,7 +6,7 @@
 from pathlib import Path
 import sys
 
-sys.path.append(str(Path("pep_sphinx_extensions").absolute()))
+sys.path.append(str(Path(".").absolute()))
 
 # -- Project information -----------------------------------------------------
 
@@ -44,6 +44,9 @@ exclude_patterns = [
     # PEP Template
     "pep-0012/pep-NNNN.rst",
 ]
+
+# Warn on missing references
+nitpicky = True
 
 # Intersphinx configuration
 intersphinx_mapping = {
