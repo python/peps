@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import csv
 from email.parser import HeaderParser
 from pathlib import Path
 import re
-from typing import TYPE_CHECKING
 
-from pep_sphinx_extensions.pep_zero_generator.author import parse_author_email
 from pep_sphinx_extensions.pep_zero_generator.constants import ACTIVE_ALLOWED
 from pep_sphinx_extensions.pep_zero_generator.constants import HIDE_STATUS
 from pep_sphinx_extensions.pep_zero_generator.constants import SPECIAL_STATUSES
@@ -18,17 +15,6 @@ from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_VALUES
 from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_STANDARDS
 from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_VALUES
 from pep_sphinx_extensions.pep_zero_generator.errors import PEPError
-
-if TYPE_CHECKING:
-    from pep_sphinx_extensions.pep_zero_generator.author import Author
-
-
-# AUTHOR_OVERRIDES.csv is an exception file for PEP 0 name parsing
-AUTHOR_OVERRIDES: dict[str, dict[str, str]] = {}
-with open("AUTHOR_OVERRIDES.csv", "r", encoding="utf-8") as f:
-    for line in csv.DictReader(f):
-        full_name = line.pop("Overridden Name")
-        AUTHOR_OVERRIDES[full_name] = line
 
 
 class PEP:
@@ -97,7 +83,7 @@ class PEP:
         self.status: str = status
 
         # Parse PEP authors
-        self.authors: list[Author] = _parse_authors(self, metadata["Author"], AUTHOR_OVERRIDES)
+        self.authors: dict[str, str] = _parse_authors(self, metadata["Author"])
 
         # Topic (for sub-indices)
         _topic = metadata.get("Topic", "").lower().split(",")
@@ -144,7 +130,7 @@ class PEP:
             # a tooltip representing the type and status
             "shorthand": self.shorthand,
             # the author list as a comma-separated with only last names
-            "authors": ", ".join(author.nick for author in self.authors),
+            "authors": ", ".join(author for author in self.authors),
         }
 
     @property
@@ -153,7 +139,7 @@ class PEP:
         return {
             "number": self.number,
             "title": self.title,
-            "authors": ", ".join(author.nick for author in self.authors),
+            "authors": ", ".join(author for author in self.authors),
             "discussions_to": self.discussions_to,
             "status": self.status,
             "type": self.pep_type,
@@ -175,12 +161,12 @@ def _raise_pep_error(pep: PEP, msg: str, pep_num: bool = False) -> None:
     raise PEPError(msg, pep.filename)
 
 
-def _parse_authors(pep: PEP, author_header: str, authors_overrides: dict) -> list[Author]:
+def _parse_authors(pep: PEP, author_header: str) -> dict[str, str]:
     """Parse Author header line"""
-    authors_and_emails = _parse_author(author_header)
-    if not authors_and_emails:
+    authors_to_emails = _parse_author(author_header)
+    if not authors_to_emails:
         raise _raise_pep_error(pep, "no authors found", pep_num=True)
-    return [parse_author_email(author_tuple, authors_overrides) for author_tuple in authors_and_emails]
+    return authors_to_emails
 
 
 author_angled = re.compile(r"(?P<author>.+?) <(?P<email>.+?)>(,\s*)?")
@@ -188,10 +174,10 @@ author_paren = re.compile(r"(?P<email>.+?) \((?P<author>.+?)\)(,\s*)?")
 author_simple = re.compile(r"(?P<author>[^,]+)(,\s*)?")
 
 
-def _parse_author(data: str) -> list[tuple[str, str]]:
-    """Return a list of author names and emails."""
+def _parse_author(data: str) -> dict[str, str]:
+    """Return a mapping of author names to emails."""
 
-    author_list = []
+    author_items = []
     for regex in (author_angled, author_paren, author_simple):
         for match in regex.finditer(data):
             # Watch out for suffixes like 'Jr.' when they are comma-separated
@@ -200,16 +186,21 @@ def _parse_author(data: str) -> list[tuple[str, str]]:
             match_dict = match.groupdict()
             author = match_dict["author"]
             if not author.partition(" ")[1] and author.endswith("."):
-                prev_author = author_list.pop()
+                prev_author = author_items.pop()
                 author = ", ".join([prev_author, author])
             if "email" not in match_dict:
                 email = ""
             else:
                 email = match_dict["email"]
-            author_list.append((author, email))
+
+            author = author.strip()
+            if not author:
+                raise ValueError("Name is empty!")
+
+            author_items.append((author, email.strip()))
 
         # If authors were found then stop searching as only expect one
         # style of author citation.
-        if author_list:
+        if author_items:
             break
-    return author_list
+    return dict(author_items)

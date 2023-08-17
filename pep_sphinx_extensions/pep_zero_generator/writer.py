@@ -295,24 +295,24 @@ def _classify_peps(peps: list[PEP]) -> tuple[list[PEP], ...]:
 def _verify_email_addresses(peps: list[PEP]) -> dict[str, str]:
     authors_dict: dict[str, set[str]] = {}
     for pep in peps:
-        for author in pep.authors:
+        for author, email in pep.authors.items():
             # If this is the first time we have come across an author, add them.
-            if author.last_first not in authors_dict:
-                authors_dict[author.last_first] = set()
+            if author not in authors_dict:
+                authors_dict[author] = set()
 
             # If the new email is an empty string, move on.
-            if not author.email:
+            if not email:
                 continue
             # If the email has not been seen, add it to the list.
-            authors_dict[author.last_first].add(author.email)
+            authors_dict[author].add(email)
 
     valid_authors_dict: dict[str, str] = {}
     too_many_emails: list[tuple[str, set[str]]] = []
-    for last_first, emails in authors_dict.items():
+    for name, emails in authors_dict.items():
         if len(emails) > 1:
-            too_many_emails.append((last_first, emails))
+            too_many_emails.append((name, emails))
         else:
-            valid_authors_dict[last_first] = next(iter(emails), "")
+            valid_authors_dict[name] = next(iter(emails), "")
     if too_many_emails:
         err_output = []
         for author, emails in too_many_emails:
