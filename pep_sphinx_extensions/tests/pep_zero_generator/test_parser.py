@@ -79,6 +79,11 @@ def test_pep_details(monkeypatch):
             {"First Last": "user@example.com"},
             marks=pytest.mark.xfail,
         ),
+        pytest.param(
+            " , First Last,",
+            {"First Last": ""},
+            marks=pytest.mark.xfail(raises=ValueError),
+        ),
     ],
 )
 def test_parse_authors(test_input, expected):
