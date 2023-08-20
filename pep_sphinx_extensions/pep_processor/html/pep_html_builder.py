@@ -22,6 +22,7 @@ class FileBuilder(StandaloneHTMLBuilder):
         self.docwriter = HTMLWriter(self)
         _opt_parser = OptionParser([self.docwriter], defaults=self.env.settings, read_config_files=True)
         self.docsettings = _opt_parser.get_default_values()
+        self._orig_css_files = self._orig_js_files = []
 
     def get_doc_context(self, docname: str, body: str, _metatags: str) -> dict:
         """Collect items for the template context of a page."""
