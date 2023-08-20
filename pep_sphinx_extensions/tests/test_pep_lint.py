@@ -59,6 +59,103 @@ def test_header_pattern_no_match(test_input):
 
 
 @pytest.mark.parametrize(
+    ("line", "expected_warnings"),
+    [
+        # valid entries
+        ("1.0, 2.4, 2.7, 2.8, 3.0, 3.1, 3.4, 3.7, 3.11, 3.14", set()),
+        ("2.x", set()),
+        ("3.x", set()),
+        ("3.0.1", set()),
+        # segments
+        ("", {"segments"}),
+        ("1", {"segments"}),
+        ("1.2.3.4", {"segments"}),
+        # major
+        ("0.0", {"major"}),
+        ("4.0", {"major"}),
+        ("9.0", {"major"}),
+        # minor number
+        ("3.a", {"minor numeric"}),
+        ("3.spam", {"minor numeric"}),
+        ("3.0+", {"minor numeric"}),
+        ("3.0-9", {"minor numeric"}),
+        ("9.Z", {"major", "minor numeric"}),
+        # minor leading zero
+        ("3.01", {"minor zero"}),
+        ("0.00", {"major", "minor zero"}),
+        # micro empty
+        ("3.x.1", {"micro empty"}),
+        ("9.x.1", {"major", "micro empty"}),
+        # micro leading zero
+        ("3.3.0", {"micro zero"}),
+        ("3.3.00", {"micro zero"}),
+        ("3.3.01", {"micro zero"}),
+        ("3.0.0", {"micro zero"}),
+        ("3.00.0", {"minor zero", "micro zero"}),
+        ("0.00.0", {"major", "minor zero", "micro zero"}),
+        # micro number
+        ("3.0.a", {"micro numeric"}),
+        ("0.3.a", {"major", "micro numeric"}),
+    ],
+    # call str() on each parameterised value in the test ID.
+    ids=str,
+)
+def test_validate_python_version(line: str, expected_warnings: set):
+    warnings = [
+        warning for (_, warning) in pep_lint._validate_python_version(1, line)
+    ]
+
+    found_warnings = set()
+
+    if "segments" in expected_warnings:
+        found_warnings.add("segments")
+        expected = f"Python-Version must have two or three segments: {line}"
+        matching = [w for w in warnings if w == expected]
+        assert matching == [expected], warnings
+
+    if "major" in expected_warnings:
+        found_warnings.add("major")
+        expected = f"Python-Version major part must be 1, 2, or 3: {line}"
+        matching = [w for w in warnings if w == expected]
+        assert matching == [expected], warnings
+
+    if "minor numeric" in expected_warnings:
+        found_warnings.add("minor numeric")
+        expected = f"Python-Version minor part must be numeric: {line}"
+        matching = [w for w in warnings if w == expected]
+        assert matching == [expected], warnings
+
+    if "minor zero" in expected_warnings:
+        found_warnings.add("minor zero")
+        expected = f"Python-Version minor part must not have leading zeros: {line}"
+        matching = [w for w in warnings if w == expected]
+        assert matching == [expected], warnings
+
+    if "micro empty" in expected_warnings:
+        found_warnings.add("micro empty")
+        expected = f"Python-Version micro part must be empty if minor part is 'x': {line}"
+        matching = [w for w in warnings if w == expected]
+        assert matching == [expected], warnings
+
+    if "micro zero" in expected_warnings:
+        found_warnings.add("micro zero")
+        expected = f"Python-Version micro part must not have leading zeros: {line}"
+        matching = [w for w in warnings if w == expected]
+        assert matching == [expected], warnings
+
+    if "micro numeric" in expected_warnings:
+        found_warnings.add("micro numeric")
+        expected = f"Python-Version micro part must be numeric: {line}"
+        matching = [w for w in warnings if w == expected]
+        assert matching == [expected], warnings
+
+    if expected_warnings == set():
+        assert warnings == [], warnings
+
+    assert found_warnings == expected_warnings
+
+
+@pytest.mark.parametrize(
     "body",
     [
         "",

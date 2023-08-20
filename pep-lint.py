@@ -318,7 +318,7 @@ def _validate_python_version(line_num, line):
 
     versions = line.split(", ")
     for version in versions:
-        if version.count(".") > 2:
+        if version.count(".") not in {1, 2}:
             yield line_num, f"Python-Version must have two or three segments: {version}"
             continue
 
@@ -332,6 +332,8 @@ def _validate_python_version(line_num, line):
             yield line_num, f"Python-Version major part must be 1, 2, or 3: {version}"
         if not _is_digits(minor) and minor != "x":
             yield line_num, f"Python-Version minor part must be numeric: {version}"
+        elif minor != "0" and minor[0] == "0":
+            yield line_num, f"Python-Version minor part must not have leading zeros: {version}"
 
         if micro == "":
             return
