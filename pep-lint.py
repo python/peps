@@ -195,12 +195,12 @@ def _validate_required_headers(found_headers):
 
     if missing := REQUIRED_HEADERS.difference(found_headers):
         for missing_header in sorted(missing, key=ALL_HEADERS.index):
-            yield 0, f"Must have required header: {missing_header}"
+            yield 1, f"Must have required header: {missing_header}"
 
     ordered_headers = sorted(found_headers, key=ALL_HEADERS.index)
     if list(found_headers) != ordered_headers:
         order_str = ", ".join(ordered_headers)
-        yield 0, "Headers must be in PEP 12 order. Correct order: " + order_str
+        yield 1, "Headers must be in PEP 12 order. Correct order: " + order_str
 
 
 def _validate_pep_number(line):
