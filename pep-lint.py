@@ -55,16 +55,16 @@ ALL_STATUSES = frozenset({
 SKIP_DIRECT_PEP_LINK_CHECK = frozenset({"0009", "0287", "0676", "0684", "8001"})
 
 # any sequence of letters or '-', followed by a single ':' and a space or end of line
-HEADER_PATTERN = re.compile(r"^([a-z\-]+):(?: |$)", re.ASCII|re.IGNORECASE)
+HEADER_PATTERN = re.compile(r"^([a-z\-]+):(?: |$)", re.ASCII | re.IGNORECASE)
 # any sequence of unicode letters or legal special characters
 NAME_PATTERN = re.compile(r"(?:[^\W\d_]|[ ',\-.])+(?: |$)")
 # any sequence of ASCII letters, digits, or legal special characters
-EMAIL_LOCAL_PART_PATTERN = re.compile(r"[\w!#$%&'*+\-/=?^{|}~.]+", re.ASCII)
-DISCOURSE_THREAD_PATTERN = re.compile(r"([\w\-]+/)?\d+")
-DISCOURSE_POST_PATTERN = re.compile(r"([\w\-]+/)?\d+(/\d+)?")
-MAILMAN_2_PATTERN = re.compile(r"[\w\-]+/\d{4}-[a-z]+/\d+\.html", re.ASCII|re.IGNORECASE)
-MAILMAN_3_THREAD_PATTERN = re.compile(r"[\w\-]+@python\.org/thread/[a-z0-9]+/?", re.ASCII|re.IGNORECASE)
-MAILMAN_3_MESSAGE_PATTERN = re.compile(r"[\w\-]+@python\.org/message/[a-z0-9]+/?(#[a-z0-9]+)?", re.ASCII|re.IGNORECASE)
+EMAIL_LOCAL_PART_PATTERN = re.compile(r"[\w!#$%&'*+\-/=?^{|}~.]+", re.ASCII | re.IGNORECASE)
+DISCOURSE_THREAD_PATTERN = re.compile(r"([\w\-]+/)?\d+", re.ASCII | re.IGNORECASE)
+DISCOURSE_POST_PATTERN = re.compile(r"([\w\-]+/)?\d+(/\d+)?", re.ASCII | re.IGNORECASE)
+MAILMAN_2_PATTERN = re.compile(r"[\w\-]+/\d{4}-[a-z]+/\d+\.html", re.ASCII | re.IGNORECASE)
+MAILMAN_3_THREAD_PATTERN = re.compile(r"[\w\-]+@python\.org/thread/[a-z0-9]+/?", re.ASCII | re.IGNORECASE)
+MAILMAN_3_MESSAGE_PATTERN = re.compile(r"[\w\-]+@python\.org/message/[a-z0-9]+/?(#[a-z0-9]+)?", re.ASCII | re.IGNORECASE)
 
 
 def check(filenames=(), /):
@@ -278,6 +278,7 @@ def _validate_discussions_to(line_num, line):
                 yield line_num, "Discussions-To must be a valid mailing list"
             return
     yield line_num, "Discussions-To must be a valid thread URL or mailing list"
+
 
 def _validate_status(line_num, line):
     """'Status' must be a valid PEP status"""
