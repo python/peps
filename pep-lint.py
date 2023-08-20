@@ -3,11 +3,24 @@
 # This file is placed in the public domain or under the
 # CC0-1.0-Universal license, whichever is more permissive.
 
+from __future__ import annotations
+
 import datetime as dt
 import itertools
 import re
 import sys
 from pathlib import Path
+
+TYPE_CHECKING = False
+if TYPE_CHECKING:
+    import os
+    from collections.abc import Iterable, Iterator, KeysView, Sequence
+    from typing import TypeAlias
+
+    # (line number, warning message)
+    Message: TypeAlias = tuple[int, str]
+    MessageIterator: TypeAlias = Iterator[Message]
+
 
 # get the directory with the PEP sources
 PEP_ROOT = Path(__file__).resolve().parent
@@ -67,7 +80,7 @@ MAILMAN_3_THREAD_PATTERN = re.compile(r"[\w\-]+@python\.org/thread/[a-z0-9]+/?",
 MAILMAN_3_MESSAGE_PATTERN = re.compile(r"[\w\-]+@python\.org/message/[a-z0-9]+/?(#[a-z0-9]+)?", re.ASCII | re.IGNORECASE)
 
 
-def check(filenames=(), /):
+def check(filenames: Sequence[str | os.PathLike[str]] = (), /) -> int:
     """The main entry-point."""
     if filenames:
         filenames = map(Path, filenames)
@@ -80,7 +93,7 @@ def check(filenames=(), /):
     return 0
 
 
-def check_file(filename, /):
+def check_file(filename: Path, /) -> int:
     filename = filename.resolve()
     try:
         content = filename.read_text(encoding="utf-8")
@@ -91,7 +104,7 @@ def check_file(filename, /):
         return _output_error(filename, lines, check_pep(filename, lines))
 
 
-def check_pep(filename, lines):
+def check_pep(filename: Path, lines: Sequence[str], /) -> MessageIterator:
     yield from check_headers(lines)
     for line_num, line in enumerate(lines, start=1):
         if filename.stem.removeprefix("pep-") in SKIP_DIRECT_PEP_LINK_CHECK:
@@ -99,7 +112,7 @@ def check_pep(filename, lines):
         yield from check_direct_links(line_num, line.lstrip())
 
 
-def check_headers(lines):
+def check_headers(lines: Sequence[str], /) -> MessageIterator:
     yield from _validate_pep_number(next(iter(lines), ""))
 
     found_headers = {}
@@ -136,7 +149,7 @@ def check_headers(lines):
             yield from _validate_header(header, line_num, remainder)
 
 
-def _validate_header(header, line_num, content):
+def _validate_header(header: str, line_num: int, content: str) -> MessageIterator:
     if header == "Title":
         yield from _validate_title(line_num, content)
     elif header == "Author":
@@ -167,17 +180,17 @@ def _validate_header(header, line_num, content):
         yield from _validate_resolution(line_num, content)
 
 
-def check_direct_links(line_num, line):
+def check_direct_links(line_num: int, line: str) -> MessageIterator:
     """Check that PEPs and RFCs aren't linked directly"""
 
-    line = line.lstrip().lower()
+    line = line.lower()
     if "dev/peps/pep-" in line or "peps.python.org/pep-" in line:
         yield line_num, "Use the :pep:`NNN` role to refer to PEPs"
     if "rfc-editor.org/rfc/" in line or "ietf.org/doc/html/rfc" in line:
         yield line_num, "Use the :rfc:`NNN` role to refer to RFCs"
 
 
-def _output_error(filename, lines, errors):
+def _output_error(filename: Path, lines: Sequence[str], errors: Iterable[Message]) -> int:
     relative_filename = filename.relative_to(PEP_ROOT)
     err_count = 0
     for line_num, msg in errors:
@@ -195,7 +208,7 @@ def _output_error(filename, lines, errors):
 ###########################
 
 
-def _validate_required_headers(found_headers):
+def _validate_required_headers(found_headers: KeysView[str]) -> MessageIterator:
     """PEPs must have all required headers, in the PEP 12 order"""
 
     if missing := REQUIRED_HEADERS.difference(found_headers):
@@ -208,7 +221,7 @@ def _validate_required_headers(found_headers):
         yield 1, "Headers must be in PEP 12 order. Correct order: " + order_str
 
 
-def _validate_pep_number(line):
+def _validate_pep_number(line: str) -> MessageIterator:
     """'PEP' header must be a number 1-9999"""
 
     if not line.startswith("PEP: "):
@@ -219,7 +232,7 @@ def _validate_pep_number(line):
     yield from _pep_num(1, pep_number, "'PEP:' header")
 
 
-def _validate_title(line_num, line):
+def _validate_title(line_num: int, line: str) -> MessageIterator:
     """'Title' must be 1-79 characters"""
 
     if len(line) == 0:
@@ -228,7 +241,7 @@ def _validate_title(line_num, line):
         yield line_num, "PEP title must be less than 80 characters"
 
 
-def _validate_author(line_num, body):
+def _validate_author(line_num: int, body: str) -> MessageIterator:
     """'Author' must be list of 'Name <email@example.com>, …'"""
 
     lines = body.split("\n")
@@ -247,13 +260,13 @@ def _validate_author(line_num, body):
             yield from _email(line_num + offset, part, "Author")
 
 
-def _validate_sponsor(line_num, line):
+def _validate_sponsor(line_num: int, line: str) -> MessageIterator:
     """'Sponsor' must have format 'Name <email@example.com>'"""
 
     yield from _email(line_num, line, "Sponsor")
 
 
-def _validate_delegate(line_num, line):
+def _validate_delegate(line_num: int, line: str) -> MessageIterator:
     """'Delegate' must have format 'Name <email@example.com>'"""
 
     if line == "":
@@ -268,7 +281,7 @@ def _validate_delegate(line_num, line):
     yield from _email(line_num, line, "Delegate")
 
 
-def _validate_discussions_to(line_num, line):
+def _validate_discussions_to(line_num: int, line: str) -> MessageIterator:
     """'Discussions-To' must be a thread URL"""
 
     yield from _thread(line_num, line, "Discussions-To", discussions_to=True)
@@ -283,21 +296,21 @@ def _validate_discussions_to(line_num, line):
     yield line_num, "Discussions-To must be a valid thread URL or mailing list"
 
 
-def _validate_status(line_num, line):
+def _validate_status(line_num: int, line: str) -> MessageIterator:
     """'Status' must be a valid PEP status"""
 
     if line not in ALL_STATUSES:
         yield line_num, "Status must be a valid PEP status"
 
 
-def _validate_type(line_num, line):
+def _validate_type(line_num: int, line: str) -> MessageIterator:
     """'Type' must be a valid PEP type"""
 
     if line not in {"Standards Track", "Informational", "Process"}:
         yield line_num, "Type must be a valid PEP type"
 
 
-def _validate_topic(line_num, line):
+def _validate_topic(line_num: int, line: str) -> MessageIterator:
     """'Topic' must be for a valid sub-index"""
 
     topics = line.split(", ")
@@ -314,14 +327,14 @@ def _validate_topic(line_num, line):
         yield line_num, "Topic must be sorted lexicographically"
 
 
-def _validate_content_type(line_num, line):
+def _validate_content_type(line_num: int, line: str) -> MessageIterator:
     """'Content-Type' must be 'text/x-rst'"""
 
     if line != "text/x-rst":
         yield line_num, "Content-Type must be 'text/x-rst'"
 
 
-def _validate_pep_references(line_num, line):
+def _validate_pep_references(line_num: int, line: str) -> MessageIterator:
     """`Requires`/`Replaces`/`Superseded-By` must be 'NNN' PEP IDs"""
 
     line = line.removesuffix(",").rstrip()
@@ -334,13 +347,13 @@ def _validate_pep_references(line_num, line):
         yield from _pep_num(line_num, reference, "PEP reference")
 
 
-def _validate_created(line_num, line):
+def _validate_created(line_num: int, line: str) -> MessageIterator:
     """'Created' must be a 'DD-mmm-YYYY' date"""
 
     yield from _date(line_num, line, "Created")
 
 
-def _validate_python_version(line_num, line):
+def _validate_python_version(line_num: int, line: str) -> MessageIterator:
     """'Python-Version' must be an ``X.Y[.Z]`` version"""
 
     versions = line.split(", ")
@@ -372,7 +385,7 @@ def _validate_python_version(line_num, line):
             yield line_num, f"Python-Version micro part must be numeric: {version}"
 
 
-def _validate_post_history(line_num, body):
+def _validate_post_history(line_num: int, body: str) -> MessageIterator:
     """'Post-History' must be '`DD-mmm-YYYY <Thread URL>`__, …'"""
 
     if body == "":
@@ -388,7 +401,7 @@ def _validate_post_history(line_num, body):
                 yield from _thread(offset, post_url, "Post-History")
 
 
-def _validate_resolution(line_num, line):
+def _validate_resolution(line_num: int, line: str) -> MessageIterator:
     """'Resolution' must be a direct thread/message URL"""
 
     yield from _thread(line_num, line, "Resolution", allow_message=True)
@@ -398,7 +411,7 @@ def _validate_resolution(line_num, line):
 #  Validation Helpers  #
 ########################
 
-def _pep_num(line_num, pep_number, prefix):
+def _pep_num(line_num: int, pep_number: str, prefix: str) -> MessageIterator:
     if pep_number == "":
         yield line_num, f"{prefix} must not be blank: {pep_number!r}"
         return
@@ -410,12 +423,12 @@ def _pep_num(line_num, pep_number, prefix):
         yield line_num, f"{prefix} must be between 0 and 9999: {pep_number!r}"
 
 
-def _is_digits(string):
+def _is_digits(string: str) -> bool:
     """Match a string of ASCII digits ([0-9]+)."""
     return string.isascii() and string.isdigit()
 
 
-def _email(line_num, author_email, prefix):
+def _email(line_num: int, author_email: str, prefix: str) -> MessageIterator:
     author_email = author_email.strip()
 
     if author_email.count("<") > 1:
@@ -455,7 +468,7 @@ def _email(line_num, author_email, prefix):
         yield line_num, f"{prefix} entries must contain a valid email address: {author_email!r}"
 
 
-def _invalid_domain(domain_part):
+def _invalid_domain(domain_part: str) -> bool:
     *labels, root = domain_part.split(".")
     for label in labels:
         if not label.replace("-", "").isalnum():
@@ -463,7 +476,7 @@ def _invalid_domain(domain_part):
     return not root.isalnum() or not root.isascii()
 
 
-def _thread(line_num, url, prefix, *, allow_message=False, discussions_to=False):
+def _thread(line_num: int, url: str, prefix: str, *, allow_message: bool = False, discussions_to: bool = False) -> MessageIterator:
     if allow_message and discussions_to:
         msg = "allow_message and discussions_to cannot both be True"
         raise ValueError(msg)
@@ -537,7 +550,7 @@ def _thread(line_num, url, prefix, *, allow_message=False, discussions_to=False)
     yield line_num, msg
 
 
-def _date(line_num, date_str, prefix):
+def _date(line_num: int, date_str: str, prefix: str) -> MessageIterator:
     try:
         parsed_date = dt.datetime.strptime(date_str, "%d-%b-%Y")
     except ValueError:
