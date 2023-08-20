@@ -58,6 +58,28 @@ def test_header_pattern_no_match(test_input):
     assert pep_lint.HEADER_PATTERN.match(test_input) is None
 
 
+def test_validate_content_type_valid():
+    warnings = [warning for (_, warning) in pep_lint._validate_content_type(1, "text/x-rst")]
+    assert warnings == [], warnings
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "text/plain",
+        "text/markdown",
+        "text/csv",
+        "text/rtf",
+        "text/javascript",
+        "text/html",
+        "text/xml",
+    ],
+)
+def test_validate_content_type_invalid(line: str):
+    warnings = [warning for (_, warning) in pep_lint._validate_content_type(1, line)]
+    assert warnings == ["Content-Type must be 'text/x-rst'"], warnings
+
+
 @pytest.mark.parametrize(
     "line",
     [
