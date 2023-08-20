@@ -346,8 +346,7 @@ def _validate_python_version(line_num, line):
 def _validate_post_history(line_num, body):
     """'Post-History' must be '`DD-mmm-YYYY <Thread URL>`__, …'"""
 
-    body = body
-    if not body:
+    if body == "":
         return
 
     for offset, line in enumerate(body.removesuffix(",").split("\n"), start=line_num):

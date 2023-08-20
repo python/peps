@@ -59,7 +59,30 @@ def test_header_pattern_no_match(test_input):
 
 
 @pytest.mark.parametrize(
-    "thread_url",
+    "body",
+    [
+        "",
+        (
+                "01-Jan-2001, 02-Feb-2002,\n              "
+                "03-Mar-2003, 04-Apr-2004,\n              "
+                "05-May-2005,"
+        ),
+        (
+            "`01-Jan-2000 <https://mail.python.org/pipermail/list-name/0000-Month/0123456.html>`__,\n              "
+            "`11-Mar-2005 <https://mail.python.org/archives/list/list-name@python.org/thread/abcdef0123456789/>`__,\n              "
+            "`21-May-2010 <https://discuss.python.org/t/thread-name/123456/654321>`__,\n              "
+            "`31-Jul-2015 <https://discuss.python.org/t/123456>`__,"
+        ),
+        "01-Jan-2001, `02-Feb-2002 <https://discuss.python.org/t/123456>`__,\n03-Mar-2003",
+    ],
+)
+def test_validate_post_history_valid(body: str):
+    warnings = [warning for (_, warning) in pep_lint._validate_post_history(1, body)]
+    assert warnings == [], warnings
+
+
+@pytest.mark.parametrize(
+    "line",
     [
         "https://mail.python.org/archives/list/list-name@python.org/thread/abcXYZ123",
         "https://mail.python.org/archives/list/list-name@python.org/thread/abcXYZ123/",
@@ -71,13 +94,13 @@ def test_header_pattern_no_match(test_input):
         "https://mail.python.org/archives/list/list-name@python.org/message/abcXYZ123/#Anchor123",
     ],
 )
-def test_validate_resolution_valid(thread_url: str):
-    warnings = [warning for (_, warning) in pep_lint._validate_resolution(1, thread_url)]
+def test_validate_resolution_valid(line: str):
+    warnings = [warning for (_, warning) in pep_lint._validate_resolution(1, line)]
     assert warnings == [], warnings
 
 
 @pytest.mark.parametrize(
-    "thread_url",
+    "line",
     [
         "https://mail.python.org/archives/list/list-name@python.org/thread",
         "https://mail.python.org/archives/list/list-name@python.org/message",
@@ -93,8 +116,8 @@ def test_validate_resolution_valid(thread_url: str):
         "https://mail.python.org/archives/list/list-name@python.org/spam/abcXYZ123/",
     ],
 )
-def test_validate_resolution_invalid(thread_url: str):
-    warnings = [warning for (_, warning) in pep_lint._validate_resolution(1, thread_url)]
+def test_validate_resolution_invalid(line: str):
+    warnings = [warning for (_, warning) in pep_lint._validate_resolution(1, line)]
     assert warnings == ["Resolution must be a valid thread URL"], warnings
 
 
