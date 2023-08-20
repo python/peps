@@ -63,9 +63,9 @@ def test_header_pattern_no_match(test_input):
     [
         "",
         (
-                "01-Jan-2001, 02-Feb-2002,\n              "
-                "03-Mar-2003, 04-Apr-2004,\n              "
-                "05-May-2005,"
+            "01-Jan-2001, 02-Feb-2002,\n              "
+            "03-Mar-2003, 04-Apr-2004,\n              "
+            "05-May-2005,"
         ),
         (
             "`01-Jan-2000 <https://mail.python.org/pipermail/list-name/0000-Month/0123456.html>`__,\n              "
@@ -163,7 +163,9 @@ def test_validate_resolution_invalid(line: str):
     ids=str,
 )
 def test_pep_num_checker(pep_number: str, expected_warnings: set):
-    warnings = [warning for (_, warning) in pep_lint._pep_num(1, pep_number, "<Prefix>")]
+    warnings = [
+        warning for (_, warning) in pep_lint._pep_num(1, pep_number, "<Prefix>")
+    ]
 
     found_warnings = set()
     pep_number = pep_number.strip()
@@ -256,8 +258,14 @@ def test_pep_num_checker(pep_number: str, expected_warnings: set):
         ("Cardinal Ximénez <Cardinal,Ximenez@spanish.inquisition>", {"valid email"}),
         ("Cardinal Ximénez <Cardinal:Ximenez@spanish.inquisition>", {"valid email"}),
         ("Cardinal Ximénez <Cardinal;Ximenez@spanish.inquisition>", {"valid email"}),
-        ("Cardinal Ximénez <Cardinal><Ximenez@spanish.inquisition>", {"multiple <", "multiple >", "valid email"}),
-        ("Cardinal Ximénez <Cardinal@Ximenez@spanish.inquisition>", {"multiple @", "valid email"}),
+        (
+            "Cardinal Ximénez <Cardinal><Ximenez@spanish.inquisition>",
+            {"multiple <", "multiple >", "valid email"},
+        ),
+        (
+            "Cardinal Ximénez <Cardinal@Ximenez@spanish.inquisition>",
+            {"multiple @", "valid email"},
+        ),
         (r"Cardinal Ximénez <Cardinal\Ximenez@spanish.inquisition>", {"valid email"}),
         ("Cardinal Ximénez <[Cardinal.Ximenez]@spanish.inquisition>", {"valid email"}),
         ('Cardinal Ximénez <"Cardinal"Ximenez"@spanish.inquisition>', {"valid email"}),
@@ -265,10 +273,16 @@ def test_pep_num_checker(pep_number: str, expected_warnings: set):
         ("Cardinal Ximénez <Cardinal£Ximénez@spanish.inquisition>", {"valid email"}),
         ("Cardinal Ximénez <Cardinal§Ximenez@spanish.inquisition>", {"valid email"}),
         # ... entries must contain a valid email address (domain)
-        ("Cardinal Ximénez <Cardinal.Ximenez@spanish+american.inquisition>", {"valid email"}),
+        (
+            "Cardinal Ximénez <Cardinal.Ximenez@spanish+american.inquisition>",
+            {"valid email"},
+        ),
         ("Cardinal Ximénez <Cardinal.Ximenez@spani$h.inquisition>", {"valid email"}),
         ("Cardinal Ximénez <Cardinal.Ximenez@spanish.inquisitioñ>", {"valid email"}),
-        ("Cardinal Ximénez <Cardinal.Ximenez@th£.spanish.inquisition>", {"valid email"}),
+        (
+            "Cardinal Ximénez <Cardinal.Ximenez@th£.spanish.inquisition>",
+            {"valid email"},
+        ),
         # valid name-emails
         ("Cardinal Ximénez <Cardinal.Ximenez@spanish.inquisition>", set()),
         ("Cardinal Ximénez <Cardinal.Ximenez at spanish.inquisition>", set()),
@@ -434,7 +448,12 @@ def test_thread_checker_invalid(thread_url: str):
     ],
 )
 def test_thread_checker_valid_allow_message(thread_url: str):
-    warnings = [warning for (_, warning) in pep_lint._thread(1, thread_url, "<Prefix>", allow_message=True)]
+    warnings = [
+        warning
+        for (_, warning) in pep_lint._thread(
+            1, thread_url, "<Prefix>", allow_message=True
+        )
+    ]
     assert warnings == [], warnings
 
 
@@ -456,7 +475,12 @@ def test_thread_checker_valid_allow_message(thread_url: str):
     ],
 )
 def test_thread_checker_invalid_allow_message(thread_url: str):
-    warnings = [warning for (_, warning) in pep_lint._thread(1, thread_url, "<Prefix>", allow_message=True)]
+    warnings = [
+        warning
+        for (_, warning) in pep_lint._thread(
+            1, thread_url, "<Prefix>", allow_message=True
+        )
+    ]
     assert warnings == ["<Prefix> must be a valid thread URL"], warnings
 
 
@@ -478,7 +502,12 @@ def test_thread_checker_invalid_allow_message(thread_url: str):
     ],
 )
 def test_thread_checker_valid_discussions_to(thread_url: str):
-    warnings = [warning for (_, warning) in pep_lint._thread(1, thread_url, "<Prefix>", discussions_to=True)]
+    warnings = [
+        warning
+        for (_, warning) in pep_lint._thread(
+            1, thread_url, "<Prefix>", discussions_to=True
+        )
+    ]
     assert warnings == [], warnings
 
 
@@ -497,13 +526,20 @@ def test_thread_checker_valid_discussions_to(thread_url: str):
     ],
 )
 def test_thread_checker_invalid_discussions_to(thread_url: str):
-    warnings = [warning for (_, warning) in pep_lint._thread(1, thread_url, "<Prefix>", discussions_to=True)]
+    warnings = [
+        warning
+        for (_, warning) in pep_lint._thread(
+            1, thread_url, "<Prefix>", discussions_to=True
+        )
+    ]
     assert warnings == ["<Prefix> must be a valid thread URL"], warnings
 
 
 def test_thread_checker_allow_message_discussions_to():
-    with pytest.raises(ValueError, match='cannot both be True'):
-        list(pep_lint._thread(1, '', "<Prefix>", allow_message=True, discussions_to=True))
+    with pytest.raises(ValueError, match="cannot both be True"):
+        list(
+            pep_lint._thread(1, "", "<Prefix>", allow_message=True, discussions_to=True)
+        )
 
 
 @pytest.mark.parametrize(
