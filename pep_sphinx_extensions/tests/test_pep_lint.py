@@ -61,6 +61,29 @@ def test_header_pattern_no_match(test_input):
 @pytest.mark.parametrize(
     "line",
     [
+        "!",
+        "The Zen of Python",
+        "A title that is exactly 79 characters long, but shorter than 80 characters long",
+    ],
+)
+def test_validate_title(line: str):
+    warnings = [warning for (_, warning) in pep_lint._validate_title(1, line)]
+    assert warnings == [], warnings
+
+
+def test_validate_title_blank():
+    warnings = [warning for (_, warning) in pep_lint._validate_title(1, "-" * 80)]
+    assert warnings == ["PEP title must be less than 80 characters"], warnings
+
+
+def test_validate_title_too_long():
+    warnings = [warning for (_, warning) in pep_lint._validate_title(1, "")]
+    assert warnings == ["PEP must have a title"], warnings
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
         "Alice",
         "Alice,",
         "Alice, Bob, Charlie",
