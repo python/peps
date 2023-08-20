@@ -61,6 +61,53 @@ def test_header_pattern_no_match(test_input):
 @pytest.mark.parametrize(
     "line",
     [
+        "Accepted",
+        "Active",
+        "April Fool!",
+        "Deferred",
+        "Draft",
+        "Final",
+        "Provisional",
+        "Rejected",
+        "Superseded",
+        "Withdrawn",
+    ],
+)
+def test_validate_status_valid(line: str):
+    warnings = [
+        warning for (_, warning) in pep_lint._validate_status(1, line)
+    ]
+    assert warnings == [], warnings
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Standards Track",
+        "Informational",
+        "Process",
+        "accepted",
+        "active",
+        "april fool!",
+        "deferred",
+        "draft",
+        "final",
+        "provisional",
+        "rejected",
+        "superseded",
+        "withdrawn",
+    ],
+)
+def test_validate_status_invalid(line: str):
+    warnings = [
+        warning for (_, warning) in pep_lint._validate_status(1, line)
+    ]
+    assert warnings == ["Status must be a valid PEP status"], warnings
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
         "Standards Track",
         "Informational",
         "Process",
@@ -79,8 +126,16 @@ def test_validate_type_valid(line: str):
         "standards track",
         "informational",
         "process",
-        *pep_lint.ALL_STATUSES,
-        *map(str.lower, pep_lint.ALL_STATUSES),
+        "Accepted",
+        "Active",
+        "April Fool!",
+        "Deferred",
+        "Draft",
+        "Final",
+        "Provisional",
+        "Rejected",
+        "Superseded",
+        "Withdrawn",
     ],
 )
 def test_validate_type_invalid(line: str):
