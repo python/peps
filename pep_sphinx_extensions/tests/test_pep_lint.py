@@ -61,6 +61,20 @@ def test_header_pattern_no_match(test_input):
 @pytest.mark.parametrize(
     "line",
     [
+        "Alice",
+        "Cardinal Ximénez",
+        "Alice <alice@domain.example>",
+        "Cardinal Ximénez <Cardinal.Ximenez@spanish.inquisition>",
+    ],
+)
+def test_validate_sponsor(line: str):
+    warnings = [warning for (_, warning) in pep_lint._validate_sponsor(1, line)]
+    assert warnings == [], warnings
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
         "",
         "Alice, Bob, Charlie",
         "Alice, Bob, Charlie,",
