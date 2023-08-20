@@ -251,7 +251,7 @@ def _validate_delegate(line_num, line):
 
     # PEP 451
     if ", " in line:
-        for part in line.removesuffix(", ").split(", "):
+        for part in line.removesuffix(",").split(", "):
             yield from _email(line_num, part, "Delegate")
         return
 

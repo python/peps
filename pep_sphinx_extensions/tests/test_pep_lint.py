@@ -61,6 +61,21 @@ def test_header_pattern_no_match(test_input):
 @pytest.mark.parametrize(
     "line",
     [
+        "",
+        "Alice, Bob, Charlie",
+        "Alice, Bob, Charlie,",
+        "Alice <alice@domain.example>",
+        "Cardinal Ximénez <Cardinal.Ximenez@spanish.inquisition>",
+    ],
+)
+def test_validate_delegate(line: str):
+    warnings = [warning for (_, warning) in pep_lint._validate_delegate(1, line)]
+    assert warnings == [], warnings
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
         "list-name@python.org",
         "distutils-sig@python.org",
         "csv@python.org",
