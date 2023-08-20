@@ -68,9 +68,7 @@ def test_header_pattern_no_match(test_input):
     ],
 )
 def test_check_direct_links_pep(line: str):
-    warnings = [
-        warning for (_, warning) in pep_lint.check_direct_links(1, line)
-    ]
+    warnings = [warning for (_, warning) in pep_lint.check_direct_links(1, line)]
     assert warnings == ["Use the :pep:`NNN` role to refer to PEPs"], warnings
 
 
@@ -84,9 +82,7 @@ def test_check_direct_links_pep(line: str):
     ],
 )
 def test_check_direct_links_rfc(line: str):
-    warnings = [
-        warning for (_, warning) in pep_lint.check_direct_links(1, line)
-    ]
+    warnings = [warning for (_, warning) in pep_lint.check_direct_links(1, line)]
     assert warnings == ["Use the :rfc:`NNN` role to refer to RFCs"], warnings
 
 
