@@ -372,12 +372,15 @@ def _validate_resolution(line_num, line):
 ########################
 
 def _pep_num(line_num, pep_number, prefix):
+    if pep_number == "":
+        yield line_num, f"{prefix} must not be blank: {pep_number!r}"
+        return
     if pep_number.startswith("0") and pep_number != "0":
-        yield line_num, f"{prefix} must not contain leading zeros: {pep_number}"
+        yield line_num, f"{prefix} must not contain leading zeros: {pep_number!r}"
     if not _is_digits(pep_number):
-        yield line_num, f"{prefix} must be numeric: {pep_number}"
+        yield line_num, f"{prefix} must be numeric: {pep_number!r}"
     elif not 0 <= int(pep_number) <= 9999:
-        yield line_num, f"{prefix} must be between 0 and 9999: {pep_number}"
+        yield line_num, f"{prefix} must be between 0 and 9999: {pep_number!r}"
 
 
 def _is_digits(string):
