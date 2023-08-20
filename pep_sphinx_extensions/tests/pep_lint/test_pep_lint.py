@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pep_lint  # NoQA: inserted into sys.modules in conftest.py
 
-PEP_9002 = Path(__file__).parent.parent / "peps" / "PEP-9002.rst"
+PEP_9002 = Path(__file__).parent.parent / "peps" / "pep-9002.rst"
 
 
 def test_with_fake_pep():
