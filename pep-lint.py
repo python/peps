@@ -69,7 +69,9 @@ MAILMAN_3_MESSAGE_PATTERN = re.compile(r"[\w\-]+@python\.org/message/[a-z0-9]+/?
 
 def check(filenames=(), /):
     """The main entry-point."""
-    if not filenames:
+    if filenames:
+        filenames = map(Path, filenames)
+    else:
         filenames = itertools.chain(PEP_ROOT.glob("pep-????.txt"), PEP_ROOT.glob("pep-????.rst"))
     if (count := sum(map(check_file, filenames))) > 0:
         s = "s" * (count != 1)
@@ -79,6 +81,7 @@ def check(filenames=(), /):
 
 
 def check_file(filename, /):
+    filename = filename.resolve()
     try:
         content = filename.read_text(encoding="utf-8")
     except FileNotFoundError:
