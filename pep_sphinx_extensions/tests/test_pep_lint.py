@@ -278,3 +278,165 @@ def test_email_checker(email: str, expected_warnings: set):
         assert warnings == [], warnings
 
     assert found_warnings == expected_warnings
+
+
+@pytest.mark.parametrize(
+    "thread_url",
+    [
+        "https://discuss.python.org/t/thread-name/123456",
+        "https://discuss.python.org/t/thread-name/123456/",
+        "https://discuss.python.org/t/thread_name/123456",
+        "https://discuss.python.org/t/thread_name/123456/",
+        "https://discuss.python.org/t/thread-name/123456/654321/",
+        "https://discuss.python.org/t/thread-name/123456/654321",
+        "https://discuss.python.org/t/123456",
+        "https://discuss.python.org/t/123456/",
+        "https://discuss.python.org/t/123456/654321/",
+        "https://discuss.python.org/t/123456/654321",
+        "https://discuss.python.org/t/1",
+        "https://discuss.python.org/t/1/",
+        "https://mail.python.org/pipermail/list-name/0000-Month/0123456.html",
+        "https://mail.python.org/archives/list/list-name@python.org/thread/abcXYZ123",
+        "https://mail.python.org/archives/list/list-name@python.org/thread/abcXYZ123/",
+    ],
+)
+def test_thread_checker_valid(thread_url: str):
+    warnings = [warning for (_, warning) in pep_lint._thread(1, thread_url, "<Prefix>")]
+    assert warnings == [], warnings
+
+
+@pytest.mark.parametrize(
+    "thread_url",
+    [
+        "http://link.example",
+        "list-name@python.org",
+        "distutils-sig@python.org",
+        "csv@python.org",
+        "python-3000@python.org",
+        "ipaddr-py-dev@googlegroups.com",
+        "python-tulip@googlegroups.com",
+        "https://link.example",
+        "https://discuss.python.org",
+        "https://discuss.python.org/",
+        "https://discuss.python.org/c/category",
+        "https://discuss.python.org/t/thread_name/123456//",
+        "https://discuss.python.org/t/thread+name/123456",
+        "https://discuss.python.org/t/thread+name/123456#",
+        "https://discuss.python.org/t/thread+name/123456/#",
+        "https://discuss.python.org/t/thread+name/123456/#anchor",
+        "https://discuss.python.org/t/thread+name/",
+        "https://discuss.python.org/t/thread+name",
+        "https://discuss.python.org/t/thread-name/123abc",
+        "https://discuss.python.org/t/thread-name/123abc/",
+        "https://discuss.python.org/t/thread-name/123456/123abc",
+        "https://discuss.python.org/t/thread-name/123456/123abc/",
+        "https://discuss.python.org/t/123/456/789",
+        "https://discuss.python.org/t/123/456/789/",
+        "https://discuss.python.org/t/#/",
+        "https://discuss.python.org/t/#",
+        "https://mail.python.org/pipermail/list+name/0000-Month/0123456.html",
+        "https://mail.python.org/pipermail/list-name/YYYY-Month/0123456.html",
+        "https://mail.python.org/pipermail/list-name/0123456/0123456.html",
+        "https://mail.python.org/pipermail/list-name/0000-Month/0123456",
+        "https://mail.python.org/pipermail/list-name/0000-Month/0123456/",
+        "https://mail.python.org/pipermail/list-name/0000-Month/",
+        "https://mail.python.org/pipermail/list-name/0000-Month",
+        "https://mail.python.org/archives/list/list-name@python.org/thread/abcXYZ123#anchor",
+        "https://mail.python.org/archives/list/list-name@python.org/thread/abcXYZ123/#anchor",
+        "https://mail.python.org/archives/list/list-name@python.org/message/abcXYZ123",
+        "https://mail.python.org/archives/list/list-name@python.org/message/abcXYZ123/",
+        "https://mail.python.org/archives/list/list-name@python.org/message/abcXYZ123#anchor",
+        "https://mail.python.org/archives/list/list-name@python.org/message/abcXYZ123/#anchor",
+        "https://mail.python.org/archives/list/list-name@python.org/spam/abcXYZ123",
+        "https://mail.python.org/archives/list/list-name@python.org/spam/abcXYZ123/",
+    ],
+)
+def test_thread_checker_invalid(thread_url: str):
+    warnings = [warning for (_, warning) in pep_lint._thread(1, thread_url, "<Prefix>")]
+    assert warnings == ["<Prefix> must be a valid thread URL"], warnings
+
+
+@pytest.mark.parametrize(
+    "thread_url",
+    [
+        "https://mail.python.org/archives/list/list-name@python.org/thread/abcXYZ123",
+        "https://mail.python.org/archives/list/list-name@python.org/thread/abcXYZ123/",
+        "https://mail.python.org/archives/list/list-name@python.org/message/abcXYZ123",
+        "https://mail.python.org/archives/list/list-name@python.org/message/abcXYZ123/",
+        "https://mail.python.org/archives/list/list-name@python.org/message/abcXYZ123#Anchor",
+        "https://mail.python.org/archives/list/list-name@python.org/message/abcXYZ123/#Anchor",
+        "https://mail.python.org/archives/list/list-name@python.org/message/abcXYZ123#Anchor123",
+        "https://mail.python.org/archives/list/list-name@python.org/message/abcXYZ123/#Anchor123",
+    ],
+)
+def test_thread_checker_valid_allow_message(thread_url: str):
+    warnings = [warning for (_, warning) in pep_lint._thread(1, thread_url, "<Prefix>", allow_message=True)]
+    assert warnings == [], warnings
+
+
+@pytest.mark.parametrize(
+    "thread_url",
+    [
+        "https://mail.python.org/archives/list/list-name@python.org/thread",
+        "https://mail.python.org/archives/list/list-name@python.org/message",
+        "https://mail.python.org/archives/list/list-name@python.org/thread/",
+        "https://mail.python.org/archives/list/list-name@python.org/message/",
+        "https://mail.python.org/archives/list/list-name@python.org/thread/abcXYZ123#anchor",
+        "https://mail.python.org/archives/list/list-name@python.org/thread/abcXYZ123/#anchor",
+        "https://mail.python.org/archives/list/list-name@python.org/message/#abcXYZ123",
+        "https://mail.python.org/archives/list/list-name@python.org/message/#abcXYZ123/",
+        "https://mail.python.org/archives/list/list-name@python.org/message/abcXYZ123/anchor/",
+        "https://mail.python.org/archives/list/list-name@python.org/message/abcXYZ123/anchor/",
+        "https://mail.python.org/archives/list/list-name@python.org/spam/abcXYZ123",
+        "https://mail.python.org/archives/list/list-name@python.org/spam/abcXYZ123/",
+    ],
+)
+def test_thread_checker_invalid_allow_message(thread_url: str):
+    warnings = [warning for (_, warning) in pep_lint._thread(1, thread_url, "<Prefix>", allow_message=True)]
+    assert warnings == ["<Prefix> must be a valid thread URL"], warnings
+
+
+@pytest.mark.parametrize(
+    "thread_url",
+    [
+        "list-name@python.org",
+        "distutils-sig@python.org",
+        "csv@python.org",
+        "python-3000@python.org",
+        "ipaddr-py-dev@googlegroups.com",
+        "python-tulip@googlegroups.com",
+        "https://discuss.python.org/t/thread-name/123456",
+        "https://discuss.python.org/t/thread-name/123456/",
+        "https://discuss.python.org/t/thread_name/123456",
+        "https://discuss.python.org/t/thread_name/123456/",
+        "https://discuss.python.org/t/123456/",
+        "https://discuss.python.org/t/123456",
+    ],
+)
+def test_thread_checker_valid_discussions_to(thread_url: str):
+    warnings = [warning for (_, warning) in pep_lint._thread(1, thread_url, "<Prefix>", discussions_to=True)]
+    assert warnings == [], warnings
+
+
+@pytest.mark.parametrize(
+    "thread_url",
+    [
+        "https://discuss.python.org/t/thread-name/123456/000",
+        "https://discuss.python.org/t/thread-name/123456/000/",
+        "https://discuss.python.org/t/thread_name/123456/000",
+        "https://discuss.python.org/t/thread_name/123456/000/",
+        "https://discuss.python.org/t/123456/000/",
+        "https://discuss.python.org/t/12345656/000",
+        "https://discuss.python.org/t/thread-name",
+        "https://discuss.python.org/t/thread_name",
+        "https://discuss.python.org/t/thread+name",
+    ],
+)
+def test_thread_checker_invalid_discussions_to(thread_url: str):
+    warnings = [warning for (_, warning) in pep_lint._thread(1, thread_url, "<Prefix>", discussions_to=True)]
+    assert warnings == ["<Prefix> must be a valid thread URL"], warnings
+
+
+def test_thread_checker_allow_message_discussions_to():
+    with pytest.raises(ValueError, match='cannot both be True'):
+        list(pep_lint._thread(1, '', "<Prefix>", allow_message=True, discussions_to=True))

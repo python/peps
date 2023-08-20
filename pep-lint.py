@@ -62,9 +62,9 @@ NAME_PATTERN = re.compile(r"(?:[^\W\d_]|[ ',\-.])+(?: |$)")
 EMAIL_LOCAL_PART_PATTERN = re.compile(r"[\w!#$%&'*+\-/=?^{|}~.]+", re.ASCII)
 DISCOURSE_THREAD_PATTERN = re.compile(r"([\w\-]+/)?\d+")
 DISCOURSE_POST_PATTERN = re.compile(r"([\w\-]+/)?\d+(/\d+)?")
-MAILMAN_2_PATTERN = re.compile(r"[\w\-]+/\d{4}-[A-Za-z]+/[A-Za-z0-9]+\.html")
-MAILMAN_3_THREAD_PATTERN = re.compile(r"[\w\-]+@python\.org/thread/[A-Za-z0-9]+/?(#[A-Za-z0-9]+)?")
-MAILMAN_3_MESSAGE_PATTERN = re.compile(r"[\w\-]+@python\.org/message/[A-Za-z0-9]+/?(#[A-Za-z0-9]+)?")
+MAILMAN_2_PATTERN = re.compile(r"[\w\-]+/\d{4}-[a-z]+/\d+\.html", re.ASCII|re.IGNORECASE)
+MAILMAN_3_THREAD_PATTERN = re.compile(r"[\w\-]+@python\.org/thread/[a-z0-9]+/?", re.ASCII|re.IGNORECASE)
+MAILMAN_3_MESSAGE_PATTERN = re.compile(r"[\w\-]+@python\.org/message/[a-z0-9]+/?(#[a-z0-9]+)?", re.ASCII|re.IGNORECASE)
 
 
 def check(filenames=(), /):
@@ -350,15 +350,14 @@ def _validate_post_history(line_num, body):
     if not body:
         return
 
-    for post in body.replace("\n", " ").removesuffix(",").split(", "):
-        post = post.strip()
-
-        if not post.startswith("`") and not post.endswith(">`__"):
-            yield from _date(line_num, post, "Post-History")
-        else:
-            post_date, post_url = post[1:-4].split(" <")
-            yield from _date(line_num, post_date, "Post-History")
-            yield from _thread(line_num, post_url, "Post-History")
+    for offset, line in enumerate(body.removesuffix(",").split("\n"), start=line_num):
+        for post in line.removesuffix(",").strip().split(", "):
+            if not post.startswith("`") and not post.endswith(">`__"):
+                yield from _date(offset, post, "Post-History")
+            else:
+                post_date, post_url = post[1:-4].split(" <")
+                yield from _date(offset, post_date, "Post-History")
+                yield from _thread(offset, post_url, "Post-History")
 
 
 def _validate_resolution(line_num, line):
@@ -436,7 +435,11 @@ def _invalid_domain(domain_part):
     return not root.isalnum() or not root.isascii()
 
 
-def _thread(line_num, url, prefix, allow_message=False, discussions_to=False):
+def _thread(line_num, url, prefix, *, allow_message=False, discussions_to=False):
+    if allow_message and discussions_to:
+        msg = "allow_message and discussions_to cannot both be True"
+        raise ValueError(msg)
+
     msg = f"{prefix} must be a valid thread URL"
 
     if not url.startswith("https://"):
@@ -445,12 +448,51 @@ def _thread(line_num, url, prefix, allow_message=False, discussions_to=False):
         return
 
     if url.startswith("https://discuss.python.org/t/"):
-        # Discussions-To links must be the thread itself, not a post
-        pattern = DISCOURSE_THREAD_PATTERN if discussions_to else DISCOURSE_POST_PATTERN
-
         remainder = url.removeprefix("https://discuss.python.org/t/").removesuffix("/")
-        if pattern.fullmatch(remainder) is not None:
-            return
+
+        # Discussions-To links must be the thread itself, not a post
+        if discussions_to:
+            # The equivalent pattern is similar to '([\w\-]+/)?\d+',
+            # but the topic name must contain a non-numeric character
+
+            # We use ``str.rpartition`` as the topic name is optional
+            topic_name, _, topic_id = remainder.rpartition("/")
+            if topic_name == '' and _is_digits(topic_id):
+                return
+            topic_name = topic_name.replace("-", "0").replace("_", "0")
+            # the topic name must not be entirely numeric
+            valid_topic_name = not _is_digits(topic_name) and topic_name.isalnum()
+            if valid_topic_name and _is_digits(topic_id):
+                return
+        else:
+            # The equivalent pattern is similar to '([\w\-]+/)?\d+(/\d+)?',
+            # but the topic name must contain a non-numeric character
+            if remainder.count("/") == 2:
+                # When there are three parts, the URL must be "topic-name/topic-id/post-id".
+                topic_name, topic_id, post_id = remainder.rsplit("/", 2)
+                topic_name = topic_name.replace("-", "0").replace("_", "0")
+                valid_topic_name = not _is_digits(topic_name) and topic_name.isalnum()
+                if valid_topic_name and _is_digits(topic_id) and _is_digits(post_id):
+                    # the topic name must not be entirely numeric
+                    return
+            elif remainder.count("/") == 1:
+                # When there are only two parts, there's an ambiguity between
+                # "topic-name/topic-id" and "topic-id/post-id".
+                # We disambiguate by checking if the LHS is a valid name and
+                # the RHS is a valid topic ID (for the former),
+                # and then if both the LHS and RHS are valid IDs (for the latter).
+                left, right = remainder.rsplit("/")
+                left = left.replace("-", "0").replace("_", "0")
+                # the topic name must not be entirely numeric
+                left_is_name = not _is_digits(left) and left.isalnum()
+                if left_is_name and _is_digits(right):
+                    return
+                elif _is_digits(left) and _is_digits(right):
+                    return
+            else:
+                # When there's only one part, it must be a valid topic ID.
+                if _is_digits(remainder):
+                    return
 
     if url.startswith("https://mail.python.org/pipermail/"):
         remainder = url.removeprefix("https://mail.python.org/pipermail/")
