@@ -58,6 +58,79 @@ def test_header_pattern_no_match(test_input):
     assert pep_lint.HEADER_PATTERN.match(test_input) is None
 
 
+@pytest.mark.parametrize(
+    ("line", "expected_warnings"),
+    [
+        # valid entries
+        ("Governance", set()),
+        ("Packaging", set()),
+        ("Typing", set()),
+        ("Release", set()),
+        ("Governance, Packaging", set()),
+        ("Packaging, Typing", set()),
+        # duplicates
+        ("Governance, Governance", {"duplicates"}),
+        ("Release, Release", {"duplicates"}),
+        ("Release, Release", {"duplicates"}),
+        ("Spam, Spam", {"duplicates", "valid"}),
+        ("lobster, lobster", {"duplicates", "capitalisation", "valid"}),
+        ("governance, governance", {"duplicates", "capitalisation"}),
+        # capitalisation
+        ("governance", {"capitalisation"}),
+        ("packaging", {"capitalisation"}),
+        ("typing", {"capitalisation"}),
+        ("release", {"capitalisation"}),
+        ("Governance, release", {"capitalisation"}),
+        # validity
+        ("Spam", {"valid"}),
+        ("lobster", {"capitalisation", "valid"}),
+        # sorted
+        ("Packaging, Governance", {"sorted"}),
+        ("Typing, Release", {"sorted"}),
+        ("Release, Governance", {"sorted"}),
+        ("spam, packaging", {"capitalisation", "valid", "sorted"}),
+    ],
+    # call str() on each parameterised value in the test ID.
+    ids=str,
+)
+def test_validate_topic(line: str, expected_warnings: set):
+    warnings = [
+        warning for (_, warning) in pep_lint._validate_topic(1, line)
+    ]
+
+    found_warnings = set()
+
+    if "duplicates" in expected_warnings:
+        found_warnings.add("duplicates")
+        expected = "Topic must not contain duplicates"
+        matching = [w for w in warnings if w == expected]
+        assert matching == [expected], warnings
+
+    if "capitalisation" in expected_warnings:
+        found_warnings.add("capitalisation")
+        expected = "Topic must be properly capitalised (Title Case)"
+        matching = [w for w in warnings if w == expected]
+        assert matching == [expected], warnings
+
+    if "valid" in expected_warnings:
+        found_warnings.add("valid")
+        expected = "Topic must be for a valid sub-index"
+        matching = [w for w in warnings if w == expected]
+        assert matching == [expected], warnings
+
+    if "sorted" in expected_warnings:
+        found_warnings.add("sorted")
+        expected = "Topic must be sorted lexicographically"
+        matching = [w for w in warnings if w == expected]
+        assert matching == [expected], warnings
+
+    if expected_warnings == set():
+        assert warnings == [], warnings
+
+    assert found_warnings == expected_warnings
+
+
+
 def test_validate_content_type_valid():
     warnings = [warning for (_, warning) in pep_lint._validate_content_type(1, "text/x-rst")]
     assert warnings == [], warnings

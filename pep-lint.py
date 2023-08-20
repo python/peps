@@ -289,7 +289,12 @@ def _validate_topic(line_num, line):
         yield line_num, "Topic must not contain duplicates"
 
     if unique_topics - {"Governance", "Packaging", "Typing", "Release"}:
-        yield line_num, "Topic must be for a valid sub-index"
+        if not all(map(str.istitle, unique_topics)):
+            yield line_num, "Topic must be properly capitalised (Title Case)"
+        if unique_topics - {"governance", "packaging", "typing", "release"}:
+            yield line_num, "Topic must be for a valid sub-index"
+    if sorted(topics) != topics:
+        yield line_num, "Topic must be sorted lexicographically"
 
 
 def _validate_content_type(line_num, line):
