@@ -94,9 +94,7 @@ def test_header_pattern_no_match(test_input):
     ids=str,
 )
 def test_validate_topic(line: str, expected_warnings: set):
-    warnings = [
-        warning for (_, warning) in pep_lint._validate_topic(1, line)
-    ]
+    warnings = [warning for (_, warning) in pep_lint._validate_topic(1, line)]
 
     found_warnings = set()
 
@@ -130,9 +128,10 @@ def test_validate_topic(line: str, expected_warnings: set):
     assert found_warnings == expected_warnings
 
 
-
 def test_validate_content_type_valid():
-    warnings = [warning for (_, warning) in pep_lint._validate_content_type(1, "text/x-rst")]
+    warnings = [
+        warning for (_, warning) in pep_lint._validate_content_type(1, "text/x-rst")
+    ]
     assert warnings == [], warnings
 
 
@@ -176,7 +175,9 @@ def test_validate_pep_references(line: str):
 )
 def test_validate_pep_references_separators(line: str):
     warnings = [warning for (_, warning) in pep_lint._validate_pep_references(1, line)]
-    assert warnings == ["PEP references must be separated by comma-spaces (', ')"], warnings
+    assert warnings == [
+        "PEP references must be separated by comma-spaces (', ')"
+    ], warnings
 
 
 @pytest.mark.parametrize(
@@ -240,9 +241,7 @@ def test_validate_created(line: str):
     ids=str,
 )
 def test_validate_python_version(line: str, expected_warnings: set):
-    warnings = [
-        warning for (_, warning) in pep_lint._validate_python_version(1, line)
-    ]
+    warnings = [warning for (_, warning) in pep_lint._validate_python_version(1, line)]
 
     found_warnings = set()
 
@@ -272,7 +271,9 @@ def test_validate_python_version(line: str, expected_warnings: set):
 
     if "micro empty" in expected_warnings:
         found_warnings.add("micro empty")
-        expected = f"Python-Version micro part must be empty if minor part is 'x': {line}"
+        expected = (
+            f"Python-Version micro part must be empty if minor part is 'x': {line}"
+        )
         matching = [w for w in warnings if w == expected]
         assert matching == [expected], warnings
 
