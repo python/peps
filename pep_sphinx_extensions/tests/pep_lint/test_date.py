@@ -1,8 +1,7 @@
 import datetime as dt
 
-import pytest
-
 import pep_lint  # NoQA: inserted into sys.modules in conftest.py
+import pytest
 
 
 @pytest.mark.parametrize(

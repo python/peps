@@ -1,6 +1,5 @@
-import pytest
-
 import pep_lint  # NoQA: inserted into sys.modules in conftest.py
+import pytest
 
 
 @pytest.mark.parametrize(
@@ -401,5 +400,3 @@ def test_validate_python_version(line: str, expected_warnings: set):
         assert warnings == [], warnings
 
     assert found_warnings == expected_warnings
-
-
