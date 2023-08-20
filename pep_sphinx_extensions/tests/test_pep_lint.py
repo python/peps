@@ -59,6 +59,24 @@ def test_header_pattern_no_match(test_input):
 
 
 @pytest.mark.parametrize(
+    "line",
+    [
+        # valid entries
+        "01-Jan-2000",
+        "29-Feb-2016",
+        "31-Dec-2000",
+        "01-Apr-2003",
+        "01-Apr-2007",
+        "01-Apr-2009",
+        "01-Jan-1990",
+    ],
+)
+def test_validate_created(line: str):
+    warnings = [warning for (_, warning) in pep_lint._validate_created(1, line)]
+    assert warnings == [], warnings
+
+
+@pytest.mark.parametrize(
     ("line", "expected_warnings"),
     [
         # valid entries
