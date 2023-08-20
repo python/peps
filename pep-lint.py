@@ -13,7 +13,6 @@ from pathlib import Path
 
 TYPE_CHECKING = False
 if TYPE_CHECKING:
-    import os
     from collections.abc import Iterable, Iterator, KeysView, Sequence
     from typing import TypeAlias
 
@@ -80,7 +79,7 @@ MAILMAN_3_THREAD_PATTERN = re.compile(r"[\w\-]+@python\.org/thread/[a-z0-9]+/?",
 MAILMAN_3_MESSAGE_PATTERN = re.compile(r"[\w\-]+@python\.org/message/[a-z0-9]+/?(#[a-z0-9]+)?", re.ASCII | re.IGNORECASE)
 
 
-def check(filenames: Sequence[str | os.PathLike[str]] = (), /) -> int:
+def check(filenames: Sequence[str] = (), /) -> int:
     """The main entry-point."""
     if filenames:
         filenames = map(Path, filenames)
