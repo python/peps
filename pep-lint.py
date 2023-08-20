@@ -210,16 +210,16 @@ def _validate_pep_number(line):
         yield 1, "PEP must begin with the 'PEP:' header"
         return
 
-    pep_number = line.removeprefix("PEP: ").strip()
+    pep_number = line.removeprefix("PEP: ").lstrip()
     yield from _pep_num(1, pep_number, "'PEP:' header")
 
 
 def _validate_title(line_num, line):
     """'Title' must be 1-79 characters"""
 
-    if len(line.strip()) == 0:
+    if len(line) == 0:
         yield line_num, "PEP must have a title"
-    elif len(line.strip()) > 79:
+    elif len(line) > 79:
         yield line_num, "PEP title must be less than 80 characters"
 
 
@@ -228,8 +228,13 @@ def _validate_author(line_num, body):
 
     lines = body.split("\n")
     for offset, line in enumerate(lines):
-        if offset > 1 and line[:9].isspace():
-            yield line_num + offset, f"Author line must not be over-indented"
+        if offset >= 1 and line[:9].isspace():
+            # Checks for:
+            # Author: Alice
+            #             Bob
+            #         ^^^^
+            # Note that len("Author: ") == 8
+            yield line_num + offset, "Author line must not be over-indented"
         if offset < len(lines) - 1:
             if not line.endswith(","):
                 yield line_num + offset, "Author continuation lines must end with a comma"
@@ -246,7 +251,7 @@ def _validate_sponsor(line_num, line):
 def _validate_delegate(line_num, line):
     """'Delegate' must have format 'Name <email@example.com>'"""
 
-    if line.strip() == "":
+    if line == "":
         return
 
     # PEP 451

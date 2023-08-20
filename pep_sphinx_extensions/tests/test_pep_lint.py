@@ -62,6 +62,55 @@ def test_header_pattern_no_match(test_input):
     "line",
     [
         "Alice",
+        "Alice,",
+        "Alice, Bob, Charlie",
+        "Alice,\nBob,\nCharlie",
+        "Alice,\n   Bob,\n   Charlie",
+        "Alice,\n        Bob,\n        Charlie",
+        "Cardinal Ximénez",
+        "Alice <alice@domain.example>",
+        "Cardinal Ximénez <Cardinal.Ximenez@spanish.inquisition>",
+    ],
+    ids=repr,  # the default calls str and renders newlines.
+)
+def test_validate_author(line: str):
+    warnings = [warning for (_, warning) in pep_lint._validate_author(1, line)]
+    assert warnings == [], warnings
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Alice,\n         Bob,\n        Charlie",
+        "Alice,\n        Bob,\n         Charlie",
+        "Alice,\n         Bob,\n         Charlie",
+        "Alice,\n              Bob",
+    ],
+    ids=repr,  # the default calls str and renders newlines.
+)
+def test_validate_author_over__indented(line: str):
+    warnings = [warning for (_, warning) in pep_lint._validate_author(1, line)]
+    assert {*warnings} == {"Author line must not be over-indented"}, warnings
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Cardinal Ximénez\nCardinal Biggles\nCardinal Fang",
+        "Cardinal Ximénez,\nCardinal Biggles\nCardinal Fang",
+        "Cardinal Ximénez\nCardinal Biggles,\nCardinal Fang",
+    ],
+    ids=repr,  # the default calls str and renders newlines.
+)
+def test_validate_author_continuation(line: str):
+    warnings = [warning for (_, warning) in pep_lint._validate_author(1, line)]
+    assert {*warnings} == {"Author continuation lines must end with a comma"}, warnings
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Alice",
         "Cardinal Ximénez",
         "Alice <alice@domain.example>",
         "Cardinal Ximénez <Cardinal.Ximenez@spanish.inquisition>",
