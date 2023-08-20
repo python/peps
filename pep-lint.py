@@ -262,12 +262,15 @@ def _validate_discussions_to(line_num, line):
     """'Discussions-To' must be a thread URL"""
 
     yield from _thread(line_num, line, "Discussions-To", discussions_to=True)
+    if line.startswith("https://"):
+        return
     for suffix in "@python.org", "@googlegroups.com":
         if line.endswith(suffix):
             remainder = line.removesuffix(suffix)
             if re.fullmatch(r"[\w\-]+", remainder) is None:
                 yield line_num, "Discussions-To must be a valid mailing list"
-
+            return
+    yield line_num, "Discussions-To must be a valid thread URL or mailing list"
 
 def _validate_status(line_num, line):
     """'Status' must be a valid PEP status"""

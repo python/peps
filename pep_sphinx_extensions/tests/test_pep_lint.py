@@ -61,6 +61,52 @@ def test_header_pattern_no_match(test_input):
 @pytest.mark.parametrize(
     "line",
     [
+        "list-name@python.org",
+        "distutils-sig@python.org",
+        "csv@python.org",
+        "python-3000@python.org",
+        "ipaddr-py-dev@googlegroups.com",
+        "python-tulip@googlegroups.com",
+        "https://discuss.python.org/t/thread-name/123456",
+        "https://discuss.python.org/t/thread-name/123456/",
+        "https://discuss.python.org/t/thread_name/123456",
+        "https://discuss.python.org/t/thread_name/123456/",
+        "https://discuss.python.org/t/123456/",
+        "https://discuss.python.org/t/123456",
+    ],
+)
+def test_validate_discussions_to_valid(line: str):
+    warnings = [warning for (_, warning) in pep_lint._validate_discussions_to(1, line)]
+    assert warnings == [], warnings
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "$pecial+chars@python.org",
+        "a-discussions-to-list!@googlegroups.com",
+    ],
+)
+def test_validate_discussions_to_list_name(line: str):
+    warnings = [warning for (_, warning) in pep_lint._validate_discussions_to(1, line)]
+    assert warnings == ["Discussions-To must be a valid mailing list"], warnings
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "list-name@python.org.uk",
+        "distutils-sig@mail-server.example",
+    ],
+)
+def test_validate_discussions_to_invalid_list_domain(line: str):
+    warnings = [warning for (_, warning) in pep_lint._validate_discussions_to(1, line)]
+    assert warnings == ["Discussions-To must be a valid thread URL or mailing list"], warnings
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
         "Accepted",
         "Active",
         "April Fool!",
@@ -74,9 +120,7 @@ def test_header_pattern_no_match(test_input):
     ],
 )
 def test_validate_status_valid(line: str):
-    warnings = [
-        warning for (_, warning) in pep_lint._validate_status(1, line)
-    ]
+    warnings = [warning for (_, warning) in pep_lint._validate_status(1, line)]
     assert warnings == [], warnings
 
 
@@ -99,9 +143,7 @@ def test_validate_status_valid(line: str):
     ],
 )
 def test_validate_status_invalid(line: str):
-    warnings = [
-        warning for (_, warning) in pep_lint._validate_status(1, line)
-    ]
+    warnings = [warning for (_, warning) in pep_lint._validate_status(1, line)]
     assert warnings == ["Status must be a valid PEP status"], warnings
 
 
@@ -114,9 +156,7 @@ def test_validate_status_invalid(line: str):
     ],
 )
 def test_validate_type_valid(line: str):
-    warnings = [
-        warning for (_, warning) in pep_lint._validate_type(1, line)
-    ]
+    warnings = [warning for (_, warning) in pep_lint._validate_type(1, line)]
     assert warnings == [], warnings
 
 
