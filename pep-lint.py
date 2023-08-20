@@ -4,6 +4,7 @@
 # CC0-1.0-Universal license, whichever is more permissive.
 
 import datetime as dt
+import itertools
 import re
 import sys
 from pathlib import Path
@@ -66,16 +67,22 @@ MAILMAN_3_THREAD_PATTERN = re.compile(r"[\w\-]+@python\.org/thread/[A-Za-z0-9]+/
 MAILMAN_3_MESSAGE_PATTERN = re.compile(r"[\w\-]+@python\.org/message/[A-Za-z0-9]+/?(#[A-Za-z0-9]+)?")
 
 
-def check():
+def check(filenames=(), /):
     """The main entry-point."""
     failed = 0
-    for iterator in (PEP_ROOT.glob("pep-????.txt"), PEP_ROOT.glob("pep-????.rst")):
-        for file in iterator:
+    if not filenames:
+        filenames = itertools.chain(PEP_ROOT.glob("pep-????.txt"), PEP_ROOT.glob("pep-????.rst"))
+    for file in filenames:
+        try:
             content = file.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            failed += _output_error(file, [''], [(1, "Could not read PEP!")])
+        else:
             lines = content.splitlines()
             failed += _output_error(file, lines, check_pep(file, lines))
     if failed > 0:
-        print(f"pep-lint failed: {failed} errors", file=sys.stderr)
+        s = "s" * (failed != 1)
+        print(f"pep-lint failed: {failed} error{s}", file=sys.stderr)
         return 1
     return 0
 
@@ -470,4 +477,5 @@ def _date(line_num, date_str, prefix):
 
 
 if __name__ == "__main__":
-    raise SystemExit(check())
+    # TODO -h / --help / -?
+    raise SystemExit(check(sys.argv[1:]))
