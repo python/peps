@@ -120,7 +120,7 @@ def check_headers(lines):
     else:
         headers_end_line_num = line_num
 
-    yield from _validate_required_headers(found_headers)
+    yield from _validate_required_headers(found_headers.keys())
 
     shifted_line_nums = list(found_headers.values())[1:]
     for i, (header, line_num) in enumerate(found_headers.items()):
