@@ -69,22 +69,23 @@ MAILMAN_3_MESSAGE_PATTERN = re.compile(r"[\w\-]+@python\.org/message/[A-Za-z0-9]
 
 def check(filenames=(), /):
     """The main entry-point."""
-    failed = 0
     if not filenames:
         filenames = itertools.chain(PEP_ROOT.glob("pep-????.txt"), PEP_ROOT.glob("pep-????.rst"))
-    for file in filenames:
-        try:
-            content = file.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            failed += _output_error(file, [''], [(1, "Could not read PEP!")])
-        else:
-            lines = content.splitlines()
-            failed += _output_error(file, lines, check_pep(file, lines))
-    if failed > 0:
-        s = "s" * (failed != 1)
-        print(f"pep-lint failed: {failed} error{s}", file=sys.stderr)
+    if (count := sum(map(check_file, filenames))) > 0:
+        s = "s" * (count != 1)
+        print(f"pep-lint failed: {count} error{s}", file=sys.stderr)
         return 1
     return 0
+
+
+def check_file(filename, /):
+    try:
+        content = filename.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return _output_error(filename, [''], [(1, "Could not read PEP!")])
+    else:
+        lines = content.splitlines()
+        return _output_error(filename, lines, check_pep(filename, lines))
 
 
 def check_pep(filename, lines):
