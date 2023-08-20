@@ -133,35 +133,38 @@ def check_headers(lines):
             if remainder[0] not in {" ", "\n"}:
                 yield line_num, f"Headers must have a space after the colon: {header}"
             remainder = remainder.lstrip()
+            yield from _validate_header(header, line_num, remainder)
 
-        if header == "Title":
-            yield from _validate_title(line_num, remainder)
-        elif header == "Author":
-            yield from _validate_author(line_num, remainder)
-        elif header == "Sponsor":
-            yield from _validate_sponsor(line_num, remainder)
-        elif header in {"BDFL-Delegate", "PEP-Delegate"}:
-            yield from _validate_delegate(line_num, remainder)
-        elif header == "Discussions-To":
-            yield from _validate_discussions_to(line_num, remainder)
-        elif header == "Status":
-            yield from _validate_status(line_num, remainder)
-        elif header == "Type":
-            yield from _validate_type(line_num, remainder)
-        elif header == "Topic":
-            yield from _validate_topic(line_num, remainder)
-        elif header == "Content-Type":
-            yield from _validate_content_type(line_num, remainder)
-        elif header in {"Requires", "Replaces", "Superseded-By"}:
-            yield from _validate_pep_references(line_num, remainder)
-        elif header == "Created":
-            yield from _validate_created(line_num, remainder)
-        elif header == "Python-Version":
-            yield from _validate_python_version(line_num, remainder)
-        elif header == "Post-History":
-            yield from _validate_post_history(line_num, remainder)
-        elif header == "Resolution":
-            yield from _validate_resolution(line_num, remainder)
+
+def _validate_header(header, line_num, content):
+    if header == "Title":
+        yield from _validate_title(line_num, content)
+    elif header == "Author":
+        yield from _validate_author(line_num, content)
+    elif header == "Sponsor":
+        yield from _validate_sponsor(line_num, content)
+    elif header in {"BDFL-Delegate", "PEP-Delegate"}:
+        yield from _validate_delegate(line_num, content)
+    elif header == "Discussions-To":
+        yield from _validate_discussions_to(line_num, content)
+    elif header == "Status":
+        yield from _validate_status(line_num, content)
+    elif header == "Type":
+        yield from _validate_type(line_num, content)
+    elif header == "Topic":
+        yield from _validate_topic(line_num, content)
+    elif header == "Content-Type":
+        yield from _validate_content_type(line_num, content)
+    elif header in {"Requires", "Replaces", "Superseded-By"}:
+        yield from _validate_pep_references(line_num, content)
+    elif header == "Created":
+        yield from _validate_created(line_num, content)
+    elif header == "Python-Version":
+        yield from _validate_python_version(line_num, content)
+    elif header == "Post-History":
+        yield from _validate_post_history(line_num, content)
+    elif header == "Resolution":
+        yield from _validate_resolution(line_num, content)
 
 
 def check_direct_links(line_num, line):
