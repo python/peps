@@ -513,13 +513,17 @@ def _date(line_num, date_str, prefix):
     try:
         parsed_date = dt.datetime.strptime(date_str, "%d-%b-%Y")
     except ValueError:
-        yield line_num, f"{prefix} must be a 'DD-mmm-YYYY' date: {date_str}"
+        yield line_num, f"{prefix} must be a 'DD-mmm-YYYY' date: {date_str!r}"
         return
+    else:
+        if date_str[1] == '-':  # Date must be zero-padded
+            yield line_num, f"{prefix} must be a 'DD-mmm-YYYY' date: {date_str!r}"
+            return
 
     if parsed_date.year < 1990:
-        yield line_num, f"{prefix} must not be before Python was invented: {date_str}"
+        yield line_num, f"{prefix} must not be before Python was invented: {date_str!r}"
     if parsed_date > (dt.datetime.now() + dt.timedelta(days=14)):
-        yield line_num, f"{prefix} must not be in the future: {date_str}"
+        yield line_num, f"{prefix} must not be in the future: {date_str!r}"
 
 
 if __name__ == "__main__":
