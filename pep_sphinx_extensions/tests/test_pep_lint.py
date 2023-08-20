@@ -61,6 +61,33 @@ def test_header_pattern_no_match(test_input):
 @pytest.mark.parametrize(
     "line",
     [
+        "PEP: 0",
+        "PEP:      12",
+    ],
+)
+def test_validate_pep_number(line: str):
+    warnings = [warning for (_, warning) in pep_lint._validate_pep_number(line)]
+    assert warnings == [], warnings
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "0",
+        "PEP:12",
+        "PEP 0",
+        "PEP 12",
+        "PEP:0",
+    ],
+)
+def test_validate_pep_number_invalid_header(line: str):
+    warnings = [warning for (_, warning) in pep_lint._validate_pep_number(line)]
+    assert warnings == ["PEP must begin with the 'PEP:' header"], warnings
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
         "!",
         "The Zen of Python",
         "A title that is exactly 79 characters long, but shorter than 80 characters long",
