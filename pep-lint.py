@@ -175,12 +175,14 @@ def check_direct_links(line_num, line):
 
 
 def _output_error(filename, lines, errors):
+    relative_filename = filename.relative_to(PEP_ROOT)
     err_count = 0
     for line_num, msg in errors:
-        print(f"{filename}:{line_num}: |", file=sys.stderr)
-        print(f"{filename}:{line_num}: {msg}", file=sys.stderr)
-        print(f"{filename}:{line_num}: from:   {lines[line_num - 1]!r}", file=sys.stderr)
-        print(f"{filename}:{line_num}: |", file=sys.stderr)
+        line = lines[line_num - 1]
+        print(f"{relative_filename}:{line_num}:  {msg}")
+        print(f"     |", file=sys.stderr)
+        print(f"{line_num: >4} | '{line}'", file=sys.stderr)
+        print(f"     |", file=sys.stderr)
         err_count += 1
     return err_count
 
