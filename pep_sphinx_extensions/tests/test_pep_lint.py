@@ -61,6 +61,32 @@ def test_header_pattern_no_match(test_input):
 @pytest.mark.parametrize(
     "line",
     [
+        "0, 1, 8, 12, 20,",
+        "101, 801,",
+        "3099, 9999",
+    ],
+)
+def test_validate_pep_references(line: str):
+    warnings = [warning for (_, warning) in pep_lint._validate_pep_references(1, line)]
+    assert warnings == [], warnings
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "0,1,8, 12, 20,",
+        "101,801,",
+        "3099, 9998,9999",
+    ],
+)
+def test_validate_pep_references_separators(line: str):
+    warnings = [warning for (_, warning) in pep_lint._validate_pep_references(1, line)]
+    assert warnings == ["PEP references must be separated by comma-spaces (', ')"], warnings
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
         # valid entries
         "01-Jan-2000",
         "29-Feb-2016",

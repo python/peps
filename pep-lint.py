@@ -302,6 +302,11 @@ def _validate_content_type(line_num, line):
 def _validate_pep_references(line_num, line):
     """`Requires`/`Replaces`/`Superseded-By` must be 'NNN' PEP IDs"""
 
+    line = line.removesuffix(",").rstrip()
+    if line.count(", ") != line.count(","):
+        yield line_num, "PEP references must be separated by comma-spaces (', ')"
+        return
+
     references = line.split(", ")
     for reference in references:
         yield from _pep_num(line_num, reference, "PEP reference")
