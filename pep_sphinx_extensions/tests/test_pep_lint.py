@@ -59,6 +59,36 @@ def test_header_pattern_no_match(test_input):
 
 
 @pytest.mark.parametrize(
+    "line",
+    [
+        "Standards Track",
+        "Informational",
+        "Process",
+    ],
+)
+def test_validate_type_valid(line: str):
+    warnings = [
+        warning for (_, warning) in pep_lint._validate_type(1, line)
+    ]
+    assert warnings == [], warnings
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "standards track",
+        "informational",
+        "process",
+        *pep_lint.ALL_STATUSES,
+        *map(str.lower, pep_lint.ALL_STATUSES),
+    ],
+)
+def test_validate_type_invalid(line: str):
+    warnings = [warning for (_, warning) in pep_lint._validate_type(1, line)]
+    assert warnings == ["Type must be a valid PEP type"], warnings
+
+
+@pytest.mark.parametrize(
     ("line", "expected_warnings"),
     [
         # valid entries
