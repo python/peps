@@ -158,7 +158,7 @@ def check_headers(lines: Sequence[str], /) -> MessageIterator:
             if remainder[0] not in {" ", "\n"}:
                 yield line_num, f"Headers must have a space after the colon: {header}"
             remainder = remainder.lstrip()
-            yield from _validate_header(header, line_num, remainder)
+        yield from _validate_header(header, line_num, remainder)
 
 
 def _validate_header(header: str, line_num: int, content: str) -> MessageIterator:
