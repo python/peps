@@ -3,9 +3,9 @@
 # This file is placed in the public domain or under the
 # CC0-1.0-Universal license, whichever is more permissive.
 
-"""pep-lint: Check PEPs for common mistakes.
+"""check-pep: Check PEPs for common mistakes.
 
-Usage: pep-lint [-d | --detailed] <PEP files...>
+Usage: check-pep [-d | --detailed] <PEP files...>
 
 Only the PEPs specified are checked.
 If none are specified, all PEPs are checked.
@@ -100,7 +100,7 @@ def check(filenames: Sequence[str] = (), /) -> int:
         filenames = itertools.chain(PEP_ROOT.glob("pep-????.txt"), PEP_ROOT.glob("pep-????.rst"))
     if (count := sum(map(check_file, filenames))) > 0:
         s = "s" * (count != 1)
-        print(f"pep-lint failed: {count} error{s}", file=sys.stderr)
+        print(f"check-pep failed: {count} error{s}", file=sys.stderr)
         return 1
     return 0
 

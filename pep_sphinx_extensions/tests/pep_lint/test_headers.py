@@ -1,4 +1,4 @@
-import pep_lint  # NoQA: inserted into sys.modules in conftest.py
+import check_pep  # NoQA: inserted into sys.modules in conftest.py
 import pytest
 
 
@@ -23,7 +23,7 @@ import pytest
     ],
 )
 def test_header_pattern(test_input, expected):
-    assert pep_lint.HEADER_PATTERN.match(test_input)[1] == expected
+    assert check_pep.HEADER_PATTERN.match(test_input)[1] == expected
 
 
 @pytest.mark.parametrize(
@@ -45,7 +45,7 @@ def test_header_pattern(test_input, expected):
     ],
 )
 def test_header_pattern_no_match(test_input):
-    assert pep_lint.HEADER_PATTERN.match(test_input) is None
+    assert check_pep.HEADER_PATTERN.match(test_input) is None
 
 
 def test_validate_required_headers():
@@ -53,7 +53,7 @@ def test_validate_required_headers():
         ("PEP", "Title", "Author", "Status", "Type", "Created")
     )
     warnings = [
-        warning for (_, warning) in pep_lint._validate_required_headers(found_headers)
+        warning for (_, warning) in check_pep._validate_required_headers(found_headers)
     ]
     assert warnings == [], warnings
 
@@ -61,7 +61,7 @@ def test_validate_required_headers():
 def test_validate_required_headers_missing():
     found_headers = dict.fromkeys(("PEP", "Title", "Author", "Type"))
     warnings = [
-        warning for (_, warning) in pep_lint._validate_required_headers(found_headers)
+        warning for (_, warning) in check_pep._validate_required_headers(found_headers)
     ]
     assert warnings == [
         "Must have required header: Status",
@@ -74,7 +74,7 @@ def test_validate_required_headers_order():
         ("PEP", "Title", "Sponsor", "Author", "Type", "Status", "Replaces", "Created")
     )
     warnings = [
-        warning for (_, warning) in pep_lint._validate_required_headers(found_headers)
+        warning for (_, warning) in check_pep._validate_required_headers(found_headers)
     ]
     assert warnings == [
         "Headers must be in PEP 12 order. Correct order: PEP, Title, Author, Sponsor, Status, Type, Created, Replaces"
@@ -90,17 +90,17 @@ def test_validate_required_headers_order():
     ],
 )
 def test_validate_title(line: str):
-    warnings = [warning for (_, warning) in pep_lint._validate_title(1, line)]
+    warnings = [warning for (_, warning) in check_pep._validate_title(1, line)]
     assert warnings == [], warnings
 
 
 def test_validate_title_blank():
-    warnings = [warning for (_, warning) in pep_lint._validate_title(1, "-" * 80)]
+    warnings = [warning for (_, warning) in check_pep._validate_title(1, "-" * 80)]
     assert warnings == ["PEP title must be less than 80 characters"], warnings
 
 
 def test_validate_title_too_long():
-    warnings = [warning for (_, warning) in pep_lint._validate_title(1, "")]
+    warnings = [warning for (_, warning) in check_pep._validate_title(1, "")]
     assert warnings == ["PEP must have a title"], warnings
 
 
@@ -120,7 +120,7 @@ def test_validate_title_too_long():
     ],
 )
 def test_validate_status_valid(line: str):
-    warnings = [warning for (_, warning) in pep_lint._validate_status(1, line)]
+    warnings = [warning for (_, warning) in check_pep._validate_status(1, line)]
     assert warnings == [], warnings
 
 
@@ -143,7 +143,7 @@ def test_validate_status_valid(line: str):
     ],
 )
 def test_validate_status_invalid(line: str):
-    warnings = [warning for (_, warning) in pep_lint._validate_status(1, line)]
+    warnings = [warning for (_, warning) in check_pep._validate_status(1, line)]
     assert warnings == ["Status must be a valid PEP status"], warnings
 
 
@@ -156,7 +156,7 @@ def test_validate_status_invalid(line: str):
     ],
 )
 def test_validate_type_valid(line: str):
-    warnings = [warning for (_, warning) in pep_lint._validate_type(1, line)]
+    warnings = [warning for (_, warning) in check_pep._validate_type(1, line)]
     assert warnings == [], warnings
 
 
@@ -179,7 +179,7 @@ def test_validate_type_valid(line: str):
     ],
 )
 def test_validate_type_invalid(line: str):
-    warnings = [warning for (_, warning) in pep_lint._validate_type(1, line)]
+    warnings = [warning for (_, warning) in check_pep._validate_type(1, line)]
     assert warnings == ["Type must be a valid PEP type"], warnings
 
 
@@ -219,7 +219,7 @@ def test_validate_type_invalid(line: str):
     ids=str,
 )
 def test_validate_topic(line: str, expected_warnings: set):
-    warnings = [warning for (_, warning) in pep_lint._validate_topic(1, line)]
+    warnings = [warning for (_, warning) in check_pep._validate_topic(1, line)]
 
     found_warnings = set()
 
@@ -255,7 +255,7 @@ def test_validate_topic(line: str, expected_warnings: set):
 
 def test_validate_content_type_valid():
     warnings = [
-        warning for (_, warning) in pep_lint._validate_content_type(1, "text/x-rst")
+        warning for (_, warning) in check_pep._validate_content_type(1, "text/x-rst")
     ]
     assert warnings == [], warnings
 
@@ -273,7 +273,7 @@ def test_validate_content_type_valid():
     ],
 )
 def test_validate_content_type_invalid(line: str):
-    warnings = [warning for (_, warning) in pep_lint._validate_content_type(1, line)]
+    warnings = [warning for (_, warning) in check_pep._validate_content_type(1, line)]
     assert warnings == ["Content-Type must be 'text/x-rst'"], warnings
 
 
@@ -286,7 +286,7 @@ def test_validate_content_type_invalid(line: str):
     ],
 )
 def test_validate_pep_references(line: str):
-    warnings = [warning for (_, warning) in pep_lint._validate_pep_references(1, line)]
+    warnings = [warning for (_, warning) in check_pep._validate_pep_references(1, line)]
     assert warnings == [], warnings
 
 
@@ -299,7 +299,7 @@ def test_validate_pep_references(line: str):
     ],
 )
 def test_validate_pep_references_separators(line: str):
-    warnings = [warning for (_, warning) in pep_lint._validate_pep_references(1, line)]
+    warnings = [warning for (_, warning) in check_pep._validate_pep_references(1, line)]
     assert warnings == [
         "PEP references must be separated by comma-spaces (', ')"
     ], warnings
@@ -348,7 +348,7 @@ def test_validate_pep_references_separators(line: str):
     ids=str,
 )
 def test_validate_python_version(line: str, expected_warnings: set):
-    warnings = [warning for (_, warning) in pep_lint._validate_python_version(1, line)]
+    warnings = [warning for (_, warning) in check_pep._validate_python_version(1, line)]
 
     found_warnings = set()
 

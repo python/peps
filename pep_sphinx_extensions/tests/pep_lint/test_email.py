@@ -1,4 +1,4 @@
-import pep_lint  # NoQA: inserted into sys.modules in conftest.py
+import check_pep  # NoQA: inserted into sys.modules in conftest.py
 import pytest
 
 
@@ -18,7 +18,7 @@ import pytest
     ids=repr,  # the default calls str and renders newlines.
 )
 def test_validate_author(line: str):
-    warnings = [warning for (_, warning) in pep_lint._validate_author(1, line)]
+    warnings = [warning for (_, warning) in check_pep._validate_author(1, line)]
     assert warnings == [], warnings
 
 
@@ -33,7 +33,7 @@ def test_validate_author(line: str):
     ids=repr,  # the default calls str and renders newlines.
 )
 def test_validate_author_over__indented(line: str):
-    warnings = [warning for (_, warning) in pep_lint._validate_author(1, line)]
+    warnings = [warning for (_, warning) in check_pep._validate_author(1, line)]
     assert {*warnings} == {"Author line must not be over-indented"}, warnings
 
 
@@ -47,7 +47,7 @@ def test_validate_author_over__indented(line: str):
     ids=repr,  # the default calls str and renders newlines.
 )
 def test_validate_author_continuation(line: str):
-    warnings = [warning for (_, warning) in pep_lint._validate_author(1, line)]
+    warnings = [warning for (_, warning) in check_pep._validate_author(1, line)]
     assert {*warnings} == {"Author continuation lines must end with a comma"}, warnings
 
 
@@ -61,7 +61,7 @@ def test_validate_author_continuation(line: str):
     ],
 )
 def test_validate_sponsor(line: str):
-    warnings = [warning for (_, warning) in pep_lint._validate_sponsor(1, line)]
+    warnings = [warning for (_, warning) in check_pep._validate_sponsor(1, line)]
     assert warnings == [], warnings
 
 
@@ -76,7 +76,7 @@ def test_validate_sponsor(line: str):
     ],
 )
 def test_validate_delegate(line: str):
-    warnings = [warning for (_, warning) in pep_lint._validate_delegate(1, line)]
+    warnings = [warning for (_, warning) in check_pep._validate_delegate(1, line)]
     assert warnings == [], warnings
 
 
@@ -191,7 +191,7 @@ def test_validate_delegate(line: str):
     ids=str,
 )
 def test_email_checker(email: str, expected_warnings: set):
-    warnings = [warning for (_, warning) in pep_lint._email(1, email, "<Prefix>")]
+    warnings = [warning for (_, warning) in check_pep._email(1, email, "<Prefix>")]
 
     found_warnings = set()
     email = email.strip()

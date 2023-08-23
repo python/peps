@@ -1,4 +1,4 @@
-import pep_lint  # NoQA: inserted into sys.modules in conftest.py
+import check_pep  # NoQA: inserted into sys.modules in conftest.py
 import pytest
 
 
@@ -20,7 +20,7 @@ import pytest
     ],
 )
 def test_validate_discussions_to_valid(line: str):
-    warnings = [warning for (_, warning) in pep_lint._validate_discussions_to(1, line)]
+    warnings = [warning for (_, warning) in check_pep._validate_discussions_to(1, line)]
     assert warnings == [], warnings
 
 
@@ -32,7 +32,7 @@ def test_validate_discussions_to_valid(line: str):
     ],
 )
 def test_validate_discussions_to_list_name(line: str):
-    warnings = [warning for (_, warning) in pep_lint._validate_discussions_to(1, line)]
+    warnings = [warning for (_, warning) in check_pep._validate_discussions_to(1, line)]
     assert warnings == ["Discussions-To must be a valid mailing list"], warnings
 
 
@@ -44,7 +44,7 @@ def test_validate_discussions_to_list_name(line: str):
     ],
 )
 def test_validate_discussions_to_invalid_list_domain(line: str):
-    warnings = [warning for (_, warning) in pep_lint._validate_discussions_to(1, line)]
+    warnings = [warning for (_, warning) in check_pep._validate_discussions_to(1, line)]
     assert warnings == [
         "Discussions-To must be a valid thread URL or mailing list"
     ], warnings
@@ -69,7 +69,7 @@ def test_validate_discussions_to_invalid_list_domain(line: str):
     ],
 )
 def test_validate_post_history_valid(body: str):
-    warnings = [warning for (_, warning) in pep_lint._validate_post_history(1, body)]
+    warnings = [warning for (_, warning) in check_pep._validate_post_history(1, body)]
     assert warnings == [], warnings
 
 
@@ -87,7 +87,7 @@ def test_validate_post_history_valid(body: str):
     ],
 )
 def test_validate_resolution_valid(line: str):
-    warnings = [warning for (_, warning) in pep_lint._validate_resolution(1, line)]
+    warnings = [warning for (_, warning) in check_pep._validate_resolution(1, line)]
     assert warnings == [], warnings
 
 
@@ -109,7 +109,7 @@ def test_validate_resolution_valid(line: str):
     ],
 )
 def test_validate_resolution_invalid(line: str):
-    warnings = [warning for (_, warning) in pep_lint._validate_resolution(1, line)]
+    warnings = [warning for (_, warning) in check_pep._validate_resolution(1, line)]
     assert warnings == ["Resolution must be a valid thread URL"], warnings
 
 
@@ -134,7 +134,7 @@ def test_validate_resolution_invalid(line: str):
     ],
 )
 def test_thread_checker_valid(thread_url: str):
-    warnings = [warning for (_, warning) in pep_lint._thread(1, thread_url, "<Prefix>")]
+    warnings = [warning for (_, warning) in check_pep._thread(1, thread_url, "<Prefix>")]
     assert warnings == [], warnings
 
 
@@ -185,7 +185,7 @@ def test_thread_checker_valid(thread_url: str):
     ],
 )
 def test_thread_checker_invalid(thread_url: str):
-    warnings = [warning for (_, warning) in pep_lint._thread(1, thread_url, "<Prefix>")]
+    warnings = [warning for (_, warning) in check_pep._thread(1, thread_url, "<Prefix>")]
     assert warnings == ["<Prefix> must be a valid thread URL"], warnings
 
 
@@ -205,7 +205,7 @@ def test_thread_checker_invalid(thread_url: str):
 def test_thread_checker_valid_allow_message(thread_url: str):
     warnings = [
         warning
-        for (_, warning) in pep_lint._thread(
+        for (_, warning) in check_pep._thread(
             1, thread_url, "<Prefix>", allow_message=True
         )
     ]
@@ -232,7 +232,7 @@ def test_thread_checker_valid_allow_message(thread_url: str):
 def test_thread_checker_invalid_allow_message(thread_url: str):
     warnings = [
         warning
-        for (_, warning) in pep_lint._thread(
+        for (_, warning) in check_pep._thread(
             1, thread_url, "<Prefix>", allow_message=True
         )
     ]
@@ -259,7 +259,7 @@ def test_thread_checker_invalid_allow_message(thread_url: str):
 def test_thread_checker_valid_discussions_to(thread_url: str):
     warnings = [
         warning
-        for (_, warning) in pep_lint._thread(
+        for (_, warning) in check_pep._thread(
             1, thread_url, "<Prefix>", discussions_to=True
         )
     ]
@@ -283,7 +283,7 @@ def test_thread_checker_valid_discussions_to(thread_url: str):
 def test_thread_checker_invalid_discussions_to(thread_url: str):
     warnings = [
         warning
-        for (_, warning) in pep_lint._thread(
+        for (_, warning) in check_pep._thread(
             1, thread_url, "<Prefix>", discussions_to=True
         )
     ]
@@ -293,5 +293,5 @@ def test_thread_checker_invalid_discussions_to(thread_url: str):
 def test_thread_checker_allow_message_discussions_to():
     with pytest.raises(ValueError, match="cannot both be True"):
         list(
-            pep_lint._thread(1, "", "<Prefix>", allow_message=True, discussions_to=True)
+            check_pep._thread(1, "", "<Prefix>", allow_message=True, discussions_to=True)
         )

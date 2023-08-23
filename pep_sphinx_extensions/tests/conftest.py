@@ -2,8 +2,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
-# Import "pep-lint.py" as "pep_lint"
-PEP_LINT_PATH = Path(__file__).resolve().parents[2] / "pep-lint.py"
-spec = importlib.util.spec_from_file_location("pep_lint", PEP_LINT_PATH)
-sys.modules["pep_lint"] = pep_lint = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(pep_lint)
+# Import "check-pep.py" as "check_pep"
+CHECK_PEP_PATH = Path(__file__).resolve().parents[2] / "check-pep.py"
+spec = importlib.util.spec_from_file_location("check_pep", CHECK_PEP_PATH)
+sys.modules["check_pep"] = check_pep = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(check_pep)
