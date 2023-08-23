@@ -3,6 +3,16 @@
 # This file is placed in the public domain or under the
 # CC0-1.0-Universal license, whichever is more permissive.
 
+"""pep-lint: Check PEPs for common mistakes.
+
+Usage: pep-lint [-d | --detailed] <PEP files...>
+
+Only the PEPs specified are checked.
+If none are specified, all PEPs are checked.
+
+Use "--detailed" to show the contents of lines where errors were found.
+"""
+
 from __future__ import annotations
 
 import datetime as dt
@@ -78,6 +88,9 @@ MAILMAN_2_PATTERN = re.compile(r"[\w\-]+/\d{4}-[a-z]+/\d+\.html", re.ASCII | re.
 MAILMAN_3_THREAD_PATTERN = re.compile(r"[\w\-]+@python\.org/thread/[a-z0-9]+/?", re.ASCII | re.IGNORECASE)
 MAILMAN_3_MESSAGE_PATTERN = re.compile(r"[\w\-]+@python\.org/message/[a-z0-9]+/?(#[a-z0-9]+)?", re.ASCII | re.IGNORECASE)
 
+# Controlled by the "--detailed" flag
+DETAILED_ERRORS = False
+
 
 def check(filenames: Sequence[str] = (), /) -> int:
     """The main entry-point."""
@@ -97,7 +110,7 @@ def check_file(filename: Path, /) -> int:
     try:
         content = filename.read_text(encoding="utf-8")
     except FileNotFoundError:
-        return _output_error(filename, [''], [(1, "Could not read PEP!")])
+        return _output_error(filename, [""], [(0, "Could not read PEP!")])
     else:
         lines = content.splitlines()
         return _output_error(filename, lines, check_pep(filename, lines))
@@ -193,12 +206,17 @@ def _output_error(filename: Path, lines: Sequence[str], errors: Iterable[Message
     relative_filename = filename.relative_to(PEP_ROOT)
     err_count = 0
     for line_num, msg in errors:
-        line = lines[line_num - 1]
-        print(f"{relative_filename}:{line_num}:  {msg}")
-        print(f"     |", file=sys.stderr)
-        print(f"{line_num: >4} | '{line}'", file=sys.stderr)
-        print(f"     |", file=sys.stderr)
         err_count += 1
+
+        print(f"{relative_filename}:{line_num}:  {msg}")
+        if not DETAILED_ERRORS:
+            continue
+
+        line = lines[line_num - 1]
+        print("     |")
+        print(f"{line_num: >4} | '{line}'")
+        print("     |")
+
     return err_count
 
 
@@ -556,7 +574,7 @@ def _date(line_num: int, date_str: str, prefix: str) -> MessageIterator:
         yield line_num, f"{prefix} must be a 'DD-mmm-YYYY' date: {date_str!r}"
         return
     else:
-        if date_str[1] == '-':  # Date must be zero-padded
+        if date_str[1] == "-":  # Date must be zero-padded
             yield line_num, f"{prefix} must be a 'DD-mmm-YYYY' date: {date_str!r}"
             return
 
@@ -567,5 +585,17 @@ def _date(line_num: int, date_str: str, prefix: str) -> MessageIterator:
 
 
 if __name__ == "__main__":
-    # TODO -h / --help / -?
-    raise SystemExit(check(sys.argv[1:]))
+    if {"-h", "--help", "-?"}.intersection(sys.argv[1:]):
+        print(__doc__, file=sys.stderr)
+        raise SystemExit(0)
+
+    files = {}
+    for arg in sys.argv[1:]:
+        if not arg.startswith("-"):
+            files[arg] = None
+        elif arg in {"-d", "--detailed"}:
+            DETAILED_ERRORS = True
+        else:
+            print(f"Unknown option: {arg!r}", file=sys.stderr)
+            raise SystemExit(1)
+    raise SystemExit(check(files))
