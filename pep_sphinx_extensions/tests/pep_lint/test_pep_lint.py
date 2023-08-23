@@ -43,6 +43,6 @@ def test_with_fake_pep():
         (18, "Post-History must be a valid thread URL"),
         (19, "Post-History must be a 'DD-mmm-YYYY' date: '3-Mar-2001'"),
         (19, "Post-History must be a valid thread URL"),
-        (20, 'Resolution must be a valid thread URL'),
+        (20, "Resolution must be a valid thread URL"),
         (23, "Use the :pep:`NNN` role to refer to PEPs"),
     ]
