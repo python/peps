@@ -74,7 +74,7 @@ ALL_STATUSES = frozenset({
 })
 
 # PEPs that are allowed to link directly to PEPs
-SKIP_DIRECT_PEP_LINK_CHECK = frozenset()
+SKIP_DIRECT_PEP_LINK_CHECK = frozenset({"0009", "0287", "0676", "0684", "8001"})
 
 # any sequence of letters or '-', followed by a single ':' and a space or end of line
 HEADER_PATTERN = re.compile(r"^([a-z\-]+):(?: |$)", re.ASCII | re.IGNORECASE)
