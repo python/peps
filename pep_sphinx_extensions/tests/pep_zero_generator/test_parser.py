@@ -87,7 +87,6 @@ def test_parse_authors(test_input, expected):
 
 
 def test_parse_authors_invalid():
-
     pep = parser.PEP(Path("pep-0008.txt"))
 
     with pytest.raises(PEPError, match="no authors found"):
