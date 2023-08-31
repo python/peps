@@ -1,13 +1,13 @@
 from pathlib import Path
 
-import check_pep  # NoQA: inserted into sys.modules in conftest.py
+import check_peps  # NoQA: inserted into sys.modules in conftest.py
 
 PEP_9002 = Path(__file__).parent.parent / "peps" / "pep-9002.rst"
 
 
 def test_with_fake_pep():
     content = PEP_9002.read_text(encoding="utf-8").splitlines()
-    warnings = list(check_pep.check_pep(PEP_9002, content))
+    warnings = list(check_peps.check_peps(PEP_9002, content))
     assert warnings == [
         (1, "PEP must begin with the 'PEP:' header"),
         (9, "Must not have duplicate header: Sponsor "),

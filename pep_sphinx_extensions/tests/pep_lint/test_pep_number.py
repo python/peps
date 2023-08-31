@@ -1,4 +1,4 @@
-import check_pep  # NoQA: inserted into sys.modules in conftest.py
+import check_peps  # NoQA: inserted into sys.modules in conftest.py
 import pytest
 
 
@@ -10,7 +10,7 @@ import pytest
     ],
 )
 def test_validate_pep_number(line: str):
-    warnings = [warning for (_, warning) in check_pep._validate_pep_number(line)]
+    warnings = [warning for (_, warning) in check_peps._validate_pep_number(line)]
     assert warnings == [], warnings
 
 
@@ -25,7 +25,7 @@ def test_validate_pep_number(line: str):
     ],
 )
 def test_validate_pep_number_invalid_header(line: str):
-    warnings = [warning for (_, warning) in check_pep._validate_pep_number(line)]
+    warnings = [warning for (_, warning) in check_peps._validate_pep_number(line)]
     assert warnings == ["PEP must begin with the 'PEP:' header"], warnings
 
 
@@ -72,7 +72,7 @@ def test_validate_pep_number_invalid_header(line: str):
 )
 def test_pep_num_checker(pep_number: str, expected_warnings: set):
     warnings = [
-        warning for (_, warning) in check_pep._pep_num(1, pep_number, "<Prefix>")
+        warning for (_, warning) in check_peps._pep_num(1, pep_number, "<Prefix>")
     ]
 
     found_warnings = set()

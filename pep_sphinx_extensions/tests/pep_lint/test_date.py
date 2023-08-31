@@ -1,6 +1,6 @@
 import datetime as dt
 
-import check_pep  # NoQA: inserted into sys.modules in conftest.py
+import check_peps  # NoQA: inserted into sys.modules in conftest.py
 import pytest
 
 
@@ -18,7 +18,7 @@ import pytest
     ],
 )
 def test_validate_created(line: str):
-    warnings = [warning for (_, warning) in check_pep._validate_created(1, line)]
+    warnings = [warning for (_, warning) in check_peps._validate_created(1, line)]
     assert warnings == [], warnings
 
 
@@ -36,7 +36,7 @@ def test_validate_created(line: str):
     ],
 )
 def test_date_checker_valid(date_str: str):
-    warnings = [warning for (_, warning) in check_pep._date(1, date_str, "<Prefix>")]
+    warnings = [warning for (_, warning) in check_peps._date(1, date_str, "<Prefix>")]
     assert warnings == [], warnings
 
 
@@ -67,7 +67,7 @@ def test_date_checker_valid(date_str: str):
     ],
 )
 def test_date_checker_malformed(date_str: str):
-    warnings = [warning for (_, warning) in check_pep._date(1, date_str, "<Prefix>")]
+    warnings = [warning for (_, warning) in check_peps._date(1, date_str, "<Prefix>")]
     expected = f"<Prefix> must be a 'DD-mmm-YYYY' date: {date_str!r}"
     assert warnings == [expected], warnings
 
@@ -83,7 +83,7 @@ def test_date_checker_malformed(date_str: str):
     ],
 )
 def test_date_checker_too_early(date_str: str):
-    warnings = [warning for (_, warning) in check_pep._date(1, date_str, "<Prefix>")]
+    warnings = [warning for (_, warning) in check_peps._date(1, date_str, "<Prefix>")]
     expected = f"<Prefix> must not be before Python was invented: {date_str!r}"
     assert warnings == [expected], warnings
 
@@ -100,6 +100,6 @@ def test_date_checker_too_early(date_str: str):
     ],
 )
 def test_date_checker_too_late(date_str: str):
-    warnings = [warning for (_, warning) in check_pep._date(1, date_str, "<Prefix>")]
+    warnings = [warning for (_, warning) in check_peps._date(1, date_str, "<Prefix>")]
     expected = f"<Prefix> must not be in the future: {date_str!r}"
     assert warnings == [expected], warnings

@@ -3,9 +3,9 @@
 # This file is placed in the public domain or under the
 # CC0-1.0-Universal license, whichever is more permissive.
 
-"""check-pep: Check PEPs for common mistakes.
+"""check-peps: Check PEPs for common mistakes.
 
-Usage: check-pep [-d | --detailed] <PEP files...>
+Usage: check-peps [-d | --detailed] <PEP files...>
 
 Only the PEPs specified are checked.
 If none are specified, all PEPs are checked.
@@ -100,7 +100,7 @@ def check(filenames: Sequence[str] = (), /) -> int:
         filenames = itertools.chain(PEP_ROOT.glob("pep-????.txt"), PEP_ROOT.glob("pep-????.rst"))
     if (count := sum(map(check_file, filenames))) > 0:
         s = "s" * (count != 1)
-        print(f"check-pep failed: {count} error{s}", file=sys.stderr)
+        print(f"check-peps failed: {count} error{s}", file=sys.stderr)
         return 1
     return 0
 
@@ -113,10 +113,10 @@ def check_file(filename: Path, /) -> int:
         return _output_error(filename, [""], [(0, "Could not read PEP!")])
     else:
         lines = content.splitlines()
-        return _output_error(filename, lines, check_pep(filename, lines))
+        return _output_error(filename, lines, check_peps(filename, lines))
 
 
-def check_pep(filename: Path, lines: Sequence[str], /) -> MessageIterator:
+def check_peps(filename: Path, lines: Sequence[str], /) -> MessageIterator:
     yield from check_headers(lines)
     for line_num, line in enumerate(lines, start=1):
         if filename.stem.removeprefix("pep-") in SKIP_DIRECT_PEP_LINK_CHECK:
