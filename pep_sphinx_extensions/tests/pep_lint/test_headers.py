@@ -286,7 +286,9 @@ def test_validate_content_type_invalid(line: str):
     ],
 )
 def test_validate_pep_references(line: str):
-    warnings = [warning for (_, warning) in check_peps._validate_pep_references(1, line)]
+    warnings = [
+        warning for (_, warning) in check_peps._validate_pep_references(1, line)
+    ]
     assert warnings == [], warnings
 
 
@@ -299,7 +301,9 @@ def test_validate_pep_references(line: str):
     ],
 )
 def test_validate_pep_references_separators(line: str):
-    warnings = [warning for (_, warning) in check_peps._validate_pep_references(1, line)]
+    warnings = [
+        warning for (_, warning) in check_peps._validate_pep_references(1, line)
+    ]
     assert warnings == [
         "PEP references must be separated by comma-spaces (', ')"
     ], warnings
@@ -348,7 +352,9 @@ def test_validate_pep_references_separators(line: str):
     ids=str,
 )
 def test_validate_python_version(line: str, expected_warnings: set):
-    warnings = [warning for (_, warning) in check_peps._validate_python_version(1, line)]
+    warnings = [
+        warning for (_, warning) in check_peps._validate_python_version(1, line)
+    ]
 
     found_warnings = set()
 
