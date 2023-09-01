@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from pep_sphinx_extensions.pep_zero_generator import parser
+from pep_sphinx_extensions.pep_zero_generator.parser import _Author
 from pep_sphinx_extensions.pep_zero_generator.constants import (
     STATUS_ACCEPTED,
     STATUS_ACTIVE,
@@ -56,27 +57,19 @@ def test_pep_details(monkeypatch):
     [
         (
             "First Last <user@example.com>",
-            {"First Last": "user@example.com"},
-        ),
-        (
-            "First Last <   user@example.com  >",
-            {"First Last": "user@example.com"},
+            [_Author(full_name="First Last", email="user@example.com")],
         ),
         (
             "First Last",
-            {"First Last": ""},
+            [_Author(full_name="First Last", email="")],
         ),
         (
             "user@example.com (First Last)",
-            {"First Last": "user@example.com"},
-        ),
-        (
-            "user@example.com (  First Last  )",
-            {"First Last": "user@example.com"},
+            [_Author(full_name="First Last", email="user@example.com")],
         ),
         pytest.param(
             "First Last <user at example.com>",
-            {"First Last": "user@example.com"},
+            [_Author(full_name="First Last", email="user@example.com")],
             marks=pytest.mark.xfail,
         ),
         pytest.param(
