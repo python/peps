@@ -1,0 +1,322 @@
+PEP: 728
+Title: Inner Fields Annotations
+Author: Nir Schulman <narsssx@gmail.com>
+Sponsor: Jelle Zijlstra <jelle.zijlstra@gmail.com>
+Discussions-To: https://discuss.python.org/t/26463/
+Status: Draft
+Type: Standards Track
+Topic: Typing
+Content-Type: text/x-rst
+Created: 01-Sep-2023
+Python-Version: 3.13
+Post-History:
+
+
+Abstract
+========
+
+This PEP specifies a way for annotations to reference the field types of other complex objects. This include the field
+names and types objects with static layout such as dataclasses (or dataclass-like objects), TypedDicts and NamedTuples.
+
+
+Motivation
+==========
+Consider the following example:
+
+.. code-block:: py
+
+    @dataclass
+    class Cat:
+        fur_color: str
+        age: int
+
+    def get_cats(field_name: Literal["fur_color", "age"], value: str | int) -> list[Cat]:
+        pass
+
+    # will return cats that are 3 years old
+    get_cats("age", 3)
+
+
+The current annotation of ``get_cats`` has some problems:
+
+1. We need to remember to update this function whenever the field types or names of ``Cat`` are changing.
+2. We lose the connection between the field name and the field type. ``get_cats("age", "black")`` is invalid usage would
+   because we supplied a non-integer value as the filter for the age field, but the type checker allows this.
+
+The latter problem can be solved using ``typing.overload``:
+
+.. code-block:: py
+
+    from typing import overload, Literal
+
+    @overload
+    def get_cats(field_name: Literal['fur_color'], value: str) -> list[Cat]:
+        pass
+
+    @overload
+    def get_cats(field_name: Literal['age'], value: int) -> list[Cat]:
+        pass
+
+    def get_cats(field_name, value) -> list[Cat]:
+        pass
+
+However this solution only worsens the former problem. We need to recreate the definition of the ``get_cats`` function
+for each field, and remember to update the relevant overload whenever the class ``Cat`` changes. This is cumbersome and
+introduces a lot of code duplication (which is prone to errors).
+
+The current proposals solves both of the mentioned problems by introducing 2 new types into the ``typing`` module.
+``Field`` and ``FieldName`` which allows you to refer to the type of an object's fields as well as their respective names.
+
+.. code-block:: py
+
+    from typing import FieldName
+
+    @dataclass
+    class Cat:
+        fur_color: str
+        age: int
+
+    def get_cats[T: FieldName[Cat]](field_name: T, value: Field[Cat, T]) -> list[Cat]:
+        pass
+
+    get_cats("some_field", 12)  # Type checker error: Cat did not define field named "some_field"
+    get_cats("age", "black")  # Type checker error: Cat defines "age" as a field of type int, but received str.
+    get_cats("age", 3)  # Passes type check
+
+A similar benefit could be achieved for other functions that expose certain CRUD operations against a database.
+Clients like pymongo can then define stricter typings for their queries:
+
+.. code-block:: py
+
+    # This definition is obviously simplified for the sake of the example.
+    type Filter[T: dict, TName: FieldName[T]] = dict[TName, NotRequired[Field[T, TName]]]
+
+    class Collection[T]:
+        def find(self, filter: Filter[T]) -> Iterable[T]:
+            ...
+
+    cat_collection: Collection[Cat]
+
+    # Passes type checking because filters do not require all of Cat's fields to be present within the query.
+    cat_collection.find({"age": 3})
+
+    # Fails type checking because fur_color must be a string
+    cat_collection.find({"fur_color": 1})
+
+    # Fails type checking because "foo" is not declared in the collection's scheme
+    cat_collection.find({"foo": "bar"})
+
+
+Specification
+=============
+
+The current proposals introduces adds ``Field`` and ``FieldName`` to the ``typing`` module.
+
+Field
+'''''''''
+``Field`` can be used to refer to another type's fields. It receives 2 arguments, a type and a name of a field within
+this type. The first argument may be a dataclasses, (or dataclass-transformed objects), classes implementing
+``__slots__``, ``TypedDict`` or any other type with a typed layout.
+
+.. code-block:: py
+
+    from typing import Field
+
+    @dataclass
+    class Foo:
+        bar: int
+        baz: str
+
+    # Function returns int
+    def func() -> Field[Foo, 'bar']:
+        pass
+
+While dataclass-like objects will consider the attributes of the instance, dictionaries will instead refer to the items
+of the instance.
+
+.. code-block:: py
+
+    from typing import Field, TypedDict
+
+    class Foo(TypedDict):
+        bar: int
+        baz: str
+
+    # Function returns int
+    def func() -> Field[Foo, 'bar']:
+        pass
+
+
+Multiple field names may be specified using ``Literal``. In these cases, the annotation will be the
+equivalent of a union of the types of the given fields.
+
+.. code-block:: py
+
+    from typing import Field, Literal
+
+    @dataclass
+    class Foo:
+        bar: int
+        baz: str
+
+    # Function returns int | str
+    def func() -> Field[Foo, Literal['bar', 'baz']]:
+        pass
+
+Using ``Field`` with an explicit ``Literal`` of a single field is allowed, but not needed because you can use the bare
+field name.
+
+.. code-block:: py
+
+    from typing import Field, Literal
+
+    @dataclass
+    class Foo:
+        bar: int
+        baz: str
+
+    # Function returns int
+    def func() -> Field[Foo, Literal["bar"]]:
+        pass
+
+
+String field names that are provided to ``Field`` will always be assumed to be the literal strings (instead of forward
+references) unless the entire annotation is wrapped within quotes. When the entire annotation is wrapped within quotes,
+you may still explicitly use ``Literal`` in order to prevent this behavior.
+
+.. code-block:: py
+
+    from typing import Field, Literal
+
+    @dataclass
+    class Foo:
+        bar: int
+        baz: str
+
+    bar: TypeAlias = Literal['baz']
+
+    # Will refer to the literal "bar". Function returns int
+    def func() -> Field[Foo, 'bar']:
+        pass
+
+    # Will refer to the type alias bar. Function returns str
+    def func() -> 'Field[Foo, bar]':
+        pass
+
+    # Will refer to a union of the literal "bar" and the type alias bar. Function returns int | str
+    def func() -> 'Field[Foo, Literal[bar] | bar]':
+        pass
+
+If no field names are given to ``Field``, the annotation will be an equivalent of a union of all values of the fields
+within the type
+
+.. code-block:: py
+
+    from typing import Field
+
+    @dataclass
+    class Foo:
+        bar: int
+        baz: str
+
+    # Function returns int | str
+    def func() -> Field[Foo]:
+        pass
+
+Type checkers should raise an error when using an invalid field name as a parameter to ``Field``
+
+.. code-block:: py
+
+    from typing import Field
+
+    @dataclass
+    class Foo:
+        bar: int
+        baz: str
+
+    # Type checker error, "Foo" does not expose a field named "bla"
+    def func() -> Field[Foo, "bla"]:
+        pass
+
+
+FieldName
+'''''''''
+In addition to ``Field``, ``FieldName`` will be added to the ``typing`` module. ``FieldName`` can be used in order to
+refer to the name of a type's fields. It receives a single argument and when used, is equivalent to a union
+of literals of its field names.
+
+.. code-block:: py
+
+    from typing import FieldName
+
+    @dataclass
+    class Foo:
+        bar: int
+        baz: str
+
+    # FieldName[ComplexType] is equivalent to Literal["bar", "baz"]
+    def func(field_name: FieldName[Foo]):
+        pass
+
+    func("bar")
+    func("baz")
+
+    # Type checker error.
+    func("something else")
+
+
+
+Open Issues
+===========
+
+Having separate types for attributes, and items
+'''''''''''''''''''''''''''''''''''''''''''''''
+``FieldName`` and ``Field`` can refer to either objects attributes (``obj.x``) or items ``(obj['x'])`` depending on the
+context, this behavior may cause some confusion. One could suggest that instead of ``FieldName`` and ``Field`` being
+added to typing, we could add ``Attribute``, ``AttributeName``, ``Item``, ``ItemName``.
+
+In general this approach has the benefit of being consistent and predictable from the user side of things.
+``Attribute[ObjType, 'x']`` would be treated the type of ``obj.x`` whereas ``Item[ObjType, 'x']`` would be treated as
+the type of ``obj['x']``. These types would have the same meaning for all python objects (Whether working with TypedDicts or
+dataclasses). It would also allow referring to fields of objects containing both attributes and items:
+
+.. code-block:: py
+
+    class Foo(TypedDict):
+        get: int
+        set: str
+
+    # Refers to the type of Foo['get']
+    Item[Foo, 'get]
+
+    # Refers to the dictionary method 'dict.get'
+    Attribute[Foo, 'get']
+
+However, this approach will clutter the typing namespace with more concepts that would have to be maintained. It is
+debatable whether or not it would make this concept easier or harder to learn. While requiring to understand 4
+additional utilities instead of only 2, one could argue it makes more intuitive sense and is easier to remember than the
+behaviour of TypedDicts, dataclasses, and dataclass-like types separately.
+
+
+Should __annotations__ be used as the reference table for fields?
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+Related to the previous question, we could define ``Field`` and ``FieldName`` by the type's __annotations__ definition.
+This approach will allow for type-checkers to have the same treatment for dataclasses and TypedDict, making it easier to
+support this feature.
+
+However, this approach will not allow users to refer to dictionaries' methods, or dataclass-like
+types' items (if they support ``__getitem__``).
+It might also prevent us from expanding these types in the future to refer to inner types of typed collections (like
+``dict[int, str]``, ``tuple[int, ...]``, etc.) or any other type that does not define ``__annotations__``.
+
+
+Naming
+''''''
+The names ``Field`` and ``FieldName`` are temporary and would probably need to change as this PEP evolves and the rest
+of the questions in this section are answered.
+
+
+Copyright
+=========
+
+This document is placed in the public domain or under the CC0-1.0-Universal license, whichever is more permissive.
