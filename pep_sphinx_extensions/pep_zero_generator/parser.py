@@ -172,7 +172,6 @@ def _raise_pep_error(pep: PEP, msg: str, pep_num: bool = False) -> None:
 
 
 author_angled = re.compile(r"(?P<author>.+?) <(?P<email>.+?)>(,\s*)?")
-author_paren = re.compile(r"(?P<email>.+?) \((?P<author>.+?)\)(,\s*)?")
 author_simple = re.compile(r"(?P<author>[^,]+)(,\s*)?")
 
 
@@ -180,7 +179,7 @@ def _parse_author(data: str) -> list[_Author]:
     """Return a list of author names and emails."""
 
     author_list = []
-    for regex in (author_angled, author_paren, author_simple):
+    for regex in (author_angled, author_simple):
         for match in regex.finditer(data):
             match_dict = match.groupdict()
             author = match_dict["author"].strip()
