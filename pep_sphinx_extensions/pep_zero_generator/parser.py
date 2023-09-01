@@ -5,7 +5,6 @@ from __future__ import annotations
 import dataclasses
 from email.parser import HeaderParser
 from pathlib import Path
-import re
 
 from pep_sphinx_extensions.pep_zero_generator.constants import ACTIVE_ALLOWED
 from pep_sphinx_extensions.pep_zero_generator.constants import HIDE_STATUS
