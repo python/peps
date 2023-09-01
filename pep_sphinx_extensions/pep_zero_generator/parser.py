@@ -171,26 +171,27 @@ def _raise_pep_error(pep: PEP, msg: str, pep_num: bool = False) -> None:
     raise PEPError(msg, pep.filename)
 
 
-author_angled = re.compile(r"(?P<author>.+?) <(?P<email>.+?)>(,\s*)?")
-author_simple = re.compile(r"(?P<author>[^,]+)(,\s*)?")
+jr_placeholder = ",Jr"
 
 
 def _parse_author(data: str) -> list[_Author]:
     """Return a list of author names and emails."""
 
     author_list = []
-    for regex in (author_angled, author_simple):
-        for match in regex.finditer(data):
-            match_dict = match.groupdict()
-            author = match_dict["author"].strip()
-            if author == "":
-                raise ValueError("Name is empty!")
+    data = (data.replace("\n", " ")
+                .replace(", Jr", jr_placeholder)
+                .rstrip().removesuffix(","))
+    for author_email in data.split(", "):
+        if ' <' in author_email:
+            author, email = author_email.removesuffix(">").split(" <")
+        else:
+            author, email = author_email, ""
 
-            email = match_dict.get("email", "").lower()
-            author_list.append(_Author(author, email))
+        author = author.strip()
+        if author == "":
+            raise ValueError("Name is empty!")
 
-        # If authors were found, then stop searching as we only expect one
-        # style of author citation.
-        if author_list:
-            break
+        author = author.replace(jr_placeholder, ", Jr")
+        email = email.lower()
+        author_list.append(_Author(author, email))
     return author_list
