@@ -3,7 +3,6 @@ from pathlib import Path
 import pytest
 
 from pep_sphinx_extensions.pep_zero_generator import parser
-from pep_sphinx_extensions.pep_zero_generator.author import Author
 from pep_sphinx_extensions.pep_zero_generator.constants import (
     STATUS_ACCEPTED,
     STATUS_ACTIVE,
@@ -19,7 +18,6 @@ from pep_sphinx_extensions.pep_zero_generator.constants import (
     TYPE_STANDARDS,
 )
 from pep_sphinx_extensions.pep_zero_generator.errors import PEPError
-from pep_sphinx_extensions.tests.utils import AUTHORS_OVERRIDES
 
 
 def test_pep_repr():
@@ -46,7 +44,7 @@ def test_pep_details(monkeypatch):
     pep8 = parser.PEP(Path("pep-0008.txt"))
 
     assert pep8.details == {
-        "authors": "GvR, Warsaw, Coghlan",
+        "authors": "Guido van Rossum, Barry Warsaw, Nick Coghlan",
         "number": 8,
         "shorthand": ":abbr:`PA (Process, Active)`",
         "title": "Style Guide for Python Code",
@@ -58,20 +56,33 @@ def test_pep_details(monkeypatch):
     [
         (
             "First Last <user@example.com>",
-            [Author(last_first="Last, First", nick="Last", email="user@example.com")],
+            {"First Last": "user@example.com"},
+        ),
+        (
+            "First Last <   user@example.com  >",
+            {"First Last": "user@example.com"},
         ),
         (
             "First Last",
-            [Author(last_first="Last, First", nick="Last", email="")],
+            {"First Last": ""},
         ),
         (
             "user@example.com (First Last)",
-            [Author(last_first="Last, First", nick="Last", email="user@example.com")],
+            {"First Last": "user@example.com"},
+        ),
+        (
+            "user@example.com (  First Last  )",
+            {"First Last": "user@example.com"},
         ),
         pytest.param(
             "First Last <user at example.com>",
-            [Author(last_first="Last, First", nick="Last", email="user@example.com")],
+            {"First Last": "user@example.com"},
             marks=pytest.mark.xfail,
+        ),
+        pytest.param(
+            " , First Last,",
+            {"First Last": ""},
+            marks=pytest.mark.xfail(raises=ValueError),
         ),
     ],
 )
@@ -80,7 +91,7 @@ def test_parse_authors(test_input, expected):
     dummy_object = parser.PEP(Path("pep-0160.txt"))
 
     # Act
-    out = parser._parse_authors(dummy_object, test_input, AUTHORS_OVERRIDES)
+    out = parser._parse_authors(dummy_object, test_input)
 
     # Assert
     assert out == expected
@@ -90,7 +101,7 @@ def test_parse_authors_invalid():
     pep = parser.PEP(Path("pep-0008.txt"))
 
     with pytest.raises(PEPError, match="no authors found"):
-        parser._parse_authors(pep, "", AUTHORS_OVERRIDES)
+        parser._parse_authors(pep, "")
 
 
 @pytest.mark.parametrize(
