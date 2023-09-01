@@ -62,10 +62,6 @@ def test_pep_details(monkeypatch):
             "First Last",
             [_Author(full_name="First Last", email="")],
         ),
-        (
-            "user@example.com (First Last)",
-            [_Author(full_name="First Last", email="user@example.com")],
-        ),
         pytest.param(
             "First Last <user at example.com>",
             [_Author(full_name="First Last", email="user@example.com")],
