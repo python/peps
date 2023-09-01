@@ -18,7 +18,6 @@ from pep_sphinx_extensions.pep_zero_generator.constants import (
     TYPE_PROCESS,
     TYPE_STANDARDS,
 )
-from pep_sphinx_extensions.pep_zero_generator.errors import PEPError
 
 
 def test_pep_repr():
@@ -80,21 +79,15 @@ def test_pep_details(monkeypatch):
     ],
 )
 def test_parse_authors(test_input, expected):
-    # Arrange
-    dummy_object = parser.PEP(Path("pep-0160.txt"))
-
     # Act
-    out = parser._parse_authors(dummy_object, test_input)
+    out = parser._parse_author(test_input)
 
     # Assert
     assert out == expected
 
 
 def test_parse_authors_invalid():
-    pep = parser.PEP(Path("pep-0008.txt"))
-
-    with pytest.raises(PEPError, match="no authors found"):
-        parser._parse_authors(pep, "")
+    assert parser._parse_author("") == []
 
 
 @pytest.mark.parametrize(

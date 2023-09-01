@@ -91,7 +91,9 @@ class PEP:
         self.status: str = status
 
         # Parse PEP authors
-        self.authors: list[_Author] = _parse_authors(self, metadata["Author"])
+        self.authors: list[_Author] = _parse_author(metadata["Author"])
+        if not self.authors:
+            raise _raise_pep_error(self, "no authors found", pep_num=True)
 
         # Topic (for sub-indices)
         _topic = metadata.get("Topic", "").lower().split(",")
@@ -167,14 +169,6 @@ def _raise_pep_error(pep: PEP, msg: str, pep_num: bool = False) -> None:
     if pep_num:
         raise PEPError(msg, pep.filename, pep_number=pep.number)
     raise PEPError(msg, pep.filename)
-
-
-def _parse_authors(pep: PEP, author_header: str) -> list[_Author]:
-    """Parse Author header line"""
-    authors_and_emails = _parse_author(author_header)
-    if not authors_and_emails:
-        raise _raise_pep_error(pep, "no authors found", pep_num=True)
-    return authors_and_emails
 
 
 author_angled = re.compile(r"(?P<author>.+?) <(?P<email>.+?)>(,\s*)?")
