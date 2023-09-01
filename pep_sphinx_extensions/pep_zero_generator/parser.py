@@ -130,7 +130,7 @@ class PEP:
             # a tooltip representing the type and status
             "shorthand": self.shorthand,
             # the author list as a comma-separated with only last names
-            "authors": ", ".join(author for author in self.authors),
+            "authors": ", ".join(self.authors),
         }
 
     @property
@@ -139,7 +139,7 @@ class PEP:
         return {
             "number": self.number,
             "title": self.title,
-            "authors": ", ".join(author for author in self.authors),
+            "authors": ", ".join(self.authors),
             "discussions_to": self.discussions_to,
             "status": self.status,
             "type": self.pep_type,
