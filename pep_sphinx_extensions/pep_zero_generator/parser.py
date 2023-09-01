@@ -182,22 +182,15 @@ def _parse_author(data: str) -> list[_Author]:
     author_list = []
     for regex in (author_angled, author_paren, author_simple):
         for match in regex.finditer(data):
-            # Watch out for suffixes like 'Jr.' when they are comma-separated
-            # from the name and thus cause issues when *all* names are only
-            # separated by commas.
             match_dict = match.groupdict()
-            author = match_dict["author"]
-            if not author.partition(" ")[1] and author.endswith("."):
-                prev_author = author_list.pop()
-                author = ", ".join([prev_author, author])
+            author = match_dict["author"].strip()
+            if author == "":
+                raise ValueError("Name is empty!")
+
             if "email" not in match_dict:
                 email = ""
             else:
                 email = match_dict["email"]
-
-            author = author.strip()
-            if author == "":
-                raise ValueError("Name is empty!")
 
             author_list.append(_Author(author, email.lower()))
 
