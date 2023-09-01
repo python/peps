@@ -187,12 +187,8 @@ def _parse_author(data: str) -> list[_Author]:
             if author == "":
                 raise ValueError("Name is empty!")
 
-            if "email" not in match_dict:
-                email = ""
-            else:
-                email = match_dict["email"]
-
-            author_list.append(_Author(author, email.lower()))
+            email = match_dict.get("email", "").lower()
+            author_list.append(_Author(author, email))
 
         # If authors were found, then stop searching as we only expect one
         # style of author citation.
