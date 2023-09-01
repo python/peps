@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import datetime as dt
 from typing import TYPE_CHECKING
 import unicodedata
 
@@ -29,11 +28,10 @@ from pep_sphinx_extensions.pep_zero_generator.errors import PEPError
 if TYPE_CHECKING:
     from pep_sphinx_extensions.pep_zero_generator.parser import PEP
 
-HEADER = f"""\
+HEADER = """\
 PEP: 0
 Title: Index of Python Enhancement Proposals (PEPs)
-Last-Modified: {dt.date.today()}
-Author: python-dev <python-dev@python.org>
+Author: The PEP Editors
 Status: Active
 Type: Informational
 Content-Type: text/x-rst
