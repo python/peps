@@ -3,7 +3,6 @@ from pathlib import Path
 import pytest
 
 from pep_sphinx_extensions.pep_zero_generator import parser
-from pep_sphinx_extensions.pep_zero_generator.parser import _Author
 from pep_sphinx_extensions.pep_zero_generator.constants import (
     STATUS_ACCEPTED,
     STATUS_ACTIVE,
@@ -18,6 +17,7 @@ from pep_sphinx_extensions.pep_zero_generator.constants import (
     TYPE_PROCESS,
     TYPE_STANDARDS,
 )
+from pep_sphinx_extensions.pep_zero_generator.parser import _Author
 
 
 def test_pep_repr():
