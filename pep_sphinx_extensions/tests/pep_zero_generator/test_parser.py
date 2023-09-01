@@ -83,7 +83,8 @@ def test_parse_authors(test_input, expected):
 
 
 def test_parse_authors_invalid():
-    assert parser._parse_author("") == []
+    with pytest.raises(ValueError, match="Name is empty!"):
+        assert parser._parse_author("")
 
 
 @pytest.mark.parametrize(
