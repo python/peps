@@ -241,7 +241,7 @@ class PEPZeroWriter:
             self.emit_newline()
             self.emit_newline()
 
-        pep0_string = "\n".join([str(s) for s in self.output])
+        pep0_string = "\n".join(map(str, self.output))
         return pep0_string
 
 
