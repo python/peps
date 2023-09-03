@@ -24,7 +24,7 @@ Configuration is stored in three files:
 The configuration:
 
 - registers the custom Sphinx extension
-- sets both ``.txt`` and ``.rst`` suffixes to be parsed as PEPs
+- sets the ``.rst`` suffix to be parsed as PEPs
 - tells Sphinx which source files to use
 - registers the PEP theme, maths renderer, and template
 - disables some default settings that are covered in the extension
