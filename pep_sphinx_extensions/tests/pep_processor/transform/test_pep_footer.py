@@ -1,3 +1,5 @@
+import datetime as dt
+
 from pep_sphinx_extensions.pep_processor.transforms import pep_footer
 
 from ...conftest import PEP_ROOT
@@ -31,4 +33,4 @@ def test_get_last_modified_timestamps():
 
     assert len(out) >= 585
     # Should be a Unix timestamp and at least this
-    assert out["pep-0008.txt"] >= 1643124055
+    assert dt.datetime.fromisoformat(out["pep-0008"]).timestamp() >= 1643124055

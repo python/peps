@@ -28,7 +28,7 @@ def test_pep_repr():
 
 def test_pep_less_than():
     pep8 = parser.PEP(PEP_ROOT / "pep-0008.txt")
-    pep3333 = parser.PEP(PEP_ROOT / "pep-3333.rst")
+    pep3333 = parser.PEP(PEP_ROOT / "pep-3333.txt")
 
     assert pep8 < pep3333
 
