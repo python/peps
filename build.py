@@ -61,7 +61,7 @@ def create_index_file(html_root: Path, builder: str) -> None:
 if __name__ == "__main__":
     args = create_parser()
 
-    root_directory = Path(".").absolute()
+    root_directory = Path("peps").absolute()
     source_directory = root_directory
     build_directory = root_directory / args.output_dir
     doctree_directory = build_directory / ".doctrees"
