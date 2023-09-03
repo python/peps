@@ -8,7 +8,7 @@ from ...conftest import PEP_ROOT
 def test_add_source_link():
     out = pep_footer._add_source_link(PEP_ROOT / "pep-0008.txt")
 
-    assert "https://github.com/python/peps/blob/main/pep-0008.txt" in str(out)
+    assert "https://github.com/python/peps/blob/main/peps/pep-0008.txt" in str(out)
 
 
 def test_add_commit_history_info():

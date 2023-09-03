@@ -41,7 +41,7 @@ def _parse_peps(path: Path) -> list[parser.PEP]:
             continue  # Skip directories etc.
         if file_path.match("pep-0000*"):
             continue  # Skip pre-existing PEP 0 files
-        if file_path.match("pep-????.???") and file_path.suffix in {".txt", ".rst"}:
+        if file_path.match("pep-????.rst"):
             pep = parser.PEP(path.joinpath(file_path).absolute())
             peps.append(pep)
 
