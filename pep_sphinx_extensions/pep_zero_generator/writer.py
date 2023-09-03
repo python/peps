@@ -5,10 +5,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 import unicodedata
 
-from pep_sphinx_extensions.pep_processor.transforms.pep_headers import (
-    ABBREVIATED_STATUSES,
-    ABBREVIATED_TYPES,
-)
+from pep_sphinx_extensions.pep_processor.transforms.pep_headers import ABBREVIATED_STATUSES
+from pep_sphinx_extensions.pep_processor.transforms.pep_headers import ABBREVIATED_TYPES
 from pep_sphinx_extensions.pep_zero_generator.constants import DEAD_STATUSES
 from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_ACCEPTED
 from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_ACTIVE

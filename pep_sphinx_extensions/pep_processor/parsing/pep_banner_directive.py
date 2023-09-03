@@ -5,7 +5,6 @@ from __future__ import annotations
 from docutils import nodes
 from docutils.parsers import rst
 
-
 PYPA_SPEC_BASE_URL = "https://packaging.python.org/en/latest/specifications/"
 
 
