@@ -1,16 +1,16 @@
-from pathlib import Path
-
 from pep_sphinx_extensions.pep_processor.transforms import pep_footer
+
+from ...conftest import PEP_ROOT
 
 
 def test_add_source_link():
-    out = pep_footer._add_source_link(Path("pep-0008.txt"))
+    out = pep_footer._add_source_link(PEP_ROOT / "pep-0008.txt")
 
     assert "https://github.com/python/peps/blob/main/pep-0008.txt" in str(out)
 
 
 def test_add_commit_history_info():
-    out = pep_footer._add_commit_history_info(Path("pep-0008.txt"))
+    out = pep_footer._add_commit_history_info(PEP_ROOT / "pep-0008.txt")
 
     assert str(out).startswith(
         "<paragraph>Last modified: "
@@ -21,7 +21,7 @@ def test_add_commit_history_info():
 
 
 def test_add_commit_history_info_invalid():
-    out = pep_footer._add_commit_history_info(Path("pep-not-found.txt"))
+    out = pep_footer._add_commit_history_info(PEP_ROOT / "pep-not-found.rst")
 
     assert str(out) == "<paragraph/>"
 
