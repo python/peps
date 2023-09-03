@@ -17,8 +17,8 @@ to `PEP 676 <https://peps.python.org/pep-0676/>`__.
 
 Configuration is stored in three files:
 
-- ``conf.py`` contains the majority of the Sphinx configuration
-- ``contents.rst`` contains the compulsory table of contents directive
+- ``peps/conf.py`` contains the majority of the Sphinx configuration
+- ``peps/contents.rst`` contains the compulsory table of contents directive
 - ``pep_sphinx_extensions/pep_theme/theme.conf`` sets the Pygments themes
 
 The configuration:
@@ -35,7 +35,7 @@ The configuration:
 ----------------
 
 ``build.py`` manages the rendering process.
-Usage is covered in :doc:`build`.
+Usage is covered in `Building PEPs Locally <./build.rst>`_.
 
 
 3. Extension
