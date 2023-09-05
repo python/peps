@@ -1,5 +1,4 @@
-..
-   Author: Adam Turner
+:author: Adam Turner
 
 
 Building PEPs Locally
@@ -10,8 +9,8 @@ This can also be used to check that the PEP is valid reStructuredText before
 submission to the PEP editors.
 
 The rest of this document assumes you are working from a local clone of the
-`PEPs repository <https://github.com/python/peps>`__, with 
-**Python 3.9 or later** installed.
+`PEPs repository <https://github.com/python/peps>`__,
+with **Python 3.9 or later** installed.
 
 
 Render PEPs locally
@@ -51,11 +50,6 @@ Render PEPs locally
 
       (venv) PS> python build.py
 
-   .. note::
-
-      There may be a series of warnings about unreferenced citations or labels.
-      Whilst these are valid warnings, they do not impact the build process.
-
 4. Navigate to the ``build`` directory of your PEPs repo to find the HTML pages.
    PEP 0 provides a formatted index, and may be a useful reference.
 
@@ -87,28 +81,8 @@ Check the validity of links within PEP sources (runs the `Sphinx linkchecker
 
 .. code-block:: shell
 
-    python build.py --check-links
-    make check-links
-
-
-Stricter rendering
-''''''''''''''''''
-
-Run in `nit-picky <https://www.sphinx-doc.org/en/master/usage/configuration.html#confval-nitpicky>`__
-mode.
-This generates warnings for all missing references.
-
-.. code-block:: shell
-
-    python build.py --nitpicky
-
-Fail the build on any warning.
-As of January 2022, there are around 250 warnings when building the PEPs.
-
-.. code-block:: shell
-
-    python build.py --fail-on-warning
-    make fail-warning
+   python build.py --check-links
+   make check-links
 
 
 ``build.py`` usage
@@ -118,4 +92,4 @@ For details on the command-line options to the ``build.py`` script, run:
 
 .. code-block:: shell
 
-    python build.py --help
+   python build.py --help
