@@ -76,17 +76,21 @@ ALL_STATUSES = frozenset({
 # PEPs that are allowed to link directly to PEPs
 SKIP_DIRECT_PEP_LINK_CHECK = frozenset({"0009", "0287", "0676", "0684", "8001"})
 
+DEFAULT_FLAGS = re.ASCII | re.IGNORECASE  # Insensitive latin
+
 # any sequence of letters or '-', followed by a single ':' and a space or end of line
-HEADER_PATTERN = re.compile(r"^([a-z\-]+):(?: |$)", re.ASCII | re.IGNORECASE)
+HEADER_PATTERN = re.compile(r"^([a-z\-]+):(?: |$)", DEFAULT_FLAGS)
 # any sequence of unicode letters or legal special characters
 NAME_PATTERN = re.compile(r"(?:[^\W\d_]|[ ',\-.])+(?: |$)")
 # any sequence of ASCII letters, digits, or legal special characters
-EMAIL_LOCAL_PART_PATTERN = re.compile(r"[\w!#$%&'*+\-/=?^{|}~.]+", re.ASCII | re.IGNORECASE)
-DISCOURSE_THREAD_PATTERN = re.compile(r"([\w\-]+/)?\d+", re.ASCII | re.IGNORECASE)
-DISCOURSE_POST_PATTERN = re.compile(r"([\w\-]+/)?\d+(/\d+)?", re.ASCII | re.IGNORECASE)
-MAILMAN_2_PATTERN = re.compile(r"[\w\-]+/\d{4}-[a-z]+/\d+\.html", re.ASCII | re.IGNORECASE)
-MAILMAN_3_THREAD_PATTERN = re.compile(r"[\w\-]+@python\.org/thread/[a-z0-9]+/?", re.ASCII | re.IGNORECASE)
-MAILMAN_3_MESSAGE_PATTERN = re.compile(r"[\w\-]+@python\.org/message/[a-z0-9]+/?(#[a-z0-9]+)?", re.ASCII | re.IGNORECASE)
+EMAIL_LOCAL_PART_PATTERN = re.compile(r"[\w!#$%&'*+\-/=?^{|}~.]+", DEFAULT_FLAGS)
+
+DISCOURSE_THREAD_PATTERN = re.compile(r"([\w\-]+/)?\d+", DEFAULT_FLAGS)
+DISCOURSE_POST_PATTERN = re.compile(r"([\w\-]+/)?\d+(/\d+)?", DEFAULT_FLAGS)
+
+MAILMAN_2_PATTERN = re.compile(r"[\w\-]+/\d{4}-[a-z]+/\d+\.html", DEFAULT_FLAGS)
+MAILMAN_3_THREAD_PATTERN = re.compile(r"[\w\-]+@python\.org/thread/[a-z0-9]+/?", DEFAULT_FLAGS)
+MAILMAN_3_MESSAGE_PATTERN = re.compile(r"[\w\-]+@python\.org/message/[a-z0-9]+/?(#[a-z0-9]+)?", DEFAULT_FLAGS)
 
 # Controlled by the "--detailed" flag
 DETAILED_ERRORS = False
