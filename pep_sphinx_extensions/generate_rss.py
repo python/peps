@@ -17,9 +17,6 @@ RSS_DESCRIPTION = (
     "and some meta-information like release procedure and schedules."
 )
 
-# get the directory with the PEP sources
-PEP_ROOT = Path(__file__).parent
-
 
 def _format_rfc_2822(datetime: dt.datetime) -> str:
     datetime = datetime.replace(tzinfo=dt.timezone.utc)
