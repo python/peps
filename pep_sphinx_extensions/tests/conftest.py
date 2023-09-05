@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 _ROOT_PATH = Path(__file__, "..", "..", "..").resolve()
-PEP_ROOT = _ROOT_PATH /  "peps"
+PEP_ROOT = _ROOT_PATH / "peps"
 
 # Import "check-peps.py" as "check_peps"
 CHECK_PEPS_PATH = _ROOT_PATH / "check-peps.py"
