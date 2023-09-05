@@ -5,6 +5,7 @@
 """Build script for Sphinx documentation"""
 
 import argparse
+import os
 from pathlib import Path
 
 from sphinx.application import Sphinx
@@ -27,15 +28,6 @@ def create_parser():
                           help='Render PEPs to "index.html" files within "pep-NNNN" directories. '
                                'Cannot be used with "-f" or "-l".')
 
-    # flags / options
-    parser.add_argument("-w", "--fail-on-warning", action="store_true",
-                        help="Fail the Sphinx build on any warning.")
-    parser.add_argument("-n", "--nitpicky", action="store_true",
-                        help="Run Sphinx in 'nitpicky' mode, "
-                             "warning on every missing reference target.")
-    parser.add_argument("-j", "--jobs", type=int, default=1,
-                        help="How many parallel jobs to run (if supported). "
-                             "Integer, default 1.")
     parser.add_argument(
         "-o",
         "--output-dir",
@@ -61,33 +53,23 @@ def create_index_file(html_root: Path, builder: str) -> None:
 if __name__ == "__main__":
     args = create_parser()
 
-    root_directory = Path(".").absolute()
+    root_directory = Path(__file__).resolve().parent
     source_directory = root_directory
     build_directory = root_directory / args.output_dir
-    doctree_directory = build_directory / ".doctrees"
 
     # builder configuration
-    if args.builder is not None:
-        sphinx_builder = args.builder
-    else:
-        # default builder
-        sphinx_builder = "html"
-
-    # other configuration
-    config_overrides = {}
-    if args.nitpicky:
-        config_overrides["nitpicky"] = True
+    sphinx_builder = args.builder or "html"
 
     app = Sphinx(
         source_directory,
         confdir=source_directory,
-        outdir=build_directory,
-        doctreedir=doctree_directory,
+        outdir=build_directory / sphinx_builder,
+        doctreedir=build_directory / "doctrees",
         buildername=sphinx_builder,
-        confoverrides=config_overrides,
-        warningiserror=args.fail_on_warning,
-        parallel=args.jobs,
+        warningiserror=True,
+        parallel=os.cpu_count() or 1,
         tags=["internal_builder"],
+        keep_going=True,
     )
     app.build()
 

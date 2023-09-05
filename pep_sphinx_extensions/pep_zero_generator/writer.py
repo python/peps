@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import datetime as dt
 from typing import TYPE_CHECKING
 import unicodedata
 
-from pep_sphinx_extensions.pep_processor.transforms.pep_headers import (
-    ABBREVIATED_STATUSES,
-    ABBREVIATED_TYPES,
-)
+from pep_sphinx_extensions.pep_processor.transforms.pep_headers import ABBREVIATED_STATUSES
+from pep_sphinx_extensions.pep_processor.transforms.pep_headers import ABBREVIATED_TYPES
 from pep_sphinx_extensions.pep_zero_generator.constants import DEAD_STATUSES
 from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_ACCEPTED
 from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_ACTIVE
@@ -29,11 +26,10 @@ from pep_sphinx_extensions.pep_zero_generator.errors import PEPError
 if TYPE_CHECKING:
     from pep_sphinx_extensions.pep_zero_generator.parser import PEP
 
-HEADER = f"""\
+HEADER = """\
 PEP: 0
 Title: Index of Python Enhancement Proposals (PEPs)
-Last-Modified: {dt.date.today()}
-Author: python-dev <python-dev@python.org>
+Author: The PEP Editors
 Status: Active
 Type: Informational
 Content-Type: text/x-rst
@@ -241,7 +237,7 @@ class PEPZeroWriter:
             self.emit_newline()
             self.emit_newline()
 
-        pep0_string = "\n".join([str(s) for s in self.output])
+        pep0_string = "\n".join(map(str, self.output))
         return pep0_string
 
 
@@ -297,22 +293,22 @@ def _verify_email_addresses(peps: list[PEP]) -> dict[str, str]:
     for pep in peps:
         for author in pep.authors:
             # If this is the first time we have come across an author, add them.
-            if author.last_first not in authors_dict:
-                authors_dict[author.last_first] = set()
+            if author.full_name not in authors_dict:
+                authors_dict[author.full_name] = set()
 
             # If the new email is an empty string, move on.
             if not author.email:
                 continue
             # If the email has not been seen, add it to the list.
-            authors_dict[author.last_first].add(author.email)
+            authors_dict[author.full_name].add(author.email)
 
     valid_authors_dict: dict[str, str] = {}
     too_many_emails: list[tuple[str, set[str]]] = []
-    for last_first, emails in authors_dict.items():
+    for full_name, emails in authors_dict.items():
         if len(emails) > 1:
-            too_many_emails.append((last_first, emails))
+            too_many_emails.append((full_name, emails))
         else:
-            valid_authors_dict[last_first] = next(iter(emails), "")
+            valid_authors_dict[full_name] = next(iter(emails), "")
     if too_many_emails:
         err_output = []
         for author, emails in too_many_emails:
