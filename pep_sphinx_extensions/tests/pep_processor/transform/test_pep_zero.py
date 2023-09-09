@@ -5,7 +5,7 @@ from pep_sphinx_extensions.pep_processor.transforms import pep_zero
 
 
 @pytest.mark.parametrize(
-    "test_input, expected",
+    ("test_input", "expected"),
     [
         (
             nodes.reference(

@@ -52,7 +52,7 @@ def test_pep_details(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "test_input, expected",
+    ("test_input", "expected"),
     [
         (
             "First Last <user@example.com>",
@@ -88,7 +88,7 @@ def test_parse_authors_invalid():
 
 
 @pytest.mark.parametrize(
-    "test_type, test_status, expected",
+    ("test_type", "test_status", "expected"),
     [
         (TYPE_INFO, STATUS_DRAFT, ":abbr:`I (Informational, Draft)`"),
         (TYPE_INFO, STATUS_ACTIVE, ":abbr:`IA (Informational, Active)`"),
