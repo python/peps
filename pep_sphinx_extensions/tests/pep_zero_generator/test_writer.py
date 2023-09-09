@@ -30,7 +30,7 @@ def test_pep_zero_writer_emit_title():
 
 
 @pytest.mark.parametrize(
-    "test_input, expected",
+    ("test_input", "expected"),
     [
         (
             "pep-9000.rst",

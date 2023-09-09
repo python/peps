@@ -196,7 +196,7 @@ def test_validate_type_invalid(line: str):
         # duplicates
         ("Governance, Governance", {"duplicates"}),
         ("Release, Release", {"duplicates"}),
-        ("Release, Release", {"duplicates"}),
+        ("Packaging, Packaging", {"duplicates"}),
         ("Spam, Spam", {"duplicates", "valid"}),
         ("lobster, lobster", {"duplicates", "capitalisation", "valid"}),
         ("governance, governance", {"duplicates", "capitalisation"}),
