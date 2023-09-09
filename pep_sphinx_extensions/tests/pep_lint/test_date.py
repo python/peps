@@ -93,7 +93,7 @@ def test_date_checker_too_early(date_str: str):
     [
         # the future
         "31-Dec-2999",
-        "01-Jan-2100",
+        "01-Jan-2042",
         "01-Jan-2100",
         (dt.datetime.now() + dt.timedelta(days=15)).strftime("%d-%b-%Y"),
         (dt.datetime.now() + dt.timedelta(days=100)).strftime("%d-%b-%Y"),

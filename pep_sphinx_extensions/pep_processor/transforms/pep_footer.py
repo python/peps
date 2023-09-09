@@ -54,7 +54,7 @@ class PEPFooter(transforms.Transform):
 
 def _add_source_link(pep_source_path: Path) -> nodes.paragraph:
     """Add link to source text on VCS (GitHub)"""
-    source_link = f"https://github.com/python/peps/blob/main/{pep_source_path.name}"
+    source_link = f"https://github.com/python/peps/blob/main/peps/{pep_source_path.name}"
     link_node = nodes.reference("", source_link, refuri=source_link)
     return nodes.paragraph("", "Source: ", link_node)
 
@@ -79,9 +79,12 @@ def _get_last_modified_timestamps():
         return {}
     all_modified = ret.stdout
 
+    # remove "peps/" prefix from file names
+    all_modified = all_modified.replace("\npeps/", "\n")
+
     # set up the dictionary with the *current* files
-    peps_dir = Path(__file__, "..", "..", "..", "..").resolve()
-    last_modified = {path.stem: "" for path in peps_dir.glob("pep-????.???") if path.suffix in {".txt", ".rst"}}
+    peps_dir = Path(__file__, "..", "..", "..", "..", "peps").resolve()
+    last_modified = {path.stem: "" for path in peps_dir.glob("pep-????.rst")}
 
     # iterate through newest to oldest, updating per file timestamps
     change_sets = all_modified.removeprefix("#").split("#")

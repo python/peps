@@ -149,7 +149,7 @@ def test_validate_delegate(line: str):
         (r"Cardinal Ximénez <Cardinal\Ximenez@spanish.inquisition>", {"valid email"}),
         ("Cardinal Ximénez <[Cardinal.Ximenez]@spanish.inquisition>", {"valid email"}),
         ('Cardinal Ximénez <"Cardinal"Ximenez"@spanish.inquisition>', {"valid email"}),
-        ("Cardinal Ximénez <Cardinal;Ximenez@spanish.inquisition>", {"valid email"}),
+        ("Cardinal Ximenez <Cardinal;Ximenez@spanish.inquisition>", {"valid email"}),
         ("Cardinal Ximénez <Cardinal£Ximénez@spanish.inquisition>", {"valid email"}),
         ("Cardinal Ximénez <Cardinal§Ximenez@spanish.inquisition>", {"valid email"}),
         # ... entries must contain a valid email address (domain)

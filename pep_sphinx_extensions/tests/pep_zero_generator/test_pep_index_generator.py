@@ -4,7 +4,7 @@ from ..conftest import PEP_ROOT
 
 
 def test_create_pep_json():
-    peps = [parser.PEP(PEP_ROOT / "pep-0008.txt")]
+    peps = [parser.PEP(PEP_ROOT / "pep-0008.rst")]
 
     out = pep_index_generator.create_pep_json(peps)
 
