@@ -54,7 +54,7 @@ if __name__ == "__main__":
     args = create_parser()
 
     root_directory = Path(__file__).resolve().parent
-    source_directory = root_directory
+    source_directory = root_directory / "peps"
     build_directory = root_directory / args.output_dir
 
     # builder configuration

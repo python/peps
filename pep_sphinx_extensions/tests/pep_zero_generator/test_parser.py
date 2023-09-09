@@ -21,27 +21,27 @@ from ..conftest import PEP_ROOT
 
 
 def test_pep_repr():
-    pep8 = parser.PEP(PEP_ROOT / "pep-0008.txt")
+    pep8 = parser.PEP(PEP_ROOT / "pep-0008.rst")
 
     assert repr(pep8) == "<PEP 0008 - Style Guide for Python Code>"
 
 
 def test_pep_less_than():
-    pep8 = parser.PEP(PEP_ROOT / "pep-0008.txt")
-    pep3333 = parser.PEP(PEP_ROOT / "pep-3333.txt")
+    pep8 = parser.PEP(PEP_ROOT / "pep-0008.rst")
+    pep3333 = parser.PEP(PEP_ROOT / "pep-3333.rst")
 
     assert pep8 < pep3333
 
 
 def test_pep_equal():
-    pep_a = parser.PEP(PEP_ROOT / "pep-0008.txt")
-    pep_b = parser.PEP(PEP_ROOT / "pep-0008.txt")
+    pep_a = parser.PEP(PEP_ROOT / "pep-0008.rst")
+    pep_b = parser.PEP(PEP_ROOT / "pep-0008.rst")
 
     assert pep_a == pep_b
 
 
 def test_pep_details(monkeypatch):
-    pep8 = parser.PEP(PEP_ROOT / "pep-0008.txt")
+    pep8 = parser.PEP(PEP_ROOT / "pep-0008.rst")
 
     assert pep8.details == {
         "authors": "Guido van Rossum, Barry Warsaw, Nick Coghlan",
@@ -106,7 +106,7 @@ def test_parse_authors_invalid():
 )
 def test_abbreviate_type_status(test_type, test_status, expected):
     # set up dummy PEP object and monkeypatch attributes
-    pep = parser.PEP(PEP_ROOT / "pep-0008.txt")
+    pep = parser.PEP(PEP_ROOT / "pep-0008.rst")
     pep.pep_type = test_type
     pep.status = test_status
 

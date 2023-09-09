@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import sys
 
-_ROOT = Path(__file__).resolve().parent
+_ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(os.fspath(_ROOT))
 
 # -- Project information -----------------------------------------------------
@@ -27,7 +27,6 @@ extensions = [
 # The file extensions of source files. Sphinx uses these suffixes as sources.
 source_suffix = {
     ".rst": "pep",
-    ".txt": "pep",
 }
 
 # List of patterns (relative to source dir) to ignore when looking for source files.
@@ -36,7 +35,6 @@ include_patterns = [
     "contents.rst",
     # PEP files
     "pep-????.rst",
-    "pep-????.txt",
     # PEP ancillary files
     "pep-????/*.rst",
     # Documentation

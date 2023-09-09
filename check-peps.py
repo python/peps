@@ -16,7 +16,6 @@ Use "--detailed" to show the contents of lines where errors were found.
 from __future__ import annotations
 
 import datetime as dt
-import itertools
 import re
 import sys
 from pathlib import Path
@@ -32,7 +31,8 @@ if TYPE_CHECKING:
 
 
 # get the directory with the PEP sources
-PEP_ROOT = Path(__file__).resolve().parent
+ROOT_DIR = Path(__file__).resolve().parent
+PEP_ROOT = ROOT_DIR / "peps"
 
 # See PEP 12 for the order
 # Note we retain "BDFL-Delegate"
@@ -101,7 +101,7 @@ def check(filenames: Sequence[str] = (), /) -> int:
     if filenames:
         filenames = map(Path, filenames)
     else:
-        filenames = itertools.chain(PEP_ROOT.glob("pep-????.txt"), PEP_ROOT.glob("pep-????.rst"))
+        filenames = PEP_ROOT.glob("pep-????.rst")
     if (count := sum(map(check_file, filenames))) > 0:
         s = "s" * (count != 1)
         print(f"check-peps failed: {count} error{s}", file=sys.stderr)
@@ -207,7 +207,7 @@ def check_direct_links(line_num: int, line: str) -> MessageIterator:
 
 
 def _output_error(filename: Path, lines: Sequence[str], errors: Iterable[Message]) -> int:
-    relative_filename = filename.relative_to(PEP_ROOT)
+    relative_filename = filename.relative_to(ROOT_DIR)
     err_count = 0
     for line_num, msg in errors:
         err_count += 1
