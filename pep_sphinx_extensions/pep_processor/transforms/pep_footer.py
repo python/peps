@@ -71,9 +71,19 @@ def _add_commit_history_info(pep_source_path: Path) -> nodes.paragraph:
     return nodes.paragraph("", "Last modified: ", link_node)
 
 
+def _load_ignored_commits() -> frozenset[str]:
+    # Load all ignored commits from .git-blame-ignore-revs
+    gbir = Path(__file__, "..", "..", "..", "..", ".git-blame-ignore-revs").resolve()
+    commits = frozenset({
+        line for line in gbir.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+    })
+    return commits
+
+
 def _get_last_modified_timestamps():
-    # get timestamps and changed files from all commits (without paging results)
-    args = ("git", "--no-pager", "log", "--format=#%at", "--name-only")
+    # get SHA-1s, timestamps and changed files from all commits (without paging results)
+    args = ("git", "--no-pager", "log", "--format=#%H:%at", "--name-only")
     ret = subprocess.run(args, stdout=subprocess.PIPE, text=True, encoding="utf-8")
     if ret.returncode:  # non-zero return code
         return {}
@@ -89,11 +99,14 @@ def _get_last_modified_timestamps():
     # iterate through newest to oldest, updating per file timestamps
     change_sets = all_modified.removeprefix("#").split("#")
     for change_set in change_sets:
-        timestamp, files = change_set.split("\n", 1)
+        lead, files = change_set.split("\n", 1)
+        sha1, timestamp = lead.split(":")
+        if sha1 in _IGNORED_COMMITS:
+            continue
         for file in files.strip().split("\n"):
-            if not file.startswith("pep-") or not file.endswith((".rst", ".txt")):
+            if not file.startswith("pep-") or not file.endswith(".rst"):
                 continue  # not a PEP
-            file = file[:-4]
+            file = file.removesuffix(".rst")
             if last_modified.get(file) != "":
                 continue  # most recent modified date already found
             try:
@@ -105,4 +118,5 @@ def _get_last_modified_timestamps():
     return last_modified
 
 
+_IGNORED_COMMITS = _load_ignored_commits()
 _LAST_MODIFIED_TIMES = _get_last_modified_timestamps()
