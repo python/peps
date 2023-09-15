@@ -48,6 +48,7 @@ def test_pep_details(monkeypatch):
         "number": 8,
         "shorthand": ":abbr:`PA (Process, Active)`",
         "title": "Style Guide for Python Code",
+        "python_version": "",
     }
 
 

@@ -74,12 +74,19 @@ class PEPZeroWriter:
         self.output.append(author_table_separator)
 
     def emit_pep_row(
-        self, *, shorthand: str, number: int, title: str, authors: str
+        self,
+        *,
+        shorthand: str,
+        number: int,
+        title: str,
+        authors: str,
+        python_version: str,
     ) -> None:
         self.emit_text(f"   * - {shorthand}")
         self.emit_text(f"     - :pep:`{number} <{number}>`")
         self.emit_text(f"     - :pep:`{title.replace('`', '')} <{number}>`")
         self.emit_text(f"     - {authors}")
+        self.emit_text(f"     - {python_version}")
 
     def emit_column_headers(self) -> None:
         """Output the column headers for the PEP indices."""
@@ -92,6 +99,7 @@ class PEPZeroWriter:
         self.emit_text("     - PEP")
         self.emit_text("     - Title")
         self.emit_text("     - Authors")
+        self.emit_text("     - Python")
 
     def emit_title(self, text: str, *, symbol: str = "=") -> None:
         self.output.append(text)
@@ -109,6 +117,7 @@ class PEPZeroWriter:
         # list-table must have at least one body row
         if len(peps) == 0:
             self.emit_text("   * -")
+            self.emit_text("     -")
             self.emit_text("     -")
             self.emit_text("     -")
             self.emit_text("     -")
@@ -192,7 +201,11 @@ class PEPZeroWriter:
             self.emit_column_headers()
             for number, claimants in sorted(self.RESERVED.items()):
                 self.emit_pep_row(
-                    shorthand="", number=number, title="RESERVED", authors=claimants
+                    shorthand="",
+                    number=number,
+                    title="RESERVED",
+                    authors=claimants,
+                    python_version="",
                 )
 
             self.emit_newline()
