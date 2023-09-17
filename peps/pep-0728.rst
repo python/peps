@@ -1,0 +1,614 @@
+PEP: 728
+Title: TypedDict with Typed Extra Fields
+Author: Zixuan James Li <p359101898@gmail.com>
+Sponsor: Alex Waygood <alex.waygood@gmail.com>
+Discussions-To: https://discuss.python.org/t/pep-692-using-typeddict-for-more-precise-kwargs-typing/17314
+Status: Draft
+Type: Standards Track
+Topic: Typing
+Content-Type: text/x-rst
+Created: 12-Sep-2023
+Python-Version: 3.13
+Post-History:
+
+
+.. highlight:: rst
+
+Abstract
+========
+
+This PEP proposes a way to type extra fields for :class:`~typing.TypedDict`.
+This addresses the need to define a subset of fields that might appear in a
+``dict`` while permitting additional fields of a specified type.
+
+Motivation
+==========
+
+:pep:`589` specified a tight restriction on type checking the construction of a TypedDict::
+
+    class MovieBase(TypedDict):
+        name: str
+
+    movie: MovieBase = {"name": "Blade Runner", "year": 1982}  # Not OK
+
+While the restriction is enforced when constructing a TypedDict, due to
+structural subtyping, the TypedDict is flexible enough to have extra fields that
+are not visible through its type. For example::
+
+    class Movie(MovieBase):
+        year: int
+
+    def f(movie: MovieBase) -> None:
+        # movie can have extra fields that are not visible through MovieBase
+        ...
+
+    movie: Movie = {"name": "Blade Runner", "year": 1982}
+    f(movie)  # OK
+
+It is not possible to acknowledge the existence of the extra fields through
+``in`` check and access them without breaking type safety, even though they
+might exist from arbitrary structural subtypes of ``MovieBase``::
+
+    def g(movie: MovieBase) -> None:
+        if "year" in movie:
+            reveal_type(movie["year"])  # Error: TypedDict 'MovieBase' has no key 'breed'
+
+There have been requests for allowing extra keys for TypedDict [1]_ [2]_. A common
+use case for this is typing complex dictionaries where only a subset of possible
+keys are known. The following are some existing workarounds:
+
+- Suppress type checking error specifically for unknown keys on TypedDict. For
+  mypy, this can be done with ``--disable-error-code=typeddict-unknown-key``
+  [3]_. This sacrifices type safety over flexibility, and it does not offer a
+  way to restrict the type of additional fields on a TypedDict.
+
+- Define the extra keys as a nested ``Dict`` or ``Mapping`` inside the
+  ``TypedDict``::
+
+      class MovieBase(TypedDict):
+          name: str
+          extra_fields: Mapping[str, int | str]
+  
+  While this construct is explicit about the type of the extra fields, it cannot
+  preserve the structure of an otherwise flatter dictionary containing all the
+  extra fields, adding an extra level of nesting. This is also undesirable when
+  the TypedDict ought to be used with an external API where the structure is
+  already defined.
+
+- Define a subclass of ``MutableMapping`` and override ``__getitem__`` for
+  specific string literals::
+
+    class Movie(MutableMapping[str, int | str]):
+        @overload
+        def __getitem__(self, key: Literal['name']) -> str:
+            ...
+
+  This requires a lot of boilerplate code and is harder to read than a plain
+  TypedDict does not work to precisely type construction or mutation of a
+  specific field.
+
+:pep:`692` adds a way to precisely annotate the types of individual keyword
+arguments represented by ``**kwargs`` using TypedDict with ``Unpack``. However,
+because TypedDict cannot be defined to accept arbitrary extra fields, it is not
+possible to allow additional keyword arguments that are not known at the time
+the TypedDict is defined.
+
+Given the usage of pre-:pep:`692` type annotation for ``**kwargs`` in existing
+codebases, it will be valuable to accept and type extra fields on TypedDict so
+that the old typing behavior can be supported in combination with the new
+``Unpack`` construct. [4]_
+
+Rationale
+=========
+
+A type that allows extra fields of type ``str`` on a TypedDict can be loosely
+described as the intersection between the TypedDict and ``Mapping[str, str]``.
+
+`Index Signatures <https://www.typescriptlang.org/docs/handbook/2/objects.html#index-signatures>`__
+in TypeScript achieve this:
+
+.. code-block:: typescript
+
+    type Foo = {
+        a: string
+        [key: string]: string
+    }
+
+This proposal aims to support a similar feature without introducing general
+intersection of types or syntax changes.
+
+We propose that we give the dunder attribute ``__extra__`` a special meaning:
+When it is defined on a TypedDict type, extra fields are allowed, and their
+types should be compatible with the type of ``__extra__``. Different from index
+signatures, the types of known fields don't need to be consistent with the type
+of ``__extra__``.
+
+There are some advantages to this approach:
+
+- Inheritance works naturally. ``__extra__`` defined on a TypedDict will also
+  be available to its subclasses.
+
+- We can build on top of
+  :pep:`the type consistency rules defined in PEP 589 <589#type-consistency>`.
+  ``__extra__`` can be treated as a pseudo-key in terms of type consistency.
+
+- There is no need to introduce a syntax to specify the type of the extra
+  fields.
+
+- We can precisely type the extra fields without making ``__extra__`` the union
+  of known fields.
+
+Specification
+=============
+
+This specification is structured to parallel :pep:`589` to highlight changes to
+the original TypedDict specification.
+
+Extra fields are treated as non-required fields having the same type of
+``__extra__`` whose keys are allowed when determining
+:pep:`supported and unsupported operations <589>`.
+
+Using TypedDict Types
+---------------------
+
+For a TypedDict type that has the ``__extra__`` field, during construction, the
+value type of each unknown field is expected to be non-required and compatible
+with the type of ``__extra__``. For example::
+
+    class Movie(TypedDict):
+        name: str
+        __extra__: bool
+    
+    a: Movie = {"name": "Blade Runner", "novel_adaption": True}  # OK
+    b: Movie = {
+        "name": "Blade Runner",
+        "year": 1982,  # Not OK. 'int' is incompatible with 'bool'
+    }  
+
+In this example, ``__extra__: bool`` does not mean that ``Movie`` has a required
+string key "__extra__" whose value type is ``bool``. Instead, it specifies that
+fields other than "name" have a value type of ``bool`` and are non-required.
+
+The alternative syntax is also supported::
+
+    Movie = TypedDict("Movie", {"name": str, "__extra__": bool})
+
+Accessing extra fields is allowed. Type checkers must infer its value type from
+the type of ``__extra__``::
+
+    def f(movie: Movie, key: str) -> None:
+        reveal_type(movie["name"])  # Revealed type is 'str'
+        reveal_type(movie["year"])  # Revealed type is 'int'
+
+
+Interaction with Totality
+---------------------------
+
+It is an error to use ``Required[]`` or ``NotRequired[]`` with the special
+``__extra__`` field. ``total=False`` and ``total=True`` have no effect on
+``__extra__`` itself.
+
+The extra fields are non-required, regardless of the totality of the TypedDict.
+Operations that are available to ``NotRequired`` fields should also be available
+to the extra fields::
+
+    def f(movie: Movie) -> None:
+        del movie["name"]  # Not OK
+        del movie["year"]  # OK
+
+Interaction with ``Unpack``
+---------------------------
+
+For type checking purposes, ``Unpack[TypedDict]`` with extra fields should be
+treated as its equivalent in regular parameters, and the existing rules for
+function parameters still apply::
+
+    class Movie(TypedDict):
+        name: str
+        __extra__: int
+    
+    def f(**kwargs: Unpack[Movie]) -> None: ...
+
+    # Should be equivalent to
+    def f(*, name: str, **kwargs: int) -> None: ...
+
+Inheritance
+-----------
+
+``__extra__`` is inherited the same way as a regular ``key: value_type``
+field. The same rules from :pep:`PEP 589 <589#inheritance>` apply.
+
+Additionally, we need to reinterpret the following rule to define how
+``__extra__`` interacts with it:
+
+    * Changing a field type of a parent TypedDict class in a subclass is not allowed.
+
+First, it is not allowed to change the type of ``__extra__`` in a subclass::
+
+    class Parent(TypedDict):
+        __extra__: int | None
+    
+    class Child(Parent):
+        __extra__: int  # Not OK. Like any other TypedDict field, __extra__'s type cannot be changed
+
+Second, ``__extra__`` effectively defines the type of any unnamed fields
+accepted to the TypedDict and marks them as non-required. Thus, the above
+restriction applies to any additional fields defined in a subclass. For each
+field added in a subclass, all of the following conditions should apply:
+
+- The field is non-required
+
+- The field's value type is consistent with the type of ``__extra__``
+
+- The type of ``__extra__`` is consistent with the field's value type
+
+For example::
+
+    class MovieBase(TypedDict):
+        name: str
+        __extra__: int | None
+    
+    class AdaptedMovie(MovieBase):  # Not OK. 'bool' is not consistent with 'int | None'
+        adapted_from_novel: bool
+ 
+    class MovieRequiredYear(MovieBase):  # Not OK. Required key 'x' is not known to 'Parent'
+        year: int | None
+
+    class MovieNotRequiredYear(MovieBase):  # Not OK. 'int | None' is not consistent with 'int'
+        year: NotRequired[int]
+
+    class MovieWithYear(MovieBase):  # OK
+        x: NotRequired[int | None]
+
+As a side-effect, annotating ``__extra__`` with :class:`typing.Never` for a
+TypedDict type will act similarly to decorating the class definition with
+``@final``, because existing fields' types cannot be changed and no meaningful
+extra fields can be added.
+
+Type Consistency
+----------------
+
+In addition to the set ``S`` of keys of the explicitly defined fields, a
+TypedDict type that has ``__extra__`` is considered to have an infinite set of
+fields that all satisfy the following conditions:
+
+- The field is non-required
+
+- The field's value type is consistent with the type of ``__extra__``
+
+- The type of ``__extra__`` is consistent with the field's value type
+
+- The field's key is not in ``S``.
+
+For type checking purposes, let "__extra__" be a pseudo-key to be included
+whenever "for each key" or "for each non-required key" is stated in
+:pep:`the existing type consistency rules <589#type-consistency>`:
+
+    Second, a TypedDict type ``A`` is consistent with TypedDict ``B`` if
+    ``A`` is structurally compatible with ``B``.  This is true if and only
+    if both of these conditions are satisfied:
+
+    * For each key in ``B``, ``A`` has the corresponding key and the
+      corresponding value type in ``A`` is consistent with the value type in
+      ``B``. For each key in ``B``, the value type in ``B`` is also consistent
+      with the corresponding value type in ``A``. [Edit: if the corresponding key
+      with the same name cannot be found in ``A``, "__extra__" is considered the
+      corresponding key.]
+
+    * For each required key in ``B``, the corresponding key is required in
+      ``A``.  For each non-required key in ``B``, the corresponding key is not
+      required in ``A``. [Edit: if the corresponding non-required key with the
+      same name cannot be found in ``A``, "__extra__" is considered the
+      corresponding key.]
+
+The following examples illustrate these checks in action.
+
+``__extra__`` as a pseudo-field follows the same rules that other fields have,
+so when both TypedDict contains ``__extra__``, this check is naturally
+enforced::
+
+    class MovieExtraInt(TypedDict):
+        name: str
+        __extra__: int
+
+    class MovieExtraStr(TypedDict):
+        name: str
+        __extra__: str
+    
+    extra_int: MovieExtraInt = {"name": "No Country for Old Men", "year": 2007}
+    extra_str: MovieExtraStr = {"name": "No Country for Old Men", "description": ""}
+    extra_int = extra_str  # Not OK. 'str' is inconsistent with 'int' for field '__extra__'
+    extra_str = extra_int  # Not OK. 'int' is inconsistent with 'str' for field '__extra__'
+    
+When only one of the TypedDict ``t`` has ``__extra__``, then the keys unknown to
+``t`` in the other TypedDict corresponds to the ``__extra__`` pseudo-field.
+Still, the same set of rules from :pep:`589` apply::
+
+    class MovieNotRequiredYear(TypedDict):
+        name: str
+        year: NotRequired[int]
+    
+    class MovieRequiredYear(TypedDict):
+        name: str
+        year: int
+
+    extra_int: MovieExtraInt = {"name": "Kill Bill Vol. 1"}
+    required_year: MovieNotRequiredYear = {"name": "Kill Bill Vol. 1"}
+    not_required_year: MovieRequiredYear = {"name": "Kill Bill Vol. 1", "year": 2003}
+
+    extra_int = required_year  # Not OK. Having an extra required field makes
+                               # 'required_year' structurally incompatible with
+                               # extra_int
+    extra_int = not_required_year  # OK.
+
+    required_year = extra_int  # Not OK. The required key 'year' is missing in
+                               # 'extra_int'
+    not_required_year = extra_int  # OK.
+
+A TypedDict can be consistent with ``Mapping[...]`` types other than
+``Mapping[str, object]`` as long as the union of value types on all fields is
+consistent with the value type of the ``Mapping[...]`` type. It is an extension
+to this rule::
+
+    * A TypedDict with all ``int`` values is not consistent with
+      ``Mapping[str, int]``, since there may be additional non-``int``
+      values not visible through the type, due to structural subtyping.
+      These can be accessed using the ``values()`` and ``items()``
+      methods in ``Mapping``
+
+For example::
+
+    extra_str: MovieExtraStr = {"name": "Blade Runner", "summary": ""}
+    str_mapping: Mapping[str, str] = extra_str  # OK
+
+    int_mapping: Mapping[str, int] = extra_int  # Not OK. 'int | str' is not consistent with 'int'
+    int_str_mapping: Mapping[str, int | str] = extra_int  # OK
+
+Note that because the presence of ``__extra__`` prohibits required keys from
+being added through inheritance, it is possible to determine if a TypedDict type
+and its structural subtypes will never have any required key during static
+analysis.
+
+If there is no required key, the TypedDict type is consistent with ``Dict[...]``
+and vice versa if all fields on the TypedDict type satisfy the following
+conditions:
+
+- The value type of the ``Dict[...]`` is consistent with the value type of the
+  field
+
+- The value type of the field is consistent with the value type of the
+  ``Dict[...]``  
+
+For example::
+
+    class IntDict(TypedDict):
+        __extra__: int
+
+    class IntDictWithNum(IntDict):
+        num: NotRequired[int]
+
+    def f(x: IntDict) -> None:
+        v: Dict[str, int] = x  # OK
+        v.clear()  # OK
+    
+    not_required_num: IntDictWithNum = {"num": 1, "bar": 2} 
+    regular_dict: Dict[str, int] = not_required_num  # OK
+    f(not_required_num)  # OK
+
+Open Issues
+===========
+
+Soundness of Structural Subtyping
+---------------------------------
+
+We refer to TypeScript's support for this feature in this PEP. However, a caveat
+here is that the TypeScript construct is unsound due to a design decision noted
+in the documentation [5]_. Consider this example:
+
+.. code-block:: typescript
+
+    interface A {
+        value: string
+        [key: string]: string | number
+    }
+
+    interface B extends A {
+        foo: number
+    }
+
+    const x: B = {value: "asd", foo: 12}
+    function mut(v: A) {
+        v.foo = "asd"
+    }
+    mut(x)
+    console.log(x)  // {"value": "asd", "foo": "asd"}
+
+Because ``A`` is a subtype of ``B``, ``mut`` accepts ``x`` and mutates the value
+of the property ``foo``, changing it to a ``string``. However, ``x`` is defined
+to be ``B``, which expects ``foo`` to be a ``number``. As a result, the value of
+``x`` in runtime is no longer consistent with its type during static analysis.
+
+To support this in Python, we need to determine if we need this level of
+flexibility to open up this hole of soundness.
+
+This PEP as written is more restrictive to match the type consistency rules
+defined in :pep:`589`. A more relaxed design may, for example, no longer
+prohibit subclasses of a TypedDict type that defines ``__extra__`` from adding
+more required fields::
+
+    class IntDict(TypedDict):
+        __extra__: int
+
+    class IntDictWithNum(IntDict):
+        num: int
+
+    def f(x: IntDict) -> None:
+        del x["num"]  # OK
+    
+    required_num: IntDictWithNum = {"num": 1}
+    f(required_num)  # OK
+    required_num["num"]  # KeyError in runtime
+
+Should ``__extra__`` Exclude the Known Keys?
+--------------------------------------------
+
+``__extra__`` specifies the value type for fields of keys that are *unknown* to
+the TypedDict type. So the value type of any known field is not necessarily
+consistent with ``__extra__``'s type, and ``__extra__``'s type is not
+necessarily consistent with the value types of all known fields.
+
+This differs from TypeScript's Index Signatures [6]_ syntax, which requires all
+properties' types to match the string index's type. For example:
+
+.. code-block:: typescript
+
+    interface MovieWithExtraNumber {
+        name: string // Property 'name' of type 'string' is not assignable to 'string' index type 'number'.
+        [index: string]: number
+    }
+
+    interface MovieWithExtraNumberOrString {
+        name: string // OK
+        [index: string]: number | string
+    }
+
+This is a known limitation is discussed in TypeScript's issue tracker [7]_,
+where it is suggested that there should be a way to exclude the defined keys
+from the index signature, so that it is possible to define a type like
+``MovieWithExtraNumber``.
+
+A workaround is to use intersection:
+
+.. code-block:: typescript
+
+    interface MovieExtras {
+        [index: string]: number
+    }
+
+    interface MovieBase {
+        name: string
+    }
+
+    type Movie = MovieExtras & MovieBase
+
+However, this does not work for assignment:
+
+.. code-block:: typescript
+
+    const movie: Movie = {
+        name: "No Country for Old Men", // Type 'string' is not assignable to type 'number'
+        year: 2007,
+    }
+
+How Else Will This Interact with PEP 692?
+-----------------------------------------
+
+Quoting from a comment on a Pull Request that implements part of :pep:`692` [8]_
+in mypy, we want it to be as simple as possible, reusing the existing type
+checking logic:
+
+    There is nothing cumbersome in reducing the PEP to just one paragraph that
+    would explain that `Unpack[SomeTD]` is a syntactic sugar for (and is
+    considered equivalent to) the expanded signature. This has a number of
+    benefits:
+
+    * This will not add any new unsafety that is not already present for
+      existing uses of TypedDicts in `**` contexts. (And type checkers may
+      handle this unsafety in a uniform way, say in mypy we _may_ use existing
+      `--extra-checks` flag to prohibit some techincally unsafe calls as I
+      mentioned before.)
+
+    * This is actually easy to remember and to reason about.
+
+    * This will allow people who want subtyping between callables to easily
+      achieve this using `total=False`, which follows from existing rules for
+      expanded callables.
+
+Backwards Compatibility
+=======================
+
+Dunder attributes like ``__extra__`` are reserved for stdlib, we need not
+concerned about using it in this proposal. If the proposal is accepted, neither
+``__required_keys__`` and ``__optional_keys__`` should include ``__extra__`` in
+runtime.
+
+Because this is a type-checking feature, it can be made available to older
+versions when TypedDict is imported from ``typing_extensions``, and type
+checkers should handle ``__extra__`` in that case.
+
+Rejected Ideas
+==============
+
+Allowing Extra Fields without Specifying the Type
+-------------------------------------------------
+
+``extra=True`` was originally proposed for defining a TypedDict accept extra
+fields regardless of the type, like how ``total=True`` works::
+
+    class TypedDict(extra=True):
+        pass
+
+Because it did not offer a way to specify the type of the extra fields, the type
+checkers will need to assume that the type of the extra fields are ``Any``,
+which compromises type safety. Furthermore, the current behavior of TypedDict
+already allows untyped extra fields to be present in runtime, due to structural
+subtyping.
+
+Supporting ``TypedDict(extra=type)``
+------------------------------------
+
+This adds more corner cases to determine whether a type should be treated as a
+type or a value. And it will require more work to support using special forms to
+type the extra fields.
+
+While this saves us from reserving an attribute for special use, it will require
+extra work to implement inheritance, and it is less natural to integrate with
+generics if we support generic TypedDict types in the future.
+
+Support Extra Fields with Intersection
+--------------------------------------
+
+Supporting intersections in Python's type system requires a lot of careful
+considerations, and it can take a long time for the community to reach a
+consensus on a reasonable design.
+
+Ideally, extra fields in TypedDict should not be blocked by work on
+intersections, nor does it necessarily need to be supported through
+intersections.
+
+Moreover, the intersection between ``Mapping[...]`` and ``TypedDict`` is not
+equivalent to a TypedDict type with the proposed ``__extra__`` special field, as
+the value type of all known fields in ``TypedDict`` need to satisfy the
+is-subtype-of relation with the value type of ``Mapping[...]``.
+
+Reference Implementation
+========================
+
+pyanalyze has
+`experimental support <https://github.com/quora/pyanalyze/blob/9bfc2c58467c87774a9950838402d2657b1486a0/pyanalyze/extensions.py#L590>`__
+for a similar feature.
+
+Reference implementation for this specific proposal, however, is not currently available.
+
+References
+==========
+
+.. [1] https://github.com/python/mypy/issues/4617
+.. [2] https://mail.python.org/archives/list/typing-sig@python.org/thread/66RITIHDQHVTUMJHH2ORSNWZ6DOPM367/
+.. [3] https://github.com/python/mypy/pull/14225
+.. [4] https://discuss.python.org/t/pep-692-using-typeddict-for-more-precise-kwargs-typing/17314/87
+.. [5] https://www.typescriptlang.org/docs/handbook/type-compatibility.html#a-note-on-soundness
+.. [6] https://www.typescriptlang.org/docs/handbook/2/objects.html#index-signatures
+.. [7] https://github.com/microsoft/TypeScript/issues/17867
+.. [8] https://github.com/python/mypy/pull/15612#discussion_r1298300340
+
+Acknowledgments
+================
+
+TBD.
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
