@@ -28,7 +28,7 @@ def _update_config_for_builder(app: Sphinx) -> None:
     app.env.document_ids = {}  # For PEPReferenceRoleTitleText
     app.env.settings["builder"] = app.builder.name
     if app.builder.name == "dirhtml":
-        app.env.settings["pep_url"] = "pep-{:0>4}"
+        app.env.settings["pep_url"] = "pep-{:0>4}/"
 
     app.connect("build-finished", _post_build)  # Post-build tasks
 
