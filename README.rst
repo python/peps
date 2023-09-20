@@ -58,8 +58,8 @@ In summary, run the following in a fresh, activated virtual environment:
     # Install requirements
     python -m pip install -U -r requirements.txt
 
-    # Render the PEPs
-    make render
+    # Build the PEPs
+    make html
 
     # Or, if you don't have 'make':
     python build.py
