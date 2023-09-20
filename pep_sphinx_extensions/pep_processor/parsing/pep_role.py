@@ -15,6 +15,10 @@ class PEPRole(roles.ReferenceRole):
             prb = self.inliner.problematic(self.rawtext, self.rawtext, msg)
             return [prb], [msg]
         pep_base = self.inliner.document.settings.pep_url.format(pep_num)
+        if self.inliner.document.settings.builder == "dirhtml":
+            pep_base = "../" + pep_base
+        if "topic" in self.get_location():
+            pep_base = "../" + pep_base
         if fragment:
             ref_uri = f"{pep_base}#{fragment}"
         else:

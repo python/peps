@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from docutils import nodes
 from docutils.frontend import OptionParser
 from sphinx.builders.html import StandaloneHTMLBuilder
@@ -22,6 +20,7 @@ class FileBuilder(StandaloneHTMLBuilder):
         self.docwriter = HTMLWriter(self)
         _opt_parser = OptionParser([self.docwriter], defaults=self.env.settings, read_config_files=True)
         self.docsettings = _opt_parser.get_default_values()
+        self._orig_css_files = self._orig_js_files = []
 
     def get_doc_context(self, docname: str, body: str, _metatags: str) -> dict:
         """Collect items for the template context of a page."""
@@ -29,10 +28,6 @@ class FileBuilder(StandaloneHTMLBuilder):
             title = self.env.longtitles[docname].astext()
         except KeyError:
             title = ""
-
-        # source filename
-        file_is_rst = Path(self.env.srcdir, docname + ".rst").exists()
-        source_name = f"{docname}.rst" if file_is_rst else f"{docname}.txt"
 
         # local table of contents
         toc_tree = self.env.tocs[docname].deepcopy()
@@ -45,7 +40,7 @@ class FileBuilder(StandaloneHTMLBuilder):
         else:
             toc = ""  # PEPs with no sections -- 9, 210
 
-        return {"title": title, "sourcename": source_name, "toc": toc, "body": body}
+        return {"title": title, "toc": toc, "body": body}
 
 
 class DirectoryBuilder(FileBuilder):
