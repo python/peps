@@ -12,7 +12,7 @@ OUTPUT_DIR   = build
 SPHINXERRORHANDLING = -W --keep-going -w sphinx-warnings.txt
 
 ALLSPHINXOPTS = -b $(BUILDER) -j $(JOBS) \
-                $(SPHINXOPTS) $(SPHINXERRORHANDLING) . $(OUTPUT_DIR) $(SOURCES)
+                $(SPHINXOPTS) $(SPHINXERRORHANDLING) peps $(OUTPUT_DIR) $(SOURCES)
 
 ## html           to render PEPs to "pep-NNNN.html" files
 .PHONY: html

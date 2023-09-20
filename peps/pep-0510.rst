@@ -1,0 +1,466 @@
+PEP: 510
+Title: Specialize functions with guards
+Version: $Revision$
+Last-Modified: $Date$
+Author: Victor Stinner <vstinner@python.org>
+Status: Rejected
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 04-Jan-2016
+Python-Version: 3.6
+
+
+Rejection Notice
+================
+
+This PEP was rejected by its author since the design didn't show any
+significant speedup, but also because of the lack of time to implement
+the most advanced and complex optimizations.
+
+
+Abstract
+========
+
+Add functions to the Python C API to specialize pure Python functions:
+add specialized codes with guards. It allows to implement static
+optimizers respecting the Python semantics.
+
+
+Rationale
+=========
+
+Python semantics
+----------------
+
+Python is hard to optimize because almost everything is mutable: builtin
+functions, function code, global variables, local variables, ... can be
+modified at runtime. Implement optimizations respecting the Python
+semantics requires to detect when "something changes", we will call these
+checks "guards".
+
+This PEP proposes to add a public API to the Python C API to add
+specialized codes with guards to a function. When the function is
+called, a specialized code is used if nothing changed, otherwise use the
+original bytecode.
+
+Even if guards help to respect most parts of the Python semantics, it's
+hard to optimize Python without making subtle changes on the exact
+behaviour. CPython has a long history and many applications rely on
+implementation details. A compromise must be found between "everything
+is mutable" and performance.
+
+Writing an optimizer is out of the scope of this PEP.
+
+
+Why not a JIT compiler?
+-----------------------
+
+There are multiple JIT compilers for Python actively developed:
+
+* `PyPy <http://pypy.org/>`_
+* `Pyston <https://github.com/dropbox/pyston>`_
+* `Numba <http://numba.pydata.org/>`_
+* `Pyjion <https://github.com/microsoft/pyjion>`_
+
+Numba is specific to numerical computation.  Pyston and Pyjion are still
+young.  PyPy is the most complete Python interpreter, it is generally
+faster than CPython in micro- and many macro-benchmarks and has a very
+good compatibility with CPython (it respects the Python semantics).
+There are still issues with Python JIT compilers which avoid them to be
+widely used instead of CPython.
+
+Many popular libraries like numpy, PyGTK, PyQt, PySide and wxPython are
+implemented in C or C++ and use the Python C API. To have a small memory
+footprint and better performances, Python JIT compilers do not use
+reference counting to use a faster garbage collector, do not use C
+structures of CPython objects and manage memory allocations differently.
+PyPy has a ``cpyext`` module which emulates the Python C API but it has
+worse performances than CPython and does not support the full Python C
+API.
+
+New features are first developed in CPython. In January 2016, the
+latest CPython stable version is 3.5, whereas PyPy only supports Python
+2.7 and 3.2, and Pyston only supports Python 2.7.
+
+Even if PyPy has a very good compatibility with Python, some modules are
+still not compatible with PyPy: see `PyPy Compatibility Wiki
+<https://bitbucket.org/pypy/compatibility/wiki/Home>`_. The incomplete
+support of the Python C API is part of this problem. There are also
+subtle differences between PyPy and CPython like reference counting:
+object destructors are always called in PyPy, but can be called "later"
+than in CPython. Using context managers helps to control when resources
+are released.
+
+Even if PyPy is much faster than CPython in a wide range of benchmarks,
+some users still report worse performances than CPython on some specific
+use cases or unstable performances.
+
+When Python is used as a scripting program for programs running less
+than 1 minute, JIT compilers can be slower because their startup time is
+higher and the JIT compiler takes time to optimize the code. For
+example, most Mercurial commands take a few seconds.
+
+Numba now supports ahead of time compilation, but it requires decorator
+to specify arguments types and it only supports numerical types.
+
+CPython 3.5 has almost no optimization: the peephole optimizer only
+implements basic optimizations. A static compiler is a compromise
+between CPython 3.5 and PyPy.
+
+.. note::
+   There was also the Unladen Swallow project, but it was abandoned in
+   2011.
+
+
+Examples
+========
+
+Following examples are not written to show powerful optimizations
+promising important speedup, but to be short and easy to understand,
+just to explain the principle.
+
+Hypothetical myoptimizer module
+-------------------------------
+
+Examples in this PEP uses a hypothetical ``myoptimizer`` module which
+provides the following functions and types:
+
+* ``specialize(func, code, guards)``: add the specialized code ``code``
+  with guards ``guards`` to the function ``func``
+* ``get_specialized(func)``: get the list of specialized codes as a list
+  of ``(code, guards)`` tuples where ``code`` is a callable or code object
+  and ``guards`` is a list of a guards
+* ``GuardBuiltins(name)``: guard watching for
+  ``builtins.__dict__[name]`` and ``globals()[name]``. The guard fails
+  if ``builtins.__dict__[name]`` is replaced, or if ``globals()[name]``
+  is set.
+
+
+Using bytecode
+--------------
+
+Add specialized bytecode where the call to the pure builtin function
+``chr(65)`` is replaced with its result ``"A"``::
+
+    import myoptimizer
+
+    def func():
+        return chr(65)
+
+    def fast_func():
+        return "A"
+
+    myoptimizer.specialize(func, fast_func.__code__,
+                           [myoptimizer.GuardBuiltins("chr")])
+    del fast_func
+
+Example showing the behaviour of the guard::
+
+    print("func(): %s" % func())
+    print("#specialized: %s" % len(myoptimizer.get_specialized(func)))
+    print()
+
+    import builtins
+    builtins.chr = lambda obj: "mock"
+
+    print("func(): %s" % func())
+    print("#specialized: %s" % len(myoptimizer.get_specialized(func)))
+
+Output::
+
+    func(): A
+    #specialized: 1
+
+    func(): mock
+    #specialized: 0
+
+The first call uses the specialized bytecode which returns the string
+``"A"``. The second call removes the specialized code because the
+builtin ``chr()`` function was replaced, and executes the original
+bytecode calling ``chr(65)``.
+
+On a microbenchmark, calling the specialized bytecode takes 88 ns,
+whereas the original function takes 145 ns (+57 ns): 1.6 times as fast.
+
+
+Using builtin function
+----------------------
+
+Add the C builtin ``chr()`` function as the specialized code instead of
+a bytecode calling ``chr(obj)``::
+
+    import myoptimizer
+
+    def func(arg):
+        return chr(arg)
+
+    myoptimizer.specialize(func, chr,
+                           [myoptimizer.GuardBuiltins("chr")])
+
+Example showing the behaviour of the guard::
+
+    print("func(65): %s" % func(65))
+    print("#specialized: %s" % len(myoptimizer.get_specialized(func)))
+    print()
+
+    import builtins
+    builtins.chr = lambda obj: "mock"
+
+    print("func(65): %s" % func(65))
+    print("#specialized: %s" % len(myoptimizer.get_specialized(func)))
+
+Output::
+
+    func(): A
+    #specialized: 1
+
+    func(): mock
+    #specialized: 0
+
+The first call calls the C builtin ``chr()`` function (without creating
+a Python frame). The second call removes the specialized code because
+the builtin ``chr()`` function was replaced, and executes the original
+bytecode.
+
+On a microbenchmark, calling the C builtin takes 95 ns, whereas the
+original bytecode takes 155 ns (+60 ns): 1.6 times as fast. Calling
+directly ``chr(65)`` takes 76 ns.
+
+
+Choose the specialized code
+===========================
+
+Pseudo-code to choose the specialized code to call a pure Python
+function::
+
+    def call_func(func, args, kwargs):
+        specialized = myoptimizer.get_specialized(func)
+        nspecialized = len(specialized)
+        index = 0
+        while index < nspecialized:
+            specialized_code, guards = specialized[index]
+
+            for guard in guards:
+                check = guard(args, kwargs)
+                if check:
+                    break
+
+            if not check:
+                # all guards succeeded:
+                # use the specialized code
+                return specialized_code
+            elif check == 1:
+                # a guard failed temporarily:
+                # try the next specialized code
+                index += 1
+            else:
+                assert check == 2
+                # a guard will always fail:
+                # remove the specialized code
+                del specialized[index]
+
+        # if a guard of each specialized code failed, or if the function
+        # has no specialized code, use original bytecode
+        code = func.__code__
+
+
+
+Changes
+=======
+
+Changes to the Python C API:
+
+* Add a ``PyFuncGuardObject`` object and a ``PyFuncGuard_Type`` type
+* Add a ``PySpecializedCode`` structure
+* Add the following fields to the ``PyFunctionObject`` structure::
+
+    Py_ssize_t nb_specialized;
+    PySpecializedCode *specialized;
+
+* Add function methods:
+
+  * ``PyFunction_Specialize()``
+  * ``PyFunction_GetSpecializedCodes()``
+  * ``PyFunction_GetSpecializedCode()``
+  * ``PyFunction_RemoveSpecialized()``
+  * ``PyFunction_RemoveAllSpecialized()``
+
+None of these function and types are exposed at the Python level.
+
+All these additions are explicitly excluded of the stable ABI.
+
+When a function code is replaced (``func.__code__ = new_code``), all
+specialized codes and guards are removed.
+
+
+Function guard
+--------------
+
+Add a function guard object::
+
+    typedef struct {
+        PyObject ob_base;
+        int (*init) (PyObject *guard, PyObject *func);
+        int (*check) (PyObject *guard, PyObject **stack, int na, int nk);
+    } PyFuncGuardObject;
+
+The ``init()`` function initializes a guard:
+
+* Return ``0`` on success
+* Return ``1`` if the guard will always fail: ``PyFunction_Specialize()``
+  must ignore the specialized code
+* Raise an exception and return ``-1`` on error
+
+
+The ``check()`` function checks a guard:
+
+* Return ``0`` on success
+* Return ``1`` if the guard failed temporarily
+* Return ``2`` if the guard will always fail: the specialized code must
+  be removed
+* Raise an exception and return ``-1`` on error
+
+*stack* is an array of arguments: indexed arguments followed by (*key*,
+*value*) pairs of keyword arguments. *na* is the number of indexed
+arguments. *nk* is the number of keyword arguments: the number of (*key*,
+*value*) pairs. ``stack`` contains ``na + nk * 2`` objects.
+
+
+Specialized code
+----------------
+
+Add a specialized code structure::
+
+    typedef struct {
+        PyObject *code;        /* callable or code object */
+        Py_ssize_t nb_guard;
+        PyObject **guards;     /* PyFuncGuardObject objects */
+    } PySpecializedCode;
+
+
+Function methods
+----------------
+
+PyFunction_Specialize
+^^^^^^^^^^^^^^^^^^^^^
+
+Add a function method to specialize the function, add a specialized code
+with guards::
+
+    int PyFunction_Specialize(PyObject *func,
+                              PyObject *code, PyObject *guards)
+
+If *code* is a Python function, the code object of the *code* function
+is used as the specialized code. The specialized Python function must
+have the same parameter defaults, the same keyword parameter defaults,
+and must not have specialized code.
+
+If *code* is a Python function or a code object, a new code object is
+created and the code name and first line number of the code object of
+*func* are copied. The specialized code must have the same cell
+variables and the same free variables.
+
+Result:
+
+* Return ``0`` on success
+* Return ``1`` if the specialization has been ignored
+* Raise an exception and return ``-1`` on error
+
+
+PyFunction_GetSpecializedCodes
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Add a function method to get the list of specialized codes::
+
+    PyObject* PyFunction_GetSpecializedCodes(PyObject *func)
+
+Return a list of (*code*, *guards*) tuples where *code* is a callable or
+code object and *guards* is a list of ``PyFuncGuard`` objects. Raise an
+exception and return ``NULL`` on error.
+
+
+PyFunction_GetSpecializedCode
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Add a function method checking guards to choose a specialized code::
+
+    PyObject* PyFunction_GetSpecializedCode(PyObject *func,
+                                            PyObject **stack,
+                                            int na, int nk)
+
+See ``check()`` function of guards for *stack*, *na* and *nk* arguments.
+Return a callable or a code object on success. Raise an exception and
+return ``NULL`` on error.
+
+
+PyFunction_RemoveSpecialized
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Add a function method to remove a specialized code with its guards by
+its index::
+
+    int PyFunction_RemoveSpecialized(PyObject *func, Py_ssize_t index)
+
+Return ``0`` on success or if the index does not exist. Raise an exception and
+return ``-1`` on error.
+
+
+PyFunction_RemoveAllSpecialized
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Add a function method to remove all specialized codes and guards of a
+function::
+
+    int PyFunction_RemoveAllSpecialized(PyObject *func)
+
+Return ``0`` on success. Raise an exception and return ``-1`` if *func* is not
+a function.
+
+
+Benchmark
+---------
+
+Microbenchmark on ``python3.6 -m timeit -s 'def f(): pass' 'f()'`` (best
+of 3 runs):
+
+* Original Python: 79 ns
+* Patched Python: 79 ns
+
+According to this microbenchmark, the changes has no overhead on calling
+a Python function without specialization.
+
+
+Implementation
+==============
+
+The `issue #26098: PEP 510: Specialize functions with guards
+<http://bugs.python.org/issue26098>`_ contains a patch which implements
+this PEP.
+
+
+Other implementations of Python
+===============================
+
+This PEP only contains changes to the Python C API, the Python API is
+unchanged. Other implementations of Python are free to not implement new
+additions, or implement added functions as no-op:
+
+* ``PyFunction_Specialize()``: always return ``1`` (the specialization
+  has been ignored)
+* ``PyFunction_GetSpecializedCodes()``: always return an empty list
+* ``PyFunction_GetSpecializedCode()``: return the function code object,
+  as the existing ``PyFunction_GET_CODE()`` macro
+
+
+Discussion
+==========
+
+Thread on the python-ideas mailing list: `RFC: PEP: Specialized
+functions with guards
+<https://mail.python.org/pipermail/python-ideas/2016-January/037703.html>`_.
+
+
+Copyright
+=========
+
+This document has been placed in the public domain.

@@ -1,0 +1,720 @@
+PEP: 447
+Title: Add __getdescriptor__ method to metaclass
+Author: Ronald Oussoren <ronaldoussoren@mac.com>
+Status: Deferred
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 12-Jun-2013
+Post-History: 02-Jul-2013, 15-Jul-2013, 29-Jul-2013, 22-Jul-2015
+
+
+Abstract
+========
+
+Currently ``object.__getattribute__`` and ``super.__getattribute__`` peek
+in the ``__dict__`` of classes on the MRO for a class when looking for
+an attribute. This PEP adds an optional ``__getdescriptor__`` method to
+a metaclass that replaces this behavior and gives more control over attribute
+lookup, especially when using a `super`_ object.
+
+That is, the MRO walking loop in ``_PyType_Lookup`` and
+``super.__getattribute__`` gets changed from::
+
+     def lookup(mro_list, name):
+         for cls in mro_list:
+             if name in cls.__dict__:
+                 return cls.__dict__
+
+         return NotFound
+
+to::
+
+     def lookup(mro_list, name):
+         for cls in mro_list:
+             try:
+                 return cls.__getdescriptor__(name)
+             except AttributeError:
+                 pass
+
+         return NotFound
+
+The default implementation of ``__getdescriptor__`` looks in the class
+dictionary::
+
+   class type:
+      def __getdescriptor__(cls, name):
+          try:
+              return cls.__dict__[name]
+          except KeyError:
+              raise AttributeError(name) from None
+
+
+PEP Status
+==========
+
+This PEP is deferred until someone has time to update this PEP and push it forward.
+
+
+Rationale
+=========
+
+It is currently not possible to influence how the `super class`_ looks
+up attributes (that is, ``super.__getattribute__`` unconditionally
+peeks in the class ``__dict__``), and that can be problematic for
+dynamic classes that can grow new methods on demand, for example dynamic
+proxy classes.
+
+The ``__getdescriptor__`` method makes it possible to dynamically add
+attributes even when looking them up using the `super class`_.
+
+The new method affects ``object.__getattribute__`` (and
+`PyObject_GenericGetAttr`_) as well for consistency and to have a single
+place to implement dynamic attribute resolution for classes.
+
+Background
+----------
+
+The current behavior of ``super.__getattribute__`` causes problems for
+classes that are dynamic proxies for other (non-Python) classes or types,
+an example of which is `PyObjC`_. PyObjC creates a Python class for every
+class in the Objective-C runtime, and looks up methods in the Objective-C
+runtime when they are used. This works fine for normal access, but doesn't
+work for access with `super`_ objects. Because of this PyObjC currently
+includes a custom `super`_ that must be used with its classes, as well as
+completely reimplementing `PyObject_GenericGetAttr`_ for normal attribute
+access.
+
+The API in this PEP makes it possible to remove the custom `super`_ and
+simplifies the implementation because the custom lookup behavior can be
+added in a central location.
+
+.. note::
+
+   `PyObjC`_ cannot precalculate the contents of the class ``__dict__``
+   because Objective-C classes can grow new methods at runtime. Furthermore,
+   Objective-C classes tend to contain a lot of methods while most Python
+   code will only use a small subset of them, this makes precalculating
+   unnecessarily expensive.
+
+
+The superclass attribute lookup hook
+====================================
+
+Both ``super.__getattribute__`` and ``object.__getattribute__`` (or
+`PyObject_GenericGetAttr`_ and in particular ``_PyType_Lookup`` in C code)
+walk an object's MRO and currently peek in the class' ``__dict__`` to look up
+attributes.
+
+With this proposal both lookup methods no longer peek in the class ``__dict__``
+but call the special method ``__getdescriptor__``, which is a slot defined
+on the metaclass. The default implementation of that method looks
+up the name the class ``__dict__``, which means that attribute lookup is
+unchanged unless a metatype actually defines the new special method.
+
+Aside: Attribute resolution algorithm in Python
+-----------------------------------------------
+
+The attribute resolution process as implemented by ``object.__getattribute__``
+(or ``PyObject_GenericGetAttr`` in CPython's implementation) is fairly
+straightforward, but not entirely so without reading C code.
+
+The current CPython implementation of object.__getattribute__ is basically
+equivalent to the following (pseudo-) Python code (excluding some house
+keeping and speed tricks)::
+
+
+    def _PyType_Lookup(tp, name):
+        mro = tp.mro()
+        assert isinstance(mro, tuple)
+
+        for base in mro:
+           assert isinstance(base, type)
+
+           # PEP 447 will change these lines:
+           try:
+               return base.__dict__[name]
+           except KeyError:
+               pass
+
+        return None
+
+
+    class object:
+        def __getattribute__(self, name):
+            assert isinstance(name, str)
+
+            tp = type(self)
+            descr = _PyType_Lookup(tp, name)
+
+            f = None
+            if descr is not None:
+                f = descr.__get__
+                if f is not None and descr.__set__ is not None:
+                    # Data descriptor
+                    return f(descr, self, type(self))
+
+            dict = self.__dict__
+            if dict is not None:
+                try:
+                    return self.__dict__[name]
+                except KeyError:
+                    pass
+
+            if f is not None:
+                # Non-data descriptor
+                return f(descr, self, type(self))
+
+            if descr is not None:
+                # Regular class attribute
+                return descr
+
+            raise AttributeError(name)
+
+
+    class super:
+        def __getattribute__(self, name):
+           assert isinstance(name, unicode)
+
+           if name != '__class__':
+               starttype = self.__self_type__
+               mro = startype.mro()
+
+               try:
+                   idx = mro.index(self.__thisclass__)
+
+               except ValueError:
+                   pass
+
+               else:
+                   for base in mro[idx+1:]:
+                       # PEP 447 will change these lines:
+                       try:
+                           descr = base.__dict__[name]
+                       except KeyError:
+                           continue
+
+                       f = descr.__get__
+                       if f is not None:
+                           return f(descr,
+                               None if (self.__self__ is self.__self_type__) else self.__self__,
+                               starttype)
+
+                       else:
+                           return descr
+
+           return object.__getattribute__(self, name)
+
+
+This PEP should change the dict lookup at the lines starting at "# PEP 447" with
+a method call to perform the actual lookup, making is possible to affect that
+lookup both for normal attribute access and access through the `super proxy`_.
+
+Note that specific classes can already completely override the default
+behaviour by implementing their own ``__getattribute__`` slot (with or without
+calling the super class implementation).
+
+
+In Python code
+--------------
+
+A meta type can define a method ``__getdescriptor__`` that is called during
+attribute resolution by both ``super.__getattribute__``
+and ``object.__getattribute``::
+
+    class MetaType(type):
+        def __getdescriptor__(cls, name):
+            try:
+                return cls.__dict__[name]
+            except KeyError:
+                raise AttributeError(name) from None
+
+The ``__getdescriptor__`` method has as its arguments a class (which is an
+instance of the meta type) and the name of the attribute that is looked up.
+It should return the value of the attribute without invoking descriptors,
+and should raise `AttributeError`_ when the name cannot be found.
+
+The `type`_ class provides a default implementation for ``__getdescriptor__``,
+that looks up the name in the class dictionary.
+
+Example usage
+.............
+
+The code below implements a silly metaclass that redirects attribute lookup to
+uppercase versions of names::
+
+    class UpperCaseAccess (type):
+        def __getdescriptor__(cls, name):
+            try:
+                return cls.__dict__[name.upper()]
+            except KeyError:
+                raise AttributeError(name) from None
+
+    class SillyObject (metaclass=UpperCaseAccess):
+        def m(self):
+            return 42
+
+        def M(self):
+            return "fortytwo"
+
+    obj = SillyObject()
+    assert obj.m() == "fortytwo"
+
+As mentioned earlier in this PEP a more realistic use case of this
+functionality is a ``__getdescriptor__`` method that dynamically populates the
+class ``__dict__`` based on attribute access, primarily when it is not
+possible to reliably keep the class dict in sync with its source, for example
+because the source used to populate ``__dict__`` is dynamic as well and does
+not have triggers that can be used to detect changes to that source.
+
+An example of that are the class bridges in PyObjC: the class bridge is a
+Python object (class) that represents an Objective-C class and conceptually
+has a Python method for every Objective-C method in the Objective-C class.
+As with Python it is possible to add new methods to an Objective-C class, or
+replace existing ones, and there are no callbacks that can be used to detect
+this.
+
+In C code
+---------
+
+A new type flag ``Py_TPFLAGS_GETDESCRIPTOR`` with value ``(1UL << 11)`` that
+indicates that the new slot is present and to be used.
+
+A new slot ``tp_getdescriptor`` is added to the ``PyTypeObject`` struct, this
+slot corresponds to the ``__getdescriptor__`` method on `type`_.
+
+The slot has the following prototype::
+
+    PyObject* (*getdescriptorfunc)(PyTypeObject* cls, PyObject* name);
+
+This method should lookup *name* in the namespace of *cls*, without looking at
+superclasses, and should not invoke descriptors. The method returns ``NULL``
+without setting an exception when the *name* cannot be found, and returns a
+new reference otherwise (not a borrowed reference).
+
+Classes with a ``tp_getdescriptor`` slot must add ``Py_TPFLAGS_GETDESCRIPTOR``
+to ``tp_flags`` to indicate that new slot must be used.
+
+Use of this hook by the interpreter
+-----------------------------------
+
+The new method is required for metatypes and as such is defined on ``type_``.
+Both ``super.__getattribute__`` and
+``object.__getattribute__``/`PyObject_GenericGetAttr`_
+(through ``_PyType_Lookup``) use the this ``__getdescriptor__`` method when
+walking the MRO.
+
+Other changes to the implementation
+-----------------------------------
+
+The change for `PyObject_GenericGetAttr`_ will be done by changing the private
+function ``_PyType_Lookup``. This currently returns a borrowed reference, but
+must return a new reference when the ``__getdescriptor__`` method is present.
+Because of this ``_PyType_Lookup`` will be renamed to ``_PyType_LookupName``,
+this will cause compile-time errors for all out-of-tree users of this
+private API.
+
+For the same reason ``_PyType_LookupId`` is renamed to ``_PyType_LookupId2``.
+A number of other functions in typeobject.c with the same issue do not get
+an updated name because they are private to that file.
+
+The attribute lookup cache in ``Objects/typeobject.c`` is disabled for classes
+that have a metaclass that overrides ``__getdescriptor__``, because using the
+cache might not be valid for such classes.
+
+Impact of this PEP on introspection
+===================================
+
+Use of the method introduced in this PEP can affect introspection of classes
+with a metaclass that uses a custom ``__getdescriptor__`` method. This section
+lists those changes.
+
+The items listed below are only affected by custom ``__getdescriptor__``
+methods, the default implementation for ``object`` won't cause problems
+because that still only uses the class ``__dict__`` and won't cause visible
+changes to the visible behaviour of the ``object.__getattribute__``.
+
+* ``dir`` might not show all attributes
+
+  As with a custom ``__getattribute__`` method `dir()`_ might not see all
+  (instance) attributes when using the ``__getdescriptor__()`` method to
+  dynamically resolve attributes.
+
+  The solution for that is quite simple: classes using ``__getdescriptor__``
+  should also implement `__dir__()`_ if they want full support for the builtin
+  `dir()`_ function.
+
+* ``inspect.getattr_static`` might not show all attributes
+
+  The function ``inspect.getattr_static`` intentionally does not invoke
+  ``__getattribute__`` and descriptors to avoid invoking user code during
+  introspection with this function. The ``__getdescriptor__`` method will also
+  be ignored and is another way in which the result of ``inspect.getattr_static``
+  can be different from that of ``builtin.getattr``.
+
+* ``inspect.getmembers`` and ``inspect.classify_class_attrs``
+
+  Both of these functions directly access the class __dict__ of classes along
+  the MRO, and hence can be affected by a custom ``__getdescriptor__`` method.
+
+  Code with a custom ``__getdescriptor__`` method that want to play nice with
+  these methods also needs to ensure that the ``__dict__`` is set up correctly
+  when that is accessed directly by Python code.
+
+  Note that ``inspect.getmembers`` is used by ``pydoc`` and hence this can
+  affect runtime documentation introspection.
+
+* Direct introspection of the class ``__dict__``
+
+  Any code that directly access the class ``__dict__`` for introspection
+  can be affected by a custom ``__getdescriptor__`` method, see the previous
+  item.
+
+
+Performance impact
+==================
+
+**WARNING**: The benchmark results in this section are old, and will be updated
+when I've ported the patch to the current trunk. I don't expect significant
+changes to the results in this section.
+
+Micro benchmarks
+----------------
+
+`Issue 18181`_ has a micro benchmark as one of its attachments
+(`pep447-micro-bench.py`_) that specifically tests the speed of attribute
+lookup, both directly and through super.
+
+Note that attribute lookup with deep class hierarchies is significantly slower
+when using a custom ``__getdescriptor__`` method. This is because the
+attribute lookup cache for CPython cannot be used when having this method.
+
+Pybench
+-------
+
+The pybench output below compares an implementation of this PEP with the
+regular source tree, both based on changeset a5681f50bae2, run on an idle
+machine and Core i7 processor running Centos 6.4.
+
+Even though the machine was idle there were clear differences between runs,
+I've seen difference in "minimum time" vary from -0.1% to +1.5%, with similar
+(but slightly smaller) differences in the "average time" difference.
+
+::
+
+        -------------------------------------------------------------------------------
+        PYBENCH 2.1
+        -------------------------------------------------------------------------------
+        * using CPython 3.4.0a0 (default, Jul 29 2013, 13:01:34) [GCC 4.4.7 20120313 (Red Hat 4.4.7-3)]
+        * disabled garbage collection
+        * system check interval set to maximum: 2147483647
+        * using timer: time.perf_counter
+        * timer: resolution=1e-09, implementation=clock_gettime(CLOCK_MONOTONIC)
+
+        -------------------------------------------------------------------------------
+        Benchmark: pep447.pybench
+        -------------------------------------------------------------------------------
+
+            Rounds: 10
+            Warp:   10
+            Timer:  time.perf_counter
+
+            Machine Details:
+               Platform ID:    Linux-2.6.32-358.114.1.openstack.el6.x86_64-x86_64-with-centos-6.4-Final
+               Processor:      x86_64
+
+            Python:
+               Implementation: CPython
+               Executable:     /tmp/default-pep447/bin/python3
+               Version:        3.4.0a0
+               Compiler:       GCC 4.4.7 20120313 (Red Hat 4.4.7-3)
+               Bits:           64bit
+               Build:          Jul 29 2013 14:09:12 (#default)
+               Unicode:        UCS4
+
+
+        -------------------------------------------------------------------------------
+        Comparing with: default.pybench
+        -------------------------------------------------------------------------------
+
+            Rounds: 10
+            Warp:   10
+            Timer:  time.perf_counter
+
+            Machine Details:
+               Platform ID:    Linux-2.6.32-358.114.1.openstack.el6.x86_64-x86_64-with-centos-6.4-Final
+               Processor:      x86_64
+
+            Python:
+               Implementation: CPython
+               Executable:     /tmp/default/bin/python3
+               Version:        3.4.0a0
+               Compiler:       GCC 4.4.7 20120313 (Red Hat 4.4.7-3)
+               Bits:           64bit
+               Build:          Jul 29 2013 13:01:34 (#default)
+               Unicode:        UCS4
+
+
+        Test                             minimum run-time        average  run-time
+                                         this    other   diff    this    other   diff
+        -------------------------------------------------------------------------------
+                  BuiltinFunctionCalls:    45ms    44ms   +1.3%    45ms    44ms   +1.3%
+                   BuiltinMethodLookup:    26ms    27ms   -2.4%    27ms    27ms   -2.2%
+                         CompareFloats:    33ms    34ms   -0.7%    33ms    34ms   -1.1%
+                 CompareFloatsIntegers:    66ms    67ms   -0.9%    66ms    67ms   -0.8%
+                       CompareIntegers:    51ms    50ms   +0.9%    51ms    50ms   +0.8%
+                CompareInternedStrings:    34ms    33ms   +0.4%    34ms    34ms   -0.4%
+                          CompareLongs:    29ms    29ms   -0.1%    29ms    29ms   -0.0%
+                        CompareStrings:    43ms    44ms   -1.8%    44ms    44ms   -1.8%
+            ComplexPythonFunctionCalls:    44ms    42ms   +3.9%    44ms    42ms   +4.1%
+                         ConcatStrings:    33ms    33ms   -0.4%    33ms    33ms   -1.0%
+                       CreateInstances:    47ms    48ms   -2.9%    47ms    49ms   -3.4%
+                    CreateNewInstances:    35ms    36ms   -2.5%    36ms    36ms   -2.5%
+               CreateStringsWithConcat:    69ms    70ms   -0.7%    69ms    70ms   -0.9%
+                          DictCreation:    52ms    50ms   +3.1%    52ms    50ms   +3.0%
+                     DictWithFloatKeys:    40ms    44ms  -10.1%    43ms    45ms   -5.8%
+                   DictWithIntegerKeys:    32ms    36ms  -11.2%    35ms    37ms   -4.6%
+                    DictWithStringKeys:    29ms    34ms  -15.7%    35ms    40ms  -11.0%
+                              ForLoops:    30ms    29ms   +2.2%    30ms    29ms   +2.2%
+                            IfThenElse:    38ms    41ms   -6.7%    38ms    41ms   -6.9%
+                           ListSlicing:    36ms    36ms   -0.7%    36ms    37ms   -1.3%
+                        NestedForLoops:    43ms    45ms   -3.1%    43ms    45ms   -3.2%
+              NestedListComprehensions:    39ms    40ms   -1.7%    39ms    40ms   -2.1%
+                  NormalClassAttribute:    86ms    82ms   +5.1%    86ms    82ms   +5.0%
+               NormalInstanceAttribute:    42ms    42ms   +0.3%    42ms    42ms   +0.0%
+                   PythonFunctionCalls:    39ms    38ms   +3.5%    39ms    38ms   +2.8%
+                     PythonMethodCalls:    51ms    49ms   +3.0%    51ms    50ms   +2.8%
+                             Recursion:    67ms    68ms   -1.4%    67ms    68ms   -1.4%
+                          SecondImport:    41ms    36ms  +12.5%    41ms    36ms  +12.6%
+                   SecondPackageImport:    45ms    40ms  +13.1%    45ms    40ms  +13.2%
+                 SecondSubmoduleImport:    92ms    95ms   -2.4%    95ms    98ms   -3.6%
+               SimpleComplexArithmetic:    28ms    28ms   -0.1%    28ms    28ms   -0.2%
+                SimpleDictManipulation:    57ms    57ms   -1.0%    57ms    58ms   -1.0%
+                 SimpleFloatArithmetic:    29ms    28ms   +4.7%    29ms    28ms   +4.9%
+              SimpleIntFloatArithmetic:    37ms    41ms   -8.5%    37ms    41ms   -8.7%
+               SimpleIntegerArithmetic:    37ms    41ms   -9.4%    37ms    42ms  -10.2%
+              SimpleListComprehensions:    33ms    33ms   -1.9%    33ms    34ms   -2.9%
+                SimpleListManipulation:    28ms    30ms   -4.3%    29ms    30ms   -4.1%
+                  SimpleLongArithmetic:    26ms    26ms   +0.5%    26ms    26ms   +0.5%
+                            SmallLists:    40ms    40ms   +0.1%    40ms    40ms   +0.1%
+                           SmallTuples:    46ms    47ms   -2.4%    46ms    48ms   -3.0%
+                 SpecialClassAttribute:   126ms   120ms   +4.7%   126ms   121ms   +4.4%
+              SpecialInstanceAttribute:    42ms    42ms   +0.6%    42ms    42ms   +0.8%
+                        StringMappings:    94ms    91ms   +3.9%    94ms    91ms   +3.8%
+                      StringPredicates:    48ms    49ms   -1.7%    48ms    49ms   -2.1%
+                         StringSlicing:    45ms    45ms   +1.4%    46ms    45ms   +1.5%
+                             TryExcept:    23ms    22ms   +4.9%    23ms    22ms   +4.8%
+                            TryFinally:    32ms    32ms   -0.1%    32ms    32ms   +0.1%
+                        TryRaiseExcept:    17ms    17ms   +0.9%    17ms    17ms   +0.5%
+                          TupleSlicing:    49ms    48ms   +1.1%    49ms    49ms   +1.0%
+                           WithFinally:    48ms    47ms   +2.3%    48ms    47ms   +2.4%
+                       WithRaiseExcept:    45ms    44ms   +0.8%    45ms    45ms   +0.5%
+        -------------------------------------------------------------------------------
+        Totals:                          2284ms  2287ms   -0.1%  2306ms  2308ms   -0.1%
+
+        (this=pep447.pybench, other=default.pybench)
+
+
+A run of the benchmark suite (with option "-b 2n3") also seems to indicate that
+the performance impact is minimal::
+
+        Report on Linux fangorn.local 2.6.32-358.114.1.openstack.el6.x86_64 #1 SMP Wed Jul 3 02:11:25 EDT 2013 x86_64 x86_64
+        Total CPU cores: 8
+
+        ### call_method_slots ###
+        Min: 0.304120 -> 0.282791: 1.08x faster
+        Avg: 0.304394 -> 0.282906: 1.08x faster
+        Significant (t=2329.92)
+        Stddev: 0.00016 -> 0.00004: 4.1814x smaller
+
+        ### call_simple ###
+        Min: 0.249268 -> 0.221175: 1.13x faster
+        Avg: 0.249789 -> 0.221387: 1.13x faster
+        Significant (t=2770.11)
+        Stddev: 0.00012 -> 0.00013: 1.1101x larger
+
+        ### django_v2 ###
+        Min: 0.632590 -> 0.601519: 1.05x faster
+        Avg: 0.635085 -> 0.602653: 1.05x faster
+        Significant (t=321.32)
+        Stddev: 0.00087 -> 0.00051: 1.6933x smaller
+
+        ### fannkuch ###
+        Min: 1.033181 -> 0.999779: 1.03x faster
+        Avg: 1.036457 -> 1.001840: 1.03x faster
+        Significant (t=260.31)
+        Stddev: 0.00113 -> 0.00070: 1.6112x smaller
+
+        ### go ###
+        Min: 0.526714 -> 0.544428: 1.03x slower
+        Avg: 0.529649 -> 0.547626: 1.03x slower
+        Significant (t=-93.32)
+        Stddev: 0.00136 -> 0.00136: 1.0028x smaller
+
+        ### iterative_count ###
+        Min: 0.109748 -> 0.116513: 1.06x slower
+        Avg: 0.109816 -> 0.117202: 1.07x slower
+        Significant (t=-357.08)
+        Stddev: 0.00008 -> 0.00019: 2.3664x larger
+
+        ### json_dump_v2 ###
+        Min: 2.554462 -> 2.609141: 1.02x slower
+        Avg: 2.564472 -> 2.620013: 1.02x slower
+        Significant (t=-76.93)
+        Stddev: 0.00538 -> 0.00481: 1.1194x smaller
+
+        ### meteor_contest ###
+        Min: 0.196336 -> 0.191925: 1.02x faster
+        Avg: 0.196878 -> 0.192698: 1.02x faster
+        Significant (t=61.86)
+        Stddev: 0.00053 -> 0.00041: 1.2925x smaller
+
+        ### nbody ###
+        Min: 0.228039 -> 0.235551: 1.03x slower
+        Avg: 0.228857 -> 0.236052: 1.03x slower
+        Significant (t=-54.15)
+        Stddev: 0.00130 -> 0.00029: 4.4810x smaller
+
+        ### pathlib ###
+        Min: 0.108501 -> 0.105339: 1.03x faster
+        Avg: 0.109084 -> 0.105619: 1.03x faster
+        Significant (t=311.08)
+        Stddev: 0.00022 -> 0.00011: 1.9314x smaller
+
+        ### regex_effbot ###
+        Min: 0.057905 -> 0.056447: 1.03x faster
+        Avg: 0.058055 -> 0.056760: 1.02x faster
+        Significant (t=79.22)
+        Stddev: 0.00006 -> 0.00015: 2.7741x larger
+
+        ### silent_logging ###
+        Min: 0.070810 -> 0.072436: 1.02x slower
+        Avg: 0.070899 -> 0.072609: 1.02x slower
+        Significant (t=-191.59)
+        Stddev: 0.00004 -> 0.00008: 2.2640x larger
+
+        ### spectral_norm ###
+        Min: 0.290255 -> 0.299286: 1.03x slower
+        Avg: 0.290335 -> 0.299541: 1.03x slower
+        Significant (t=-572.10)
+        Stddev: 0.00005 -> 0.00015: 2.8547x larger
+
+        ### threaded_count ###
+        Min: 0.107215 -> 0.115206: 1.07x slower
+        Avg: 0.107488 -> 0.115996: 1.08x slower
+        Significant (t=-109.39)
+        Stddev: 0.00016 -> 0.00076: 4.8665x larger
+
+        The following not significant results are hidden, use -v to show them:
+        call_method, call_method_unknown, chaos, fastpickle, fastunpickle, float, formatted_logging, hexiom2, json_load, normal_startup, nqueens, pidigits, raytrace, regex_compile, regex_v8, richards, simple_logging, startup_nosite, telco, unpack_sequence.
+
+
+Alternative proposals
+=====================
+
+``__getattribute_super__``
+--------------------------
+
+An earlier version of this PEP used the following static method on classes::
+
+    def __getattribute_super__(cls, name, object, owner): pass
+
+This method performed name lookup as well as invoking descriptors and was
+necessarily limited to working only with ``super.__getattribute__``.
+
+
+Reuse ``tp_getattro``
+---------------------
+
+It would be nice to avoid adding a new slot, thus keeping the API simpler and
+easier to understand.  A comment on `Issue 18181`_ asked about reusing the
+``tp_getattro`` slot, that is super could call the ``tp_getattro`` slot of all
+methods along the MRO.
+
+That won't work because ``tp_getattro`` will look in the instance
+``__dict__`` before it tries to resolve attributes using classes in the MRO.
+This would mean that using ``tp_getattro`` instead of peeking the class
+dictionaries changes the semantics of the `super class`_.
+
+Alternative placement of the new method
+---------------------------------------
+
+This PEP proposes to add ``__getdescriptor__`` as a method on the metaclass.
+An alternative would be to add it as a class method on the class itself
+(similar to how ``__new__`` is a `staticmethod`_ of the class and not a method
+of the metaclass).
+
+The advantage of using a method on the metaclass is that will give an error
+when two classes on the MRO have different metaclasses that may have different
+behaviors for ``__getdescriptor__``. With a normal classmethod that problem
+would pass undetected while it might cause subtle errors when running the code.
+
+History
+=======
+
+* 23-Jul-2015: Added type flag ``Py_TPFLAGS_GETDESCRIPTOR`` after talking
+  with Guido.
+
+  The new flag is primarily useful to avoid crashing when loading an extension
+  for an older version of CPython and could have positive speed implications
+  as well.
+
+* Jul-2014: renamed slot to ``__getdescriptor__``, the old name didn't
+  match the naming style of other slots and was less descriptive.
+
+Discussion threads
+==================
+
+* The initial version of the PEP was send with
+  Message-ID `<75030FAC-6918-4E94-95DA-67A88D53E6F5@mac.com>`_
+
+* Further discussion starting at a message with
+  Message-ID `<5BB87CC4-F31B-4213-AAAC-0C0CE738460C@mac.com>`_
+
+* And more discussion starting at message with
+  Message-ID `<00AA7433-C853-4101-9718-060468EBAC54@mac.com>`_
+
+
+
+References
+==========
+
+* `Issue 18181`_ contains an out of date prototype implementation
+
+Copyright
+=========
+
+This document has been placed in the public domain.
+
+..  _`<75030FAC-6918-4E94-95DA-67A88D53E6F5@mac.com>`: http://marc.info/?l=python-dev&m=137510220928964&w=2
+
+.. _`<5BB87CC4-F31B-4213-AAAC-0C0CE738460C@mac.com>`: https://mail.python.org/pipermail/python-ideas/2014-July/028420.html
+
+.. _`<00AA7433-C853-4101-9718-060468EBAC54@mac.com>`: https://mail.python.org/pipermail/python-dev/2013-July/127321.html
+
+.. _`Issue 18181`: http://bugs.python.org/issue18181
+
+.. _`super class`: http://docs.python.org/3/library/functions.html#super
+
+.. _`super proxy`: http://docs.python.org/3/library/functions.html#super
+
+.. _`super`: http://docs.python.org/3/library/functions.html#super
+
+.. _`dir()`: http://docs.python.org/3/library/functions.html#dir
+
+.. _`staticmethod`: http://docs.python.org/3/library/functions.html#staticmethod
+
+.. _`__dir__()`: https://docs.python.org/3/reference/datamodel.html#object.__dir__
+
+.. _`NotImplemented`: http://docs.python.org/3/library/constants.html#NotImplemented
+
+.. _`PyObject_GenericGetAttr`: http://docs.python.org/3/c-api/object.html#PyObject_GenericGetAttr
+
+.. _`type`: http://docs.python.org/3/library/functions.html#type
+
+.. _`AttributeError`: http://docs.python.org/3/library/exceptions.html#AttributeError
+
+.. _`PyObjC`: http://pyobjc.sourceforge.net/
+
+.. _`classmethod`: http://docs.python.org/3/library/functions.html#classmethod
+
+.. _`pep447-micro-bench.py`: http://bugs.python.org/file40013/pep447-micro-bench.py
