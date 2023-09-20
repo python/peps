@@ -1,0 +1,295 @@
+PEP: 705
+Title: TypedMapping: Type Hints for Mappings with a Fixed Set of Keys
+Author: Alice Purcell <alicederyn@gmail.com>
+Sponsor: Pablo Galindo <pablogsal@gmail.com>
+Discussions-To: https://discuss.python.org/t/pep-705-typedmapping/24827
+Status: Draft
+Type: Standards Track
+Topic: Typing
+Content-Type: text/x-rst
+Created: 07-Nov-2022
+Python-Version: 3.12
+Post-History: `30-Sep-2022 <https://mail.python.org/archives/list/typing-sig@python.org/thread/6FR6RKNUZU4UY6B6RXC2H4IAHKBU3UKV/>`__,
+              `02-Nov-2022 <https://mail.python.org/archives/list/python-dev@python.org/thread/2P26R4VH2ZCNNNOQCBZWEM4RNF35OXOW/>`__,
+              `14-Mar-2023 <https://discuss.python.org/t/pep-705-typedmapping/24827>`__,
+
+
+Abstract
+========
+
+:pep:`589` defines the structural type :class:`~typing.TypedDict` for dictionaries with a fixed set of keys.
+As ``TypedDict`` is a mutable type, it is difficult to correctly annotate methods which accept read-only parameters in a way that doesn't prevent valid inputs.
+This PEP proposes a type constructor ``typing.TypedMapping`` to support this use case.
+
+Motivation
+==========
+
+Representing structured data using (potentially nested) dictionaries with string keys is a common pattern in Python programs. :pep:`589` allows these values to be type checked when the exact type is known up-front, but it is hard to write read-only code that accepts more specific variants: for instance, where fields may be subtypes or restrict a union of possible types. This is an especially common issue when writing APIs for services, which may support a wide range of input structures, and typically do not need to modify their input.
+
+For illustration, we will try to add type hints to a function ``movie_string``::
+
+    def movie_string(movie: Movie) -> str:
+        if movie.get("year") is None:
+            return movie["name"]
+        else:
+            return f'{movie["name"]} ({movie["year"]})'
+
+We could define this ``Movie`` type using a ``TypedDict``::
+
+    from typing import NotRequired, TypedDict
+
+    class Movie(TypedDict):
+        name: str
+        year: NotRequired[int | None]
+
+But suppose we have another type where year is required::
+
+    class MovieRecord(TypedDict):
+        name: str
+        year: int
+
+Attempting to pass a ``MovieRecord`` into ``movie_string`` results in the error (using mypy):
+
+.. code-block:: text
+
+    Argument 1 to "movie_string" has incompatible type "MovieRecord"; expected "Movie"
+
+This particular use case should be type-safe, but the type checker correctly stops the
+user from passing a ``MovieRecord`` into a ``Movie`` parameter in the general case, because
+the ``Movie`` class has mutator methods that could potentially allow the function to break
+the type constraints in ``MovieRecord`` (e.g. with ``movie["year"] = None`` or ``del movie["year"]``).
+The problem disappears if we don't have mutator methods in ``Movie``. This could be achieved by defining an immutable interface using a :pep:`544` :class:`~typing.Protocol`::
+
+    from typing import Literal, Protocol, overload
+
+    class Movie(Protocol):
+        @overload
+        def get(self, key: Literal["name"]) -> str: ...
+
+        @overload
+        def get(self, key: Literal["year"]) -> int | None: ...
+
+        @overload
+        def __getitem__(self, key: Literal["name"]) -> str: ...
+
+        @overload
+        def __getitem__(self, key: Literal["year"]) -> int | None: ...
+
+This is very repetitive, easy to get wrong, and is still missing important method definitions like ``__contains__()`` and ``keys()``.
+
+Rationale
+=========
+
+The proposed ``TypedMapping`` type allows a straightforward way of defining these types that should be familiar to existing users of ``TypedDict`` and support the cases exemplified above::
+
+    from typing import NotRequired, TypedMapping
+
+    class Movie(TypedMapping):
+        name: str
+        year: NotRequired[int | None]
+
+In addition to those benefits, by flagging arguments of a function as ``TypedMapping``, it makes explicit not just to typecheckers but also to users that the function is not going to modify its inputs, which is usually a desirable property of a function interface.
+Finally, this allows bringing the benefits of ``TypedDict`` to other mapping types that are unrelated to ``dict``.
+
+Specification
+=============
+
+A ``TypedMapping`` type defines a protocol with the same methods as :class:`~collections.abc.Mapping`, but with value types determined per-key as with ``TypedDict``.
+
+Notable similarities to ``TypedDict``:
+
+* A ``TypedMapping`` protocol can be declared using class-based or alternative syntax.
+* Keys must be strings.
+* By default, all specified keys must be present in a ``TypedMapping`` instance. It is possible to override this by specifying totality, or by using ``NotRequired`` from :pep:`655`.
+* Methods are not allowed in the declaration (though they may be inherited).
+
+Notable differences from ``TypedDict``:
+
+* The runtime type of a ``TypedMapping`` object is not constrained to be a ``dict``.
+* No mutator methods (``__setitem__``, ``__delitem__``, ``update``, etc.) will be generated.
+* The ``|`` operator is not supported.
+* A class definition defines a ``TypedMapping`` protocol if and only if ``TypedMapping`` appears directly in its class bases.
+* Subclasses can narrow value types, in the same manner as other protocols.
+
+As with :pep:`589`, this PEP provides a sketch of how a type checker is expected to support type checking operations involving ``TypedMapping`` and ``TypedDict`` objects, but details are left to implementors. In particular, type compatibility should be based on structural compatibility.
+
+
+Multiple inheritance and TypedDict
+----------------------------------
+
+A type that inherits from a ``TypedMapping`` protocol and from ``TypedDict`` (either directly or indirectly):
+
+* is the structural intersection of its parents, or invalid if no such intersection exists
+* instances must be a dict subclass
+* adds mutator methods only for fields it explicitly (re)declares
+
+For example::
+
+    class Movie(TypedMapping):
+        name: str
+        year: int | None
+
+    class MovieRecord(Movie, TypedDict):
+        year: int
+
+    movie: MovieRecord = { "name": "Blade Runner",
+                           "year": 1982 }
+     
+    movie["year"] = 1985  # Fine; mutator methods added in definition
+    movie["name"] = "Terminator"  # Type check error; "name" mutator not declared
+
+Inheriting, directly or indirectly, from both ``TypedDict`` and ``Protocol`` will continue to fail at runtime, and should continue to be rejected by type checkers.
+
+
+Multiple inheritance and Protocol
+---------------------------------
+
+* A type that inherits from a ``TypedMapping`` protocol and from a ``Protocol`` protocol must satisfy the protocols defined by both, but is not itself a protocol unless it inherits directly from ``TypedMapping`` or ``Protocol``.
+* A type that inherits from a ``TypedMapping`` protocol and from ``Protocol`` itself is configured as a ``Protocol``. Methods and properties may be defined; keys may not::
+
+    class A(Movie, Protocol):
+        # Declare a mutable property called 'year'
+        # This does not affect the dictionary key 'year'
+        year: str
+
+* A type that inherits from a ``Protocol`` protocol and from ``TypedMapping`` itself is configured as a ``TypedMapping``. Keys may be defined; methods and properties may not::
+
+    class B(A, TypedMapping):
+        # Declare a key 'year'
+        # This does not affect the property 'year'
+        year: int
+
+
+Type consistency rules
+----------------------
+
+Informally speaking, *type consistency* is a generalization of the is-subtype-of relation to support the ``Any`` type. It is defined more formally in :pep:`483`. This section introduces the new, non-trivial rules needed to support type consistency for ``TypedMapping`` types.
+
+First, any ``TypedMapping`` type is consistent with ``Mapping[str, object]``.
+Second, a ``TypedMapping`` or ``TypedDict`` type ``A`` is consistent with ``TypedMapping`` ``B`` if ``A`` is structurally compatible with ``B``. This is true if and only if both of these conditions are satisfied:
+
+* For each key in ``A``, ``B`` has the corresponding key and the corresponding value type in ``B`` is consistent with the value type in ``A``.
+
+* For each required key in ``A``, the corresponding key is required in ``B``.
+
+Discussion:
+
+* Value types behave covariantly, since ``TypedMapping`` objects have no mutator methods. This is similar to container types such as ``Mapping``, and different from relationships between two ``TypedDict`` types. Example::
+
+    class A(TypedMapping):
+        x: int | None
+
+    class B(TypedDict):
+        x: int
+
+    def f(a: A) -> None:
+        print(a['x'] or 0)
+
+    b: B = {'x': 0}
+    f(b)  # Accepted by type checker
+
+* A ``TypedDict`` or ``TypedMapping`` type with a required key is consistent with a ``TypedMapping`` type where the same key is a non-required key, again unlike relationships between two ``TypedDict`` types. Example::
+
+    class A(TypedMapping, total=False):
+        x: int
+
+    class B(TypedDict):
+        x: int
+
+    def f(a: A) -> None:
+        print(a.get('x', 0))
+
+    b: B = {'x': 0}
+    f(b)  # Accepted by type checker
+
+* A ``TypedMapping`` type ``A`` with no key ``'x'`` is not consistent with a ``TypedMapping`` type with a non-required key ``'x'``, since at runtime the key ``'x'`` could be present and have an incompatible type (which may not be visible through ``A`` due to structural subtyping). This is the same as for ``TypedDict`` types. Example::
+
+    class A(TypedMapping, total=False):
+        x: int
+        y: int
+
+    class B(TypedMapping, total=False):
+        x: int
+
+    class C(TypedMapping, total=False):
+        x: int
+        y: str
+
+    def f(a: A) -> None:
+        print(a.get('y') + 1)
+
+    def g(b: B) -> None:
+        f(b)  # Type check error: 'B' incompatible with 'A'
+
+    c: C = {'x': 0, 'y': 'foo'}
+    g(c)  # Runtime error: str + int
+
+* A ``TypedMapping`` with all ``int`` values is not consistent with ``Mapping[str, int]``, since there may be additional non-``int`` values not visible through the type, due to structural subtyping. This mirrors ``TypedDict``. Example::
+
+    class A(TypedMapping):
+        x: int
+
+    class B(TypedMapping):
+        x: int
+        y: str
+
+    def sum_values(m: Mapping[str, int]) -> int:
+        return sum(m.values())
+
+    def f(a: A) -> None:
+        sum_values(a)  # Type check error: 'A' incompatible with Mapping[str, int]
+
+    b: B = {'x': 0, 'y': 'foo'}
+    f(b)  # Runtime error: int + str
+
+
+Backwards Compatibility
+=======================
+
+This PEP changes the rules for how ``TypedDict`` behaves (allowing subclasses to
+inherit from ``TypedMapping`` protocols in a way that changes the resulting
+overloads), so code that inspects ``TypedDict`` types will have to change. This
+is expected to mainly affect type-checkers.
+
+The ``TypedMapping`` type will be added to the ``typing_extensions`` module,
+enabling its use in older versions of Python.
+
+
+Security Implications
+=====================
+
+There are no known security consequences arising from this PEP.
+
+
+How to Teach This
+=================
+
+Class documentation should be added to the :mod:`typing` module's documentation, using
+that for :class:`~collections.abc.Mapping`, :class:`~typing.Protocol` and
+:class:`~typing.TypedDict` as examples. Suggested introductory sentence: "Base class
+for read-only mapping protocol classes."
+
+This PEP could be added to the others listed in the :mod:`typing` module's documentation.
+
+
+Reference Implementation
+========================
+
+No reference implementation exists yet.
+
+
+Rejected Alternatives
+=====================
+
+Several variations were considered and discarded:
+
+* A ``readonly`` parameter to ``TypedDict``, behaving much like ``TypedMapping`` but with the additional constraint that instances must be dictionaries at runtime. This was discarded as less flexible due to the extra constraint; additionally, the new type nicely mirrors the existing ``Mapping``/``Dict`` types.
+* Inheriting from a ``TypedMapping`` subclass and ``TypedDict`` resulting in mutator methods being added for all fields, not just those actively (re)declared in the class body. Discarded as less flexible, and not matching how inheritance works in other cases for ``TypedDict`` (e.g. total=False and total=True do not affect fields not specified in the class body).
+* A generic type that removes mutator methods from its parameter, e.g. ``Readonly[MovieRecord]``. This would naturally want to be defined for a wider set of types than just ``TypedDict`` subclasses, and also raises questions about whether and how it applies to nested types. We decided to keep the scope of this PEP narrower.
+* Declaring methods directly on a ``TypedMapping`` class. Methods are a kind of property, but declarations on a ``TypedMapping`` class are defining keys, so mixing the two is potentially confusing. Banning methods also makes it very easy to decide whether a ``TypedDict`` subclass can mix in a protocol or not (yes if it's just ``TypedMapping`` superclasses, no if there's a ``Protocol``).
+
+
+Copyright
+=========
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.

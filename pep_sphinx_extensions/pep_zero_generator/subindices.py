@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -14,8 +15,7 @@ if TYPE_CHECKING:
 
 
 def update_sphinx(filename: str, text: str, docnames: list[str], env: BuildEnvironment) -> Path:
-    file_path = Path(f"{filename}.rst").resolve()
-    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path = Path(env.srcdir, f"{filename}.rst")
     file_path.write_text(text, encoding="utf-8")
 
     # Add to files for builder
@@ -32,6 +32,9 @@ def generate_subindices(
     docnames: list[str],
     env: BuildEnvironment,
 ) -> None:
+    # create topic directory
+    os.makedirs(os.path.join(env.srcdir, "topic"), exist_ok=True)
+
     # Create sub index page
     generate_topic_contents(docnames, env)
 
@@ -57,6 +60,8 @@ the PEP index.
 
 def generate_topic_contents(docnames: list[str], env: BuildEnvironment):
     update_sphinx("topic/index", """\
+.. _topic-index:
+
 Topic Index
 ***********
 

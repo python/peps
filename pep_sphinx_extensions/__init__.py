@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from docutils.writers.html5_polyglot import HTMLTranslator
 from sphinx import environment
 
+from pep_sphinx_extensions.generate_rss import create_rss_feed
 from pep_sphinx_extensions.pep_processor.html import pep_html_builder
 from pep_sphinx_extensions.pep_processor.html import pep_html_translator
 from pep_sphinx_extensions.pep_processor.parsing import pep_banner_directive
@@ -25,12 +26,11 @@ def _depart_maths():
 
 def _update_config_for_builder(app: Sphinx) -> None:
     app.env.document_ids = {}  # For PEPReferenceRoleTitleText
+    app.env.settings["builder"] = app.builder.name
     if app.builder.name == "dirhtml":
-        app.env.settings["pep_url"] = "/pep-{:0>4}"
+        app.env.settings["pep_url"] = "pep-{:0>4}/"
 
-    # internal_builder exists if Sphinx is run by build.py
-    if "internal_builder" not in app.tags:
-        app.connect("build-finished", _post_build)  # Post-build tasks
+    app.connect("build-finished", _post_build)  # Post-build tasks
 
 
 def _post_build(app: Sphinx, exception: Exception | None) -> None:
@@ -40,13 +40,17 @@ def _post_build(app: Sphinx, exception: Exception | None) -> None:
 
     if exception is not None:
         return
-    create_index_file(Path(app.outdir), app.builder.name)
+
+    # internal_builder exists if Sphinx is run by build.py
+    if "internal_builder" not in app.tags:
+        create_index_file(Path(app.outdir), app.builder.name)
+    create_rss_feed(app.doctreedir, app.outdir)
 
 
 def setup(app: Sphinx) -> dict[str, bool]:
     """Initialize Sphinx extension."""
 
-    environment.default_settings["pep_url"] = "/pep-{:0>4}.html"
+    environment.default_settings["pep_url"] = "pep-{:0>4}.html"
     environment.default_settings["halt_level"] = 2  # Fail on Docutils warning
 
     # Register plugin logic
