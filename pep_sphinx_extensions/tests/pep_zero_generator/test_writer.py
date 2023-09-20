@@ -30,18 +30,18 @@ def test_pep_zero_writer_emit_title():
 
 
 @pytest.mark.parametrize(
-    "test_input, expected",
+    ("test_input", "expected"),
     [
         (
             "pep-9000.rst",
             {
-                "Fussyreverend, Francis": "one@example.com",
-                "Soulfulcommodore, Javier": "two@example.com",
+                "Francis Fussyreverend": "one@example.com",
+                "Javier Soulfulcommodore": "two@example.com",
             },
         ),
         (
             "pep-9001.rst",
-            {"Fussyreverend, Francis": "", "Soulfulcommodore, Javier": ""},
+            {"Francis Fussyreverend": "", "Javier Soulfulcommodore": ""},
         ),
     ],
 )

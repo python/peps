@@ -1,0 +1,433 @@
+PEP: 266
+Title: Optimizing Global Variable/Attribute Access
+Author: Skip Montanaro <skip@pobox.com>
+Status: Withdrawn
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 13-Aug-2001
+Python-Version: 2.3
+Post-History:
+
+
+Abstract
+========
+
+The bindings for most global variables and attributes of other modules
+typically never change during the execution of a Python program, but because
+of Python's dynamic nature, code which accesses such global objects must run
+through a full lookup each time the object is needed.  This PEP proposes a
+mechanism that allows code that accesses most global objects to treat them as
+local objects and places the burden of updating references on the code that
+changes the name bindings of such objects.
+
+
+Introduction
+============
+
+Consider the workhorse function ``sre_compile._compile``.  It is the internal
+compilation function for the ``sre`` module.  It consists almost entirely of a
+loop over the elements of the pattern being compiled, comparing opcodes with
+known constant values and appending tokens to an output list.  Most of the
+comparisons are with constants imported from the ``sre_constants`` module.
+This means there are lots of ``LOAD_GLOBAL`` bytecodes in the compiled output
+of this module.  Just by reading the code it's apparent that the author
+intended ``LITERAL``, ``NOT_LITERAL``, ``OPCODES`` and many other symbols to
+be constants.  Still, each time they are involved in an expression, they must
+be looked up anew.
+
+Most global accesses are actually to objects that are "almost constants".
+This includes global variables in the current module as well as the attributes
+of other imported modules.  Since they rarely change, it seems reasonable to
+place the burden of updating references to such objects on the code that
+changes the name bindings.  If ``sre_constants.LITERAL`` is changed to refer
+to another object, perhaps it would be worthwhile for the code that modifies
+the ``sre_constants`` module dict to correct any active references to that
+object.  By doing so, in many cases global variables and the attributes of
+many objects could be cached as local variables.  If the bindings between the
+names given to the objects and the objects themselves changes rarely, the cost
+of keeping track of such objects should be low and the potential payoff fairly
+large.
+
+In an attempt to gauge the effect of this proposal, I modified the Pystone
+benchmark program included in the Python distribution to cache global
+functions.  Its main function, ``Proc0``, makes calls to ten different
+functions inside its ``for`` loop.  In addition, ``Func2`` calls ``Func1``
+repeatedly inside a loop.  If local copies of these 11 global identifiers are
+made before the functions' loops are entered, performance on this particular
+benchmark improves by about two percent (from 5561 pystones to 5685 on my
+laptop).  It gives some indication that performance would be improved by
+caching most global variable access.  Note also that the pystone benchmark
+makes essentially no accesses of global module attributes, an anticipated area
+of improvement for this PEP.
+
+
+Proposed Change
+===============
+
+I propose that the Python virtual machine be modified to include
+``TRACK_OBJECT`` and ``UNTRACK_OBJECT`` opcodes.  ``TRACK_OBJECT`` would
+associate a global name or attribute of a global name with a slot in the local
+variable array and perform an initial lookup of the associated object to fill
+in the slot with a valid value.  The association it creates would be noted by
+the code responsible for changing the name-to-object binding to cause the
+associated local variable to be updated.  The ``UNTRACK_OBJECT`` opcode would
+delete any association between the name and the local variable slot.
+
+
+Threads
+=======
+
+Operation of this code in threaded programs will be no different than in
+unthreaded programs.  If you need to lock an object to access it, you would
+have had to do that before ``TRACK_OBJECT`` would have been executed and
+retain that lock until after you stop using it.
+
+FIXME: I suspect I need more here.
+
+
+Rationale
+=========
+
+Global variables and attributes rarely change.  For example, once a function
+imports the math module, the binding between the name *math* and the
+module it refers to aren't likely to change.  Similarly, if the function that
+uses the ``math`` module refers to its *sin* attribute, it's unlikely to
+change.  Still, every time the module wants to call the ``math.sin`` function,
+it must first execute a pair of instructions::
+
+    LOAD_GLOBAL     math
+    LOAD_ATTR       sin
+
+If the client module always assumed that ``math.sin`` was a local constant and
+it was the responsibility of "external forces" outside the function to keep
+the reference correct, we might have code like this::
+
+    TRACK_OBJECT       math.sin
+    ...
+    LOAD_FAST          math.sin
+    ...
+    UNTRACK_OBJECT     math.sin
+
+If the ``LOAD_FAST`` was in a loop the payoff in reduced global loads and
+attribute lookups could be significant.
+
+This technique could, in theory, be applied to any global variable access or
+attribute lookup.  Consider this code::
+
+    l = []
+    for i in range(10):
+        l.append(math.sin(i))
+    return l
+
+Even though *l* is a local variable, you still pay the cost of loading
+``l.append`` ten times in the loop.  The compiler (or an optimizer) could
+recognize that both ``math.sin`` and ``l.append`` are being called in the loop
+and decide to generate the tracked local code, avoiding it for the builtin
+``range()`` function because it's only called once during loop setup.
+Performance issues related to accessing local variables make tracking
+``l.append`` less attractive than tracking globals such as ``math.sin``.
+
+According to a post to python-dev by Marc-Andre Lemburg [1]_, ``LOAD_GLOBAL``
+opcodes account for over 7% of all instructions executed by the Python virtual
+machine.  This can be a very expensive instruction, at least relative to a
+``LOAD_FAST`` instruction, which is a simple array index and requires no extra
+function calls by the virtual machine.  I believe many ``LOAD_GLOBAL``
+instructions and ``LOAD_GLOBAL/LOAD_ATTR`` pairs could be converted to
+``LOAD_FAST`` instructions.
+
+Code that uses global variables heavily often resorts to various tricks to
+avoid global variable and attribute lookup.  The aforementioned
+``sre_compile._compile`` function caches the ``append`` method of the growing
+output list.  Many people commonly abuse functions' default argument feature
+to cache global variable lookups.  Both of these schemes are hackish and
+rarely address all the available opportunities for optimization.  (For
+example, ``sre_compile._compile`` does not cache the two globals that it uses
+most frequently: the builtin ``len`` function and the global ``OPCODES`` array
+that it imports from ``sre_constants.py``.
+
+
+Questions
+=========
+
+What about threads?  What if ``math.sin`` changes while in cache?
+-----------------------------------------------------------------
+
+I believe the global interpreter lock will protect values from being
+corrupted.  In any case, the situation would be no worse than it is today.
+If one thread modified ``math.sin`` after another thread had already executed
+``LOAD_GLOBAL math``, but before it executed ``LOAD_ATTR sin``, the client
+thread would see the old value of ``math.sin``.
+
+The idea is this.  I use a multi-attribute load below as an example, not
+because it would happen very often, but because by demonstrating the recursive
+nature with an extra call hopefully it will become clearer what I have in
+mind.  Suppose a function defined in module ``foo`` wants to access
+``spam.eggs.ham`` and that ``spam`` is a module imported at the module level
+in ``foo``::
+
+    import spam
+    ...
+    def somefunc():
+    ...
+    x = spam.eggs.ham
+
+Upon entry to ``somefunc``, a ``TRACK_GLOBAL`` instruction will be executed::
+
+    TRACK_GLOBAL spam.eggs.ham n
+
+*spam.eggs.ham* is a string literal stored in the function's constants
+array.  *n* is a fastlocals index.  ``&fastlocals[n]`` is a reference to
+slot *n* in the executing frame's ``fastlocals`` array, the location in
+which the *spam.eggs.ham* reference will be stored.  Here's what I envision
+happening:
+
+1. The ``TRACK_GLOBAL`` instruction locates the object referred to by the name
+   *spam* and finds it in its module scope.  It then executes a C function
+   like::
+
+       _PyObject_TrackName(m, "spam.eggs.ham", &fastlocals[n])
+
+   where ``m`` is the module object with an attribute ``spam``.
+
+2. The module object strips the leading *spam.* and  stores the necessary
+   information (*eggs.ham* and ``&fastlocals[n]``) in case its binding for the
+   name *eggs* changes.  It then locates the object referred to by the key
+   *eggs* in its dict and recursively calls::
+
+       _PyObject_TrackName(eggs, "eggs.ham", &fastlocals[n])
+
+3. The ``eggs`` object strips the leading *eggs.*, stores the
+   (*ham*, &fastlocals[n]) info, locates the object in its namespace called
+   ``ham`` and calls ``_PyObject_TrackName`` once again::
+
+       _PyObject_TrackName(ham, "ham", &fastlocals[n])
+
+4. The ``ham`` object strips the leading string (no "." this time, but that's
+   a minor point), sees that the result is empty, then uses its own value
+   (``self``, probably) to update the location it was handed::
+
+       Py_XDECREF(&fastlocals[n]);
+       &fastlocals[n] = self;
+       Py_INCREF(&fastlocals[n]);
+
+   At this point, each object involved in resolving ``spam.eggs.ham``
+   knows which entry in its namespace needs to be tracked and what location
+   to update if that name changes.  Furthermore, if the one name it is
+   tracking in its local storage changes, it can call ``_PyObject_TrackName``
+   using the new object once the change has been made.  At the bottom end of
+   the food chain, the last object will always strip a name, see the empty
+   string and know that its value should be stuffed into the location it's
+   been passed.
+
+   When the object referred to by the dotted expression ``spam.eggs.ham``
+   is going to go out of scope, an ``UNTRACK_GLOBAL spam.eggs.ham n``
+   instruction is executed.  It has the effect of deleting all the tracking
+   information that ``TRACK_GLOBAL`` established.
+
+   The tracking operation may seem expensive, but recall that the objects
+   being tracked are assumed to be "almost constant", so the setup cost will
+   be traded off against hopefully multiple local instead of global loads.
+   For globals with attributes the tracking setup cost grows but is offset by
+   avoiding the extra ``LOAD_ATTR`` cost.  The ``TRACK_GLOBAL`` instruction
+   needs to perform a ``PyDict_GetItemString`` for the first name in the chain
+   to determine where the top-level object resides.  Each object in the chain
+   has to store a string and an address somewhere, probably in a dict that
+   uses storage locations as keys (e.g. the ``&fastlocals[n]``) and strings as
+   values.  (This dict could possibly be a central dict of dicts whose keys
+   are object addresses instead of a per-object dict.)  It shouldn't be the
+   other way around because multiple active frames may want to track
+   ``spam.eggs.ham``, but only one frame will want to associate that name with
+   one of its fast locals slots.
+
+
+Unresolved Issues
+=================
+
+Threading
+---------
+
+What about this (dumb) code?::
+
+    l = []
+    lock = threading.Lock()
+    ...
+    def fill_l()::
+       for i in range(1000)::
+          lock.acquire()
+          l.append(math.sin(i))
+          lock.release()
+    ...
+    def consume_l()::
+       while 1::
+          lock.acquire()
+          if l::
+             elt = l.pop()
+          lock.release()
+          fiddle(elt)
+
+It's not clear from a static analysis of the code what the lock is protecting.
+(You can't tell at compile-time that threads are even involved can you?)
+Would or should it affect attempts to track ``l.append`` or ``math.sin`` in
+the ``fill_l`` function?
+
+If we annotate the code with mythical ``track_object`` and ``untrack_object``
+builtins (I'm not proposing this, just illustrating where stuff would go!), we
+get::
+
+    l = []
+    lock = threading.Lock()
+    ...
+    def fill_l()::
+       track_object("l.append", append)
+       track_object("math.sin", sin)
+       for i in range(1000)::
+          lock.acquire()
+          append(sin(i))
+          lock.release()
+       untrack_object("math.sin", sin)
+       untrack_object("l.append", append)
+    ...
+    def consume_l()::
+       while 1::
+          lock.acquire()
+          if l::
+             elt = l.pop()
+          lock.release()
+          fiddle(elt)
+
+Is that correct both with and without threads (or at least equally incorrect
+with and without threads)?
+
+Nested Scopes
+-------------
+
+The presence of nested scopes will affect where ``TRACK_GLOBAL`` finds a
+global variable, but shouldn't affect anything after that.  (I think.)
+
+Missing Attributes
+------------------
+
+Suppose I am tracking the object referred to by ``spam.eggs.ham`` and
+``spam.eggs`` is rebound to an object that does not have a ``ham`` attribute.
+It's clear this will be an ``AttributeError`` if the programmer attempts to
+resolve ``spam.eggs.ham`` in the current Python virtual machine, but suppose
+the programmer has anticipated this case::
+
+    if hasattr(spam.eggs, "ham"):
+        print spam.eggs.ham
+    elif hasattr(spam.eggs, "bacon"):
+        print spam.eggs.bacon
+    else:
+        print "what? no meat?"
+
+You can't raise an ``AttributeError`` when the tracking information is
+recalculated.  If it does not raise ``AttributeError`` and instead lets the
+tracking stand, it may be setting the programmer up for a very subtle error.
+
+One solution to this problem would be to track the shortest possible root of
+each dotted expression the function refers to directly.  In the above example,
+``spam.eggs`` would be tracked, but ``spam.eggs.ham`` and ``spam.eggs.bacon``
+would not.
+
+Who does the dirty work?
+------------------------
+
+In the Questions section I postulated the existence of a
+``_PyObject_TrackName`` function.  While the API is fairly easy to specify,
+the implementation behind-the-scenes is not so obvious.  A central dictionary
+could be used to track the name/location mappings, but it appears that all
+``setattr`` functions might need to be modified to accommodate this new
+functionality.
+
+If all types used the ``PyObject_GenericSetAttr`` function to set attributes
+that would localize the update code somewhat.  They don't however (which is
+not too surprising), so it seems that all ``getattrfunc`` and ``getattrofunc``
+functions will have to be updated.  In addition, this would place an absolute
+requirement on C extension module authors to call some function when an
+attribute changes value (``PyObject_TrackUpdate``?).
+
+Finally, it's quite possible that some attributes will be set by side effect
+and not by any direct call to a ``setattr`` method of some sort.  Consider a
+device interface module that has an interrupt routine that copies the contents
+of a device register into a slot in the object's ``struct`` whenever it
+changes.  In these situations, more extensive modifications would have to be
+made by the module author.  To identify such situations at compile time would
+be impossible.  I think an extra slot could be added to ``PyTypeObjects`` to
+indicate if an object's code is safe for global tracking.  It would have a
+default value of 0 (``Py_TRACKING_NOT_SAFE``).  If an extension module author
+has implemented the necessary tracking support, that field could be
+initialized to 1 (``Py_TRACKING_SAFE``).  ``_PyObject_TrackName`` could check
+that field and issue a warning if it is asked to track an object that the
+author has not explicitly said was safe for tracking.
+
+
+Discussion
+==========
+
+Jeremy Hylton has an alternate proposal on the table [2]_.  His proposal seeks
+to create a hybrid dictionary/list object for use in global name lookups that
+would make global variable access look more like local variable access.  While
+there is no C code available to examine, the Python implementation given in
+his proposal still appears to require dictionary key lookup.  It doesn't
+appear that his proposal could speed local variable attribute lookup, which
+might be worthwhile in some situations if potential performance burdens could
+be addressed.
+
+
+Backwards Compatibility
+=======================
+
+I don't believe there will be any serious issues of backward compatibility.
+Obviously, Python bytecode that contains ``TRACK_OBJECT`` opcodes could not be
+executed by earlier versions of the interpreter, but breakage at the bytecode
+level is often assumed between versions.
+
+
+Implementation
+==============
+
+TBD.  This is where I need help.  I believe there should be either a central
+name/location registry or the code that modifies object attributes should be
+modified, but I'm not sure the best way to go about this.  If you look at the
+code that implements the ``STORE_GLOBAL`` and ``STORE_ATTR`` opcodes, it seems
+likely that some changes will be required to ``PyDict_SetItem`` and
+``PyObject_SetAttr`` or their String variants.  Ideally, there'd be a fairly
+central place to localize these changes.  If you begin considering tracking
+attributes of local variables you get into issues of modifying ``STORE_FAST``
+as well, which could be a problem, since the name bindings for local variables
+are changed much more frequently.  (I think an optimizer could avoid inserting
+the tracking code for the attributes for any local variables where the
+variable's name binding changes.)
+
+
+Performance
+===========
+
+I believe (though I have no code to prove it at this point), that implementing
+``TRACK_OBJECT`` will generally not be much more expensive than a single
+``LOAD_GLOBAL`` instruction or a ``LOAD_GLOBAL``/``LOAD_ATTR`` pair.  An
+optimizer should be able to avoid converting ``LOAD_GLOBAL`` and
+``LOAD_GLOBAL``/``LOAD_ATTR`` to the new scheme unless the object access
+occurred within a loop.  Further down the line, a register-oriented
+replacement for the current Python virtual machine [3]_ could conceivably
+eliminate most of the ``LOAD_FAST`` instructions as well.
+
+The number of tracked objects should be relatively small.  All active frames
+of all active threads could conceivably be tracking objects, but this seems
+small compared to the number of functions defined in a given application.
+
+
+References
+==========
+
+.. [1] https://mail.python.org/pipermail/python-dev/2000-July/007609.html
+
+.. [2] http://www.zope.org/Members/jeremy/CurrentAndFutureProjects/FastGlobalsPEP
+
+.. [3] http://www.musi-cal.com/~skip/python/rattlesnake20010813.tar.gz
+
+
+Copyright
+=========
+
+This document has been placed in the public domain.

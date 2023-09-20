@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING
 
 from docutils.writers.html5_polyglot import HTMLTranslator
 from sphinx import environment
-from sphinx import project
 
+from pep_sphinx_extensions.generate_rss import create_rss_feed
 from pep_sphinx_extensions.pep_processor.html import pep_html_builder
 from pep_sphinx_extensions.pep_processor.html import pep_html_translator
 from pep_sphinx_extensions.pep_processor.parsing import pep_banner_directive
@@ -18,37 +18,6 @@ from pep_sphinx_extensions.pep_zero_generator.pep_index_generator import create_
 
 if TYPE_CHECKING:
     from sphinx.application import Sphinx
-    from sphinx.config import Config
-
-
-def find_files(self: environment.BuildEnvironment, config: Config, _b) -> None:
-    """Find all pep source files."""
-    import fnmatch
-    from pathlib import Path
-
-    root = Path(self.project.srcdir).absolute()
-    self.project.docnames = set()
-    for pattern in config.include_patterns:
-        for path in root.glob(pattern):
-            filename = str(path.relative_to(root))
-            if any(fnmatch.fnmatch(filename, pattern) for pattern in config.exclude_patterns):
-                continue
-
-            doc_name = self.project.path2doc(filename)
-            if not doc_name:
-                continue
-
-            if doc_name not in self.project.docnames:
-                self.project.docnames.add(doc_name)
-                continue
-
-            other_files = [str(f.relative_to(root)) for f in root.glob(f"{doc_name}.*")]
-            project.logger.warning(
-                f'multiple files found for the document "{doc_name}": {other_files!r}\n'
-                f'Use {self.doc2path(doc_name)!r} for the build.', once=True)
-
-
-environment.BuildEnvironment.find_files = find_files
 
 
 def _depart_maths():
@@ -57,12 +26,11 @@ def _depart_maths():
 
 def _update_config_for_builder(app: Sphinx) -> None:
     app.env.document_ids = {}  # For PEPReferenceRoleTitleText
+    app.env.settings["builder"] = app.builder.name
     if app.builder.name == "dirhtml":
-        app.env.settings["pep_url"] = "/pep-{:0>4}"
+        app.env.settings["pep_url"] = "pep-{:0>4}/"
 
-    # internal_builder exists if Sphinx is run by build.py
-    if "internal_builder" not in app.tags:
-        app.connect("build-finished", _post_build)  # Post-build tasks
+    app.connect("build-finished", _post_build)  # Post-build tasks
 
 
 def _post_build(app: Sphinx, exception: Exception | None) -> None:
@@ -72,13 +40,17 @@ def _post_build(app: Sphinx, exception: Exception | None) -> None:
 
     if exception is not None:
         return
-    create_index_file(Path(app.outdir), app.builder.name)
+
+    # internal_builder exists if Sphinx is run by build.py
+    if "internal_builder" not in app.tags:
+        create_index_file(Path(app.outdir), app.builder.name)
+    create_rss_feed(app.doctreedir, app.outdir)
 
 
 def setup(app: Sphinx) -> dict[str, bool]:
     """Initialize Sphinx extension."""
 
-    environment.default_settings["pep_url"] = "/pep-{:0>4}.html"
+    environment.default_settings["pep_url"] = "pep-{:0>4}.html"
     environment.default_settings["halt_level"] = 2  # Fail on Docutils warning
 
     # Register plugin logic
