@@ -1,6 +1,11 @@
+#!/usr/bin/env python3
+# This file is placed in the public domain or under the
+# CC0-1.0-Universal license, whichever is more permissive.
+
 """Build script for Sphinx documentation"""
 
 import argparse
+import os
 from pathlib import Path
 
 from sphinx.application import Sphinx
@@ -9,17 +14,26 @@ from sphinx.application import Sphinx
 def create_parser():
     parser = argparse.ArgumentParser(description="Build PEP documents")
     # alternative builders:
-    parser.add_argument("-l", "--check-links", action="store_true")
-    parser.add_argument("-f", "--build-files", action="store_true")
-    parser.add_argument("-d", "--build-dirs", action="store_true")
+    builders = parser.add_mutually_exclusive_group()
+    builders.add_argument("-l", "--check-links", action="store_const",
+                          dest="builder", const="linkcheck",
+                          help='Check validity of links within PEP sources. '
+                               'Cannot be used with "-f" or "-d".')
+    builders.add_argument("-f", "--build-files", action="store_const",
+                          dest="builder", const="html",
+                          help='Render PEPs to "pep-NNNN.html" files (default). '
+                               'Cannot be used with "-d" or "-l".')
+    builders.add_argument("-d", "--build-dirs", action="store_const",
+                          dest="builder", const="dirhtml",
+                          help='Render PEPs to "index.html" files within "pep-NNNN" directories. '
+                               'Cannot be used with "-f" or "-l".')
 
-    # flags / options
-    parser.add_argument("-w", "--fail-on-warning", action="store_true")
-    parser.add_argument("-n", "--nitpicky", action="store_true")
-    parser.add_argument("-j", "--jobs", type=int, default=1)
-
-    # extra build steps
-    parser.add_argument("-i", "--index-file", action="store_true")  # for PEP 0
+    parser.add_argument(
+        "-o",
+        "--output-dir",
+        default="build",
+        help="Output directory, relative to root. Default 'build'.",
+    )
 
     return parser.parse_args()
 
@@ -39,40 +53,24 @@ def create_index_file(html_root: Path, builder: str) -> None:
 if __name__ == "__main__":
     args = create_parser()
 
-    root_directory = Path(".").absolute()
-    source_directory = root_directory
-    build_directory = root_directory / "build"  # synchronise with deploy-gh-pages.yaml -> deploy step
-    doctree_directory = build_directory / ".doctrees"
+    root_directory = Path(__file__).resolve().parent
+    source_directory = root_directory / "peps"
+    build_directory = root_directory / args.output_dir
 
     # builder configuration
-    if args.build_files:
-        sphinx_builder = "html"
-    elif args.build_dirs:
-        sphinx_builder = "dirhtml"
-    elif args.check_links:
-        sphinx_builder = "linkcheck"
-    else:
-        # default builder
-        sphinx_builder = "dirhtml"
-
-    # other configuration
-    config_overrides = {}
-    if args.nitpicky:
-        config_overrides["nitpicky"] = True
+    sphinx_builder = args.builder or "html"
 
     app = Sphinx(
         source_directory,
         confdir=source_directory,
-        outdir=build_directory,
-        doctreedir=doctree_directory,
+        outdir=build_directory / sphinx_builder,
+        doctreedir=build_directory / "doctrees",
         buildername=sphinx_builder,
-        confoverrides=config_overrides,
-        warningiserror=args.fail_on_warning,
-        parallel=args.jobs,
+        warningiserror=True,
+        parallel=os.cpu_count() or 1,
+        tags=["internal_builder"],
+        keep_going=True,
     )
-    app.builder.copysource = False  # Prevent unneeded source copying - we link direct to GitHub
-    app.builder.search = False  # Disable search
     app.build()
-    
-    if args.index_file:
-        create_index_file(build_directory, sphinx_builder)
+
+    create_index_file(build_directory, sphinx_builder)

@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
+import dataclasses
 from email.parser import HeaderParser
 from pathlib import Path
-import re
-import textwrap
-from typing import TYPE_CHECKING
 
-from pep_sphinx_extensions.pep_zero_generator.author import parse_author_email
 from pep_sphinx_extensions.pep_zero_generator.constants import ACTIVE_ALLOWED
 from pep_sphinx_extensions.pep_zero_generator.constants import HIDE_STATUS
 from pep_sphinx_extensions.pep_zero_generator.constants import SPECIAL_STATUSES
@@ -19,8 +16,12 @@ from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_STANDARDS
 from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_VALUES
 from pep_sphinx_extensions.pep_zero_generator.errors import PEPError
 
-if TYPE_CHECKING:
-    from pep_sphinx_extensions.pep_zero_generator.author import Author
+
+@dataclasses.dataclass(order=True, frozen=True)
+class _Author:
+    """Represent PEP authors."""
+    full_name: str  # The author's name.
+    email: str  # The author's email address.
 
 
 class PEP:
@@ -38,7 +39,7 @@ class PEP:
     # The required RFC 822 headers for all PEPs.
     required_headers = {"PEP", "Title", "Author", "Status", "Type", "Created"}
 
-    def __init__(self, filename: Path, authors_overrides: dict):
+    def __init__(self, filename: Path):
         """Init object from an open PEP file object.
 
         pep_file is full text of the PEP file, filename is path of the PEP file, author_lookup is author exceptions file
@@ -89,7 +90,27 @@ class PEP:
         self.status: str = status
 
         # Parse PEP authors
-        self.authors: list[Author] = _parse_authors(self, metadata["Author"], authors_overrides)
+        self.authors: list[_Author] = _parse_author(metadata["Author"])
+        if not self.authors:
+            raise _raise_pep_error(self, "no authors found", pep_num=True)
+
+        # Topic (for sub-indices)
+        _topic = metadata.get("Topic", "").lower().split(",")
+        self.topic: set[str] = {topic for topic_raw in _topic if (topic := topic_raw.strip())}
+
+        # Other headers
+        self.created = metadata["Created"]
+        self.discussions_to = metadata["Discussions-To"]
+        self.python_version = metadata["Python-Version"]
+        self.replaces = metadata["Replaces"]
+        self.requires = metadata["Requires"]
+        self.resolution = metadata["Resolution"]
+        self.superseded_by = metadata["Superseded-By"]
+        if metadata["Post-History"]:
+            # Squash duplicate whitespace
+            self.post_history = " ".join(metadata["Post-History"].split())
+        else:
+            self.post_history = None
 
     def __repr__(self) -> str:
         return f"<PEP {self.number:0>4} - {self.title}>"
@@ -100,17 +121,46 @@ class PEP:
     def __eq__(self, other):
         return self.number == other.number
 
-    def details(self, *, title_length) -> dict[str, str | int]:
+    @property
+    def shorthand(self) -> str:
+        """Return reStructuredText tooltip for the PEP type and status."""
+        type_code = self.pep_type[0].upper()
+        if self.status in HIDE_STATUS:
+            return f":abbr:`{type_code} ({self.pep_type}, {self.status})`"
+        status_code = self.status[0].upper()
+        return f":abbr:`{type_code}{status_code} ({self.pep_type}, {self.status})`"
+
+    @property
+    def details(self) -> dict[str, str | int]:
         """Return the line entry for the PEP."""
         return {
-            # how the type is to be represented in the index
-            "type": self.pep_type[0].upper(),
             "number": self.number,
-            "title": _title_abbr(self.title, title_length),
-            # how the status should be represented in the index
-            "status": " " if self.status in HIDE_STATUS else self.status[0].upper(),
+            "title": self.title,
+            # a tooltip representing the type and status
+            "shorthand": self.shorthand,
             # the author list as a comma-separated with only last names
-            "authors": ", ".join(author.nick for author in self.authors),
+            "authors": ", ".join(author.full_name for author in self.authors),
+        }
+
+    @property
+    def full_details(self) -> dict[str, str | int]:
+        """Returns all headers of the PEP as a dict."""
+        return {
+            "number": self.number,
+            "title": self.title,
+            "authors": ", ".join(author.full_name for author in self.authors),
+            "discussions_to": self.discussions_to,
+            "status": self.status,
+            "type": self.pep_type,
+            "topic": ", ".join(sorted(self.topic)),
+            "created": self.created,
+            "python_version": self.python_version,
+            "post_history": self.post_history,
+            "resolution": self.resolution,
+            "requires": self.requires,
+            "replaces": self.replaces,
+            "superseded_by": self.superseded_by,
+            "url": f"https://peps.python.org/pep-{self.number:0>4}/",
         }
 
 
@@ -120,49 +170,27 @@ def _raise_pep_error(pep: PEP, msg: str, pep_num: bool = False) -> None:
     raise PEPError(msg, pep.filename)
 
 
-def _parse_authors(pep: PEP, author_header: str, authors_overrides: dict) -> list[Author]:
-    """Parse Author header line"""
-    authors_and_emails = _parse_author(author_header)
-    if not authors_and_emails:
-        raise _raise_pep_error(pep, "no authors found", pep_num=True)
-    return [parse_author_email(author_tuple, authors_overrides) for author_tuple in authors_and_emails]
+jr_placeholder = ",Jr"
 
 
-author_angled = re.compile(r"(?P<author>.+?) <(?P<email>.+?)>(,\s*)?")
-author_paren = re.compile(r"(?P<email>.+?) \((?P<author>.+?)\)(,\s*)?")
-author_simple = re.compile(r"(?P<author>[^,]+)(,\s*)?")
-
-
-def _parse_author(data: str) -> list[tuple[str, str]]:
+def _parse_author(data: str) -> list[_Author]:
     """Return a list of author names and emails."""
 
     author_list = []
-    for regex in (author_angled, author_paren, author_simple):
-        for match in regex.finditer(data):
-            # Watch out for suffixes like 'Jr.' when they are comma-separated
-            # from the name and thus cause issues when *all* names are only
-            # separated by commas.
-            match_dict = match.groupdict()
-            author = match_dict["author"]
-            if not author.partition(" ")[1] and author.endswith("."):
-                prev_author = author_list.pop()
-                author = ", ".join([prev_author, author])
-            if "email" not in match_dict:
-                email = ""
-            else:
-                email = match_dict["email"]
-            author_list.append((author, email))
+    data = (data.replace("\n", " ")
+                .replace(", Jr", jr_placeholder)
+                .rstrip().removesuffix(","))
+    for author_email in data.split(", "):
+        if ' <' in author_email:
+            author, email = author_email.removesuffix(">").split(" <")
+        else:
+            author, email = author_email, ""
 
-        # If authors were found then stop searching as only expect one
-        # style of author citation.
-        if author_list:
-            break
+        author = author.strip()
+        if author == "":
+            raise ValueError("Name is empty!")
+
+        author = author.replace(jr_placeholder, ", Jr")
+        email = email.lower()
+        author_list.append(_Author(author, email))
     return author_list
-
-
-def _title_abbr(title, title_length) -> str:
-    """Shorten the title to be no longer than the max title length."""
-    if len(title) <= title_length:
-        return title
-    wrapped_title, *_excess = textwrap.wrap(title, title_length - 4)
-    return f"{wrapped_title} ..."

@@ -1,0 +1,386 @@
+PEP: 521
+Title: Managing global context via 'with' blocks in generators and coroutines
+Version: $Revision$
+Last-Modified: $Date$
+Author: Nathaniel J. Smith <njs@pobox.com>
+Status: Withdrawn
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 27-Apr-2015
+Python-Version: 3.6
+Post-History: 29-Apr-2015
+
+PEP Withdrawal
+==============
+
+Withdrawn in favor of :pep:`567`.
+
+
+Abstract
+========
+
+While we generally try to avoid global state when possible, there
+nonetheless exist a number of situations where it is agreed to be the
+best approach.  In Python, a standard pattern for handling such cases
+is to store the global state in global or thread-local storage, and
+then use ``with`` blocks to limit modifications of this global state
+to a single dynamic scope. Examples where this pattern is used include
+the standard library's ``warnings.catch_warnings`` and
+``decimal.localcontext``, NumPy's ``numpy.errstate`` (which exposes
+the error-handling settings provided by the IEEE 754 floating point
+standard), and the handling of logging context or HTTP request context
+in many server application frameworks.
+
+However, there is currently no ergonomic way to manage such local
+changes to global state when writing a generator or coroutine. For
+example, this code::
+
+  def f():
+      with warnings.catch_warnings():
+          for x in g():
+              yield x
+
+may or may not successfully catch warnings raised by ``g()``, and may
+or may not inadvertently swallow warnings triggered elsewhere in the
+code.  The context manager, which was intended to apply only to ``f``
+and its callees, ends up having a dynamic scope that encompasses
+arbitrary and unpredictable parts of its call\ **ers**. This problem
+becomes particularly acute when writing asynchronous code, where
+essentially all functions become coroutines.
+
+Here, we propose to solve this problem by notifying context managers
+whenever execution is suspended or resumed within their scope,
+allowing them to restrict their effects appropriately.
+
+
+Specification
+=============
+
+Two new, optional, methods are added to the context manager protocol:
+``__suspend__`` and ``__resume__``.  If present, these methods will be
+called whenever a frame's execution is suspended or resumed from
+within the context of the ``with`` block.
+
+More formally, consider the following code::
+
+  with EXPR as VAR:
+      PARTIAL-BLOCK-1
+      f((yield foo))
+      PARTIAL-BLOCK-2
+
+Currently this is equivalent to the following code (copied from :pep:`343`)::
+
+  mgr = (EXPR)
+  exit = type(mgr).__exit__  # Not calling it yet
+  value = type(mgr).__enter__(mgr)
+  exc = True
+  try:
+      try:
+          VAR = value  # Only if "as VAR" is present
+          PARTIAL-BLOCK-1
+          f((yield foo))
+          PARTIAL-BLOCK-2
+      except:
+          exc = False
+          if not exit(mgr, *sys.exc_info()):
+              raise
+  finally:
+      if exc:
+          exit(mgr, None, None, None)
+
+This PEP proposes to modify ``with`` block handling to instead become::
+
+  mgr = (EXPR)
+  exit = type(mgr).__exit__  # Not calling it yet
+  ### --- NEW STUFF ---
+  if the_block_contains_yield_points:  # known statically at compile time
+      suspend = getattr(type(mgr), "__suspend__", lambda: None)
+      resume = getattr(type(mgr), "__resume__", lambda: None)
+  ### --- END OF NEW STUFF ---
+  value = type(mgr).__enter__(mgr)
+  exc = True
+  try:
+      try:
+          VAR = value  # Only if "as VAR" is present
+          PARTIAL-BLOCK-1
+          ### --- NEW STUFF ---
+          suspend(mgr)
+          tmp = yield foo
+          resume(mgr)
+          f(tmp)
+          ### --- END OF NEW STUFF ---
+          PARTIAL-BLOCK-2
+      except:
+          exc = False
+          if not exit(mgr, *sys.exc_info()):
+              raise
+  finally:
+      if exc:
+          exit(mgr, None, None, None)
+
+Analogous suspend/resume calls are also wrapped around the ``yield``
+points embedded inside the ``yield from``, ``await``, ``async with``,
+and ``async for`` constructs.
+
+
+Nested blocks
+-------------
+
+Given this code::
+
+  def f():
+      with OUTER:
+          with INNER:
+              yield VALUE
+
+then we perform the following operations in the following sequence::
+
+  INNER.__suspend__()
+  OUTER.__suspend__()
+  yield VALUE
+  OUTER.__resume__()
+  INNER.__resume__()
+
+Note that this ensures that the following is a valid refactoring::
+
+  def f():
+      with OUTER:
+          yield from g()
+
+  def g():
+      with INNER
+          yield VALUE
+
+Similarly, ``with`` statements with multiple context managers suspend
+from right to left, and resume from left to right.
+
+
+Other changes
+-------------
+
+Appropriate ``__suspend__`` and ``__resume__`` methods are added to
+``warnings.catch_warnings`` and ``decimal.localcontext``.
+
+
+Rationale
+=========
+
+In the abstract, we gave an example of plausible but incorrect code::
+
+  def f():
+      with warnings.catch_warnings():
+          for x in g():
+              yield x
+
+To make this correct in current Python, we need to instead write
+something like::
+
+  def f():
+      with warnings.catch_warnings():
+          it = iter(g())
+      while True:
+          with warnings.catch_warnings():
+              try:
+                  x = next(it)
+              except StopIteration:
+                  break
+          yield x
+
+OTOH, if this PEP is accepted then the original code will become
+correct as-is.  Or if this isn't convincing, then here's another
+example of broken code; fixing it requires even greater gyrations, and
+these are left as an exercise for the reader::
+
+  async def test_foo_emits_warning():
+      with warnings.catch_warnings(record=True) as w:
+          await foo()
+      assert len(w) == 1
+      assert "xyzzy" in w[0].message
+
+And notice that this last example isn't artificial at all -- this is
+exactly how you write a test that an async/await-using coroutine
+correctly raises a warning.  Similar issues arise for pretty much any
+use of ``warnings.catch_warnings``, ``decimal.localcontext``, or
+``numpy.errstate`` in async/await-using code.  So there's clearly a
+real problem to solve here, and the growing prominence of async code
+makes it increasingly urgent.
+
+
+Alternative approaches
+----------------------
+
+The main alternative that has been proposed is to create some kind of
+"task-local storage", analogous to "thread-local storage"
+[#yury-task-local-proposal]_. In essence, the idea would be that the
+event loop would take care to allocate a new "task namespace" for each
+task it schedules, and provide an API to at any given time fetch the
+namespace corresponding to the currently executing task.  While there
+are many details to be worked out [#task-local-challenges]_, the basic
+idea seems doable, and it is an especially natural way to handle the
+kind of global context that arises at the top-level of async
+application frameworks (e.g., setting up context objects in a web
+framework).  But it also has a number of flaws:
+
+* It only solves the problem of managing global state for coroutines
+  that ``yield`` back to an asynchronous event loop.  But there
+  actually isn't anything about this problem that's specific to
+  asyncio -- as shown in the examples above, simple generators run
+  into exactly the same issue.
+
+* It creates an unnecessary coupling between event loops and code that
+  needs to manage global state. Obviously an async web framework needs
+  to interact with some event loop API anyway, so it's not a big deal
+  in that case. But it's weird that ``warnings`` or ``decimal`` or
+  NumPy should have to call into an async library's API to access
+  their internal state when they themselves involve no async code.
+  Worse, since there are multiple event loop APIs in common use, it
+  isn't clear how to choose which to integrate with.  (This could be
+  somewhat mitigated by CPython providing a standard API for creating
+  and switching "task-local domains" that asyncio, Twisted, tornado,
+  etc. could then work with.)
+
+* It's not at all clear that this can be made acceptably fast.  NumPy
+  has to check the floating point error settings on every single
+  arithmetic operation.  Checking a piece of data in thread-local
+  storage is absurdly quick, because modern platforms have put massive
+  resources into optimizing this case (e.g. dedicating a CPU register
+  for this purpose); calling a method on an event loop to fetch a
+  handle to a namespace and then doing lookup in that namespace is
+  much slower.
+
+  More importantly, this extra cost would be paid on *every* access to
+  the global data, even for programs which are not otherwise using an
+  event loop at all.  This PEP's proposal, by contrast, only affects
+  code that actually mixes ``with`` blocks and ``yield`` statements,
+  meaning that the users who experience the costs are the same users
+  who also reap the benefits.
+
+On the other hand, such tight integration between task context and the
+event loop does potentially allow other features that are beyond the
+scope of the current proposal.  For example, an event loop could note
+which task namespace was in effect when a task called ``call_soon``,
+and arrange that the callback when run would have access to the same
+task namespace.  Whether this is useful, or even well-defined in the
+case of cross-thread calls (what does it mean to have task-local
+storage accessed from two threads simultaneously?), is left as a
+puzzle for event loop implementors to ponder -- nothing in this
+proposal rules out such enhancements as well.  It does seem though
+that such features would be useful primarily for state that already
+has a tight integration with the event loop -- while we might want a
+request id to be preserved across ``call_soon``, most people would not
+expect::
+
+  with warnings.catch_warnings():
+      loop.call_soon(f)
+
+to result in ``f`` being run with warnings disabled, which would be
+the result if ``call_soon`` preserved global context in general. It's
+also unclear how this would even work given that the warnings context
+manager ``__exit__`` would be called before ``f``.
+
+So this PEP takes the position that ``__suspend__``\/``__resume__``
+and "task-local storage" are two complementary tools that are both
+useful in different circumstances.
+
+
+Backwards compatibility
+=======================
+
+Because ``__suspend__`` and ``__resume__`` are optional and default to
+no-ops, all existing context managers continue to work exactly as
+before.
+
+Speed-wise, this proposal adds additional overhead when entering a
+``with`` block (where we must now check for the additional methods;
+failed attribute lookup in CPython is rather slow, since it involves
+allocating an ``AttributeError``), and additional overhead at
+suspension points.  Since the position of ``with`` blocks and
+suspension points is known statically, the compiler can
+straightforwardly optimize away this overhead in all cases except
+where one actually has a ``yield`` inside a ``with``. Furthermore,
+because we only do attribute checks for ``__suspend__`` and
+``__resume__`` once at the start of a ``with`` block, when these
+attributes are undefined then the per-yield overhead can be optimized
+down to a single C-level ``if (frame->needs_suspend_resume_calls) {
+... }``. Therefore, we expect the overall overhead to be negligible.
+
+
+Interaction with PEP 492
+========================
+
+:pep:`492` added new asynchronous context managers, which are like
+regular context managers, but instead of having regular methods
+``__enter__`` and ``__exit__`` they have coroutine methods
+``__aenter__`` and ``__aexit__``.
+
+Following this pattern, one might expect this proposal to add
+``__asuspend__`` and ``__aresume__`` coroutine methods. But this
+doesn't make much sense, since the whole point is that ``__suspend__``
+should be called before yielding our thread of execution and allowing
+other code to run. The only thing we accomplish by making
+``__asuspend__`` a coroutine is to make it possible for
+``__asuspend__`` itself to yield. So either we need to recursively
+call ``__asuspend__`` from inside ``__asuspend__``, or else we need to
+give up and allow these yields to happen without calling the suspend
+callback; either way it defeats the whole point.
+
+Well, with one exception: one possible pattern for coroutine code is
+to call ``yield`` in order to communicate with the coroutine runner,
+but without actually suspending their execution (i.e., the coroutine
+might know that the coroutine runner will resume them immediately
+after processing the ``yield``\ ed message). An example of this is the
+``curio.timeout_after`` async context manager, which yields a special
+``set_timeout`` message to the curio kernel, and then the kernel
+immediately (synchronously) resumes the coroutine which sent the
+message. And from the user point of view, this timeout value acts just
+like the kinds of global variables that motivated this PEP. But, there
+is a crucal difference: this kind of async context manager is, by
+definition, tightly integrated with the coroutine runner. So, the
+coroutine runner can take over responsibility for keeping track of
+which timeouts apply to which coroutines without any need for this PEP
+at all (and this is indeed how curio.timeout_after works).
+
+That leaves two reasonable approaches to handling async context managers:
+
+1) Add plain ``__suspend__`` and ``__resume__`` methods.
+
+2) Leave async context managers alone for now until we have more
+   experience with them.
+
+Either seems plausible, so out of laziness / `YAGNI
+<http://martinfowler.com/bliki/Yagni.html>`_ this PEP tentatively
+proposes to stick with option (2).
+
+
+References
+==========
+
+.. [#yury-task-local-proposal] https://groups.google.com/forum/#!topic/python-tulip/zix5HQxtElg
+   https://github.com/python/asyncio/issues/165
+
+.. [#task-local-challenges] For example, we would have to decide
+   whether there is a single task-local namespace shared by all users
+   (in which case we need a way for multiple third-party libraries to
+   adjudicate access to this namespace), or else if there are multiple
+   task-local namespaces, then we need some mechanism for each library
+   to arrange for their task-local namespaces to be created and
+   destroyed at appropriate moments.  The preliminary patch linked
+   from the github issue above doesn't seem to provide any mechanism
+   for such lifecycle management.
+
+
+Copyright
+=========
+
+This document has been placed in the public domain.
+
+
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   coding: utf-8
+   End:

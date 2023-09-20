@@ -1,0 +1,268 @@
+PEP: 3154
+Title: Pickle protocol version 4
+Version: $Revision$
+Last-Modified: $Date$
+Author: Antoine Pitrou <solipsis@pitrou.net>
+Status: Final
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 11-Aug-2011
+Python-Version: 3.4
+Post-History: `12-Aug-2011 <https://mail.python.org/pipermail/python-dev/2011-August/112821.html>`__
+Resolution: https://mail.python.org/pipermail/python-dev/2013-November/130439.html
+
+
+Abstract
+========
+
+Data serialized using the pickle module must be portable across Python
+versions.  It should also support the latest language features as well
+as implementation-specific features.  For this reason, the pickle
+module knows about several protocols (currently numbered from 0 to 3),
+each of which appeared in a different Python version.  Using a
+low-numbered protocol version allows to exchange data with old Python
+versions, while using a high-numbered protocol allows access to newer
+features and sometimes more efficient resource use (both CPU time
+required for (de)serializing, and disk size / network bandwidth
+required for data transfer).
+
+
+Rationale
+=========
+
+The latest current protocol, coincidentally named protocol 3, appeared
+with Python 3.0 and supports the new incompatible features in the
+language (mainly, unicode strings by default and the new bytes
+object).  The opportunity was not taken at the time to improve the
+protocol in other ways.
+
+This PEP is an attempt to foster a number of incremental improvements
+in a new pickle protocol version.  The PEP process is used in order to
+gather as many improvements as possible, because the introduction of a
+new pickle protocol should be a rare occurrence.
+
+
+Proposed changes
+================
+
+Framing
+-------
+
+Traditionally, when unpickling an object from a stream (by calling
+``load()`` rather than ``loads()``), many small ``read()``
+calls can be issued on the file-like object, with a potentially huge
+performance impact.
+
+Protocol 4, by contrast, features binary framing.  The general structure
+of a pickle is thus the following::
+
+    +------+------+
+    | 0x80 | 0x04 |              protocol header (2 bytes)
+    +------+------+
+    |  OP  |                     FRAME opcode (1 byte)
+    +------+------+-----------+
+    | MM MM MM MM MM MM MM MM |  frame size (8 bytes, little-endian)
+    +------+------------------+
+    | .... |                     first frame contents (M bytes)
+    +------+
+    |  OP  |                     FRAME opcode (1 byte)
+    +------+------+-----------+
+    | NN NN NN NN NN NN NN NN |  frame size (8 bytes, little-endian)
+    +------+------------------+
+    | .... |                     second frame contents (N bytes)
+    +------+
+      etc.
+
+To keep the implementation simple, it is forbidden for a pickle opcode
+to straddle frame boundaries.  The pickler takes care not to produce such
+pickles, and the unpickler refuses them.  Also, there is no "last frame"
+marker.  The last frame is simply the one which ends with a STOP opcode.
+
+A well-written C implementation doesn't need additional memory copies
+for the framing layer, preserving general (un)pickling efficiency.
+
+.. note::
+
+   How the pickler decides to partition the pickle stream into frames is an
+   implementation detail.  For example, "closing" a frame as soon as it
+   reaches ~64 KiB is a reasonable choice for both performance and pickle
+   size overhead.
+
+Binary encoding for all opcodes
+-------------------------------
+
+The GLOBAL opcode, which is still used in protocol 3, uses the
+so-called "text" mode of the pickle protocol, which involves looking
+for newlines in the pickle stream.  It also complicates the implementation
+of binary framing.
+
+Protocol 4 forbids use of the GLOBAL opcode and replaces it with
+STACK_GLOBAL, a new opcode which takes its operand from the stack.
+
+Serializing more "lookupable" objects
+-------------------------------------
+
+By default, pickle is only able to serialize module-global functions and
+classes.  Supporting other kinds of objects, such as unbound methods [4]_,
+is a common request. Actually, third-party support for some of them, such
+as bound methods, is implemented in the multiprocessing module [5]_.
+
+The ``__qualname__`` attribute from :pep:`3155` makes it possible to
+lookup many more objects by name.  Making the STACK_GLOBAL opcode accept
+dot-separated names would allow the standard pickle implementation to
+support all those kinds of objects.
+
+64-bit opcodes for large objects
+--------------------------------
+
+Current protocol versions export object sizes for various built-in
+types (str, bytes) as 32-bit ints.  This forbids serialization of
+large data [1]_.  New opcodes are required to support very large bytes
+and str objects.
+
+Native opcodes for sets and frozensets
+--------------------------------------
+
+Many common built-in types (such as str, bytes, dict, list, tuple)
+have dedicated opcodes to improve resource consumption when
+serializing and deserializing them; however, sets and frozensets
+don't.  Adding such opcodes would be an obvious improvement.  Also,
+dedicated set support could help remove the current impossibility of
+pickling self-referential sets [2]_.
+
+Calling __new__ with keyword arguments
+--------------------------------------
+
+Currently, classes whose ``__new__`` mandates the use of keyword-only
+arguments can not be pickled (or, rather, unpickled) [3]_.  Both a new
+special method (``__getnewargs_ex__``) and a new opcode (NEWOBJ_EX)
+are needed.  The ``__getnewargs_ex__`` method, if it exists, must
+return a two-tuple ``(args, kwargs)`` where the first item is the
+tuple of positional arguments and the second item is the dict of
+keyword arguments for the class's ``__new__`` method.
+
+Better string encoding
+----------------------
+
+Short str objects currently have their length coded as a 4-bytes
+integer, which is wasteful.  A specific opcode with a 1-byte length
+would make many pickles smaller.
+
+Smaller memoization
+-------------------
+
+The PUT opcodes all require an explicit index to select in which entry
+of the memo dictionary the top-of-stack is memoized.  However, in practice
+those numbers are allocated in sequential order.  A new opcode, MEMOIZE,
+will instead store the top-of-stack in at the index equal to the current
+size of the memo dictionary.  This allows for shorter pickles, since PUT
+opcodes are emitted for all non-atomic datatypes.
+
+
+Summary of new opcodes
+======================
+
+These reflect the state of the proposed implementation (thanks mostly
+to Alexandre Vassalotti's work):
+
+* ``FRAME``: introduce a new frame (followed by the 8-byte frame size
+  and the frame contents).
+
+* ``SHORT_BINUNICODE``: push a utf8-encoded str object with a one-byte
+  size prefix (therefore less than 256 bytes long).
+
+* ``BINUNICODE8``: push a utf8-encoded str object with an eight-byte
+  size prefix (for strings longer than 2**32 bytes, which therefore cannot
+  be serialized using ``BINUNICODE``).
+
+* ``BINBYTES8``: push a bytes object with an eight-byte size prefix
+  (for bytes objects longer than 2**32 bytes, which therefore cannot be
+  serialized using ``BINBYTES``).
+
+* ``EMPTY_SET``: push a new empty set object on the stack.
+
+* ``ADDITEMS``: add the topmost stack items to the set (to be used with
+  ``EMPTY_SET``).
+
+* ``FROZENSET``: create a frozenset object from the topmost stack items,
+  and push it on the stack.
+
+* ``NEWOBJ_EX``: take the three topmost stack items ``cls``, ``args``
+  and ``kwargs``, and push the result of calling
+  ``cls.__new__(*args, **kwargs)``.
+
+* ``STACK_GLOBAL``: take the two topmost stack items ``module_name`` and
+  ``qualname``, and push the result of looking up the dotted ``qualname``
+  in the module named ``module_name``.
+
+* ``MEMOIZE``: store the top-of-stack object in the memo dictionary with
+  an index equal to the current size of the memo dictionary.
+
+
+Alternative ideas
+=================
+
+Prefetching
+-----------
+
+Serhiy Storchaka suggested to replace framing with a special PREFETCH
+opcode (with a 2- or 4-bytes argument) to declare known pickle chunks
+explicitly. Large data may be pickled outside such chunks.  A naïve
+unpickler should be able to skip the PREFETCH opcode and still decode
+pickles properly, but good error handling would require checking that
+the PREFETCH length falls on an opcode boundary.
+
+
+Acknowledgments
+===============
+
+In alphabetic order:
+
+* Alexandre Vassalotti, for starting the second :pep:`3154` implementation [6]_
+
+* Serhiy Storchaka, for discussing the framing proposal [6]_
+
+* Stefan Mihaila, for starting the first :pep:`3154` implementation as a
+  Google Summer of Code project mentored by Alexandre Vassalotti [7]_.
+
+
+References
+==========
+
+.. [1] "pickle not 64-bit ready":
+   http://bugs.python.org/issue11564
+
+.. [2] "Cannot pickle self-referencing sets":
+   http://bugs.python.org/issue9269
+
+.. [3] "pickle/copyreg doesn't support keyword only arguments in __new__":
+   http://bugs.python.org/issue4727
+
+.. [4] "pickle should support methods":
+   http://bugs.python.org/issue9276
+
+.. [5] Lib/multiprocessing/forking.py:
+   http://hg.python.org/cpython/file/baea9f5f973c/Lib/multiprocessing/forking.py#l54
+
+.. [6] Implement PEP 3154, by Alexandre Vassalotti
+   http://bugs.python.org/issue17810
+
+.. [7] Implement PEP 3154, by Stefan Mihaila
+   http://bugs.python.org/issue15642
+
+
+Copyright
+=========
+
+This document has been placed in the public domain.
+
+
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   coding: utf-8
+   End:

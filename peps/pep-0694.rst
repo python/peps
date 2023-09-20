@@ -1,0 +1,732 @@
+PEP: 694
+Title: Upload 2.0 API for Python Package Repositories
+Author: Donald Stufft <donald@stufft.io>
+Discussions-To: https://discuss.python.org/t/pep-694-upload-2-0-api-for-python-package-repositories/16879
+Status: Draft
+Type: Standards Track
+Topic: Packaging
+Content-Type: text/x-rst
+Created: 11-Jun-2022
+Post-History: `27-Jun-2022 <https://discuss.python.org/t/pep-694-upload-2-0-api-for-python-package-repositories/16879>`__
+
+
+Abstract
+========
+
+There is currently no standardized API for uploading files to a Python package
+repository such as PyPI. Instead, everyone has been forced to reverse engineer
+the non-standard API from PyPI.
+
+That API, while functional, leaks a lot of implementation details of the original
+PyPI code base, which have now had to have been faithfully replicated in the new
+code base, and alternative implementations.
+
+Beyond the above, there are a number of major issues with the current API:
+
+- It is a fully synchronous API, which means that we're forced to have a single
+  request being held open for potentially a long time, both for the upload itself,
+  and then while the repository processes the uploaded file to determine success
+  or failure.
+
+- It does not support any mechanism for resuming an upload, with the largest file
+  size on PyPI being just under 1GB in size, that's a lot of wasted bandwidth if
+  a large file has a network blip towards the end of an upload.
+
+- It treats a single file as the atomic unit of operation, which can be problematic
+  when a release might have multiple binary wheels which can cause people to get
+  different versions while the files are uploading, and if the sdist happens to
+  not go last, possibly some hard to build packages are attempting to be built
+  from source.
+
+- It has very limited support for communicating back to the user, with no support 
+  for multiple errors, warnings, deprecations, etc. It is limited entirely to the 
+  HTTP status code and reason phrase, of which the reason phrase has been 
+  deprecated since HTTP/2 (:rfc:`RFC 7540 <7540#section-8.1.2.4>`). 
+
+- The metadata for a release/file is submitted alongside the file, however this
+  metadata is famously unreliable, and most installers instead choose to download
+  the entire file and read that in part due to that unreliability.
+
+- There is no mechanism for allowing a repository to do any sort of sanity
+  checks before bandwidth starts getting expended on an upload, whereas a lot
+  of the cases of invalid metadata or incorrect permissions could be checked
+  prior to upload.
+
+- It has no support for "staging" a draft release prior to publishing it to the
+  repository.
+
+- It has no support for creating new projects, without uploading a file.
+
+This PEP proposes a new API for uploads, and deprecates the existing non standard
+API.
+
+
+Status Quo
+==========
+
+This does not attempt to be a fully exhaustive documentation of the current API, but
+give a high level overview of the existing API.
+
+
+Endpoint
+--------
+
+The existing upload API (and the now removed register API) lives at an url, currently
+``https://upload.pypi.org/legacy/``, and to communicate which specific API you want
+to call, you add a ``:action`` url parameter with a value of ``file_upload``. The values
+of ``submit``, ``submit_pkg_info``, and ``doc_upload`` also used to be supported, but
+no longer are.
+
+It also has a ``protocol_version`` parameter, in theory to allow new versions of the
+API to be written, but in practice that has never happened, and the value is always
+``1``.
+
+So in practice, on PyPI, the endpoint is
+``https://upload.pypi.org/legacy/?:action=file_upload&protocol_version=1``.
+
+
+
+Encoding
+--------
+
+The data to be submitted is submitted as a ``POST`` request with the content type
+of ``multipart/form-data``. This is due to the historical nature, that this API
+was not actually designed as an API, but rather was a form on the initial PyPI
+implementation, then client code was written to programmatically submit that form.
+
+
+Content
+-------
+
+Roughly speaking, the metadata contained within the package is submitted as parts
+where the content-disposition is ``form-data``, and the name is the name of the
+field. The names of these various pieces of metadata are not documented, and they
+sometimes, but not always match the names used in the ``METADATA`` files. The casing
+rarely matches though, but overall the ``METADATA`` to ``form-data`` conversion is
+extremely inconsistent.
+
+The file itself is then sent as a ``application/octet-stream`` part with the name
+of ``content``, and if there is a PGP signature attached, then it will be included
+as a ``application/octet-stream`` part with the name of ``gpg_signature``.
+
+
+Specification
+=============
+
+This PEP traces the root cause of most of the issues with the existing API to be
+roughly two things:
+
+- The metadata is submitted alongside the file, rather than being parsed from the
+  file itself.
+
+  - This is actually fine if used as a pre-check, but it should be validated
+    against the actual ``METADATA`` or similar files within the distribution.
+
+- It supports a single request, using nothing but form data, that either succeeds
+  or fails, and everything is done and contained within that single request.
+
+We then propose a multi-request workflow, that essentially boils down to:
+
+1. Initiate an upload session.
+2. Upload the file(s) as part of the upload session.
+3. Complete the upload session.
+4. (Optional) Check the status of an upload session.
+
+All URLs described here will be relative to the root endpoint, which may be
+located anywhere within the url structure of a domain. So it could be at
+``https://upload.example.com/``, or ``https://example.com/upload/``.
+
+
+Versioning
+----------
+
+This PEP uses the same ``MAJOR.MINOR`` versioning system as used in :pep:`691`,
+but it is otherwise independently versioned. The existing API is considered by
+this spec to be version ``1.0``, but it otherwise does not attempt to modify
+that API in any way.
+
+
+Endpoints
+---------
+
+Create an Upload Session
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+To create a new upload session, you can send a ``POST`` request to ``/``,
+with a payload that looks like:
+
+.. code-block:: json
+
+    {
+      "meta": {
+        "api-version": "2.0"
+      },
+      "name": "foo",
+      "version": "1.0"
+    }
+
+
+This currently has three keys, ``meta``, ``name``, and ``version``.
+
+The ``meta`` key is included in all payloads, and it describes information about the
+payload itself.
+
+The ``name`` key is the name of the project that this session is attempting to
+add files to.
+
+The ``version`` key is the version of the project that this session is attepmting to
+add files to.
+
+If creating the session was successful, then the server must return a response
+that looks like:
+
+.. code-block:: json
+
+    {
+      "meta": {
+        "api-version": "2.0"
+      },
+      "urls": {
+        "upload": "...",
+        "draft": "...",
+        "publish": "..."
+      },
+      "valid-for": 604800,
+      "status": "pending",
+      "files": {},
+      "notices": [
+        "a notice to display to the user"
+      ]
+    }
+
+
+Besides the ``meta`` key, this response has five keys, ``urls``, ``valid-for``,
+``status``, ``files``, and ``notices``.
+
+The ``urls`` key is a dictionary mapping identifiers to related URLs to this
+session.
+
+The ``valid-for`` key is an integer representing how long, in seconds, until the
+server itself will expire this session (and thus all of the URLs contained in it).
+The session **SHOULD** live at least this much longer unless the client itself
+has canceled the session. Servers **MAY** choose to *increase* this time, but should
+never *decrease* it, except naturally through the passage of time.
+
+The ``status`` key is a string that contains one of ``pending``, ``published``,
+``errored``, or ``canceled``, this string represents the overall status of
+the session.
+
+The ``files`` key is a mapping containing the filenames that have been uploaded
+to this session, to a mapping containing details about each file.
+
+The ``notices`` key is an optional key that points to an array of notices that
+the server wishes to communicate to the end user that are not specific to any
+one file.
+
+For each filename in ``files`` the mapping has three keys, ``status``, ``url``,
+and ``notices``.
+
+The ``status`` key is the same as the top level ``status`` key, except that it
+indicates the status of a specific file.
+
+The ``url`` key is the *absolute* URL that the client should upload that specific
+file to (or use to delete that file).
+
+The ``notices`` key is an optional key, that is an array of notices that the server
+wishes to communicate to the end user that are specific to this file.
+
+The required response code to a successful creation of the session is a
+``201 Created`` response and it **MUST** include a ``Location`` header that is the
+URL for this session, which may be used to check its status or cancel it.
+
+For the ``urls`` key, there are currently three keys that may appear:
+
+The ``upload`` key, which is the upload endpoint for this session to initiate
+a file upload.
+
+The ``draft`` key, which is the repository URL that these files are available at
+prior to publishing.
+
+The ``publish`` key, which is the endpoint to trigger publishing the session.
+
+
+In addition to the above, if a second session is created for the same name+version
+pair, then the upload server **MUST** return the already existing session rather
+than creating a new, empty one.
+
+
+Upload Each File
+~~~~~~~~~~~~~~~~
+
+Once you have initiated an upload session for one or more files, then you have
+to actually upload each of those files.
+
+There is no set endpoint for actually uploading the file, that is given to the
+client by the server as part of the creation of the upload session, and clients
+**MUST NOT** assume that there is any commonality to what those URLs look like from
+one session to the next.
+
+To initiate a file upload, a client sends a ``POST`` request to the upload URL
+in the session, with a request body that looks like:
+
+.. code-block:: json
+
+    {
+      "meta": {
+        "api-version": "2.0"
+      },
+      "filename": "foo-1.0.tar.gz",
+      "size": 1000,
+      "hashes": {"sha256": "...", "blake2b": "..."},
+      "metadata": "..."
+    }
+
+
+Besides the standard ``meta`` key, this currently has 4 keys:
+
+- ``filename``: The filename of the file being uploaded.
+- ``size``: The size, in bytes, of the file that is being uploaded.
+- ``hashes``: A mapping of hash names to hex encoded digests, each of these digests
+  are the digests of that file, when hashed by the hash identified in the name.
+
+  By default, any hash algorithm available via `hashlib
+  <https://docs.python.org/3/library/hashlib.html>`_ (specifically any that can
+  be passed to ``hashlib.new()`` and do not require additional parameters) can
+  be used as a key for the hashes dictionary. At least one secure algorithm from
+  ``hashlib.algorithms_guaranteed`` **MUST** always be included. At the time
+  of this PEP, ``sha256`` specifically is recommended.
+
+  Multiple hashes may be passed at a time, but all hashes must be valid for the
+  file.
+- ``metadata``: An optional key that is a string containing the file's
+  `core metadata <https://packaging.python.org/en/latest/specifications/core-metadata/>`_.
+
+Servers **MAY** use the data provided in this response to do some sanity checking
+prior to allowing the file to be uploaded, which may include but is not limited
+to:
+
+- Checking if the ``filename`` already exists.
+- Checking if the ``size`` would invalidate some quota.
+- Checking if the contents of the ``metadata``, if provided, are valid.
+
+If the server determines that the client should attempt the upload, it will return
+a ``201 Created`` response, with an empty body, and a ``Location`` header pointing
+to the URL that the file itself should be uploaded to.
+
+At this point, the status of the session should show the filename, with the above url
+included in it.
+
+
+Upload Data
++++++++++++
+
+To upload the file, a client has two choices, they may upload the file as either
+a single chunk, or as multiple chunks. Either option is acceptable, but it is
+recommended that most clients should choose to upload each file as a single chunk
+as that requires fewer requests and typically has better performance.
+
+However for particularly large files, uploading within a single request may result
+in timeouts, so larger files may need to be uploaded in multiple chunks.
+
+In either case, the client must generate a unique token (or nonce) for each upload
+attempt for a file, and **MUST** include that token in each request in the ``Upload-Token``
+header. The ``Upload-Token`` is a binary blob encoded using base64 surrounded by
+a ``:`` on either side. Clients **SHOULD** use at least 32 bytes of cryptographically
+random data. You can generate it using the following:
+
+.. code-block:: python
+
+    import base64
+    import secrets
+
+    header = ":" + base64.b64encode(secrets.token_bytes(32)).decode() + ":"
+
+The one time that it is permissible to omit the ``Upload-Token`` from an upload
+request is when a client wishes to opt out of the resumable or chunked file upload
+feature completely. In that case, they **MAY** omit the ``Upload-Token``, and the
+file must be successfully uploaded in a single HTTP request, and if it fails, the
+entire file must be resent in another single HTTP request.
+
+To upload in a single chunk, a client sends a ``POST`` request to the URL from the
+session response for that filename. The client **MUST** include a ``Content-Length``
+header that is equal to the size of the file in bytes, and this **MUST** match the
+size given in the original session creation.
+
+As an example, if uploading a 100,000 byte file, you would send headers like::
+
+    Content-Length: 100000
+    Upload-Token: :nYuc7Lg2/Lv9S4EYoT9WE6nwFZgN/TcUXyk9wtwoABg=:
+
+If the upload completes successfully, the server **MUST** respond with a
+``201 Created`` status. At this point this file **MUST** not be present in the
+repository, but merely staged until the upload session has completed.
+
+To upload in multiple chunks, a client sends multiple ``POST`` requests to the same
+URL as before, one for each chunk.
+
+This time however, the ``Content-Length`` is equal to the size, in bytes, of the
+chunk that they are sending. In addition, the client **MUST** include a
+``Upload-Offset`` header which indicates a byte offset that the content included
+in this request starts at and a ``Upload-Incomplete`` header set to ``1``.
+
+As an example, if uploading a 100,000 byte file in 1000 byte chunks, and this chunk
+represents bytes 1001 through 2000, you would send headers like::
+
+    Content-Length: 1000
+    Upload-Token: :nYuc7Lg2/Lv9S4EYoT9WE6nwFZgN/TcUXyk9wtwoABg=:
+    Upload-Offset: 1001
+    Upload-Incomplete: 1
+
+However, the **final** chunk of data omits the ``Upload-Incomplete`` header, since
+at that point the upload is no longer incomplete.
+
+For each successful chunk, the server **MUST** respond with a ``202 Accepted``
+header, except for the final chunk, which **MUST** be a ``201 Created``.
+
+The following constraints are placed on uploads regardless of whether they are
+single chunk or multiple chunks:
+
+- A client **MUST NOT** perform multiple ``POST`` requests in parallel for the
+  same file to avoid race conditions and data loss or corruption. The server
+  **MAY** terminate any ongoing ``POST`` request that utilizes the same
+  ``Upload-Token``.
+- If the offset provided in ``Upload-Offset`` is not ``0`` or the next chunk
+  in an incomplete upload, then the server **MUST** respond with a 409 Conflict.
+- Once an upload has started with a specific token, you may not use another token
+  for that file without deleting the in progress upload.
+- Once a file has uploaded successfully, you may initiate another upload for
+  that file, and doing so will replace that file.
+
+
+Resume Upload
++++++++++++++
+
+To resume an upload, you first have to know how much of the data the server has
+already received, regardless of if you were originally uploading the file as
+a single chunk, or in multiple chunks.
+
+To get the status of an individual upload, a client can make a ``HEAD`` request
+with their existing ``Upload-Token`` to the same URL they were uploading to.
+
+The server **MUST** respond back with a ``204 No Content`` response, with an
+``Upload-Offset`` header that indicates what offset the client should continue
+uploading from. If the server has not received any data, then this would be ``0``,
+if it has received 1007 bytes then it would be ``1007``.
+
+Once the client has retrieved the offset that they need to start from, they can
+upload the rest of the file as described above, either in a single request
+containing all of the remaining data or in multiple chunks.
+
+
+Canceling an In Progress Upload
++++++++++++++++++++++++++++++++
+
+If a client wishes to cancel an upload of a specific file, for instance because
+they need to upload a different file, they may do so by issuing a ``DELETE``
+request to the file upload URL with the ``Upload-Token`` used to upload the
+file in the first place.
+
+A successful cancellation request **MUST** response with a ``204 No Content``.
+
+
+Delete an uploaded File
++++++++++++++++++++++++
+
+Already uploaded files may be deleted by issuing a ``DELETE`` request to the file
+upload URL without the ``Upload-Token``.
+
+A successful deletion request **MUST** response with a ``204 No Content``.
+
+
+Session Status
+~~~~~~~~~~~~~~
+
+Similarly to file upload, the session URL is provided in the response to
+creating the upload session, and clients **MUST NOT** assume that there is any
+commonality to what those URLs look like from one session to the next.
+
+To check the status of a session, clients issue a ``GET`` request to the
+session URL, to which the server will respond with the same response that
+they got when they initially created the upload session, except with any
+changes to ``status``, ``valid-for``, or updated ``files`` reflected.
+
+
+Session Cancellation
+~~~~~~~~~~~~~~~~~~~~
+
+To cancel an upload session, a client issues a ``DELETE`` request to the
+same session URL as before. At which point the server marks the session as
+canceled, **MAY** purge any data that was uploaded as part of that session,
+and future attempts to access that session URL or any of the file upload URLs
+**MAY** return a ``404 Not Found``.
+
+To prevent a lot of dangling sessions, servers may also choose to cancel a
+session on their own accord. It is recommended that servers expunge their
+sessions after no less than a week, but each server may choose their own
+schedule.
+
+
+Session Completion
+~~~~~~~~~~~~~~~~~~
+
+To complete a session, and publish the files that have been included in it,
+a client **MUST** send a ``POST`` request to the ``publish`` url in the
+session status payload.
+
+If the server is able to immediately complete the session, it may do so
+and return a ``201 Created`` response. If it is unable to immediately
+complete the session (for instance, if it needs to do processing that may
+take longer than reasonable in a single HTTP request), then it may return
+a ``202 Accepted`` response.
+
+In either case, the server should include a ``Location`` header pointing
+back to the session status url, and if the server returned a ``202 Accepted``,
+the client may poll that URL to watch for the status to change.
+
+
+Errors
+------
+
+All Error responses that contain a body will have a body that looks like:
+
+.. code-block:: json
+
+    {
+      "meta": {
+        "api-version": "2.0"
+      },
+      "message": "...",
+      "errors": [
+        {
+          "source": "...",
+          "message": "..."
+        }
+      ]
+    }
+
+Besides the standard ``meta`` key, this has two top level keys, ``message``
+and ``errors``.
+
+The ``message`` key is a singular message that encapsulates all errors that
+may have happened on this request.
+
+The ``errors`` key is an array of specific errors, each of which contains
+a ``source`` key, which is a string that indicates what the source of the
+error is, and a ``messasge`` key for that specific error.
+
+The ``message`` and ``source`` strings do not have any specific meaning, and
+are intended for human interpretation to figure out what the underlying issue
+was.
+
+
+Content-Types
+-------------
+
+Like :pep:`691`, this PEP proposes that all requests and responses from the
+Upload API will have a standard content type that describes what the content
+is, what version of the API it represents, and what serialization format has
+been used.
+
+The structure of this content type will be:
+
+.. code-block:: text
+
+    application/vnd.pypi.upload.$version+format
+
+Since only major versions should be disruptive to systems attempting to
+understand one of these API content bodies, only the major version will be
+included in the content type, and will be prefixed with a ``v`` to clarify
+that it is a version number.
+
+Unlike :pep:`691`, this PEP does not change the existing ``1.0`` API in any
+way, so servers will be required to host the new API described in this PEP at
+a different endpoint than the existing upload API.
+
+Which means that for the new 2.0 API, the content types would be:
+
+- **JSON:** ``application/vnd.pypi.upload.v2+json``
+
+In addition to the above, a special "meta" version is supported named ``latest``,
+whose purpose is to allow clients to request the absolute latest version, without
+having to know ahead of time what that version is. It is recommended however,
+that clients be explicit about what versions they support.
+
+These content types **DO NOT** apply to the file uploads themselves, only to the
+other API requests/responses in the upload API. The files themselves should use
+the ``application/octet-stream`` content-type.
+
+
+Version + Format Selection
+--------------------------
+
+Again similar to :pep:`691`, this PEP standardizes on using server-driven
+content negotiation to allow clients to request different versions or
+serialization formats, which includes the ``format`` url parameter.
+
+Since this PEP expects the existing legacy ``1.0`` upload API to exist at a
+different endpoint, and it currently only provides for JSON serialization, this
+mechanism is not particularly useful, and clients only have a single version and
+serialization they can request. However clients **SHOULD** be setup to handle
+content negotiation gracefully in the case that additional formats or versions
+are added in the future.
+
+
+FAQ
+===
+
+Does this mean PyPI is planning to drop support for the existing upload API?
+----------------------------------------------------------------------------
+
+At this time PyPI does not have any specific plans to drop support for the
+existing upload API.
+
+Unlike with :pep:`691` there are wide benefits to doing so, so it is likely
+that we will want to drop support for it at some point in the future, but
+until this API is implemented, and receiving broad use it would be premature
+to make any plans for actually dropping support for it.
+
+
+Is this Resumable Upload protocol based on anything?
+----------------------------------------------------
+
+Yes!
+
+It's actually the protocol specified in an
+`Active Internet-Draft <https://datatracker.ietf.org/doc/draft-tus-httpbis-resumable-uploads-protocol/>`_,
+where the authors took what they learned implementing `tus <https://tus.io/>`_
+to provide the idea of resumable uploads in a wholly generic, standards based
+way.
+
+The only deviation we've made from that spec is that we don't use the
+``104 Upload Resumption Supported`` informational response in the first
+``POST`` request. This decision was made for a few reasons:
+
+- The ``104 Upload Resumption Supported`` is the only part of that draft
+  which does not rely entirely on things that are already supported in the
+  existing standards, since it was adding a new informational status.
+- Many clients and web frameworks don't support ``1xx`` informational
+  responses in a very good way, if at all, adding it would complicate
+  implementation for very little benefit.
+- The purpose of the ``104 Upload Resumption Supported`` support is to allow
+  clients to determine that an arbitrary endpoint that they're interacting
+  with supports resumable uploads. Since this PEP is mandating support for
+  that in servers, clients can just assume that the server they are
+  interacting with supports it, which makes using it unneeded.
+- In theory, if the support for ``1xx`` responses got resolved and the draft
+  gets accepted with it in, we can add that in at a later date without
+  changing the overall flow of the API.
+
+There is a risk that the above draft doesn't get accepted, but even if it
+does not, that doesn't actually affect us. It would just mean that our
+support for resumable uploads is an application specific protocol, but is
+still wholly standards compliant.
+
+
+Open Questions
+==============
+
+
+Multipart Uploads vs tus
+------------------------
+
+This PEP currently bases the actual uploading of files on an internet draft
+from tus.io that supports resumable file uploads.
+
+That protocol requires a few things:
+
+- That the client selects a secure ``Upload-Token`` that they use to identify
+  uploading a single file.
+- That if clients don't upload the entire file in one shot, that they have
+  to submit the chunks serially, and in the correct order, with all but the
+  final chunk having a ``Upload-Incomplete: 1`` header.
+- Resumption of an upload is essentially just querying the server to see how
+  much data they've gotten, then sending the remaining bytes (either as a single
+  request, or in chunks).
+- The upload implicitly is completed when the server successfully gets all of
+  the data from the client.
+
+This has one big benefit, that if a client doesn't care about resuming their
+download, the work to support, from a client side, resumable uploads is able
+to be completely ignored. They can just ``POST`` the file to the URL, and if
+it doesn't succeed, they can just ``POST`` the whole file again.
+
+The other benefit is that even if you do want to support resumption, you can
+still just ``POST`` the file, and unless you *need* to resume the download,
+that's all you have to do.
+
+Another, possibly theoretical, benefit is that for hashing the uploaded files,
+the serial chunks requirement means that the server can maintain hashing state
+between requests, update it for each request, then write that file back to
+storage. Unfortunately this isn't actually possible to do with Python's hashlib,
+though there are some libraries like `Rehash <https://github.com/kislyuk/rehash>`_
+that implement it, but they don't support every hash that hashlib does
+(specifically not blake2 or sha3 at the time of writing).
+
+We might also need to reconstitute the download for processing anyways to do
+things like extract metadata, etc from it, which would make it a moot point.
+
+The downside is that there is no ability to parallelize the upload of a single
+file because each chunk has to be submitted serially.
+
+AWS S3 has a similar API (and most blob stores have copied it either wholesale
+or something like it) which they call multipart uploading.
+
+The basic flow for a multipart upload is:
+
+1. Initiate a Multipart Upload to get an Upload ID.
+2. Break your file up into chunks, and upload each one of them individually.
+3. Once all chunks have been uploaded, finalize the upload.
+   - This is the step where any errors would occur.
+
+It does not directly support resuming an upload, but it allows clients to
+control the "blast radius" of failure by adjusting the size of each part
+they upload, and if any of the parts fail, they only have to resend those
+specific parts.
+
+This has a big benefit in that it allows parallelization in uploading files,
+allowing clients to maximize their bandwidth using multiple threads to send
+the data.
+
+We wouldn't need an explicit step (1), because our session would implicitly
+initiate a multipart upload for each file.
+
+It does have its own downsides:
+
+- Clients have to do more work on every request to have something resembling
+  resumable uploads. They would *have* to break the file up into multiple parts
+  rather than just making a single POST request, and only needing to deal
+  with the complexity if something fails.
+
+- Clients that don't care about resumption at all still have to deal with
+  the third explicit step, though they could just upload the file all as a
+  single part.
+
+  - S3 works around this by having another API for one shot uploads, but
+    I'd rather not have two different APIs for uploading the same file.
+
+- Verifying hashes gets somewhat more complicated. AWS implements hashing
+  multipart uploads by hashing each part, then the overall hash is just a
+  hash of those hashes, not of the content itself. We need to know the
+  actual hash of the file itself for PyPI, so we would have to reconstitute
+  the file and read its content and hash it once it's been fully uploaded,
+  though we could still use the hash of hashes trick for checksumming the
+  upload itself.
+
+  - See above about whether this is actually a downside in practice, or
+    if it's just in theory.
+
+I lean towards the tus style resumable uploads as I think they're simpler
+to use and to implement, and the main downside is that we possibly leave
+some multi-threaded performance on the table, which I think that I'm
+personally fine with?
+
+I guess one additional benefit of the S3 style multi part uploads is that
+you don't have to try and do any sort of protection against parallel uploads,
+since they're just supported. That alone might erase most of the server side
+implementation simplification.
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.

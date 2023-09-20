@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import datetime
-import functools
 from typing import TYPE_CHECKING
 import unicodedata
 
+from pep_sphinx_extensions.pep_processor.transforms.pep_headers import ABBREVIATED_STATUSES
+from pep_sphinx_extensions.pep_processor.transforms.pep_headers import ABBREVIATED_TYPES
 from pep_sphinx_extensions.pep_zero_generator.constants import DEAD_STATUSES
-from pep_sphinx_extensions.pep_zero_generator.constants import HIDE_STATUS
 from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_ACCEPTED
 from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_ACTIVE
 from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_DEFERRED
@@ -18,6 +17,7 @@ from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_PROVISIONA
 from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_REJECTED
 from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_VALUES
 from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_WITHDRAWN
+from pep_sphinx_extensions.pep_zero_generator.constants import SUBINDICES_BY_TOPIC
 from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_INFO
 from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_PROCESS
 from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_VALUES
@@ -26,37 +26,22 @@ from pep_sphinx_extensions.pep_zero_generator.errors import PEPError
 if TYPE_CHECKING:
     from pep_sphinx_extensions.pep_zero_generator.parser import PEP
 
-title_length = 55
-author_length = 40
-table_separator = "== ====  " + "="*title_length + " " + "="*author_length
-
-# column format is called as a function with a mapping containing field values
-column_format = functools.partial(
-    "{type}{status}{number: >5}  {title: <{title_length}} {authors}".format,
-    title_length=title_length
-)
-
-header = f"""\
+HEADER = """\
 PEP: 0
 Title: Index of Python Enhancement Proposals (PEPs)
-Last-Modified: {datetime.date.today()}
-Author: python-dev <python-dev@python.org>
+Author: The PEP Editors
 Status: Active
 Type: Informational
 Content-Type: text/x-rst
 Created: 13-Jul-2000
 """
 
-intro = """\
+INTRO = """\
 This PEP contains the index of all Python Enhancement Proposals,
-known as PEPs.  PEP numbers are assigned by the PEP editors, and
-once assigned are never changed [1_].  The version control history [2_] of
+known as PEPs.  PEP numbers are :pep:`assigned <1#pep-editors>`
+by the PEP editors, and once assigned are never changed.  The
+`version control history <https://github.com/python/peps>`_ of
 the PEP texts represent their historical record.
-"""
-
-references = """\
-.. [1] PEP 1: PEP Purpose and Guidelines
-.. [2] View PEP history online: https://github.com/python/peps
 """
 
 
@@ -84,134 +69,175 @@ class PEPZeroWriter:
     def emit_newline(self) -> None:
         self.output.append("")
 
-    def emit_table_separator(self) -> None:
-        self.output.append(table_separator)
-
     def emit_author_table_separator(self, max_name_len: int) -> None:
         author_table_separator = "=" * max_name_len + "  " + "=" * len("email address")
         self.output.append(author_table_separator)
 
-    def emit_pep_row(self, pep_details: dict[str, int | str]) -> None:
-        self.emit_text(column_format(**pep_details))
+    def emit_pep_row(
+        self, *, shorthand: str, number: int, title: str, authors: str
+    ) -> None:
+        self.emit_text(f"   * - {shorthand}")
+        self.emit_text(f"     - :pep:`{number} <{number}>`")
+        self.emit_text(f"     - :pep:`{title.replace('`', '')} <{number}>`")
+        self.emit_text(f"     - {authors}")
 
     def emit_column_headers(self) -> None:
         """Output the column headers for the PEP indices."""
-        self.emit_table_separator()
-        self.emit_pep_row({"status": ".", "type": ".", "number": "PEP", "title": "PEP Title", "authors": "PEP Author(s)"})
-        self.emit_table_separator()
+        self.emit_text(".. list-table::")
+        self.emit_text("   :header-rows: 1")
+        self.emit_text("   :widths: auto")
+        self.emit_text("   :class: pep-zero-table")
+        self.emit_newline()
+        self.emit_text("   * - ")
+        self.emit_text("     - PEP")
+        self.emit_text("     - Title")
+        self.emit_text("     - Authors")
 
-    def emit_title(self, text: str, anchor: str, *, symbol: str = "=") -> None:
-        self.output.append(f".. _{anchor}:\n")
+    def emit_title(self, text: str, *, symbol: str = "=") -> None:
         self.output.append(text)
         self.output.append(symbol * len(text))
         self.emit_newline()
 
-    def emit_subtitle(self, text: str, anchor: str) -> None:
-        self.emit_title(text, anchor, symbol="-")
+    def emit_subtitle(self, text: str) -> None:
+        self.emit_title(text, symbol="-")
 
-    def emit_pep_category(self, category: str, anchor: str, peps: list[PEP]) -> None:
-        self.emit_subtitle(category, anchor)
+    def emit_pep_category(self, category: str, peps: list[PEP]) -> None:
+        self.emit_subtitle(category)
         self.emit_column_headers()
         for pep in peps:
-            self.output.append(column_format(**pep.details(title_length=title_length)))
-        self.emit_table_separator()
+            self.emit_pep_row(**pep.details)
+        # list-table must have at least one body row
+        if len(peps) == 0:
+            self.emit_text("   * -")
+            self.emit_text("     -")
+            self.emit_text("     -")
+            self.emit_text("     -")
         self.emit_newline()
 
-    def write_pep0(self, peps: list[PEP]):
+    def write_pep0(
+        self,
+        peps: list[PEP],
+        header: str = HEADER,
+        intro: str = INTRO,
+        is_pep0: bool = True,
+        builder: str = None,
+    ):
+        if len(peps) == 0:
+            return ""
 
         # PEP metadata
         self.emit_text(header)
         self.emit_newline()
 
         # Introduction
-        self.emit_title("Introduction", "intro")
+        self.emit_title("Introduction")
         self.emit_text(intro)
         self.emit_newline()
 
+        # PEPs by topic
+        if is_pep0:
+            self.emit_title("Topics")
+            self.emit_text(
+                "PEPs for specialist subjects are :doc:`indexed by topic <topic/index>`."
+            )
+            self.emit_newline()
+            for subindex in SUBINDICES_BY_TOPIC:
+                target = (
+                    f"topic/{subindex}.html"
+                    if builder == "html"
+                    else f"../topic/{subindex}/"
+                )
+                self.emit_text(f"* `{subindex.title()} PEPs <{target}>`_")
+                self.emit_newline()
+            self.emit_newline()
+
         # PEPs by category
-        self.emit_title("Index by Category", "by-category")
+        self.emit_title("Index by Category")
         meta, info, provisional, accepted, open_, finished, historical, deferred, dead = _classify_peps(peps)
         pep_categories = [
-            ("Meta-PEPs (PEPs about PEPs or Processes)", "by-category-meta", meta),
-            ("Other Informational PEPs", "by-category-other-info", info),
-            ("Provisional PEPs (provisionally accepted; interface may still change)", "by-category-provisional", provisional),
-            ("Accepted PEPs (accepted; may not be implemented yet)", "by-category-accepted", accepted),
-            ("Open PEPs (under consideration)", "by-category-open", open_),
-            ("Finished PEPs (done, with a stable interface)", "by-category-finished", finished),
-            ("Historical Meta-PEPs and Informational PEPs", "by-category-historical", historical),
-            ("Deferred PEPs (postponed pending further research or updates)", "by-category-deferred", deferred),
-            ("Abandoned, Withdrawn, and Rejected PEPs", "by-category-abandoned", dead),
+            ("Meta-PEPs (PEPs about PEPs or Processes)", meta),
+            ("Other Informational PEPs", info),
+            ("Provisional PEPs (provisionally accepted; interface may still change)", provisional),
+            ("Accepted PEPs (accepted; may not be implemented yet)", accepted),
+            ("Open PEPs (under consideration)", open_),
+            ("Finished PEPs (done, with a stable interface)", finished),
+            ("Historical Meta-PEPs and Informational PEPs", historical),
+            ("Deferred PEPs (postponed pending further research or updates)", deferred),
+            ("Abandoned, Withdrawn, and Rejected PEPs", dead),
         ]
-        for (category, anchor, peps_in_category) in pep_categories:
-            self.emit_pep_category(category, anchor, peps_in_category)
+        for (category, peps_in_category) in pep_categories:
+            # For sub-indices, only emit categories with entries.
+            # For PEP 0, emit every category, but only with a table when it has entries.
+            if len(peps_in_category) > 0:
+                self.emit_pep_category(category, peps_in_category)
+            elif is_pep0:
+                # emit the category with no table
+                self.emit_subtitle(category)
+                self.emit_text("None.")
+                self.emit_newline()
 
         self.emit_newline()
 
         # PEPs by number
-        self.emit_title("Numerical Index", "by-pep-number")
+        self.emit_title("Numerical Index")
         self.emit_column_headers()
-        prev_pep = 0
         for pep in peps:
-            if pep.number - prev_pep > 1:
-                self.emit_newline()
-            self.emit_pep_row(pep.details(title_length=title_length))
-            prev_pep = pep.number
+            self.emit_pep_row(**pep.details)
 
-        self.emit_table_separator()
         self.emit_newline()
 
         # Reserved PEP numbers
-        self.emit_title("Reserved PEP Numbers", "reserved")
-        self.emit_column_headers()
-        for number, claimants in sorted(self.RESERVED.items()):
-            self.emit_pep_row({"type": ".", "status": ".", "number": number, "title": "RESERVED", "authors": claimants})
+        if is_pep0:
+            self.emit_title("Reserved PEP Numbers")
+            self.emit_column_headers()
+            for number, claimants in sorted(self.RESERVED.items()):
+                self.emit_pep_row(
+                    shorthand="", number=number, title="RESERVED", authors=claimants
+                )
 
-        self.emit_table_separator()
-        self.emit_newline()
-
-        # PEP types key
-        self.emit_title("PEP Types Key", "type-key")
-        for type_ in sorted(TYPE_VALUES):
-            self.emit_text(f"    {type_[0]} - {type_} PEP")
             self.emit_newline()
 
+        # PEP types key
+        self.emit_title("PEP Types Key")
+        for type_ in sorted(TYPE_VALUES):
+            self.emit_text(
+                f"* **{type_[0]}** --- *{type_}*: {ABBREVIATED_TYPES[type_]}"
+            )
+            self.emit_newline()
+
+        self.emit_text(":pep:`More info in PEP 1 <1#pep-types>`.")
         self.emit_newline()
 
         # PEP status key
-        self.emit_title("PEP Status Key", "status-key")
+        self.emit_title("PEP Status Key")
         for status in sorted(STATUS_VALUES):
             # Draft PEPs have no status displayed, Active shares a key with Accepted
-            if status in HIDE_STATUS:
-                continue
-            if status == STATUS_ACCEPTED:
-                msg = "    A - Accepted (Standards Track only) or Active proposal"
-            else:
-                msg = f"    {status[0]} - {status} proposal"
-            self.emit_text(msg)
+            status_code = "<No letter>" if status == STATUS_DRAFT else status[0]
+            self.emit_text(
+                f"* **{status_code}** --- *{status}*: {ABBREVIATED_STATUSES[status]}"
+            )
             self.emit_newline()
 
+        self.emit_text(":pep:`More info in PEP 1 <1#pep-review-resolution>`.")
         self.emit_newline()
 
-        # PEP owners
-        authors_dict = _verify_email_addresses(peps)
-        max_name_len = max(len(author_name) for author_name in authors_dict)
-        self.emit_title("Authors/Owners", "authors")
-        self.emit_author_table_separator(max_name_len)
-        self.emit_text(f"{'Name':{max_name_len}}  Email Address")
-        self.emit_author_table_separator(max_name_len)
-        for author_name in _sort_authors(authors_dict):
-            # Use the email from authors_dict instead of the one from "author" as
-            # the author instance may have an empty email.
-            self.emit_text(f"{author_name:{max_name_len}}  {authors_dict[author_name]}")
-        self.emit_author_table_separator(max_name_len)
-        self.emit_newline()
-        self.emit_newline()
+        if is_pep0:
+            # PEP owners
+            authors_dict = _verify_email_addresses(peps)
+            max_name_len = max(len(author_name) for author_name in authors_dict)
+            self.emit_title("Authors/Owners")
+            self.emit_author_table_separator(max_name_len)
+            self.emit_text(f"{'Name':{max_name_len}}  Email Address")
+            self.emit_author_table_separator(max_name_len)
+            for author_name in _sort_authors(authors_dict):
+                # Use the email from authors_dict instead of the one from "author" as
+                # the author instance may have an empty email.
+                self.emit_text(f"{author_name:{max_name_len}}  {authors_dict[author_name]}")
+            self.emit_author_table_separator(max_name_len)
+            self.emit_newline()
+            self.emit_newline()
 
-        # References for introduction footnotes
-        self.emit_title("References", "references")
-        self.emit_text(references)
-
-        pep0_string = "\n".join([str(s) for s in self.output])
+        pep0_string = "\n".join(map(str, self.output))
         return pep0_string
 
 
@@ -235,7 +261,7 @@ def _classify_peps(peps: list[PEP]) -> tuple[list[PEP], ...]:
         elif pep.status == STATUS_DEFERRED:
             deferred.append(pep)
         elif pep.pep_type == TYPE_PROCESS:
-            if pep.status == STATUS_ACTIVE:
+            if pep.status in {STATUS_ACCEPTED, STATUS_ACTIVE}:
                 meta.append(pep)
             elif pep.status in {STATUS_WITHDRAWN, STATUS_REJECTED}:
                 dead.append(pep)
@@ -247,7 +273,7 @@ def _classify_peps(peps: list[PEP]) -> tuple[list[PEP], ...]:
             # Hack until the conflict between the use of "Final"
             # for both API definition PEPs and other (actually
             # obsolete) PEPs is addressed
-            if pep.status == STATUS_ACTIVE or "Release Schedule" not in pep.title:
+            if pep.status == STATUS_ACTIVE or "release schedule" not in pep.title.lower():
                 info.append(pep)
             else:
                 historical.append(pep)
@@ -267,22 +293,22 @@ def _verify_email_addresses(peps: list[PEP]) -> dict[str, str]:
     for pep in peps:
         for author in pep.authors:
             # If this is the first time we have come across an author, add them.
-            if author.last_first not in authors_dict:
-                authors_dict[author.last_first] = set()
+            if author.full_name not in authors_dict:
+                authors_dict[author.full_name] = set()
 
             # If the new email is an empty string, move on.
             if not author.email:
                 continue
             # If the email has not been seen, add it to the list.
-            authors_dict[author.last_first].add(author.email)
+            authors_dict[author.full_name].add(author.email)
 
     valid_authors_dict: dict[str, str] = {}
     too_many_emails: list[tuple[str, set[str]]] = []
-    for last_first, emails in authors_dict.items():
+    for full_name, emails in authors_dict.items():
         if len(emails) > 1:
-            too_many_emails.append((last_first, emails))
+            too_many_emails.append((full_name, emails))
         else:
-            valid_authors_dict[last_first] = next(iter(emails), "")
+            valid_authors_dict[full_name] = next(iter(emails), "")
     if too_many_emails:
         err_output = []
         for author, emails in too_many_emails:

@@ -19,8 +19,8 @@ STATUS_VALUES = {
 SPECIAL_STATUSES = {
     "April Fool!": STATUS_REJECTED,  # See PEP 401 :)
 }
-# Draft PEPs have no status displayed, Active shares a key with Accepted
-HIDE_STATUS = {STATUS_DRAFT, STATUS_ACTIVE}
+# Draft PEPs have no status displayed
+HIDE_STATUS = {STATUS_DRAFT}
 # Dead PEP statuses
 DEAD_STATUSES = {STATUS_REJECTED, STATUS_WITHDRAWN, STATUS_SUPERSEDED}
 
@@ -32,3 +32,32 @@ TYPE_STANDARDS = "Standards Track"
 TYPE_VALUES = {TYPE_STANDARDS, TYPE_INFO, TYPE_PROCESS}
 # Active PEPs can only be for Informational or Process PEPs.
 ACTIVE_ALLOWED = {TYPE_PROCESS, TYPE_INFO}
+
+# map of topic -> additional description
+SUBINDICES_BY_TOPIC = {
+    "governance": """\
+These PEPs detail Python's governance, including governance model proposals
+and selection, and the results of the annual steering council elections.
+    """,
+    "packaging": """\
+Packaging PEPs follow the `PyPA specification update process`_.
+They are used to propose major additions or changes to the PyPA specifications.
+The canonical, up-to-date packaging specifications can be found on the
+`Python Packaging Authority`_ (PyPA) `specifications`_ page.
+
+.. _Python Packaging Authority: https://www.pypa.io/
+.. _specifications: https://packaging.python.org/en/latest/specifications/
+.. _PyPA specification update process: https://www.pypa.io/en/latest/specifications/#specification-update-process
+""",
+    "release": """\
+A PEP is written to specify the release cycle for each feature release of Python.
+See the `developer's guide`_ for more information.
+
+.. _developer's guide: https://devguide.python.org/devcycle/
+""",
+    "typing": """\
+Many recent PEPs propose changes to Python's static type system
+or otherwise relate to type annotations.
+They are listed here for reference.
+""",
+}

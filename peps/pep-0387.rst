@@ -1,0 +1,221 @@
+PEP: 387
+Title: Backwards Compatibility Policy
+Version: $Revision$
+Last-Modified: $Date$
+Author: Benjamin Peterson <benjamin@python.org>
+PEP-Delegate: Brett Cannon <brett@python.org>
+Status: Active
+Type: Process
+Content-Type: text/x-rst
+Created: 18-Jun-2009
+Post-History: `19-Jun-2009 <https://mail.python.org/archives/list/python-dev@python.org/thread/YAZQHFUCYEYIX5MIG6LFJLCVQ5ORVUM6/>`__,
+              `12-Jun-2020 <https://discuss.python.org/t/pep-387-backwards-compatibilty-policy/4421>`__,
+              `16-Jun-2023 <https://discuss.python.org/t/formalize-the-concept-of-soft-deprecation-dont-schedule-removal-in-pep-387-backwards-compatibility-policy/27957>`__
+
+
+Abstract
+========
+
+This PEP outlines Python's backwards compatibility policy.
+
+
+Rationale
+=========
+
+As one of the most used programming languages today [#tiobe]_, the
+Python core language and its standard library play a critical role in
+millions of applications and libraries. This is fantastic. However, it
+means the development team must be very careful not to break this
+existing 3rd party code with new releases.
+
+This PEP takes the perspective that "backwards incompatibility" means
+preexisting code ceases to comparatively function after a change. It is
+acknowledged that this is not a concrete definition, but the expectation
+is people in general understand what is meant by
+"backwards incompatibility", and if they are unsure they may ask the
+Python development team and/or steering council for guidance.
+
+
+Backwards Compatibility Rules
+=============================
+
+This policy applies to all public APIs.  These include:
+
+- Syntax and behavior of these constructs as defined by the reference
+  manual.
+
+- The C-API.
+
+- Function, class, module, attribute, and method names and types.
+
+- Given a set of arguments, the return value, side effects, and raised
+  exceptions of a function.  This does not preclude changes from
+  reasonable bug fixes.
+
+- The position and expected types of arguments and returned values.
+
+- Behavior of classes with regards to subclasses: the conditions under
+  which overridden methods are called.
+
+- Documented exceptions and the semantics which lead to their raising.
+
+- Exceptions commonly raised in EAFP scenarios.
+
+Others are explicitly not part of the public API.  They can change or
+be removed at any time in any way.  These include:
+
+- Function, class, module, attribute, method, and C-API names and
+  types that are prefixed by "_" (except special names).
+
+- Anything documented publicly as being private.
+  Note that if something is not documented at all, it is *not*
+  automatically considered private.
+
+- Imported modules (unless explicitly documented as part of the public
+  API; e.g. importing the ``bacon`` module in the ``spam`` does not
+  automatically mean ``spam.bacon`` is part of the public API unless
+  it is documented as such).
+
+- Inheritance patterns of internal classes.
+
+- Test suites.  (Anything in the ``Lib/test`` directory or test
+  subdirectories of packages.)
+
+- Backward compatibility rules do not apply to any module or API that is
+  explicitly documented as **Provisional** per :pep:`411`.
+
+
+Basic policy for backwards compatibility
+----------------------------------------
+
+* In general, incompatibilities should have a large benefit to
+  breakage ratio, and the incompatibility should be easy to resolve in
+  affected code.  For example, adding an stdlib module with the same
+  name as a third party package is generally not acceptable.  Adding
+  a method or attribute that conflicts with 3rd party code through
+  inheritance, however, is likely reasonable.
+
+* Unless it is going through the deprecation process below, the
+  behavior of an API *must* not change in an incompatible fashion
+  between any two consecutive releases.  Python's yearly release
+  process (:pep:`602`) means that the deprecation period must last at
+  least two years.
+
+* Similarly a feature cannot be removed without notice between any two
+  consecutive releases.
+
+* For changes that are unable to raise a deprecation warning, consult
+  with the steering council.
+
+* The steering council may grant exceptions to this policy. In
+  particular, they may shorten the required deprecation period for a
+  feature. Exceptions are only granted for extreme situations such as
+  dangerously broken or insecure features or features no one could
+  reasonably be depending on (e.g., support for completely obsolete
+  platforms).
+
+
+Soft Deprecation
+================
+
+A soft deprecation can be used when using an API which should no longer
+be used to write new code, but it remains safe to continue using it in
+existing code. The API remains documented and tested, but will not be
+developed further (no enhancement).
+
+The main difference between a "soft" and a (regular) "hard" deprecation
+is that the soft deprecation does not imply scheduling the removal of
+the deprecated API.
+
+Another difference is that a soft deprecation does not issue a warning:
+it's only mentioned in the documentation, whereas usually a "hard"
+deprecation issues a ``DeprecationWarning`` warning at runtime. The
+documentation of a soft deprecation should explain why the API should be
+avoided, and if possible propose a replacement.
+
+If the decision is made to deprecate (in the regular sense) a feature
+that is currently soft deprecated, the deprecation must follow the
+`Backwards Compatibility Rules`_ (i.e., there is no exception because
+the feature is already soft deprecated).
+
+
+Making Incompatible Changes
+===========================
+
+Making an incompatible change is a gradual process performed over
+several releases:
+
+1. Discuss the change.  Depending on the degree of incompatibility,
+   this could be on the bug tracker, python-dev, python-list, or the
+   appropriate SIG.  A PEP or similar document may be written.
+   Hopefully users of the affected API will pipe up to comment.
+
+2. Add a warning to the current ``main`` branch.
+   If behavior is changing, the API may gain a new
+   function or method to perform the new behavior; old usage should
+   raise the warning.  If an API is being removed, simply warn
+   whenever it is entered.  ``DeprecationWarning`` is the usual
+   warning category to use, but ``PendingDeprecationWarning`` may be
+   used in special cases where the old and new versions of the API will
+   coexist for many releases [#warnings]_.  The warning message should
+   include the release the incompatibility is expected to become the
+   default and a link to an issue that users can post feedback to.
+
+   For C API, a compiler warning generated by the ``Py_DEPRECATED`` macro
+   is also acceptable.
+
+3. Wait for the warning to appear in at least two minor Python
+   versions of the same major version, or one minor version in an older
+   major version (e.g. for a warning in Python 3.10.0, you either wait
+   until at least Python 3.12 or Python 4.0 to make the change).
+
+   It's fine to wait more than two releases, for example:
+
+   - If the expected maintenance overhead and security risk of the
+     deprecated behavior is small (e.g. an old function is reimplemented
+     in terms of a new, more general one), it can stay indefinitely
+     (or until the situation changes).
+
+   - If the deprecated feature is replaced by a new one, it should
+     generally be removed only after the last Python version
+     *without* the new feature reaches end of support.
+
+4. See if there's any feedback.  Users not involved in the original
+   discussions may comment now after seeing the warning.  Perhaps
+   reconsider.
+
+5. The behavior change or feature removal may now be made default or
+   permanent having reached the declared version. Remove the old
+   version and warning.
+
+6. If a warning cannot be provided to users, consult with the steering
+   council.
+
+
+References
+==========
+
+.. [#tiobe] TIOBE Programming Community Index
+
+   http://www.tiobe.com/index.php/content/paperinfo/tpci/index.html
+
+.. [#warnings] The warnings module
+
+   http://docs.python.org/library/warnings.html
+
+
+Copyright
+=========
+
+This document has been placed in the public domain.
+
+
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   coding: utf-8
+   End:

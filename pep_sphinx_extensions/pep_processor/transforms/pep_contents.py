@@ -17,8 +17,7 @@ class PEPContents(transforms.Transform):
         if not Path(self.document["source"]).match("pep-*"):
             return  # not a PEP file, exit early
         # Create the contents placeholder section
-        title = nodes.title("", "", nodes.Text("Contents"))
-        contents_section = nodes.section("", title)
+        contents_section = nodes.section("")
         if not self.document.has_name("contents"):
             contents_section["names"].append("contents")
         self.document.note_implicit_target(contents_section)
