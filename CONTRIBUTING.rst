@@ -37,8 +37,8 @@ which don't significantly impair meaning and understanding.
 
 If you're still unsure, we encourage you to reach out first before opening a
 PR here. For example, you could contact the PEP author(s), propose your idea in
-a discussion venue appropriate to the PEP (such as `Typing-SIG
-<https://mail.python.org/archives/list/typing-sig@python.org/>`__ for static
+a discussion venue appropriate to the PEP (such as `Typing Discourse
+<https://discuss.python.org/c/typing/>`__ for static
 typing, or `Packaging Discourse <https://discuss.python.org/c/packaging/>`__
 for packaging), or `open an issue <https://github.com/python/peps/issues>`__.
 
