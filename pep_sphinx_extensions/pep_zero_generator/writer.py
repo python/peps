@@ -111,8 +111,7 @@ class PEPZeroWriter:
     def emit_subtitle(self, text: str) -> None:
         self.emit_title(text, symbol="-")
 
-    def emit_pep_category(self, category: str, peps: list[PEP]) -> None:
-        self.emit_subtitle(category)
+    def emit_table(self, peps: list[PEP]):
         include_version = any(pep.details["python_version"] for pep in peps)
         self.emit_column_headers(include_version=include_version)
         for pep in peps:
@@ -120,6 +119,10 @@ class PEPZeroWriter:
             if not include_version:
                 details.pop("python_version")
             self.emit_pep_row(**details)
+
+    def emit_pep_category(self, category: str, peps: list[PEP]) -> None:
+        self.emit_subtitle(category)
+        self.emit_table(peps)
         # list-table must have at least one body row
         if len(peps) == 0:
             self.emit_text("   * -")
@@ -195,13 +198,7 @@ class PEPZeroWriter:
 
         # PEPs by number
         self.emit_title("Numerical Index")
-        include_version = any(pep.details["python_version"] for pep in peps)
-        self.emit_column_headers(include_version=include_version)
-        for pep in peps:
-            details = pep.details
-            if not include_version:
-                details.pop("python_version")
-            self.emit_pep_row(**details)
+        self.emit_table(peps)
 
         self.emit_newline()
 
