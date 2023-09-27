@@ -111,7 +111,7 @@ class PEPZeroWriter:
     def emit_subtitle(self, text: str) -> None:
         self.emit_title(text, symbol="-")
 
-    def emit_table(self, peps: list[PEP]):
+    def emit_table(self, peps: list[PEP]) -> None:
         include_version = any(pep.details["python_version"] for pep in peps)
         self.emit_column_headers(include_version=include_version)
         for pep in peps:
