@@ -74,14 +74,22 @@ class PEPZeroWriter:
         self.output.append(author_table_separator)
 
     def emit_pep_row(
-        self, *, shorthand: str, number: int, title: str, authors: str
+        self,
+        *,
+        shorthand: str,
+        number: int,
+        title: str,
+        authors: str,
+        python_version: str | None = None,
     ) -> None:
         self.emit_text(f"   * - {shorthand}")
         self.emit_text(f"     - :pep:`{number} <{number}>`")
         self.emit_text(f"     - :pep:`{title.replace('`', '')} <{number}>`")
         self.emit_text(f"     - {authors}")
+        if python_version is not None:
+            self.emit_text(f"     - {python_version}")
 
-    def emit_column_headers(self) -> None:
+    def emit_column_headers(self, *, include_version=True) -> None:
         """Output the column headers for the PEP indices."""
         self.emit_text(".. list-table::")
         self.emit_text("   :header-rows: 1")
@@ -92,6 +100,8 @@ class PEPZeroWriter:
         self.emit_text("     - PEP")
         self.emit_text("     - Title")
         self.emit_text("     - Authors")
+        if include_version:
+            self.emit_text("     - ")  # for Python-Version
 
     def emit_title(self, text: str, *, symbol: str = "=") -> None:
         self.output.append(text)
@@ -101,14 +111,22 @@ class PEPZeroWriter:
     def emit_subtitle(self, text: str) -> None:
         self.emit_title(text, symbol="-")
 
+    def emit_table(self, peps: list[PEP]) -> None:
+        include_version = any(pep.details["python_version"] for pep in peps)
+        self.emit_column_headers(include_version=include_version)
+        for pep in peps:
+            details = pep.details
+            if not include_version:
+                details.pop("python_version")
+            self.emit_pep_row(**details)
+
     def emit_pep_category(self, category: str, peps: list[PEP]) -> None:
         self.emit_subtitle(category)
-        self.emit_column_headers()
-        for pep in peps:
-            self.emit_pep_row(**pep.details)
+        self.emit_table(peps)
         # list-table must have at least one body row
         if len(peps) == 0:
             self.emit_text("   * -")
+            self.emit_text("     -")
             self.emit_text("     -")
             self.emit_text("     -")
             self.emit_text("     -")
@@ -180,19 +198,21 @@ class PEPZeroWriter:
 
         # PEPs by number
         self.emit_title("Numerical Index")
-        self.emit_column_headers()
-        for pep in peps:
-            self.emit_pep_row(**pep.details)
+        self.emit_table(peps)
 
         self.emit_newline()
 
         # Reserved PEP numbers
         if is_pep0:
             self.emit_title("Reserved PEP Numbers")
-            self.emit_column_headers()
+            self.emit_column_headers(include_version=False)
             for number, claimants in sorted(self.RESERVED.items()):
                 self.emit_pep_row(
-                    shorthand="", number=number, title="RESERVED", authors=claimants
+                    shorthand="",
+                    number=number,
+                    title="RESERVED",
+                    authors=claimants,
+                    python_version=None,
                 )
 
             self.emit_newline()
