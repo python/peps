@@ -42,6 +42,17 @@ a discussion venue appropriate to the PEP (such as `Typing Discourse
 typing, or `Packaging Discourse <https://discuss.python.org/c/packaging/>`__
 for packaging), or `open an issue <https://github.com/python/peps/issues>`__.
 
+Creating a PEP PR
+-----------------
+
+If you use the Github command line tool, you may be accustomed to creating PRs by
+following the URL that is provided after pushing a new branch. **Do not use this link**,
+as it does not provide the option to populate the PR template.
+
+Instead, after pushing your branch, you should visit `https://github.com/python/peps
+<https://github.com/python/peps>`__, and follow the link in the yellow notification
+about recent changes to your branch. This will allow you to select a PR template for
+your new PR.
 
 Commit messages and PR titles
 -----------------------------
@@ -56,7 +67,7 @@ the Readme/Contributing Guide, issue/PR template, etc., with ``Meta:``.
 Sign the Contributor License Agreement
 --------------------------------------
 
-All contributors need to sign the 
+All contributors need to sign the
 `PSF Contributor Agreement <https://www.python.org/psf/contrib/contrib-form/>`_.
 to ensure we legally accept your work.
 
