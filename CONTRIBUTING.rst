@@ -48,7 +48,7 @@ Opening a pull request
 The PEPs repository defines a set of pull request templates, which should be
 used when opening a PR.
 
-If you use the git from the command line, you may be accustomed to creating PRs
+If you use Git from the command line, you may be accustomed to creating PRs
 by following the URL that is provided after pushing a new branch. **Do not use
 this link**, as it does not provide the option to populate the PR template.
 
@@ -58,7 +58,7 @@ and then give you the option of continuing editing in your broswer.
 
 Alternatively, after pushing your branch, you can visit
 `https://github.com/python/peps <https://github.com/python/peps>`__, and follow
-the link in the yellow notification about recent changes to your branch to
+the link in the notification about recent changes to your branch to
 create a new PR. The in-browser interface will allow you to select a PR template
 for your new PR.
 
