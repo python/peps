@@ -42,17 +42,25 @@ a discussion venue appropriate to the PEP (such as `Typing Discourse
 typing, or `Packaging Discourse <https://discuss.python.org/c/packaging/>`__
 for packaging), or `open an issue <https://github.com/python/peps/issues>`__.
 
-Creating a PEP PR
------------------
+Opening a pull request
+----------------------
 
-If you use the Github command line tool, you may be accustomed to creating PRs by
-following the URL that is provided after pushing a new branch. **Do not use this link**,
-as it does not provide the option to populate the PR template.
+The PEPs repository defines a set of pull request templates, which should be
+used when opening a PR.
 
-Instead, after pushing your branch, you should visit `https://github.com/python/peps
-<https://github.com/python/peps>`__, and follow the link in the yellow notification
-about recent changes to your branch. This will allow you to select a PR template for
-your new PR.
+If you use the git from the command line, you may be accustomed to creating PRs
+by following the URL that is provided after pushing a new branch. **Do not use
+this link**, as it does not provide the option to populate the PR template.
+
+However, you *can* use the ``gh`` command line tool. ``gh pr create`` will allow
+you to create a pull request, will prompt you for the template you wish to use,
+and then give you the option of continuing editing in your broswer.
+
+Alternatively, after pushing your branch, you can visit
+`https://github.com/python/peps <https://github.com/python/peps>`__, and follow
+the link in the yellow notification about recent changes to your branch to
+create a new PR. The in-browser interface will allow you to select a PR template
+for your new PR.
 
 Commit messages and PR titles
 -----------------------------
