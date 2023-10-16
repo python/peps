@@ -46,7 +46,7 @@ def test_pep_equal():
         (
             "pep-0008.rst",
             {
-                "authors": "Guido van Rossum, Barry Warsaw, Nick Coghlan",
+                "authors": "Guido van Rossum, Barry Warsaw, Alyssa Coghlan",
                 "number": 8,
                 "shorthand": ":abbr:`PA (Process, Active)`",
                 "title": "Style Guide for Python Code",
