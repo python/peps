@@ -415,9 +415,9 @@ def _validate_post_history(line_num: int, body: str) -> MessageIterator:
     for offset, line in enumerate(body.removesuffix(",").split("\n"), start=line_num):
         for post in line.removesuffix(",").strip().split(", "):
             match (post.startswith("`"), post.endswith(">`__")):
-                case (True, True):
-                    yield from _date(offset, post, "Post-History")
                 case (False, False):
+                    yield from _date(offset, post, "Post-History")
+                case (True, True):
                     post_date, post_url = post[1:-4].split(" <")
                     yield from _date(offset, post_date, "Post-History")
                     yield from _thread(offset, post_url, "Post-History")
