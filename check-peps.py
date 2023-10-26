@@ -421,7 +421,7 @@ def _validate_post_history(line_num: int, body: str) -> MessageIterator:
                 yield from _date(offset, post_date, "Post-History")
                 yield from _thread(offset, post_url, "Post-History")
             else:
-                yield line, f"post line must start with “`” and end with “>`__”"
+                yield offset, f"post line must start with “`” and end with “>`__”"
 
 
 def _validate_resolution(line_num: int, line: str) -> MessageIterator:
