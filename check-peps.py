@@ -416,10 +416,12 @@ def _validate_post_history(line_num: int, body: str) -> MessageIterator:
         for post in line.removesuffix(",").strip().split(", "):
             if not post.startswith("`") and not post.endswith(">`__"):
                 yield from _date(offset, post, "Post-History")
-            else:
+            elif post.startswith("`") and post.endswith(">`__"):
                 post_date, post_url = post[1:-4].split(" <")
                 yield from _date(offset, post_date, "Post-History")
                 yield from _thread(offset, post_url, "Post-History")
+            else:
+                yield line, f"post line must start with “`” and end with “>`__”"
 
 
 def _validate_resolution(line_num: int, line: str) -> MessageIterator:
