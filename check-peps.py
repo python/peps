@@ -414,12 +414,15 @@ def _validate_post_history(line_num: int, body: str) -> MessageIterator:
 
     for offset, line in enumerate(body.removesuffix(",").split("\n"), start=line_num):
         for post in line.removesuffix(",").strip().split(", "):
-            if not post.startswith("`") and not post.endswith(">`__"):
-                yield from _date(offset, post, "Post-History")
-            else:
-                post_date, post_url = post[1:-4].split(" <")
-                yield from _date(offset, post_date, "Post-History")
-                yield from _thread(offset, post_url, "Post-History")
+            match (post.startswith("`"), post.endswith(">`__")):
+                case (True, True):
+                    yield from _date(offset, post, "Post-History")
+                case (False, False):
+                    post_date, post_url = post[1:-4].split(" <")
+                    yield from _date(offset, post_date, "Post-History")
+                    yield from _thread(offset, post_url, "Post-History")
+                case _:
+                    yield offset, f"post line must be a date or both start with “`” and end with “>`__”"
 
 
 def _validate_resolution(line_num: int, line: str) -> MessageIterator:
