@@ -18,7 +18,7 @@ from pep_sphinx_extensions.pep_zero_generator.constants import (
 
 
 @pytest.mark.parametrize(
-    "test_input, expected",
+    ("test_input", "expected"),
     [
         ("my-mailing-list@example.com", "my-mailing-list@example.com"),
         ("python-tulip@googlegroups.com", "https://groups.google.com/g/python-tulip"),
@@ -37,7 +37,7 @@ def test_generate_list_url(test_input, expected):
 
 
 @pytest.mark.parametrize(
-    "test_input, expected",
+    ("test_input", "expected"),
     [
         (
             "https://mail.python.org/pipermail/python-3000/2006-November/004190.html",
@@ -72,7 +72,7 @@ def test_process_pretty_url(test_input, expected):
 
 
 @pytest.mark.parametrize(
-    "test_input, expected",
+    ("test_input", "expected"),
     [
         (
             "https://example.com/",
@@ -94,7 +94,7 @@ def test_process_pretty_url_invalid(test_input, expected):
 
 
 @pytest.mark.parametrize(
-    "test_input, expected",
+    ("test_input", "expected"),
     [
         (
             "https://mail.python.org/pipermail/python-3000/2006-November/004190.html",
@@ -129,7 +129,7 @@ def test_make_link_pretty(test_input, expected):
 
 
 @pytest.mark.parametrize(
-    "test_input, expected",
+    ("test_input", "expected"),
     [
         (STATUS_ACCEPTED, "Normative proposal accepted for implementation"),
         (STATUS_ACTIVE, "Currently valid informational guidance, or an in-use process"),
@@ -155,7 +155,7 @@ def test_abbreviate_status_unknown():
 
 
 @pytest.mark.parametrize(
-    "test_input, expected",
+    ("test_input", "expected"),
     [
         (
             TYPE_INFO,

@@ -1,0 +1,1285 @@
+PEP: 346
+Title: User Defined ("``with``") Statements
+Version: $Revision$
+Last-Modified: $Date$
+Author: Alyssa Coghlan <ncoghlan@gmail.com>
+Status: Withdrawn
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 06-May-2005
+Python-Version: 2.5
+Post-History:
+
+
+Abstract
+========
+
+This PEP is a combination of :pep:`310`'s "Reliable Acquisition/Release
+Pairs" with the "Anonymous Block Statements" of Guido's :pep:`340`.  This
+PEP aims to take the good parts of :pep:`340`, blend them with parts of
+:pep:`310` and rearrange the lot into an elegant whole.  It borrows from
+various other PEPs in order to paint a complete picture, and is
+intended to stand on its own.
+
+
+Author's Note
+=============
+
+During the discussion of :pep:`340`, I maintained drafts of this PEP as
+PEP 3XX on my own website (since I didn't have CVS access to update a
+submitted PEP fast enough to track the activity on python-dev).
+
+Since the first draft of this PEP, Guido wrote :pep:`343` as a simplified
+version of :pep:`340`.  :pep:`343` (at the time of writing) uses the exact
+same semantics for the new statements as this PEP, but uses a slightly
+different mechanism to allow generators to be used to write statement
+templates.  However, Guido has indicated that he intends to accept a
+new PEP being written by Raymond Hettinger that will integrate :pep:`288`
+and :pep:`325`, and will permit a generator decorator like the one
+described in this PEP to be used to write statement templates for PEP
+343. The other difference was the choice of keyword ('with' versus
+'do') and Guido has stated he will organise a vote on that in the
+context of :pep:`343`.
+
+Accordingly, the version of this PEP submitted for archiving on
+python.org is to be WITHDRAWN immediately after submission.  :pep:`343`
+and the combined generator enhancement PEP will cover the important
+ideas.
+
+
+Introduction
+============
+
+This PEP proposes that Python's ability to reliably manage resources
+be enhanced by the introduction of a new ``with`` statement that
+allows factoring out of arbitrary ``try``/``finally`` and some
+``try``/``except``/``else`` boilerplate.  The new construct is called
+a 'user defined statement', and the associated class definitions are
+called 'statement templates'.
+
+The above is the main point of the PEP.  However, if that was all it
+said, then :pep:`310` would be sufficient and this PEP would be
+essentially redundant. Instead, this PEP recommends additional
+enhancements that make it natural to write these statement templates
+using appropriately decorated generators.  A side effect of those
+enhancements is that it becomes important to appropriately deal
+with the management of resources inside generators.
+
+This is quite similar to :pep:`343`, but the exceptions that occur are
+re-raised inside the generators frame, and the issue of generator
+finalisation needs to be addressed as a result.  The template
+generator decorator suggested by this PEP also creates reusable
+templates, rather than the single use templates of :pep:`340`.
+
+In comparison to :pep:`340`, this PEP eliminates the ability to suppress
+exceptions, and makes the user defined statement a non-looping
+construct.  The other main difference is the use of a decorator to
+turn generators into statement templates, and the incorporation of
+ideas for addressing iterator finalisation.
+
+If all that seems like an ambitious operation. . . well, Guido was the
+one to set the bar that high when he wrote :pep:`340` :)
+
+
+Relationship with other PEPs
+============================
+
+This PEP competes directly with :pep:`310`, :pep:`340` and :pep:`343`,
+as those PEPs all describe alternative mechanisms for handling
+deterministic resource management.
+
+It does not compete with :pep:`342` which splits off :pep:`340`'s
+enhancements related to passing data into iterators.  The associated
+changes to the ``for`` loop semantics would be combined with the
+iterator finalisation changes suggested in this PEP.  User defined
+statements would not be affected.
+
+Neither does this PEP compete with the generator enhancements
+described in :pep:`288`.  While this PEP proposes the ability to
+inject exceptions into generator frames, it is an internal
+implementation detail, and does not require making that ability
+publicly available to Python code.  :pep:`288` is, in part, about
+making that implementation detail easily accessible.
+
+This PEP would, however, make the generator resource release support
+described in :pep:`325` redundant - iterators which require
+finalisation should provide an appropriate implementation of the
+statement template protocol.
+
+
+User defined statements
+=======================
+
+To steal the motivating example from :pep:`310`, correct handling of a
+synchronisation lock currently looks like this::
+
+    the_lock.acquire()
+    try:
+        # Code here executes with the lock held
+    finally:
+        the_lock.release()
+
+Like :pep:`310`, this PEP proposes that such code be able to be written
+as::
+
+    with the_lock:
+        # Code here executes with the lock held
+
+These user defined statements are primarily designed to allow easy
+factoring of ``try`` blocks that are not easily converted to
+functions.  This is most commonly the case when the exception handling
+pattern is consistent, but the body of the ``try`` block changes.
+With a user-defined statement, it is straightforward to factor out the
+exception handling into a statement template, with the body of the
+``try`` clause provided inline in the user code.
+
+The term 'user defined statement' reflects the fact that the meaning
+of a ``with`` statement is governed primarily by the statement
+template used, and programmers are free to create their own statement
+templates, just as they are free to create their own iterators for use
+in ``for`` loops.
+
+
+Usage syntax for user defined statements
+----------------------------------------
+
+The proposed syntax is simple::
+
+    with EXPR1 [as VAR1]:
+        BLOCK1
+
+
+Semantics for user defined statements
+-------------------------------------
+
+::
+
+    the_stmt = EXPR1
+    stmt_enter = getattr(the_stmt, "__enter__", None)
+    stmt_exit = getattr(the_stmt, "__exit__", None)
+    if stmt_enter is None or stmt_exit is None:
+        raise TypeError("Statement template required")
+
+    VAR1 = stmt_enter() # Omit 'VAR1 =' if no 'as' clause
+    exc = (None, None, None)
+    try:
+        try:
+            BLOCK1
+        except:
+            exc = sys.exc_info()
+            raise
+    finally:
+        stmt_exit(*exc)
+
+
+Other than ``VAR1``, none of the local variables shown above will be
+visible to user code.  Like the iteration variable in a ``for`` loop,
+``VAR1`` is visible in both ``BLOCK1`` and code following the user
+defined statement.
+
+Note that the statement template can only react to exceptions, it
+cannot suppress them.  See `Rejected Options`_ for an explanation as
+to why.
+
+
+Statement template protocol: ``__enter__``
+------------------------------------------
+
+The ``__enter__()`` method takes no arguments, and if it raises an
+exception, ``BLOCK1`` is never executed.  If this happens, the
+``__exit__()`` method is not called.  The value returned by this
+method is assigned to VAR1 if the ``as`` clause is used.  Object's
+with no other value to return should generally return ``self`` rather
+than ``None`` to permit in-place creation in the ``with`` statement.
+
+Statement templates should use this method to set up the conditions
+that are to exist during execution of the statement (e.g. acquisition
+of a synchronisation lock).
+
+Statement templates which are not always usable (e.g. closed file
+objects) should raise a ``RuntimeError`` if an attempt is made to call
+``__enter__()`` when the template is not in a valid state.
+
+
+Statement template protocol: ``__exit__``
+-----------------------------------------
+
+The ``__exit__()`` method accepts three arguments which correspond to
+the three "arguments" to the ``raise`` statement: type, value, and
+traceback.  All arguments are always supplied, and will be set to
+``None`` if no exception occurred.  This method will be called exactly
+once by the ``with`` statement machinery if the ``__enter__()`` method
+completes successfully.
+
+Statement templates perform their exception handling in this method.
+If the first argument is ``None``, it indicates non-exceptional
+completion of ``BLOCK1`` - execution either reached the end of block,
+or early completion was forced using a ``return``, ``break`` or
+``continue`` statement.  Otherwise, the three arguments reflect the
+exception that terminated ``BLOCK1``.
+
+Any exceptions raised by the ``__exit__()`` method are propagated to
+the scope containing the ``with`` statement.  If the user code in
+``BLOCK1`` also raised an exception, that exception would be lost, and
+replaced by the one raised by the ``__exit__()`` method.
+
+
+Factoring out arbitrary exception handling
+------------------------------------------
+
+Consider the following exception handling arrangement::
+
+    SETUP_BLOCK
+    try:
+        try:
+            TRY_BLOCK
+        except exc_type1, exc:
+            EXCEPT_BLOCK1
+        except exc_type2, exc:
+            EXCEPT_BLOCK2
+        except:
+            EXCEPT_BLOCK3
+        else:
+            ELSE_BLOCK
+    finally:
+        FINALLY_BLOCK
+
+It can be roughly translated to a statement template as follows::
+
+    class my_template(object):
+
+        def __init__(self, *args):
+            # Any required arguments (e.g. a file name)
+            # get stored in member variables
+            # The various BLOCK's will need updating to reflect
+            # that.
+
+        def __enter__(self):
+            SETUP_BLOCK
+
+        def __exit__(self, exc_type, value, traceback):
+            try:
+                try:
+                    if exc_type is not None:
+                        raise exc_type, value, traceback
+                except exc_type1, exc:
+                    EXCEPT_BLOCK1
+                except exc_type2, exc:
+                    EXCEPT_BLOCK2
+                except:
+                    EXCEPT_BLOCK3
+                else:
+                    ELSE_BLOCK
+            finally:
+                FINALLY_BLOCK
+
+Which can then be used as::
+
+    with my_template(*args):
+        TRY_BLOCK
+
+However, there are two important semantic differences between this
+code and the original ``try`` statement.
+
+Firstly, in the original ``try`` statement, if a ``break``, ``return``
+or ``continue`` statement is encountered in ``TRY_BLOCK``, only
+``FINALLY_BLOCK`` will be executed as the statement completes.  With
+the statement template, ``ELSE_BLOCK`` will also execute, as these
+statements are treated like any other non-exceptional block
+termination.  For use cases where it matters, this is likely to be a
+good thing (see ``transaction`` in the Examples_), as this hole where
+neither the ``except`` nor the ``else`` clause gets executed is easy
+to forget when writing exception handlers.
+
+Secondly, the statement template will not suppress any exceptions.
+If, for example, the original code suppressed the ``exc_type1`` and
+``exc_type2`` exceptions, then this would still need to be done inline
+in the user code::
+
+    try:
+        with my_template(*args):
+            TRY_BLOCK
+    except (exc_type1, exc_type2):
+        pass
+
+However, even in these cases where the suppression of exceptions needs
+to be made explicit, the amount of boilerplate repeated at the calling
+site is significantly reduced (See `Rejected Options`_ for further
+discussion of this behaviour).
+
+In general, not all of the clauses will be needed.  For resource
+handling (like files or synchronisation locks), it is possible to
+simply execute the code that would have been part of ``FINALLY_BLOCK``
+in the ``__exit__()`` method.  This can be seen in the following
+implementation that makes synchronisation locks into statement
+templates as mentioned at the beginning of this section::
+
+    # New methods of synchronisation lock objects
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc_info):
+        self.release()
+
+
+Generators
+==========
+
+With their ability to suspend execution, and return control to the
+calling frame, generators are natural candidates for writing statement
+templates.  Adding user defined statements to the language does *not*
+require the generator changes described in this section, thus making
+this PEP an obvious candidate for a phased implementation (``with``
+statements in phase 1, generator integration in phase 2).  The
+suggested generator updates allow arbitrary exception handling to
+be factored out like this::
+
+    @statement_template
+    def my_template(*arguments):
+        SETUP_BLOCK
+        try:
+            try:
+                yield
+            except exc_type1, exc:
+                EXCEPT_BLOCK1
+            except exc_type2, exc:
+                EXCEPT_BLOCK2
+            except:
+                EXCEPT_BLOCK3
+            else:
+                ELSE_BLOCK
+        finally:
+            FINALLY_BLOCK
+
+Notice that, unlike the class based version, none of the blocks need
+to be modified, as shared values are local variables of the
+generator's internal frame, including the arguments passed in by the
+invoking code.  The semantic differences noted earlier (all
+non-exceptional block termination triggers the ``else`` clause, and
+the template is unable to suppress exceptions) still apply.
+
+
+Default value for ``yield``
+---------------------------
+
+When creating a statement template with a generator, the ``yield``
+statement will often be used solely to return control to the body of
+the user defined statement, rather than to return a useful value.
+
+Accordingly, if this PEP is accepted, ``yield``, like ``return``, will
+supply a default value of ``None`` (i.e. ``yield`` and ``yield None``
+will become equivalent statements).
+
+This same change is being suggested in :pep:`342`.  Obviously, it would
+only need to be implemented once if both PEPs were accepted :)
+
+
+Template generator decorator: ``statement_template``
+----------------------------------------------------
+
+As with :pep:`343`, a new decorator is suggested that wraps a generator
+in an object with the appropriate statement template semantics.
+Unlike :pep:`343`, the templates suggested here are reusable, as the
+generator is instantiated anew in each call to ``__enter__()``.
+Additionally, any exceptions that occur in ``BLOCK1`` are re-raised in
+the generator's internal frame::
+
+    class template_generator_wrapper(object):
+
+        def __init__(self, func, func_args, func_kwds):
+             self.func = func
+             self.args = func_args
+             self.kwds = func_kwds
+             self.gen = None
+
+        def __enter__(self):
+            if self.gen is not None:
+                raise RuntimeError("Enter called without exit!")
+            self.gen = self.func(*self.args, **self.kwds)
+            try:
+                return self.gen.next()
+            except StopIteration:
+                raise RuntimeError("Generator didn't yield")
+
+        def __exit__(self, *exc_info):
+            if self.gen is None:
+                raise RuntimeError("Exit called without enter!")
+            try:
+                try:
+                    if exc_info[0] is not None:
+                        self.gen._inject_exception(*exc_info)
+                    else:
+                        self.gen.next()
+                except StopIteration:
+                    pass
+                else:
+                    raise RuntimeError("Generator didn't stop")
+            finally:
+                self.gen = None
+
+    def statement_template(func):
+        def factory(*args, **kwds):
+            return template_generator_wrapper(func, args, kwds)
+        return factory
+
+
+Template generator wrapper: ``__enter__()`` method
+--------------------------------------------------
+
+The template generator wrapper has an ``__enter__()`` method that
+creates a new instance of the contained generator, and then invokes
+``next()`` once.  It will raise a ``RuntimeError`` if the last
+generator instance has not been cleaned up, or if the generator
+terminates instead of yielding a value.
+
+
+Template generator wrapper: ``__exit__()`` method
+-------------------------------------------------
+
+The template generator wrapper has an ``__exit__()`` method that
+simply invokes ``next()`` on the generator if no exception is passed
+in.  If an exception is passed in, it is re-raised in the contained
+generator at the point of the last ``yield`` statement.
+
+In either case, the generator wrapper will raise a RuntimeError if the
+internal frame does not terminate as a result of the operation.  The
+``__exit__()`` method will always clean up the reference to the used
+generator instance, permitting ``__enter__()`` to be called again.
+
+A ``StopIteration`` raised by the body of the user defined statement
+may be inadvertently suppressed inside the ``__exit__()`` method, but
+this is unimportant, as the originally raised exception still
+propagates correctly.
+
+
+Injecting exceptions into generators
+------------------------------------
+
+To implement the ``__exit__()`` method of the template generator
+wrapper, it is necessary to inject exceptions into the internal frame
+of the generator.  This is new implementation level behaviour that has
+no current Python equivalent.
+
+The injection mechanism (referred to as ``_inject_exception`` in this
+PEP) raises an exception in the generator's frame with the specified
+type, value and traceback information.  This means that the exception
+looks like the original if it is allowed to propagate.
+
+For the purposes of this PEP, there is no need to make this capability
+available outside the Python implementation code.
+
+
+Generator finalisation
+----------------------
+
+To support resource management in template generators, this PEP will
+eliminate the restriction on ``yield`` statements inside the ``try``
+block of a ``try``/``finally`` statement.  Accordingly, generators
+which require the use of a file or some such object can ensure the
+object is managed correctly through the use of ``try``/``finally`` or
+``with`` statements.
+
+This restriction will likely need to be lifted globally - it would be
+difficult to restrict it so that it was only permitted inside
+generators used to define statement templates.  Accordingly, this PEP
+includes suggestions designed to ensure generators which are not used
+as statement templates are still finalised appropriately.
+
+
+Generator finalisation: ``TerminateIteration`` exception
+--------------------------------------------------------
+
+A new exception is proposed::
+
+    class TerminateIteration(Exception): pass
+
+The new exception is injected into a generator in order to request
+finalisation.  It should not be suppressed by well-behaved code.
+
+
+Generator finalisation: ``__del__()`` method
+--------------------------------------------
+
+To ensure a generator is finalised eventually (within the limits of
+Python's garbage collection), generators will acquire a ``__del__()``
+method with the following semantics::
+
+    def __del__(self):
+        try:
+            self._inject_exception(TerminateIteration, None, None)
+        except TerminateIteration:
+            pass
+
+
+Deterministic generator finalisation
+------------------------------------
+
+There is a simple way to provide deterministic finalisation of
+generators - give them appropriate ``__enter__()`` and ``__exit__()``
+methods::
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        try:
+            self._inject_exception(TerminateIteration, None, None)
+        except TerminateIteration:
+            pass
+
+Then any generator can be finalised promptly by wrapping the relevant
+``for`` loop inside a ``with`` statement::
+
+    with all_lines(filenames) as lines:
+        for line in lines:
+            print lines
+
+(See the Examples_ for the definition of ``all_lines``, and the reason
+it requires prompt finalisation)
+
+Compare the above example to the usage of file objects::
+
+    with open(filename) as f:
+        for line in f:
+            print f
+
+
+Generators as user defined statement templates
+----------------------------------------------
+
+When used to implement a user defined statement, a generator should
+yield only once on a given control path.  The result of that yield
+will then be provided as the result of the generator's ``__enter__()``
+method.  Having a single ``yield`` on each control path ensures that
+the internal frame will terminate when the generator's ``__exit__()``
+method is called.  Multiple ``yield`` statements on a single control
+path will result in a ``RuntimeError`` being raised by the
+``__exit__()`` method when the internal frame fails to terminate
+correctly.  Such an error indicates a bug in the statement template.
+
+To respond to exceptions, or to clean up resources, it is sufficient
+to wrap the ``yield`` statement in an appropriately constructed
+``try`` statement.  If execution resumes after the ``yield`` without
+an exception, the generator knows that the body of the ``do``
+statement completed without incident.
+
+
+Examples
+========
+
+1. A template for ensuring that a lock, acquired at the start of a
+   block, is released when the block is left::
+
+       # New methods on synchronisation locks
+           def __enter__(self):
+               self.acquire()
+               return self
+
+           def __exit__(self, *exc_info):
+               lock.release()
+
+   Used as follows::
+
+       with myLock:
+           # Code here executes with myLock held.  The lock is
+           # guaranteed to be released when the block is left (even
+           # if via return or by an uncaught exception).
+
+2. A template for opening a file that ensures the file is closed when
+   the block is left::
+
+       # New methods on file objects
+           def __enter__(self):
+               if self.closed:
+                   raise RuntimeError, "Cannot reopen closed file handle"
+               return self
+
+           def __exit__(self, *args):
+               self.close()
+
+   Used as follows::
+
+       with open("/etc/passwd") as f:
+           for line in f:
+               print line.rstrip()
+
+3. A template for committing or rolling back a database transaction::
+
+       def transaction(db):
+           try:
+               yield
+           except:
+               db.rollback()
+           else:
+               db.commit()
+
+   Used as follows::
+
+       with transaction(the_db):
+           make_table(the_db)
+           add_data(the_db)
+           # Getting to here automatically triggers a commit
+           # Any exception automatically triggers a rollback
+
+4. It is possible to nest blocks and combine templates::
+
+       @statement_template
+       def lock_opening(lock, filename, mode="r"):
+           with lock:
+               with open(filename, mode) as f:
+                   yield f
+
+   Used as follows::
+
+       with lock_opening(myLock, "/etc/passwd") as f:
+           for line in f:
+               print line.rstrip()
+
+5. Redirect stdout temporarily::
+
+       @statement_template
+       def redirected_stdout(new_stdout):
+           save_stdout = sys.stdout
+           try:
+               sys.stdout = new_stdout
+               yield
+           finally:
+               sys.stdout = save_stdout
+
+   Used as follows::
+
+       with open(filename, "w") as f:
+           with redirected_stdout(f):
+               print "Hello world"
+
+6. A variant on ``open()`` that also returns an error condition::
+
+       @statement_template
+       def open_w_error(filename, mode="r"):
+           try:
+               f = open(filename, mode)
+           except IOError, err:
+               yield None, err
+           else:
+               try:
+                   yield f, None
+               finally:
+                   f.close()
+
+   Used as follows::
+
+       do open_w_error("/etc/passwd", "a") as f, err:
+           if err:
+               print "IOError:", err
+           else:
+               f.write("guido::0:0::/:/bin/sh\n")
+
+7. Find the first file with a specific header::
+
+       for name in filenames:
+           with open(name) as f:
+               if f.read(2) == 0xFEB0:
+                   break
+
+8. Find the first item you can handle, holding a lock for the entire
+   loop, or just for each iteration::
+
+       with lock:
+           for item in items:
+               if handle(item):
+                   break
+
+       for item in items:
+           with lock:
+               if handle(item):
+                   break
+
+9. Hold a lock while inside a generator, but release it when
+   returning control to the outer scope::
+
+       @statement_template
+       def released(lock):
+           lock.release()
+           try:
+               yield
+           finally:
+               lock.acquire()
+
+   Used as follows::
+
+       with lock:
+           for item in items:
+               with released(lock):
+                   yield item
+
+10. Read the lines from a collection of files (e.g. processing
+    multiple configuration sources)::
+
+        def all_lines(filenames):
+            for name in filenames:
+                with open(name) as f:
+                    for line in f:
+                        yield line
+
+    Used as follows::
+
+        with all_lines(filenames) as lines:
+            for line in lines:
+                update_config(line)
+
+11. Not all uses need to involve resource management::
+
+        @statement_template
+        def tag(*args, **kwds):
+            name = cgi.escape(args[0])
+            if kwds:
+                kwd_pairs = ["%s=%s" % cgi.escape(key), cgi.escape(value)
+                             for key, value in kwds]
+                print '<%s %s>' % name, " ".join(kwd_pairs)
+            else:
+                print '<%s>' % name
+            yield
+            print '</%s>' % name
+
+    Used as follows::
+
+        with tag('html'):
+            with tag('head'):
+               with tag('title'):
+                  print 'A web page'
+            with tag('body'):
+               for par in pars:
+                  with tag('p'):
+                     print par
+               with tag('a', href="http://www.python.org"):
+                   print "Not a dead parrot!"
+
+12. From :pep:`343`, another useful example would be an operation that
+    blocks signals.  The use could be like this::
+
+        from signal import blocked_signals
+
+        with blocked_signals():
+            # code executed without worrying about signals
+
+    An optional argument might be a list of signals to be blocked; by
+    default all signals are blocked.  The implementation is left as an
+    exercise to the reader.
+
+13. Another use for this feature is for Decimal contexts::
+
+        # New methods on decimal Context objects
+
+        def __enter__(self):
+            if self._old_context is not None:
+                raise RuntimeError("Already suspending other Context")
+            self._old_context = getcontext()
+            setcontext(self)
+
+        def __exit__(self, *args):
+            setcontext(self._old_context)
+            self._old_context = None
+
+    Used as follows::
+
+        with decimal.Context(precision=28):
+           # Code here executes with the given context
+           # The context always reverts after this statement
+
+
+Open Issues
+===========
+
+None, as this PEP has been withdrawn.
+
+
+Rejected Options
+================
+
+Having the basic construct be a looping construct
+-------------------------------------------------
+
+The major issue with this idea, as illustrated by :pep:`340`'s
+``block`` statements, is that it causes problems with factoring
+``try`` statements that are inside loops, and contain ``break`` and
+``continue`` statements (as these statements would then apply to the
+``block`` construct, instead of the original loop).  As a key goal is
+to be able to factor out arbitrary exception handling (other than
+suppression) into statement templates, this is a definite problem.
+
+There is also an understandability problem, as can be seen in the
+Examples_.  In the example showing acquisition of a lock either for an
+entire loop, or for each iteration of the loop, if the user defined
+statement was itself a loop, moving it from outside the ``for`` loop
+to inside the ``for`` loop would have major semantic implications,
+beyond those one would expect.
+
+Finally, with a looping construct, there are significant problems with
+TOOWTDI, as it is frequently unclear whether a particular situation
+should be handled with a conventional ``for`` loop or the new looping
+construct.  With the current PEP, there is no such problem - ``for``
+loops continue to be used for iteration, and the new ``do`` statements
+are used to factor out exception handling.
+
+Another issue, specifically with :pep:`340`'s anonymous block statements,
+is that they make it quite difficult to write statement templates
+directly (i.e. not using a generator).  This problem is addressed by
+the current proposal, as can be seen by the relative simplicity of the
+various class based implementations of statement templates in the
+Examples_.
+
+
+Allowing statement templates to suppress exceptions
+---------------------------------------------------
+
+Earlier versions of this PEP gave statement templates the ability to
+suppress exceptions.  The BDFL expressed concern over the associated
+complexity, and I agreed after reading an article by Raymond Chen
+about the evils of hiding flow control inside macros in C code [1]_.
+
+Removing the suppression ability eliminated a whole lot of complexity
+from both the explanation and implementation of user defined
+statements, further supporting it as the correct choice.  Older
+versions of the PEP had to jump through some horrible hoops to avoid
+inadvertently suppressing exceptions in ``__exit__()`` methods - that
+issue does not exist with the current suggested semantics.
+
+There was one example (``auto_retry``) that actually used the ability
+to suppress exceptions.  This use case, while not quite as elegant,
+has significantly more obvious control flow when written out in full
+in the user code::
+
+  def attempts(num_tries):
+      return reversed(xrange(num_tries))
+
+  for retry in attempts(3):
+      try:
+          make_attempt()
+      except IOError:
+          if not retry:
+              raise
+
+For what it's worth, the perverse could still write this as::
+
+  for attempt in auto_retry(3, IOError):
+      try:
+          with attempt:
+              make_attempt()
+      except FailedAttempt:
+          pass
+
+To protect the innocent, the code to actually support that is not
+included here.
+
+
+Differentiating between non-exceptional exits
+---------------------------------------------
+
+Earlier versions of this PEP allowed statement templates to
+distinguish between exiting the block normally, and exiting via a
+``return``, ``break`` or ``continue`` statement.  The BDFL flirted
+with a similar idea in :pep:`343` and its associated discussion.  This
+added significant complexity to the description of the semantics, and
+it required each and every statement template to decide whether or not
+those statements should be treated like exceptions, or like a normal
+mechanism for exiting the block.
+
+This template-by-template decision process raised great potential for
+confusion - consider if one database connector provided a transaction
+template that treated early exits like an exception, whereas a second
+connector treated them as normal block termination.
+
+Accordingly, this PEP now uses the simplest solution - early exits
+appear identical to normal block termination as far as the statement
+template is concerned.
+
+
+Not injecting raised exceptions into generators
+-----------------------------------------------
+
+:pep:`343` suggests simply invoking next() unconditionally on generators
+used to define statement templates.  This means the template
+generators end up looking rather unintuitive, and the retention of the
+ban against yielding inside ``try``/``finally`` means that Python's
+exception handling capabilities cannot be used to deal with management
+of multiple resources.
+
+The alternative which this PEP advocates (injecting raised exceptions
+into the generator frame), means that multiple resources can be
+managed elegantly as shown by ``lock_opening`` in the Examples_
+
+
+Making all generators statement templates
+-----------------------------------------
+
+Separating the template object from the generator itself makes it
+possible to have reusable generator templates.  That is, the following
+code will work correctly if this PEP is accepted::
+
+    open_it = lock_opening(parrot_lock, "dead_parrot.txt")
+
+    with open_it as f:
+        # use the file for a while
+
+    with open_it as f:
+        # use the file again
+
+The second benefit is that iterator generators and template generators
+are very different things - the decorator keeps that distinction
+clear, and prevents one being used where the other is required.
+
+Finally, requiring the decorator allows the native methods of
+generator objects to be used to implement generator finalisation.
+
+
+Using ``do`` as the keyword
+---------------------------
+
+``do`` was an alternative keyword proposed during the :pep:`340`
+discussion.  It reads well with appropriately named functions, but it
+reads poorly when used with methods, or with objects that provide
+native statement template support.
+
+When ``do`` was first suggested, the BDFL had rejected :pep:`310`'s
+``with`` keyword, based on a desire to use it for a Pascal/Delphi
+style ``with`` statement.  Since then, the BDFL has retracted this
+objection, as he no longer intends to provide such a statement.  This
+change of heart was apparently based on the C# developers reasons for
+not providing the feature [2]_.
+
+
+Not having a keyword
+--------------------
+
+This is an interesting option, and can be made to read quite well.
+However, it's awkward to look up in the documentation for new users,
+and strikes some as being too magical.  Accordingly, this PEP goes
+with a keyword based suggestion.
+
+
+Enhancing ``try`` statements
+----------------------------
+
+This suggestion involves give bare ``try`` statements a signature
+similar to that proposed for ``with`` statements.
+
+I think that trying to write a ``with`` statement as an enhanced
+``try`` statement makes as much sense as trying to write a ``for``
+loop as an enhanced ``while`` loop.  That is, while the semantics of
+the former can be explained as a particular way of using the latter,
+the former is not an *instance* of the latter.  The additional
+semantics added around the more fundamental statement result in a new
+construct, and the two different statements shouldn't be confused.
+
+This can be seen by the fact that the 'enhanced' ``try`` statement
+still needs to be explained in terms of a 'non-enhanced' ``try``
+statement.  If it's something different, it makes more sense to give
+it a different name.
+
+
+Having the template protocol directly reflect ``try`` statements
+----------------------------------------------------------------
+
+One suggestion was to have separate methods in the protocol to cover
+different parts of the structure of a generalised ``try`` statement.
+Using the terms ``try``, ``except``, ``else`` and ``finally``, we
+would have something like::
+
+    class my_template(object):
+
+        def __init__(self, *args):
+            # Any required arguments (e.g. a file name)
+            # get stored in member variables
+            # The various BLOCK's will need to updated to reflect
+            # that.
+
+        def __try__(self):
+            SETUP_BLOCK
+
+        def __except__(self, exc, value, traceback):
+            if isinstance(exc, exc_type1):
+                EXCEPT_BLOCK1
+            if isinstance(exc, exc_type2):
+                EXCEPT_BLOCK2
+            else:
+                EXCEPT_BLOCK3
+
+        def __else__(self):
+            ELSE_BLOCK
+
+        def __finally__(self):
+            FINALLY_BLOCK
+
+Aside from preferring the addition of two method slots rather than
+four, I consider it significantly easier to be able to simply
+reproduce a slightly modified version of the original ``try``
+statement code in the ``__exit__()`` method (as shown in `Factoring
+out arbitrary exception handling`_), rather than have to split the
+functionality amongst several different methods (or figure out
+which method to use if not all clauses are used by the template).
+
+To make this discussion less theoretical, here is the ``transaction``
+example implemented using both the two method and the four method
+protocols instead of a generator.  Both implementations guarantee a
+commit if a ``break``, ``return`` or ``continue`` statement is
+encountered (as does the generator-based implementation in the
+Examples_ section)::
+
+    class transaction_2method(object):
+
+        def __init__(self, db):
+            self.db = db
+
+        def __enter__(self):
+            pass
+
+        def __exit__(self, exc_type, *exc_details):
+            if exc_type is None:
+                self.db.commit()
+            else:
+                self.db.rollback()
+
+    class transaction_4method(object):
+
+        def __init__(self, db):
+            self.db = db
+            self.commit = False
+
+        def __try__(self):
+            self.commit = True
+
+        def __except__(self, exc_type, exc_value, traceback):
+            self.db.rollback()
+            self.commit = False
+
+        def __else__(self):
+            pass
+
+        def __finally__(self):
+            if self.commit:
+                self.db.commit()
+                self.commit = False
+
+There are two more minor points, relating to the specific method names
+in the suggestion.  The name of the ``__try__()`` method is
+misleading, as ``SETUP_BLOCK`` executes *before* the ``try`` statement
+is entered, and the name of the ``__else__()`` method is unclear in
+isolation, as numerous other Python statements include an ``else``
+clause.
+
+
+Iterator finalisation (WITHDRAWN)
+=================================
+
+The ability to use user defined statements inside generators is likely
+to increase the need for deterministic finalisation of iterators, as
+resource management is pushed inside the generators, rather than being
+handled externally as is currently the case.
+
+The PEP currently suggests handling this by making all generators
+statement templates, and using ``with`` statements to handle
+finalisation.  However, earlier versions of this PEP suggested the
+following, more complex, solution, that allowed the *author* of a
+generator to flag the need for finalisation, and have ``for`` loops
+deal with it automatically.  It is included here as a long, detailed
+rejected option.
+
+
+Iterator protocol addition: ``__finish__``
+------------------------------------------
+
+An optional new method for iterators is proposed, called
+``__finish__()``.  It takes no arguments, and should not return
+anything.
+
+The ``__finish__`` method is expected to clean up all resources the
+iterator has open.  Iterators with a ``__finish__()`` method are
+called 'finishable iterators' for the remainder of the PEP.
+
+
+Best effort finalisation
+------------------------
+
+A finishable iterator should ensure that it provides a ``__del__``
+method that also performs finalisation (e.g. by invoking the
+``__finish__()`` method).  This allows Python to still make a best
+effort at finalisation in the event that deterministic finalisation is
+not applied to the iterator.
+
+
+Deterministic finalisation
+--------------------------
+
+If the iterator used in a ``for`` loop has a ``__finish__()`` method,
+the enhanced ``for`` loop semantics will guarantee that that method
+will be executed, regardless of the means of exiting the loop.  This
+is important for iterator generators that utilise `user defined
+statements`_ or the now permitted ``try``/``finally`` statements, or
+for new iterators that rely on timely finalisation to release
+allocated resources (e.g. releasing a thread or database connection
+back into a pool).
+
+
+``for`` loop syntax
+-------------------
+
+No changes are suggested to ``for`` loop syntax.  This is just to
+define the statement parts needed for the description of the
+semantics::
+
+    for VAR1 in EXPR1:
+        BLOCK1
+    else:
+        BLOCK2
+
+
+Updated ``for`` loop semantics
+------------------------------
+
+When the target iterator does not have a ``__finish__()`` method, a
+``for`` loop will execute as follows (i.e. no change from the status
+quo)::
+
+    itr = iter(EXPR1)
+    exhausted = False
+    while True:
+        try:
+            VAR1 = itr.next()
+        except StopIteration:
+            exhausted = True
+            break
+        BLOCK1
+    if exhausted:
+        BLOCK2
+
+When the target iterator has a ``__finish__()`` method, a ``for`` loop
+will execute as follows::
+
+    itr = iter(EXPR1)
+    exhausted = False
+    try:
+        while True:
+            try:
+                VAR1 = itr.next()
+            except StopIteration:
+                exhausted = True
+                break
+            BLOCK1
+        if exhausted:
+            BLOCK2
+    finally:
+        itr.__finish__()
+
+The implementation will need to take some care to avoid incurring the
+``try``/``finally`` overhead when the iterator does not have a
+``__finish__()`` method.
+
+
+Generator iterator finalisation: ``__finish__()`` method
+--------------------------------------------------------
+
+When enabled with the appropriate decorator, generators will have a
+``__finish__()`` method that raises ``TerminateIteration`` in the
+internal frame::
+
+    def __finish__(self):
+        try:
+            self._inject_exception(TerminateIteration)
+        except TerminateIteration:
+            pass
+
+A decorator (e.g. ``needs_finish()``) is required to enable this
+feature, so that existing generators (which are not expecting
+finalisation) continue to work as expected.
+
+
+Partial iteration of finishable iterators
+-----------------------------------------
+
+Partial iteration of a finishable iterator is possible, although it
+requires some care to ensure the iterator is still finalised promptly
+(it was made finishable for a reason!).  First, we need a class to
+enable partial iteration of a finishable iterator by hiding the
+iterator's ``__finish__()`` method from the ``for`` loop::
+
+    class partial_iter(object):
+
+        def __init__(self, iterable):
+            self.iter = iter(iterable)
+
+        def __iter__(self):
+            return self
+
+        def next(self):
+            return self.itr.next()
+
+Secondly, an appropriate statement template is needed to ensure the
+iterator is finished eventually::
+
+    @statement_template
+    def finishing(iterable):
+          itr = iter(iterable)
+          itr_finish = getattr(itr, "__finish__", None)
+          if itr_finish is None:
+              yield itr
+          else:
+              try:
+                  yield partial_iter(itr)
+              finally:
+                  itr_finish()
+
+This can then be used as follows::
+
+    do finishing(finishable_itr) as itr:
+        for header_item in itr:
+            if end_of_header(header_item):
+                break
+            # process header item
+        for body_item in itr:
+            # process body item
+
+Note that none of the above is needed for an iterator that is not
+finishable - without a ``__finish__()`` method, it will not be
+promptly finalised by the ``for`` loop, and hence inherently allows
+partial iteration.  Allowing partial iteration of non-finishable
+iterators as the default behaviour is a key element in keeping this
+addition to the iterator protocol backwards compatible.
+
+
+Acknowledgements
+================
+
+The acknowledgements section for :pep:`340` applies, since this text grew
+out of the discussion of that PEP, but additional thanks go to Michael
+Hudson, Paul Moore and Guido van Rossum for writing :pep:`310` and PEP
+340 in the first place, and to (in no meaningful order) Fredrik Lundh,
+Phillip J. Eby, Steven Bethard, Josiah Carlson, Greg Ewing, Tim
+Delaney and Arnold deVos for prompting particular ideas that made
+their way into this text.
+
+
+References
+==========
+
+.. [1] A rant against flow control macros
+   (http://blogs.msdn.com/oldnewthing/archive/2005/01/06/347666.aspx)
+
+.. [2] Why doesn't C# have a 'with' statement?
+   (http://msdn.microsoft.com/vcsharp/programming/language/ask/withstatement/)
+
+
+Copyright
+=========
+
+This document has been placed in the public domain.
+
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   End:

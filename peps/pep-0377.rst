@@ -1,0 +1,287 @@
+PEP: 377
+Title: Allow __enter__() methods to skip the statement body
+Version: $Revision$
+Last-Modified: $Date$
+Author: Alyssa Coghlan <ncoghlan@gmail.com>
+Status: Rejected
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 08-Mar-2009
+Python-Version: 2.7, 3.1
+Post-History: 08-Mar-2009
+
+
+Abstract
+========
+
+This PEP proposes a backwards compatible mechanism that allows ``__enter__()``
+methods to skip the body of the associated ``with`` statement. The lack of
+this ability currently means the ``contextlib.contextmanager`` decorator
+is unable to fulfil its specification of being able to turn arbitrary
+code into a context manager by moving it into a generator function
+with a yield in the appropriate location. One symptom of this is that
+``contextlib.nested`` will currently raise ``RuntimeError`` in
+situations where writing out the corresponding nested ``with``
+statements would not [1]_.
+
+The proposed change is to introduce a new flow control exception
+``SkipStatement``, and skip the execution of the ``with``
+statement body if ``__enter__()`` raises this exception.
+
+
+PEP Rejection
+=============
+
+This PEP was rejected by Guido [4]_ as it imposes too great an increase
+in complexity without a proportional increase in expressiveness and
+correctness. In the absence of compelling use cases that need the more
+complex semantics proposed by this PEP the existing behaviour is
+considered acceptable.
+
+
+Proposed Change
+===============
+
+The semantics of the ``with`` statement will be changed to include a
+new ``try``/``except``/``else`` block around the call to ``__enter__()``.
+If ``SkipStatement`` is raised by the ``__enter__()`` method, then
+the main section of the ``with`` statement (now located in the ``else``
+clause) will not be executed. To avoid leaving the names in any ``as``
+clause unbound in this case, a new ``StatementSkipped`` singleton
+(similar to the existing ``NotImplemented`` singleton) will be
+assigned to all names that appear in the ``as`` clause.
+
+The components of the ``with`` statement remain as described in :pep:`343`::
+
+    with EXPR as VAR:
+        BLOCK
+
+After the modification, the ``with`` statement semantics would
+be as follows::
+
+    mgr = (EXPR)
+    exit = mgr.__exit__  # Not calling it yet
+    try:
+        value = mgr.__enter__()
+    except SkipStatement:
+        VAR = StatementSkipped
+        # Only if "as VAR" is present and
+        # VAR is a single name
+        # If VAR is a tuple of names, then StatementSkipped
+        # will be assigned to each name in the tuple
+    else:
+        exc = True
+        try:
+            try:
+                VAR = value  # Only if "as VAR" is present
+                BLOCK
+            except:
+                # The exceptional case is handled here
+                exc = False
+                if not exit(*sys.exc_info()):
+                    raise
+                # The exception is swallowed if exit() returns true
+        finally:
+            # The normal and non-local-goto cases are handled here
+            if exc:
+                exit(None, None, None)
+
+With the above change in place for the ``with`` statement semantics,
+``contextlib.contextmanager()`` will then be modified to raise
+``SkipStatement`` instead of ``RuntimeError`` when the underlying
+generator doesn't yield.
+
+
+Rationale for Change
+====================
+
+Currently, some apparently innocuous context managers may raise
+``RuntimeError`` when executed. This occurs when the context
+manager's ``__enter__()`` method encounters a situation where
+the written out version of the code corresponding to the
+context manager would skip the code that is now the body
+of the ``with`` statement. Since the ``__enter__()`` method
+has no mechanism available to signal this to the interpreter,
+it is instead forced to raise an exception that not only
+skips the body of the ``with`` statement, but also jumps over
+all code until the nearest exception handler. This goes against
+one of the design goals of the ``with`` statement, which was to
+be able to factor out arbitrary common exception handling code
+into a single context manager by putting into a generator
+function and replacing the variant part of the code with a
+``yield`` statement.
+
+Specifically, the following examples behave differently if
+``cmB().__enter__()`` raises an exception which ``cmA().__exit__()``
+then handles and suppresses::
+
+  with cmA():
+    with cmB():
+      do_stuff()
+  # This will resume here without executing "do_stuff()"
+
+  @contextlib.contextmanager
+  def combined():
+    with cmA():
+      with cmB():
+        yield
+
+  with combined():
+    do_stuff()
+  # This will raise a RuntimeError complaining that the context
+  # manager's underlying generator didn't yield
+
+  with contextlib.nested(cmA(), cmB()):
+    do_stuff()
+  # This will raise the same RuntimeError as the contextmanager()
+  # example (unsurprising, given that the nested() implementation
+  # uses contextmanager())
+
+  # The following class based version shows that the issue isn't
+  # specific to contextlib.contextmanager() (it also shows how
+  # much simpler it is to write context managers as generators
+  # instead of as classes!)
+  class CM(object):
+    def __init__(self):
+      self.cmA = None
+      self.cmB = None
+
+    def __enter__(self):
+      if self.cmA is not None:
+        raise RuntimeError("Can't re-use this CM")
+      self.cmA = cmA()
+      self.cmA.__enter__()
+      try:
+        self.cmB = cmB()
+        self.cmB.__enter__()
+      except:
+        self.cmA.__exit__(*sys.exc_info())
+        # Can't suppress in __enter__(), so must raise
+        raise
+
+    def __exit__(self, *args):
+      suppress = False
+      try:
+        if self.cmB is not None:
+          suppress = self.cmB.__exit__(*args)
+      except:
+        suppress = self.cmA.__exit__(*sys.exc_info()):
+        if not suppress:
+          # Exception has changed, so reraise explicitly
+          raise
+      else:
+        if suppress:
+          # cmB already suppressed the exception,
+          # so don't pass it to cmA
+          suppress = self.cmA.__exit__(None, None, None):
+        else:
+          suppress = self.cmA.__exit__(*args):
+      return suppress
+
+With the proposed semantic change in place, the contextlib based examples
+above would then "just work", but the class based version would need
+a small adjustment to take advantage of the new semantics::
+
+  class CM(object):
+    def __init__(self):
+      self.cmA = None
+      self.cmB = None
+
+    def __enter__(self):
+      if self.cmA is not None:
+        raise RuntimeError("Can't re-use this CM")
+      self.cmA = cmA()
+      self.cmA.__enter__()
+      try:
+        self.cmB = cmB()
+        self.cmB.__enter__()
+      except:
+        if self.cmA.__exit__(*sys.exc_info()):
+          # Suppress the exception, but don't run
+          # the body of the with statement either
+          raise SkipStatement
+        raise
+
+    def __exit__(self, *args):
+      suppress = False
+      try:
+        if self.cmB is not None:
+          suppress = self.cmB.__exit__(*args)
+      except:
+        suppress = self.cmA.__exit__(*sys.exc_info()):
+        if not suppress:
+          # Exception has changed, so reraise explicitly
+          raise
+      else:
+        if suppress:
+          # cmB already suppressed the exception,
+          # so don't pass it to cmA
+          suppress = self.cmA.__exit__(None, None, None):
+        else:
+          suppress = self.cmA.__exit__(*args):
+      return suppress
+
+There is currently a tentative suggestion [3]_ to add import-style syntax to
+the ``with`` statement to allow multiple context managers to be included in
+a single ``with`` statement without needing to use ``contextlib.nested``. In
+that case the compiler has the option of simply emitting multiple ``with``
+statements at the AST level, thus allowing the semantics of actual nested
+``with`` statements to be reproduced accurately. However, such a change
+would highlight rather than alleviate the problem the current PEP aims to
+address: it would not be possible to use ``contextlib.contextmanager`` to
+reliably factor out such ``with`` statements, as they would exhibit exactly
+the same semantic differences as are seen with the ``combined()`` context
+manager in the above example.
+
+
+Performance Impact
+==================
+
+Implementing the new semantics makes it necessary to store the references
+to the ``__enter__`` and ``__exit__`` methods in temporary variables instead
+of on the stack. This results in a slight regression in ``with`` statement
+speed relative to Python 2.6/3.1. However, implementing a custom
+``SETUP_WITH`` opcode would negate any differences between the two
+approaches (as well as dramatically improving speed by eliminating more
+than a dozen unnecessary trips around the eval loop).
+
+
+Reference Implementation
+========================
+
+Patch attached to Issue 5251 [1]_. That patch uses only existing opcodes
+(i.e. no ``SETUP_WITH``).
+
+
+Acknowledgements
+================
+
+James William Pye both raised the issue and suggested the basic outline of
+the solution described in this PEP.
+
+
+References
+==========
+
+.. [1] Issue 5251: contextlib.nested inconsistent with nested with statements
+   (http://bugs.python.org/issue5251)
+
+.. [3] Import-style syntax to reduce indentation of nested with statements
+   (https://mail.python.org/pipermail/python-ideas/2009-March/003188.html)
+
+.. [4] Guido's rejection of the PEP
+   (https://mail.python.org/pipermail/python-dev/2009-March/087263.html)
+
+
+Copyright
+=========
+
+This document has been placed in the public domain.
+
+..
+   Local Variables:
+   mode: indented-text
+   indent-tabs-mode: nil
+   sentence-end-double-space: t
+   fill-column: 70
+   End:
