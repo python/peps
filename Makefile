@@ -11,7 +11,8 @@ SOURCES      =
 OUTPUT_DIR   = build
 SPHINXERRORHANDLING = -W --keep-going -w sphinx-warnings.txt
 
-ALLSPHINXOPTS = -b $(BUILDER) -j $(JOBS) \
+ALLSPHINXOPTS = -b $(BUILDER) \
+                -j $(JOBS) \
                 $(SPHINXOPTS) $(SPHINXERRORHANDLING) peps $(OUTPUT_DIR) $(SOURCES)
 
 ## html           to render PEPs to "pep-NNNN.html" files
@@ -27,14 +28,12 @@ htmlview: html
 ## dirhtml        to render PEPs to "index.html" files within "pep-NNNN" directories
 .PHONY: dirhtml
 dirhtml: BUILDER = dirhtml
-dirhtml: venv
-	$(SPHINXBUILD) $(ALLSPHINXOPTS)
+dirhtml: html
 
 ## check-links    to check validity of links within PEP sources
 .PHONY: check-links
 check-links: BUILDER = linkcheck
-check-links: venv
-	$(SPHINXBUILD) $(ALLSPHINXOPTS)
+check-links: html
 
 ## clean          to remove the venv and build files
 .PHONY: clean
