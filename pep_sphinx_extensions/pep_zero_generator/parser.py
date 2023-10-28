@@ -140,6 +140,8 @@ class PEP:
             "shorthand": self.shorthand,
             # the author list as a comma-separated with only last names
             "authors": ", ".join(author.full_name for author in self.authors),
+            # The targeted Python-Version (if present) or the empty string
+            "python_version": self.python_version or "",
         }
 
     @property
