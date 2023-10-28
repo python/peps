@@ -1,9 +1,6 @@
-from pathlib import Path
-
 import pytest
 
 from pep_sphinx_extensions.pep_zero_generator import parser
-from pep_sphinx_extensions.pep_zero_generator.author import Author
 from pep_sphinx_extensions.pep_zero_generator.constants import (
     STATUS_ACCEPTED,
     STATUS_ACTIVE,
@@ -18,84 +15,100 @@ from pep_sphinx_extensions.pep_zero_generator.constants import (
     TYPE_PROCESS,
     TYPE_STANDARDS,
 )
-from pep_sphinx_extensions.pep_zero_generator.errors import PEPError
-from pep_sphinx_extensions.tests.utils import AUTHORS_OVERRIDES
+from pep_sphinx_extensions.pep_zero_generator.parser import _Author
+
+from ..conftest import PEP_ROOT
 
 
 def test_pep_repr():
-    pep8 = parser.PEP(Path("pep-0008.txt"))
+    pep8 = parser.PEP(PEP_ROOT / "pep-0008.rst")
 
     assert repr(pep8) == "<PEP 0008 - Style Guide for Python Code>"
 
 
 def test_pep_less_than():
-    pep8 = parser.PEP(Path("pep-0008.txt"))
-    pep3333 = parser.PEP(Path("pep-3333.txt"))
+    pep8 = parser.PEP(PEP_ROOT / "pep-0008.rst")
+    pep3333 = parser.PEP(PEP_ROOT / "pep-3333.rst")
 
     assert pep8 < pep3333
 
 
 def test_pep_equal():
-    pep_a = parser.PEP(Path("pep-0008.txt"))
-    pep_b = parser.PEP(Path("pep-0008.txt"))
+    pep_a = parser.PEP(PEP_ROOT / "pep-0008.rst")
+    pep_b = parser.PEP(PEP_ROOT / "pep-0008.rst")
 
     assert pep_a == pep_b
 
 
-def test_pep_details(monkeypatch):
-    pep8 = parser.PEP(Path("pep-0008.txt"))
+@pytest.mark.parametrize(
+    ("test_input", "expected"),
+    [
+        (
+            "pep-0008.rst",
+            {
+                "authors": "Guido van Rossum, Barry Warsaw, Alyssa Coghlan",
+                "number": 8,
+                "shorthand": ":abbr:`PA (Process, Active)`",
+                "title": "Style Guide for Python Code",
+                "python_version": "",
+            },
+        ),
+        (
+            "pep-0719.rst",
+            {
+                "authors": "Thomas Wouters",
+                "number": 719,
+                "shorthand": ":abbr:`IA (Informational, Active)`",
+                "title": "Python 3.13 Release Schedule",
+                "python_version": "3.13",
+            },
+        ),
+    ],
+)
+def test_pep_details(test_input, expected):
+    pep = parser.PEP(PEP_ROOT / test_input)
 
-    assert pep8.details == {
-        "authors": "GvR, Warsaw, Coghlan",
-        "number": 8,
-        "shorthand": ":abbr:`PA (Process, Active)`",
-        "title": "Style Guide for Python Code",
-    }
+    assert pep.details == expected
 
 
 @pytest.mark.parametrize(
-    "test_input, expected",
+    ("test_input", "expected"),
     [
         (
             "First Last <user@example.com>",
-            [Author(last_first="Last, First", nick="Last", email="user@example.com")],
+            [_Author(full_name="First Last", email="user@example.com")],
         ),
         (
             "First Last",
-            [Author(last_first="Last, First", nick="Last", email="")],
-        ),
-        (
-            "user@example.com (First Last)",
-            [Author(last_first="Last, First", nick="Last", email="user@example.com")],
+            [_Author(full_name="First Last", email="")],
         ),
         pytest.param(
             "First Last <user at example.com>",
-            [Author(last_first="Last, First", nick="Last", email="user@example.com")],
+            [_Author(full_name="First Last", email="user@example.com")],
             marks=pytest.mark.xfail,
+        ),
+        pytest.param(
+            " , First Last,",
+            {"First Last": ""},
+            marks=pytest.mark.xfail(raises=ValueError),
         ),
     ],
 )
 def test_parse_authors(test_input, expected):
-    # Arrange
-    dummy_object = parser.PEP(Path("pep-0160.txt"))
-
     # Act
-    out = parser._parse_authors(dummy_object, test_input, AUTHORS_OVERRIDES)
+    out = parser._parse_author(test_input)
 
     # Assert
     assert out == expected
 
 
 def test_parse_authors_invalid():
-
-    pep = parser.PEP(Path("pep-0008.txt"))
-
-    with pytest.raises(PEPError, match="no authors found"):
-        parser._parse_authors(pep, "", AUTHORS_OVERRIDES)
+    with pytest.raises(ValueError, match="Name is empty!"):
+        assert parser._parse_author("")
 
 
 @pytest.mark.parametrize(
-    "test_type, test_status, expected",
+    ("test_type", "test_status", "expected"),
     [
         (TYPE_INFO, STATUS_DRAFT, ":abbr:`I (Informational, Draft)`"),
         (TYPE_INFO, STATUS_ACTIVE, ":abbr:`IA (Informational, Active)`"),
@@ -113,7 +126,7 @@ def test_parse_authors_invalid():
 )
 def test_abbreviate_type_status(test_type, test_status, expected):
     # set up dummy PEP object and monkeypatch attributes
-    pep = parser.PEP(Path("pep-0008.txt"))
+    pep = parser.PEP(PEP_ROOT / "pep-0008.rst")
     pep.pep_type = test_type
     pep.status = test_status
 

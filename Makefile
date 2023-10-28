@@ -1,15 +1,23 @@
 # Builds PEP files to HTML using sphinx
 
-PYTHON=python3
-VENVDIR=.venv
-JOBS=8
-OUTPUT_DIR=build
-RENDER_COMMAND=$(VENVDIR)/bin/python3 build.py -j $(JOBS) -o $(OUTPUT_DIR)
+# You can set these variables from the command line.
+PYTHON       = python3
+VENVDIR      = .venv
+SPHINXBUILD  = PATH=$(VENVDIR)/bin:$$PATH sphinx-build
+BUILDER      = html
+JOBS         = 8
+SOURCES      =
+# synchronise with render.yml -> deploy step
+OUTPUT_DIR   = build
+SPHINXERRORHANDLING = -W --keep-going -w sphinx-warnings.txt
+
+ALLSPHINXOPTS = -b $(BUILDER) -j $(JOBS) \
+                $(SPHINXOPTS) $(SPHINXERRORHANDLING) peps $(OUTPUT_DIR) $(SOURCES)
 
 ## html           to render PEPs to "pep-NNNN.html" files
 .PHONY: html
 html: venv
-	$(RENDER_COMMAND)
+	$(SPHINXBUILD) $(ALLSPHINXOPTS)
 
 ## htmlview       to open the index page built by the html target in your browser
 .PHONY: htmlview
@@ -18,23 +26,15 @@ htmlview: html
 
 ## dirhtml        to render PEPs to "index.html" files within "pep-NNNN" directories
 .PHONY: dirhtml
-dirhtml: venv rss
-	$(RENDER_COMMAND) --build-dirs
-
-## fail-warning   to render PEPs to "pep-NNNN.html" files and fail the Sphinx build on any warning
-.PHONY: fail-warning
-fail-warning: venv
-	$(RENDER_COMMAND) --fail-on-warning
+dirhtml: BUILDER = dirhtml
+dirhtml: venv
+	$(SPHINXBUILD) $(ALLSPHINXOPTS)
 
 ## check-links    to check validity of links within PEP sources
 .PHONY: check-links
+check-links: BUILDER = linkcheck
 check-links: venv
-	$(RENDER_COMMAND) --check-links
-
-## rss            to generate the peps.rss file
-.PHONY: rss
-rss: venv
-	$(VENVDIR)/bin/python3 generate_rss.py -o $(OUTPUT_DIR)
+	$(SPHINXBUILD) $(ALLSPHINXOPTS)
 
 ## clean          to remove the venv and build files
 .PHONY: clean
@@ -75,16 +75,6 @@ test: venv
 spellcheck: venv
 	$(VENVDIR)/bin/python3 -m pre_commit --version > /dev/null || $(VENVDIR)/bin/python3 -m pip install pre-commit
 	$(VENVDIR)/bin/python3 -m pre_commit run --all-files --hook-stage manual codespell
-
-## render         (deprecated: use 'make html' alias instead)
-.PHONY: render
-render: html
-	@echo "\033[0;33mWarning:\033[0;31m 'make render' \033[0;33mis deprecated, use\033[0;32m 'make html' \033[0;33malias instead\033[0m"
-
-## pages          (deprecated: use 'make dirhtml' alias instead)
-.PHONY: pages
-pages: dirhtml
-	@echo "\033[0;33mWarning:\033[0;31m 'make pages' \033[0;33mis deprecated, use\033[0;32m 'make dirhtml' \033[0;33malias instead\033[0m"
 
 .PHONY: help
 help : Makefile

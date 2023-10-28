@@ -72,11 +72,11 @@ class PEPHeaders(transforms.Transform):
             raise PEPParsingError("Document does not contain an RFC-2822 'PEP' header!")
 
         # Extract PEP number
-        value = pep_field[1].astext()
+        pep_num_str = pep_field[1].astext()
         try:
-            pep_num = int(value)
+            pep_num = int(pep_num_str)
         except ValueError:
-            raise PEPParsingError(f"'PEP' header must contain an integer. '{value}' is invalid!")
+            raise PEPParsingError(f"PEP header must contain an integer. '{pep_num_str}' is invalid!")
 
         # Special processing for PEP 0.
         if pep_num == 0:
@@ -89,7 +89,11 @@ class PEPHeaders(transforms.Transform):
             raise PEPParsingError("No title!")
 
         fields_to_remove = []
+        self.document["headers"] = headers = {}
         for field in header:
+            row_attributes = {sub.tagname: sub.rawsource for sub in field}
+            headers[row_attributes["field_name"]] = row_attributes["field_body"]
+
             name = field[0].astext().lower()
             body = field[1]
             if len(body) == 0:

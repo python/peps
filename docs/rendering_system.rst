@@ -1,6 +1,6 @@
-..
-   Author: Adam Turner
+:author: Adam Turner
 
+..
    We can't use :pep:`N` references in this document, as they use links relative
    to the current file, which doesn't work in a subdirectory like this one.
 
@@ -9,7 +9,7 @@ An Overview of the PEP Rendering System
 =======================================
 
 This document provides an overview of the PEP rendering system, as a companion
-to :doc:`PEP 676 <../pep-0676>`.
+to `PEP 676 <https://peps.python.org/pep-0676/>`__.
 
 
 1. Configuration
@@ -17,14 +17,14 @@ to :doc:`PEP 676 <../pep-0676>`.
 
 Configuration is stored in three files:
 
-- ``conf.py`` contains the majority of the Sphinx configuration
-- ``contents.rst`` creates the Sphinx-mandated table of contents directive
+- ``peps/conf.py`` contains the majority of the Sphinx configuration
+- ``peps/contents.rst`` contains the compulsory table of contents directive
 - ``pep_sphinx_extensions/pep_theme/theme.conf`` sets the Pygments themes
 
 The configuration:
 
 - registers the custom Sphinx extension
-- sets both ``.txt`` and ``.rst`` suffixes to be parsed as PEPs
+- sets the ``.rst`` suffix to be parsed as PEPs
 - tells Sphinx which source files to use
 - registers the PEP theme, maths renderer, and template
 - disables some default settings that are covered in the extension
@@ -35,7 +35,7 @@ The configuration:
 ----------------
 
 ``build.py`` manages the rendering process.
-Usage is covered in :doc:`build`.
+Usage is covered in `Building PEPs Locally <./build.rst>`_.
 
 
 3. Extension
@@ -110,7 +110,8 @@ This overrides the built-in ``:pep:`` role to return the correct URL.
 3.4.2 ``PEPHeaders`` transform
 ******************************
 
-PEPs start with a set of :rfc:`2822` headers, per :doc:`PEP 1 <../pep-0001>`.
+PEPs start with a set of :rfc:`2822` headers,
+per `PEP 1 <https://peps.python.org/pep-0001/>`__.
 This transform validates that the required headers are present and of the
 correct data type, and removes headers not for display.
 It must run before the ``PEPTitle`` transform.
@@ -122,7 +123,7 @@ It must run before the ``PEPTitle`` transform.
 We generate the title node from the parsed title in the PEP headers, and make
 all nodes in the document children of the new title node.
 This transform must also handle parsing reStructuredText markup within PEP
-titles, such as :doc:`PEP 604 <../pep-0604>`.
+titles, such as `PEP 604 <https://peps.python.org/pep-0604/>`__.
 
 
 3.4.4 ``PEPContents`` transform
@@ -216,12 +217,9 @@ parse and validate that metadata.
 After collecting and validating all the PEP data, the index itself is created in
 three steps:
 
-    1. Output the header text
-    2. Output the category and numerical indices
-    3. Output the author index
-
-The ``AUTHOR_OVERRIDES.csv`` file can be used to override an author's name in
-the PEP 0 output.
+1. Output the header text
+2. Output the category and numerical indices
+3. Output the author index
 
 We then add the newly created PEP 0 file to two Sphinx variables so that it will
 be processed as a normal source document.

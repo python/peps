@@ -1,0 +1,971 @@
+PEP: 343
+Title: The "with" Statement
+Version: $Revision$
+Last-Modified: $Date$
+Author: Guido van Rossum, Alyssa Coghlan
+Status: Final
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 13-May-2005
+Python-Version: 2.5
+Post-History: 02-Jun-2005, 16-Oct-2005, 29-Oct-2005, 23-Apr-2006, 01-May-2006,
+              30-Jul-2006
+
+Abstract
+========
+
+This PEP adds a new statement "with" to the Python language to make
+it possible to factor out standard uses of ``try/finally`` statements.
+
+In this PEP, context managers provide ``__enter__()`` and ``__exit__()``
+methods that are invoked on entry to and exit from the body of the
+with statement.
+
+Author's Note
+=============
+
+This PEP was originally written in first person by Guido, and
+subsequently updated by Alyssa (Nick) Coghlan to reflect later discussion
+on python-dev. Any first person references are from Guido's
+original.
+
+Python's alpha release cycle revealed terminology problems in this
+PEP and in the associated documentation and implementation [13]_.
+The PEP stabilised around the time of the first Python 2.5 beta
+release.
+
+Yes, the verb tense is messed up in a few places. We've been
+working on this PEP for over a year now, so things that were
+originally in the future are now in the past :)
+
+Introduction
+============
+
+After a lot of discussion about :pep:`340` and alternatives, I
+decided to withdraw :pep:`340` and proposed a slight variant on PEP
+310.  After more discussion, I have added back a mechanism for
+raising an exception in a suspended generator using a ``throw()``
+method, and a ``close()`` method which throws a new GeneratorExit
+exception; these additions were first proposed on python-dev in
+[2]_ and universally approved of.  I'm also changing the keyword to
+'with'.
+
+After acceptance of this PEP, the following PEPs were rejected due
+to overlap:
+
+- :pep:`310`, Reliable Acquisition/Release Pairs.  This is the
+  original with-statement proposal.
+
+- :pep:`319`, Python Synchronize/Asynchronize Block.  Its use cases
+  can be covered by the current PEP by providing suitable
+  with-statement controllers: for 'synchronize' we can use the
+  "locking" template from example 1; for 'asynchronize' we can use
+  a similar "unlocking" template.  I don't think having an
+  "anonymous" lock associated with a code block is all that
+  important; in fact it may be better to always be explicit about
+  the mutex being used.
+
+:pep:`340` and :pep:`346` also overlapped with this PEP, but were
+voluntarily withdrawn when this PEP was submitted.
+
+Some discussion of earlier incarnations of this PEP took place on
+the Python Wiki [3]_.
+
+Motivation and Summary
+======================
+
+:pep:`340`, Anonymous Block Statements, combined many powerful ideas:
+using generators as block templates, adding exception handling and
+finalization to generators, and more.  Besides praise it received
+a lot of opposition from people who didn't like the fact that it
+was, under the covers, a (potential) looping construct.  This
+meant that break and continue in a block-statement would break or
+continue the block-statement, even if it was used as a non-looping
+resource management tool.
+
+But the final blow came when I read Raymond Chen's rant about
+flow-control macros [1]_.  Raymond argues convincingly that hiding
+flow control in macros makes your code inscrutable, and I find
+that his argument applies to Python as well as to C.  I realized
+that :pep:`340` templates can hide all sorts of control flow; for
+example, its example 4 (``auto_retry()``) catches exceptions and
+repeats the block up to three times.
+
+However, the with-statement of :pep:`310` does **not** hide control
+flow, in my view: while a finally-suite temporarily suspends the
+control flow, in the end, the control flow resumes as if the
+finally-suite wasn't there at all.
+
+Remember, :pep:`310` proposes roughly this syntax (the "VAR =" part is
+optional)::
+
+    with VAR = EXPR:
+        BLOCK
+
+which roughly translates into this::
+
+    VAR = EXPR
+    VAR.__enter__()
+    try:
+        BLOCK
+    finally:
+        VAR.__exit__()
+
+Now consider this example::
+
+    with f = open("/etc/passwd"):
+        BLOCK1
+    BLOCK2
+
+Here, just as if the first line was "if True" instead, we know
+that if ``BLOCK1`` completes without an exception, BLOCK2 will be
+reached; and if ``BLOCK1`` raises an exception or executes a non-local
+goto (a break, continue or return), ``BLOCK2`` is **not** reached.  The
+magic added by the with-statement at the end doesn't affect this.
+
+(You may ask, what if a bug in the ``__exit__()`` method causes an
+exception?  Then all is lost -- but this is no worse than with
+other exceptions; the nature of exceptions is that they can happen
+**anywhere**, and you just have to live with that.  Even if you
+write bug-free code, a KeyboardInterrupt exception can still cause
+it to exit between any two virtual machine opcodes.)
+
+This argument almost led me to endorse :pep:`310`, but I had one idea
+left from the :pep:`340` euphoria that I wasn't ready to drop: using
+generators as "templates" for abstractions like acquiring and
+releasing a lock or opening and closing a file is a powerful idea,
+as can be seen by looking at the examples in that PEP.
+
+Inspired by a counter-proposal to :pep:`340` by Phillip Eby I tried
+to create a decorator that would turn a suitable generator into an
+object with the necessary ``__enter__()`` and ``__exit__()`` methods.
+Here I ran into a snag: while it wasn't too hard for the locking
+example, it was impossible to do this for the opening example.
+The idea was to define the template like this::
+
+    @contextmanager
+    def opening(filename):
+        f = open(filename)
+        try:
+            yield f
+        finally:
+            f.close()
+
+and used it like this::
+
+    with f = opening(filename):
+        ...read data from f...
+
+The problem is that in :pep:`310`, the result of calling ``EXPR`` is
+assigned directly to ``VAR``, and then ``VAR``'s ``__exit__()`` method is
+called upon exit from ``BLOCK1``.  But here, ``VAR`` clearly needs to
+receive the opened file, and that would mean that ``__exit__()`` would
+have to be a method on the file.
+
+While this can be solved using a proxy class, this is awkward and
+made me realize that a slightly different translation would make
+writing the desired decorator a piece of cake: let ``VAR`` receive the
+result from calling the ``__enter__()`` method, and save the value of
+``EXPR`` to call its ``__exit__()`` method later.  Then the decorator can
+return an instance of a wrapper class whose ``__enter__()`` method
+calls the generator's ``next()`` method and returns whatever ``next()``
+returns; the wrapper instance's ``__exit__()`` method calls ``next()``
+again but expects it to raise StopIteration.  (Details below in
+the section Optional Generator Decorator.)
+
+So now the final hurdle was that the :pep:`310` syntax::
+
+    with VAR = EXPR:
+        BLOCK1
+
+would be deceptive, since ``VAR`` does **not** receive the value of
+``EXPR``.  Borrowing from :pep:`340`, it was an easy step to::
+
+    with EXPR as VAR:
+        BLOCK1
+
+Additional discussion showed that people really liked being able
+to "see" the exception in the generator, even if it was only to
+log it; the generator is not allowed to yield another value, since
+the with-statement should not be usable as a loop (raising a
+different exception is marginally acceptable).  To enable this, a
+new ``throw()`` method for generators is proposed, which takes one to
+three arguments representing an exception in the usual fashion
+(type, value, traceback) and raises it at the point where the
+generator is suspended.
+
+Once we have this, it is a small step to proposing another
+generator method, ``close()``, which calls ``throw()`` with a special
+exception, ``GeneratorExit``.  This tells the generator to exit, and
+from there it's another small step to proposing that ``close()`` be
+called automatically when the generator is garbage-collected.
+
+Then, finally, we can allow a yield-statement inside a try-finally
+statement, since we can now guarantee that the finally-clause will
+(eventually) be executed.  The usual cautions about finalization
+apply -- the process may be terminated abruptly without finalizing
+any objects, and objects may be kept alive forever by cycles or
+memory leaks in the application (as opposed to cycles or leaks in
+the Python implementation, which are taken care of by GC).
+
+Note that we're not guaranteeing that the finally-clause is
+executed immediately after the generator object becomes unused,
+even though this is how it will work in CPython.  This is similar
+to auto-closing files: while a reference-counting implementation
+like CPython deallocates an object as soon as the last reference
+to it goes away, implementations that use other GC algorithms do
+not make the same guarantee.  This applies to Jython, IronPython,
+and probably to Python running on Parrot.
+
+(The details of the changes made to generators can now be found in
+:pep:`342` rather than in the current PEP)
+
+Use Cases
+=========
+
+See the Examples section near the end.
+
+Specification: The 'with' Statement
+===================================
+
+A new statement is proposed with the syntax::
+
+    with EXPR as VAR:
+        BLOCK
+
+Here, 'with' and 'as' are new keywords; ``EXPR`` is an arbitrary
+expression (but not an expression-list) and ``VAR`` is a single
+assignment target.  It can **not** be a comma-separated sequence of
+variables, but it **can** be a **parenthesized** comma-separated
+sequence of variables.  (This restriction makes a future extension
+possible of the syntax to have multiple comma-separated resources,
+each with its own optional as-clause.)
+
+The "as VAR" part is optional.
+
+The translation of the above statement is::
+
+    mgr = (EXPR)
+    exit = type(mgr).__exit__  # Not calling it yet
+    value = type(mgr).__enter__(mgr)
+    exc = True
+    try:
+        try:
+            VAR = value  # Only if "as VAR" is present
+            BLOCK
+        except:
+            # The exceptional case is handled here
+            exc = False
+            if not exit(mgr, *sys.exc_info()):
+                raise
+            # The exception is swallowed if exit() returns true
+    finally:
+        # The normal and non-local-goto cases are handled here
+        if exc:
+            exit(mgr, None, None, None)
+
+Here, the lowercase variables (mgr, exit, value, exc) are internal
+variables and not accessible to the user; they will most likely be
+implemented as special registers or stack positions.
+
+The details of the above translation are intended to prescribe the
+exact semantics.  If either of the relevant methods are not found
+as expected, the interpreter will raise ``AttributeError``, in the
+order that they are tried (``__exit__``, ``__enter__``).
+Similarly, if any of the calls raises an exception, the effect is
+exactly as it would be in the above code.  Finally, if ``BLOCK``
+contains a break, continue or return statement, the ``__exit__()``
+method is called with three None arguments just as if ``BLOCK``
+completed normally.  (I.e. these "pseudo-exceptions" are not seen
+as exceptions by ``__exit__()``.)
+
+If the "as VAR" part of the syntax is omitted, the "VAR =" part of
+the translation is omitted (but ``mgr.__enter__()`` is still called).
+
+The calling convention for ``mgr.__exit__()`` is as follows.  If the
+finally-suite was reached through normal completion of ``BLOCK`` or
+through a non-local goto (a break, continue or return statement in
+``BLOCK``), ``mgr.__exit__()`` is called with three ``None`` arguments.  If
+the finally-suite was reached through an exception raised in
+``BLOCK``, ``mgr.__exit__()`` is called with three arguments representing
+the exception type, value, and traceback.
+
+IMPORTANT: if ``mgr.__exit__()`` returns a "true" value, the exception
+is "swallowed".  That is, if it returns "true", execution
+continues at the next statement after the with-statement, even if
+an exception happened inside the with-statement.  However, if the
+with-statement was left via a non-local goto (break, continue or
+return), this non-local return is resumed when ``mgr.__exit__()``
+returns regardless of the return value.  The motivation for this
+detail is to make it possible for ``mgr.__exit__()`` to swallow
+exceptions, without making it too easy (since the default return
+value, ``None``, is false and this causes the exception to be
+re-raised).  The main use case for swallowing exceptions is to
+make it possible to write the ``@contextmanager`` decorator so
+that a try/except block in a decorated generator behaves exactly
+as if the body of the generator were expanded in-line at the place
+of the with-statement.
+
+The motivation for passing the exception details to ``__exit__()``, as
+opposed to the argument-less ``__exit__()`` from :pep:`310`, was given by
+the ``transactional()`` use case, example 3 below.  The template in
+that example must commit or roll back the transaction depending on
+whether an exception occurred or not.  Rather than just having a
+boolean flag indicating whether an exception occurred, we pass the
+complete exception information, for the benefit of an
+exception-logging facility for example.  Relying on ``sys.exc_info()``
+to get at the exception information was rejected; ``sys.exc_info()``
+has very complex semantics and it is perfectly possible that it
+returns the exception information for an exception that was caught
+ages ago.  It was also proposed to add an additional boolean to
+distinguish between reaching the end of ``BLOCK`` and a non-local
+goto.  This was rejected as too complex and unnecessary; a
+non-local goto should be considered unexceptional for the purposes
+of a database transaction roll-back decision.
+
+To facilitate chaining of contexts in Python code that directly
+manipulates context managers, ``__exit__()`` methods  should **not**
+re-raise the error that is passed in to them. It is always the
+responsibility of the **caller** of the ``__exit__()`` method to do any
+reraising in that case.
+
+That way, if the caller needs to tell whether the ``__exit__()``
+invocation **failed** (as opposed to successfully cleaning up before
+propagating the original error), it can do so.
+
+If ``__exit__()`` returns without an error, this can then be
+interpreted as success of the ``__exit__()`` method itself (regardless
+of whether or not the original error is to be propagated or
+suppressed).
+
+However, if ``__exit__()`` propagates an exception to its caller, this
+means that ``__exit__()`` **itself** has failed.  Thus, ``__exit__()``
+methods should avoid raising errors unless they have actually
+failed.  (And allowing the original error to proceed isn't a
+failure.)
+
+Transition Plan
+===============
+
+In Python 2.5, the new syntax will only be recognized if a future
+statement is present::
+
+    from __future__ import with_statement
+
+This will make both 'with' and 'as' keywords.  Without the future
+statement, using 'with' or 'as' as an identifier will cause a
+Warning to be issued to stderr.
+
+In Python 2.6, the new syntax will always be recognized; 'with'
+and 'as' are always keywords.
+
+Generator Decorator
+===================
+
+With :pep:`342` accepted, it is possible to write a decorator
+that makes it possible to use a generator that yields exactly once
+to control a with-statement.  Here's a sketch of such a decorator::
+
+    class GeneratorContextManager(object):
+
+       def __init__(self, gen):
+           self.gen = gen
+
+       def __enter__(self):
+           try:
+               return self.gen.next()
+           except StopIteration:
+               raise RuntimeError("generator didn't yield")
+
+       def __exit__(self, type, value, traceback):
+           if type is None:
+               try:
+                   self.gen.next()
+               except StopIteration:
+                   return
+               else:
+                   raise RuntimeError("generator didn't stop")
+           else:
+               try:
+                   self.gen.throw(type, value, traceback)
+                   raise RuntimeError("generator didn't stop after throw()")
+               except StopIteration:
+                   return True
+               except:
+                   # only re-raise if it's *not* the exception that was
+                   # passed to throw(), because __exit__() must not raise
+                   # an exception unless __exit__() itself failed.  But
+                   # throw() has to raise the exception to signal
+                   # propagation, so this fixes the impedance mismatch
+                   # between the throw() protocol and the __exit__()
+                   # protocol.
+                   #
+                   if sys.exc_info()[1] is not value:
+                       raise
+
+    def contextmanager(func):
+       def helper(*args, **kwds):
+           return GeneratorContextManager(func(*args, **kwds))
+       return helper
+
+This decorator could be used as follows::
+
+    @contextmanager
+    def opening(filename):
+       f = open(filename) # IOError is untouched by GeneratorContext
+       try:
+           yield f
+       finally:
+           f.close() # Ditto for errors here (however unlikely)
+
+A robust implementation of this decorator will be made
+part of the standard library.
+
+Context Managers in the Standard Library
+========================================
+
+It would be possible to endow certain objects, like files,
+sockets, and locks, with ``__enter__()`` and ``__exit__()`` methods so
+that instead of writing::
+
+    with locking(myLock):
+        BLOCK
+
+one could write simply::
+
+    with myLock:
+        BLOCK
+
+I think we should be careful with this; it could lead to mistakes
+like::
+
+    f = open(filename)
+    with f:
+        BLOCK1
+    with f:
+        BLOCK2
+
+which does not do what one might think (f is closed before ``BLOCK2``
+is entered).
+
+OTOH such mistakes are easily diagnosed; for example, the
+generator context decorator above raises ``RuntimeError`` when a
+second  with-statement calls ``f.__enter__()`` again. A similar error
+can be raised if ``__enter__`` is invoked on a closed file object.
+
+For Python 2.5, the following types have been identified as
+context managers::
+
+    - file
+    - thread.LockType
+    - threading.Lock
+    - threading.RLock
+    - threading.Condition
+    - threading.Semaphore
+    - threading.BoundedSemaphore
+
+A context manager will also be added to the decimal module to
+support using a local decimal arithmetic context within the body
+of a with statement, automatically restoring the original context
+when the with statement is exited.
+
+Standard Terminology
+====================
+
+This PEP proposes that the protocol consisting of the ``__enter__()``
+and ``__exit__()`` methods be known as the "context management protocol",
+and that objects that implement that protocol be known as "context
+managers". [4]_
+
+The expression immediately following the with keyword in the
+statement is a "context expression" as that expression provides the
+main clue as to the runtime environment the context manager
+establishes for the duration of the statement body.
+
+The code in the body of the with statement and the variable name
+(or names) after the as keyword don't really have special terms at
+this point in time. The general terms "statement body" and "target
+list" can be used, prefixing with "with" or "with statement" if the
+terms would otherwise be unclear.
+
+Given the existence of objects such as the decimal module's
+arithmetic context, the term "context" is unfortunately ambiguous.
+If necessary, it can be made more specific by using the terms
+"context manager" for the concrete object created by the context
+expression and "runtime context" or (preferably) "runtime
+environment" for the actual state modifications made by the context
+manager. When simply discussing use of the with statement, the
+ambiguity shouldn't matter too much as the context expression fully
+defines the changes made to the runtime environment.
+The distinction is more important when discussing the mechanics of
+the with statement itself and how to go about actually implementing
+context managers.
+
+Caching Context Managers
+========================
+
+Many context managers (such as files and generator-based contexts)
+will be single-use objects. Once the ``__exit__()`` method has been
+called, the context manager will no longer be in a usable state
+(e.g. the file has been closed, or the underlying generator has
+finished execution).
+
+Requiring a fresh manager object for each with statement is the
+easiest way to avoid problems with multi-threaded code and nested
+with statements trying to use the same context manager. It isn't
+coincidental that all of the standard library context managers
+that support reuse come from the threading module - they're all
+already designed to deal with the problems created by threaded
+and nested usage.
+
+This means that in order to save a context manager with particular
+initialisation arguments to be used in multiple with statements, it
+will typically be necessary to store it in a zero-argument callable
+that is then called in the context expression of each statement
+rather than caching the context manager directly.
+
+When this restriction does not apply, the documentation of the
+affected context manager should make that clear.
+
+
+Resolved Issues
+===============
+
+The following issues were resolved by BDFL approval (and a lack
+of any major objections on python-dev).
+
+1. What exception should ``GeneratorContextManager`` raise when the
+   underlying generator-iterator misbehaves? The following quote is
+   the reason behind Guido's choice of ``RuntimeError`` for both this
+   and for the generator ``close()`` method in :pep:`342` (from [8]_):
+
+   "I'd rather not introduce a new exception class just for this
+   purpose, since it's not an exception that I want people to catch:
+   I want it to turn into a traceback which is seen by the
+   programmer who then fixes the code.  So now I believe they
+   should both raise ``RuntimeError``.
+   There are some precedents for that: it's raised by the core
+   Python code in situations where endless recursion is detected,
+   and for uninitialized objects (and for a variety of
+   miscellaneous conditions)."
+
+2. It is fine to raise ``AttributeError`` instead of ``TypeError`` if the
+   relevant methods aren't present on a class involved in a with
+   statement. The fact that the abstract object C API raises
+   ``TypeError`` rather than ``AttributeError`` is an accident of history,
+   rather than a deliberate design decision [11]_.
+
+3. Objects with ``__enter__/__exit__`` methods are called "context
+   managers" and the decorator to convert a generator function
+   into a context manager factory is ``contextlib.contextmanager``.
+   There were some other suggestions [15]_ during the 2.5 release
+   cycle but no compelling arguments for switching away from the
+   terms that had been used in the PEP implementation were made.
+
+
+Rejected Options
+================
+
+For several months, the PEP prohibited suppression of exceptions
+in order to avoid hidden flow control. Implementation
+revealed this to be a right royal pain, so Guido restored the
+ability [12]_.
+
+Another aspect of the PEP that caused no end of questions and
+terminology debates was providing a ``__context__()`` method that
+was analogous to an iterable's ``__iter__()`` method [5]_ [7]_ [9]_.
+The ongoing problems [10]_ [12]_ with explaining what it was and why
+it was and how it was meant to work eventually lead to Guido
+killing the concept outright [14]_ (and there was much rejoicing!).
+
+The notion of using the :pep:`342` generator API directly to define
+the with statement was also briefly entertained [6]_, but quickly
+dismissed as making it too difficult to write non-generator
+based context managers.
+
+
+Examples
+========
+
+The generator based examples rely on :pep:`342`. Also, some of the
+examples are unnecessary in practice, as the appropriate objects,
+such as ``threading.RLock``, are able to be used directly in with
+statements.
+
+The tense used in the names of the example contexts is not
+arbitrary. Past tense ("-ed") is used when the name refers to an
+action which is done in the ``__enter__`` method and undone in the
+``__exit__`` method. Progressive tense ("-ing") is used when the name
+refers to an action which is to be done in the ``__exit__`` method.
+
+1. A template for ensuring that a lock, acquired at the start of a
+   block, is released when the block is left::
+
+       @contextmanager
+       def locked(lock):
+           lock.acquire()
+           try:
+               yield
+           finally:
+               lock.release()
+
+   Used as follows::
+
+       with locked(myLock):
+           # Code here executes with myLock held.  The lock is
+           # guaranteed to be released when the block is left (even
+           # if via return or by an uncaught exception).
+
+2. A template for opening a file that ensures the file is closed
+   when the block is left::
+
+       @contextmanager
+       def opened(filename, mode="r"):
+           f = open(filename, mode)
+           try:
+               yield f
+           finally:
+               f.close()
+
+   Used as follows::
+
+       with opened("/etc/passwd") as f:
+           for line in f:
+               print line.rstrip()
+
+3. A template for committing or rolling back a database
+   transaction::
+
+       @contextmanager
+       def transaction(db):
+           db.begin()
+           try:
+               yield None
+           except:
+               db.rollback()
+               raise
+           else:
+               db.commit()
+
+4. Example 1 rewritten without a generator::
+
+       class locked:
+          def __init__(self, lock):
+              self.lock = lock
+          def __enter__(self):
+              self.lock.acquire()
+          def __exit__(self, type, value, tb):
+              self.lock.release()
+
+   (This example is easily modified to implement the other
+   relatively stateless examples; it shows that it is easy to avoid
+   the need for a generator if no special state needs to be
+   preserved.)
+
+5. Redirect stdout temporarily::
+
+       @contextmanager
+       def stdout_redirected(new_stdout):
+           save_stdout = sys.stdout
+           sys.stdout = new_stdout
+           try:
+               yield None
+           finally:
+               sys.stdout = save_stdout
+
+   Used as follows::
+
+       with opened(filename, "w") as f:
+           with stdout_redirected(f):
+               print "Hello world"
+
+   This isn't thread-safe, of course, but neither is doing this
+   same dance manually.  In single-threaded programs (for example,
+   in scripts) it is a popular way of doing things.
+
+6. A variant on ``opened()`` that also returns an error condition::
+
+       @contextmanager
+       def opened_w_error(filename, mode="r"):
+           try:
+               f = open(filename, mode)
+           except IOError, err:
+               yield None, err
+           else:
+               try:
+                   yield f, None
+               finally:
+                   f.close()
+
+   Used as follows::
+
+       with opened_w_error("/etc/passwd", "a") as (f, err):
+           if err:
+               print "IOError:", err
+           else:
+               f.write("guido::0:0::/:/bin/sh\n")
+
+7. Another useful example would be an operation that blocks
+   signals.  The use could be like this::
+
+       import signal
+
+       with signal.blocked():
+           # code executed without worrying about signals
+
+   An optional argument might be a list of signals to be blocked;
+   by default all signals are blocked.  The implementation is left
+   as an exercise to the reader.
+
+8. Another use for this feature is the Decimal context.  Here's a
+   simple example, after one posted by Michael Chermside::
+
+       import decimal
+
+       @contextmanager
+       def extra_precision(places=2):
+           c = decimal.getcontext()
+           saved_prec = c.prec
+           c.prec += places
+           try:
+               yield None
+           finally:
+               c.prec = saved_prec
+
+   Sample usage (adapted from the Python Library Reference)::
+
+       def sin(x):
+           "Return the sine of x as measured in radians."
+           with extra_precision():
+               i, lasts, s, fact, num, sign = 1, 0, x, 1, x, 1
+               while s != lasts:
+                   lasts = s
+                   i += 2
+                   fact *= i * (i-1)
+                   num *= x * x
+                   sign *= -1
+                   s += num / fact * sign
+           # The "+s" rounds back to the original precision,
+           # so this must be outside the with-statement:
+           return +s
+
+9. Here's a simple context manager for the decimal module::
+
+       @contextmanager
+       def localcontext(ctx=None):
+           """Set a new local decimal context for the block"""
+           # Default to using the current context
+           if ctx is None:
+               ctx = getcontext()
+           # We set the thread context to a copy of this context
+           # to ensure that changes within the block are kept
+           # local to the block.
+           newctx = ctx.copy()
+           oldctx = decimal.getcontext()
+           decimal.setcontext(newctx)
+           try:
+               yield newctx
+           finally:
+               # Always restore the original context
+               decimal.setcontext(oldctx)
+
+   Sample usage::
+
+       from decimal import localcontext, ExtendedContext
+
+       def sin(x):
+           with localcontext() as ctx:
+               ctx.prec += 2
+               # Rest of sin calculation algorithm
+               # uses a precision 2 greater than normal
+           return +s # Convert result to normal precision
+
+       def sin(x):
+           with localcontext(ExtendedContext):
+               # Rest of sin calculation algorithm
+               # uses the Extended Context from the
+               # General Decimal Arithmetic Specification
+           return +s # Convert result to normal context
+
+10. A generic "object-closing" context manager::
+
+        class closing(object):
+            def __init__(self, obj):
+                self.obj = obj
+            def __enter__(self):
+                return self.obj
+            def __exit__(self, *exc_info):
+                try:
+                    close_it = self.obj.close
+                except AttributeError:
+                    pass
+                else:
+                    close_it()
+
+    This can be used to deterministically close anything with a
+    close method, be it file, generator, or something else. It
+    can even be used when the object isn't guaranteed to require
+    closing (e.g., a function that accepts an arbitrary
+    iterable)::
+
+        # emulate opening():
+        with closing(open("argument.txt")) as contradiction:
+           for line in contradiction:
+               print line
+
+        # deterministically finalize an iterator:
+        with closing(iter(data_source)) as data:
+           for datum in data:
+               process(datum)
+
+    (Python 2.5's contextlib module contains a version
+    of this context manager)
+
+11. :pep:`319` gives a use case for also having a ``released()``
+    context to temporarily release a previously acquired lock;
+    this can be written very similarly to the locked context
+    manager above by swapping the ``acquire()`` and ``release()`` calls::
+
+        class released:
+          def __init__(self, lock):
+              self.lock = lock
+          def __enter__(self):
+              self.lock.release()
+          def __exit__(self, type, value, tb):
+              self.lock.acquire()
+
+    Sample usage::
+
+        with my_lock:
+            # Operations with the lock held
+            with released(my_lock):
+                # Operations without the lock
+                # e.g. blocking I/O
+            # Lock is held again here
+
+12. A "nested" context manager that automatically nests the
+    supplied contexts from left-to-right to avoid excessive
+    indentation::
+
+        @contextmanager
+        def nested(*contexts):
+            exits = []
+            vars = []
+            try:
+                try:
+                    for context in contexts:
+                        exit = context.__exit__
+                        enter = context.__enter__
+                        vars.append(enter())
+                        exits.append(exit)
+                    yield vars
+                except:
+                    exc = sys.exc_info()
+                else:
+                    exc = (None, None, None)
+            finally:
+                while exits:
+                    exit = exits.pop()
+                    try:
+                        exit(*exc)
+                    except:
+                        exc = sys.exc_info()
+                    else:
+                        exc = (None, None, None)
+                if exc != (None, None, None):
+                    # sys.exc_info() may have been
+                    # changed by one of the exit methods
+                    # so provide explicit exception info
+                    raise exc[0], exc[1], exc[2]
+
+    Sample usage::
+
+        with nested(a, b, c) as (x, y, z):
+            # Perform operation
+
+    Is equivalent to::
+
+        with a as x:
+            with b as y:
+                with c as z:
+                    # Perform operation
+
+    (Python 2.5's contextlib module contains a version
+    of this context manager)
+
+Reference Implementation
+========================
+
+This PEP was first accepted by Guido at his EuroPython
+keynote, 27 June 2005.
+It was accepted again later, with ``the __context__`` method added.
+The PEP was implemented in Subversion for Python 2.5a1
+The ``__context__()`` method was removed in Python 2.5b1
+
+
+Acknowledgements
+================
+
+Many people contributed to the ideas and concepts in this PEP,
+including all those mentioned in the acknowledgements for :pep:`340`
+and :pep:`346`.
+
+Additional thanks goes to (in no meaningful order): Paul Moore,
+Phillip J. Eby, Greg Ewing, Jason Orendorff, Michael Hudson,
+Raymond Hettinger, Walter Dörwald, Aahz, Georg Brandl, Terry Reedy,
+A.M. Kuchling, Brett Cannon, and all those that participated in the
+discussions on python-dev.
+
+
+References
+==========
+
+.. [1] Raymond Chen's article on hidden flow control
+       https://devblogs.microsoft.com/oldnewthing/20050106-00/?p=36783
+
+.. [2] Guido suggests some generator changes that ended up in PEP 342
+       https://mail.python.org/pipermail/python-dev/2005-May/053885.html
+
+.. [3] Wiki discussion of PEP 343
+       http://wiki.python.org/moin/WithStatement
+
+.. [4] Early draft of some documentation for the with statement
+       https://mail.python.org/pipermail/python-dev/2005-July/054658.html
+
+.. [5] Proposal to add the __with__ method
+       https://mail.python.org/pipermail/python-dev/2005-October/056947.html
+
+.. [6] Proposal to use the PEP 342 enhanced generator API directly
+       https://mail.python.org/pipermail/python-dev/2005-October/056969.html
+
+.. [7] Guido lets me (Alyssa Coghlan) talk him into a bad idea ;)
+       https://mail.python.org/pipermail/python-dev/2005-October/057018.html
+
+.. [8] Guido raises some exception handling questions
+       https://mail.python.org/pipermail/python-dev/2005-June/054064.html
+
+.. [9] Guido answers some questions about the __context__ method
+       https://mail.python.org/pipermail/python-dev/2005-October/057520.html
+
+.. [10] Guido answers more questions about the __context__ method
+        https://mail.python.org/pipermail/python-dev/2005-October/057535.html
+
+.. [11] Guido says AttributeError is fine for missing special methods
+        https://mail.python.org/pipermail/python-dev/2005-October/057625.html
+
+.. [12] Guido restores the ability to suppress exceptions
+        https://mail.python.org/pipermail/python-dev/2006-February/061909.html
+
+.. [13] A simple question kickstarts a thorough review of PEP 343
+        https://mail.python.org/pipermail/python-dev/2006-April/063859.html
+
+.. [14] Guido kills the __context__() method
+        https://mail.python.org/pipermail/python-dev/2006-April/064632.html
+
+.. [15] Proposal to use 'context guard' instead of 'context manager'
+        https://mail.python.org/pipermail/python-dev/2006-May/064676.html
+
+Copyright
+=========
+
+This document has been placed in the public domain.
