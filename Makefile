@@ -30,10 +30,15 @@ htmlview: html
 dirhtml: BUILDER = dirhtml
 dirhtml: html
 
-## check-links    to check validity of links within PEP sources
-.PHONY: check-links
+## linkcheck      to check validity of links within PEP sources
+.PHONY: linkcheck
 check-links: BUILDER = linkcheck
 check-links: html
+
+## check-links    (deprecated: use 'make linkcheck' alias instead)
+.PHONY: pages
+check-links: linkcheck
+	@echo "\033[0;33mWarning:\033[0;31m 'make check-links' \033[0;33mis deprecated, use\033[0;32m 'make linkcheck' \033[0;33malias instead\033[0m"
 
 ## clean          to remove the venv and build files
 .PHONY: clean
