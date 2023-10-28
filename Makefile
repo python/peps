@@ -3,17 +3,18 @@
 # You can set these variables from the command line.
 PYTHON       = python3
 VENVDIR      = .venv
+# synchronise with render.yml -> deploy step
+BUILDDIR     = build
 SPHINXBUILD  = PATH=$(VENVDIR)/bin:$$PATH sphinx-build
 BUILDER      = html
 JOBS         = 8
 SOURCES      =
-# synchronise with render.yml -> deploy step
-OUTPUT_DIR   = build
 SPHINXERRORHANDLING = -W --keep-going -w sphinx-warnings.txt
 
 ALLSPHINXOPTS = -b $(BUILDER) \
                 -j $(JOBS) \
-                $(SPHINXOPTS) $(SPHINXERRORHANDLING) peps $(OUTPUT_DIR) $(SOURCES)
+                $(SPHINXOPTS) $(SPHINXERRORHANDLING) \
+                peps $(BUILDDIR) $(SOURCES)
 
 ## html           to render PEPs to "pep-NNNN.html" files
 .PHONY: html
