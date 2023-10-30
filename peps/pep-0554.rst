@@ -38,7 +38,6 @@ Proposal
 Summary:
 
 * add a new stdlib module: "interpreters"
-* add public C-API needed for the module
 * add concurrent.futures.InterpreterPoolExecutor
 * help for extension module maintainers
 
@@ -498,14 +497,21 @@ is mitigated somewhat for some "immortal" objects (see :pep:`683`).
 
 Consequently, the mechanism for sharing needs to be carefully considered.
 There are a number of valid solutions, several of which may be
-appropriate to support in Python, even though we propose a basic one
-here.  Ultimately, any other solution will look similar to the proposed
-one, which will set the precedent.
+appropriate to support in Python's stdlib and C-API.  Any such solution
+is likely to share many characteristics with the others.
 
-Note that the implementation of ``Interpreter.bind()`` will be done
-in a way that allows for may of these solutions to be implemented
-independently and to coexist.  Part of the proposed C-API additions
-facilitate the mechanism.
+In the meantime, we propose here a minimal solution
+(``Interpreter.bind()``), which sets some precedent for how objects
+are shared.  More importantly, it facilitates the introduction of more
+advanced approaches later and allows them to coexist and cooperate.
+In part to demonstrate that, we will provide a basic implementation of
+"channels", as a somewhat more advanced sharing solution.
+
+Separate proposals may cover:
+
+* the addition of a public C-API based on the implementation
+  ``Interpreter.bind()``
+* the addition of other sharing approaches to the "interpreters" module
 
 The fundamental enabling feature for communication is that most objects
 can be converted to some encoding of underlying raw data, which is safe
@@ -781,10 +787,10 @@ Shareable Types
 ---------------
 
 An object is "shareable" if its type supports shareable instances.
-The type must implement the new protocol described in `New C-API`_
-below, which is used to convert an object to interpreter-independent
-data and then coverted back to an object on the other side.
-Also see `is_shareable() <interpreters-is-shareable_>`_ above.
+The type must implement a new internal protocol, which is used to
+convert an object to interpreter-independent data and then coverted
+back to an object on the other side.  Also see
+`is_shareable() <interpreters-is-shareable_>`_ above.
 
 A minimal set of simple, immutable builtin types will be supported
 initially, including:
@@ -804,10 +810,12 @@ Further builtin types may be supported later, complex or not.
 Limiting the initial shareable types is a practical matter, reducing
 the potential complexity of the initial implementation.  There are a
 number of strategies we may pursue in the future to expand supported
-objects, once we have more experience with interpreter isolation..
+objects, once we have more experience with interpreter isolation.
 
-Regardless, support for other types may be added for now by extension
-modules, using the new C-API.
+In the meantime, a separate proposal will discuss making the internal
+protocol (and C-API) used by ``Interpreter.bind()`` public.  With
+that protocol, support for other types could be added
+by extension modules.
 
 Communicating Through OS Pipes
 ''''''''''''''''''''''''''''''
@@ -948,204 +956,6 @@ Then object destruction can happen like normal in the original
 interpreter, along with the previously shared data.
 
 
-New C-API
-=========
-
-At the C layer, the fundamental problem to solve is sharing data
-safely between two interpreters.  This refers to both thread-safety
-(mutation) and managing lifecycles (deallocation).
-
-The proposed C-API falls into three catagories:
-
-1. users - passing objects/data between interpreters safely
-2. types - supporting cross-interpreter instances
-3. implementation - enables implementing the "_interpreters" module
-
-The first two categories effectively operate on the same data type.
-However, they use a different API prefix to reflect the distinction.
-
-Using Cross-Interpreter Data
-----------------------------
-
-The following API facilitates passing object-derived data between
-interpreters safely.  It is inspired by the :pep:`3118` buffer API.
-
-Usage will typically follow this pattern::
-
-   /* interpreter A */
-
-   PyCrossInterpreterData *xid = PyObject_GetCrossInterpreterData(obj);
-   if (xid == NULL) {
-       return -1;
-   }
-
-   /* interpreter B */
-   PyObject *obj = PyCrossInterpreterData_NewObject(xid);
-   PyCrossInterpreterData_Release(xid);
-   if (obj == NULL) {
-       return -1;
-   }
-
-The new API:
-
-::
-
-   typedef struct xid PyCrossInterpreterData
-
-The opaque type that encapsulates the information needed to safely
-pass/share data between interpreters.
-
-::
-
-   int PyObject_CheckCrossInterpreterData(PyObject *obj)
-
-Return true if the object's type supports "sharing".
-
-::
-
-   PyCrossInterpreterData * PyObject_GetCrossInterpreterData(PyObject *obj);
-
-Return the cross-interpreter data corresponding to the object.
-
-::
-
-   PyObject * PyCrossInterpreterData_NewObject(PyCrossInterpreterData *xid)
-
-Return a new object corresponding to the given data.
-
-::
-
-   int PyCrossInterpreterData_Release(PyCrossInterpreterData *xid)
-
-Release the associated object, if any, and free the raw data,
-if necessary.  Both tasks are performed in the original interpreter.
-If that is the current interpreter then it happens immediately.
-Otherwise it happens "soon" in any one of that interpreter's threads
-where the eval loop is running.
-
-Regardiess, the given "xid" is always deallocated after the object
-and raw data have been released.
-
-Defining a Cross-Interpreter Type
----------------------------------
-
-For cross-interpreter data to be useful, there must be a way for types
-to define how their instances are converted to cross-interpreter data
-and back.
-
-That involves:
-
-1. a function to convert an instance of the type to raw data
-2. a function to convert raw data back into an object
-
-The new API:
-
-::
-
-   typedef struct xid Py_xid_t
-
-The opaque type that encapsulates the information needed to safely
-pass/share data between interpreters.
-
-::
-
-   typedef int (*xidfunc)(PyThreadState *, PyObject *, Py_xid_t *)
-
-   /* for builtin static types and internal data */
-   typedef struct {
-       ...
-       xidfunc tp_xid;
-       ...
-   } PyTypeObject
-
-   /* for heap types */
-   #define Py_tp_xid 82
-
-For a type to define that its instances are shareable, it must have its
-``tp_xid`` slot set.  This function takes the current thread state, an
-instance of the type, and a cross-interpreter data object.  The function
-must initialize the cross-interpreter data using the instance.  This
-includes the raw data and the function to convert it back to an object.
-
-::
-
-   typedef PyObject *(*xid_newobjectfunc)(Py_xid_t *xid, void *data)
-
-   void PyXID_InitWithData(Py_xid_t *xid, void *data,
-                           xid_newobjectfunc new_object)
-
-   void PyXID_InitWithObject(Py_xid_t *xid, void *data, PyObject *obj,
-                             xid_newobjectfunc new_object)
-
-   void * PyXID_InitWithSize(Py_xid_t *xid, const size_t size,
-                             xid_newobjectfunc new_object);
-
-In the ``tp_xid`` function, the type uses one of these functions
-to initialize the cross-interpreter data.
-
-``PyXID_InitWithData()`` is used when the raw data already exists,
-but isn't associated with the object (or with the object's lifetime).
-This can be useful in a number of situations, such as when the object
-maps to an entry in a static lookup table or is a singleton.
-No memory is allocated and the caller is responsible for cleaning up
-(if needed).
-
-``PyXID_InitWithObject()`` is used when the raw data comes from
-(or is tied to the lifetime of) an object, like the underlying data
-of a ``bytes`` object.  No memory is allocated, but it is expected
-that the raw data will be deallocated when the object is deallocated.
-
-``PyXID_InitWithSize()`` is used when the raw data will be filled in
-dynamically afterward.  This implies it is completely independent
-of the object's lifetime.
-
-In each case, the "data" arg may be ``NULL``, but the "newobject"
-function is required.  This function is called by
-``PyCrossInterpreterData_NewObject()``.
-
-::
-
-   int64_t PyXID_GetInterpID(PyCrossInterpreterData *xid)
-
-The "newobject" function set by the type may need additional data
-stored in the cross-interpreter data.  These helper functions provide
-that information.
-
-Implementing the _interpreters Module
--------------------------------------
-
-The implementation of the low-level ``_interpreters`` module has
-demonstrated a need for various additional public API.  These would
-be useful to anyone building their own library for managing
-interpreters.
-
-Existing "private"/internal API:
-
-* ``PyInterpreterConfig_INIT`` (AKA ``_PyInterpreterConfig_INIT``)
-* ``PyInterpreterConfig_LEGACY_INIT`` (AKA ``_PyInterpreterConfig_LEGACY_INIT``)
-* ``PyInterpreterState_RequireIDRef()`` (AKA ``_PyInterpreterState_RequireIDRef()``)
-* ``PyErr_SetFromPyStatus()`` (AKA ``_PyErr_SetFromPyStatus()``)
-* ``PyErr_ChainExceptions()`` (AKA ``_PyErr_ChainExceptions1()``, see `gh-89101 <https://github.com/python/cpython/issues/89101>`_)
-* ``PyArg_BadArgument()`` (AKA ``_PyArg_BadArgument()``)
-
-New public API:
-
-* ``PyInterpreterState_IsRunningMain()``
-* ``PyInterpreterState_FailIfRunningMain()``
-* ``PyInterpreterState_SetRunningMain()``
-* ``PyInterpreterState_SetNotRunningMain()``
-
-The above all relate to tracking if an interpreter is currently running
-a thread against its ``__main__`` module.
-
-New public API:
-
-* ``PyThreadState_WHENCE_EXEC``
-* ``PyThreadState_WHENCE_INTERP``
-* ``PyThreadState_GetWhence()``
-* ``PyThreadState_SetWhence()``
-
-
 Documentation
 =============
 
@@ -1198,8 +1008,6 @@ Similar reasoning applies for support in the ``multiprocessing`` module.
 Open Questions
 ==============
 
-* Is ``tp_xid`` a good name?
-* Is the new C-API for sharing good?
 * Should channels be its own PEP?
 
 
@@ -1789,7 +1597,7 @@ The implementation of the PEP has 4 parts:
 * the high-level module described in this PEP (mostly a light wrapper
   around a low-level C extension
 * the low-level C extension module
-* additions to the C-API needed by the low-level module
+* additions to the internal C-API needed by the low-level module
 * secondary fixes/changes in the CPython runtime that facilitate
   the low-level module (among other benefits)
 
