@@ -82,7 +82,7 @@ Check the validity of links within PEP sources (runs the `Sphinx linkchecker
 .. code-block:: shell
 
    python build.py --check-links
-   make check-links
+   make linkcheck
 
 
 ``build.py`` usage
