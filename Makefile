@@ -3,16 +3,18 @@
 # You can set these variables from the command line.
 PYTHON       = python3
 VENVDIR      = .venv
+# synchronise with render.yml -> deploy step
+BUILDDIR     = build
 SPHINXBUILD  = PATH=$(VENVDIR)/bin:$$PATH sphinx-build
 BUILDER      = html
 JOBS         = 8
 SOURCES      =
-# synchronise with render.yml -> deploy step
-OUTPUT_DIR   = build
 SPHINXERRORHANDLING = -W --keep-going -w sphinx-warnings.txt
 
-ALLSPHINXOPTS = -b $(BUILDER) -j $(JOBS) \
-                $(SPHINXOPTS) $(SPHINXERRORHANDLING) peps $(OUTPUT_DIR) $(SOURCES)
+ALLSPHINXOPTS = -b $(BUILDER) \
+                -j $(JOBS) \
+                $(SPHINXOPTS) $(SPHINXERRORHANDLING) \
+                peps $(BUILDDIR) $(SOURCES)
 
 ## html           to render PEPs to "pep-NNNN.html" files
 .PHONY: html
@@ -27,14 +29,17 @@ htmlview: html
 ## dirhtml        to render PEPs to "index.html" files within "pep-NNNN" directories
 .PHONY: dirhtml
 dirhtml: BUILDER = dirhtml
-dirhtml: venv
-	$(SPHINXBUILD) $(ALLSPHINXOPTS)
+dirhtml: html
 
-## check-links    to check validity of links within PEP sources
-.PHONY: check-links
+## linkcheck      to check validity of links within PEP sources
+.PHONY: linkcheck
 check-links: BUILDER = linkcheck
-check-links: venv
-	$(SPHINXBUILD) $(ALLSPHINXOPTS)
+check-links: html
+
+## check-links    (deprecated: use 'make linkcheck' alias instead)
+.PHONY: pages
+check-links: linkcheck
+	@echo "\033[0;33mWarning:\033[0;31m 'make check-links' \033[0;33mis deprecated, use\033[0;32m 'make linkcheck' \033[0;33malias instead\033[0m"
 
 ## clean          to remove the venv and build files
 .PHONY: clean
