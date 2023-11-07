@@ -1,0 +1,392 @@
+PEP: 734
+Title: Multiple Interpreters in the Stdlib
+Author: Eric Snow <ericsnowcurrently@gmail.com>
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: 06-Nov-2023
+Python-Version: 3.13
+
+
+Abstract
+========
+
+I propose that we add a new module, "interpreters", to the standard
+library, to make the existing multiple-interpreters feature of CPython
+more easily accessible to Python code.  This is particularly relevant
+now that we have a per-interpreter GIL (:pep:`684`) and people are
+more interested in using multiple interpreters.  Without a stdlib
+module, users are limited to the `C-API`_, which restricts how much
+they can try out and take advantage of multiple interpreters.
+
+.. _C-API:
+   https://docs.python.org/3/c-api/init.html#sub-interpreter-support
+
+
+Rationale
+=========
+
+The ``interpreters`` module will provide a high-level interface to the
+multiple interpreter functionality.  Since we have no experience with
+how users will make use of multiple interpreters in Python code, we are
+purposefully keeping the initial API as lean and minimal as possible.
+The objective is to provide a well-considered foundation on which we may
+add more-advanced functionality later.
+
+That said, the proposed design incorporates lessons learned from
+existing use of subinterpreters by the community, from existing stdlib
+modules, and from other programming languages.  It also factors in
+experience from using subinterpreters in the CPython test suite and
+using them in `concurrency benchmarks`_.
+
+.. _concurrency benchmarks:
+   https://github.com/ericsnowcurrently/concurrency-benchmarks
+
+The module will include a basic mechanism for communicating between
+interpreters.  Without one, multiple interpreters are a much less
+useful feature.
+
+
+Specification
+=============
+
+The module will:
+
+* expose the existing multiple interpreter support
+* introduce a basic mechanism for communicating between interpreters
+
+The module will wrap a new low-level ``_interpreters`` module
+(in the same way as the ``threading`` module).  However, that low-level
+API is not intended for public use and thus not part of this proposal.
+
+We also expect that an ``InterpreterPoolExecutor`` will be added to the
+``concurrent.futures`` module, but that is outside the scope of this PEP.
+
+API: Using Interpreters
+-----------------------
+
+The module's top-level API for managing interpreters looks like this:
+
++----------------------------------+----------------------------------------------+
+| signature                        | description                                  |
++==================================+==============================================+
+| ``list_all() -> [Interpreter]``  | Get all existing interpreters.               |
++----------------------------------+----------------------------------------------+
+| ``get_current() -> Interpreter`` | Get the currently running interpreter.       |
++----------------------------------+----------------------------------------------+
+| ``create() -> Interpreter``      | Initialize a new (idle) Python interpreter.  |
++----------------------------------+----------------------------------------------+
+
+Each interpreter object:
+
++----------------------------------+------------------------------------------------+
+| signature                        | description                                    |
++==================================+================================================+
+| ``class Interpreter``            | A single interpreter.                          |
++----------------------------------+------------------------------------------------+
+| ``.id``                          | The interpreter's ID (read-only).              |
++----------------------------------+------------------------------------------------+
+| ``.is_running() -> bool``        | Is the interpreter currently executing code?   |
++----------------------------------+------------------------------------------------+
+| ``.set_main_attrs(**kwargs)``    | Bind objects in ``__main__``.                  |
++----------------------------------+------------------------------------------------+
+| ``.exec(code, /)``               | | Run the given source code in the interpreter |
+|                                  | | (in the current thread).                     |
++----------------------------------+------------------------------------------------+
+
+Additional details:
+
+* Every ``Interpreter`` instance wraps an ``InterpreterID`` object.
+  When there are no more references to an interpreter's ID, it gets
+  finalized.  Thus no interpreters created through
+  ``interpreters.create()`` will leak.
+
+|
+
+* ``Interpreter.is_running()`` refers only to if there is a thread
+  running a script (code) in the interpreter's ``__main__`` module.
+  That basically means whether or not ``Interpreter.exec()`` is running
+  in some thread.  Code running in sub-threads is ignored.
+
+|
+
+* ``Interpreter.set_main_attrs()`` will only allow (for now) objects
+  that are specifically supported for passing between interpreters.
+  See `Shareable Objects`_.
+
+|
+
+* ``Interpreter.set_main_attrs()`` is helpful for initializing the
+  globals for an interpreter before running code in it.
+
+|
+
+* ``Interpreter.exec()`` does not reset the interpreter's state nor
+  the ``__main__`` module, neither before nor after, so each
+  successive call picks up where the last one left off.  This can
+  be useful for running some code to initialize an interpreter
+  (e.g. with imports) before later performing some repeated task.
+
+Comparison with builtins.exec()
+-------------------------------
+
+``Interpreter.exec()`` is essentially the same as the builtin
+``exec()``, except it targets a different interpreter, using that
+interpreter's isolated state.
+
+The builtin ``exec()`` runs in the current OS thread and pauses
+whatever was running there, which resumes when ``exec()`` finishes.
+No other threads are affected.  (To avoid pausing the current thread,
+run ``exec()`` in a ``threading.Thread``.)
+
+``Interpreter.exec()`` works the same way.
+
+The builtin ``exec()`` take a namespace against which it executes.
+It uses that namespace as-is and does not clear it before or after.
+
+``Interpreter.exec()`` works the same way.
+
+...with one slight difference: the namespace is implicit
+(the ``__main__`` module's ``__dict__``).  This is the same as how
+scripts run from the Python commandline or REPL work.
+
+The builtin ``exec()`` discards any object returned from the
+executed code.
+
+``Interpreter.exec()`` works the same way.
+
+The builtin ``exec()`` propagates any uncaught exception from the code
+it ran.  The exception is raised from the ``exec()`` call in the
+thread that originally called ``exec()``.
+
+``Interpreter.exec()`` works the same way.
+
+...with one slight difference.  Rather than propagate the uncaught
+exception directly, we raise an ``interpreters.RunFailedError``
+with a snapshot of the uncaught exception (including its traceback)
+as the ``__cause__``.  Directly raising (a proxy of) the exception
+is problematic since it's harder to distinguish between an error
+in the ``Interpreter.exec()`` call and an uncaught exception
+from the subinterpreter.
+
+API: Communicating Between Interpreters
+---------------------------------------
+
+The module introduces a basic communication mechanism called "channels".
+They are based on `CSP`_, as is ``Go``'s concurrency model (loosely).
+Channels are like pipes: FIFO queues with distinct send/recv ends.
+They are designed to work safely between isolated interpreters.
+
+.. _CSP:
+   https://en.wikipedia.org/wiki/Communicating_sequential_processes
+
+For now, only objects that are specifically supported for passing
+between interpreters may be sent through a channel.
+See `Shareable Objects`_.
+
+The module's top-level API for this new mechanism:
+
++----------------------------------------------------+-----------------------+
+| signature                                          | description           |
++====================================================+=======================+
+| ``create_channel() -> (RecvChannel, SendChannel)`` | Create a new channel. |
++----------------------------------------------------+-----------------------+
+
+The objects for the two ends of a channel:
+
++------------------------------------------+-----------------------------------------------+
+| signature                                | description                                   |
++==========================================+===============================================+
+| ``class RecvChannel(id)``                | The receiving end of a channel.               |
++------------------------------------------+-----------------------------------------------+
+| ``.id``                                  | The channel's unique ID.                      |
++------------------------------------------+-----------------------------------------------+
+| ``.recv() -> object``                    | | Get the next object from the channel,       |
+|                                          | | and wait if none have been sent.            |
++------------------------------------------+-----------------------------------------------+
+| ``.recv_nowait(default=None) -> object`` | | Like recv(), but return the default         |
+|                                          | | instead of waiting.                         |
++------------------------------------------+-----------------------------------------------+
+
+|
+
++------------------------------+---------------------------------------------------------------------+
+| signature                    | description                                                         |
++==============================+=====================================================================+
+| ``class SendChannel(id)``    | The sending end of a channel.                                       |
++------------------------------+---------------------------------------------------------------------+
+| ``.id``                      | The channel's unique ID.                                            |
++------------------------------+---------------------------------------------------------------------+
+| ``.send(obj)``               | | Send the `shareable object <Shareable Objects_>`_ (i.e. its data) |
+|                              | | to the receiving end of the channel and wait.                     |
++------------------------------+---------------------------------------------------------------------+
+| ``.send_nowait(obj)``        | Like send(), but return False if not received.                      |
++------------------------------+---------------------------------------------------------------------+
+
+Shareable Objects
+-----------------
+
+Both ``Interpreter.set_main_attrs()`` and channels work only with
+"shareable" objects.
+
+A "shareable" object is one which may be passed from one interpreter
+to another.  The object is not necessarily actually shared by the
+interpreters.  However, the object in the one interpreter is guaranteed
+to exactly match the corresponding object in the other interpreter.
+
+For some types, the actual object is shared.  For some, the object's
+underlying data is actually shared but each interpreter has a distinct
+object wrapping that data.  For all other shareable types, a strict copy
+or proxy is made such that the corresponding objects continue to match.
+
+For now, shareable objects must be specifically supported internally
+by the Python runtime.
+
+Here's the initial list of supported objects:
+
+* ``str``
+* ``bytes``
+* ``int``
+* ``float``
+* ``bool`` (``True``/``False``)
+* ``None``
+* ``tuple`` (only with shareable items)
+* channels (``SendChannel``/``RecvChannel``)
+* ``memoryview``
+
+Again, for some types the actual object is shared, whereas for others
+only the underlying data (or even a copy or proxy) is shared.
+Eventually mutable objects may also be shareable.
+
+Regardless, the guarantee of "shareable" objects is that corresponding
+objects in different interpreters will always strictly match each other.
+
+Examples
+--------
+
+Using interpreters as workers, with channels to communicate:
+
+::
+
+   tasks_recv, tasks = interpreters.create_channel()
+   results, results_send = interpreters.create_channel()
+
+   def worker():
+       interp = interpreters.create()
+       interp.set_main_attrs(tasks=tasks_recv, results=results_send)
+       interp.exec(tw.dedent("""
+           def handle_request(req):
+               ...
+
+           def capture_exception(exc):
+               ...
+
+           while True:
+               try:
+                   req = tasks.recv()
+               except Exception:
+                   # channel closed
+                   break
+               try:
+                   res = handle_request(req)
+               except Exception as exc:
+                   res = capture_exception(exc)
+               results.send_nowait(res)
+           """))
+   threads = [threading.Thread(target=worker) for _ in range(20)]
+   for t in threads:
+       t.start()
+
+   requests = ...
+   for req in requests:
+       tasks.send(req)
+   tasks.close()
+
+   for t in threads:
+       t.join()
+
+Sharing a memoryview (imagine map-reduce):
+
+::
+
+   data, chunksize = read_large_data_set()
+   buf = memoryview(data)
+   numchunks = (len(buf) + 1) / chunksize
+   results = memoryview(b'\0' * numchunks)
+
+   tasks_recv, tasks = interpreters.create_channel()
+
+   def worker():
+       interp = interpreters.create()
+       interp.set_main_attrs(data=buf, results=results, tasks=tasks_recv)
+       interp.exec(tw.dedent("""
+           while True:
+               try:
+                   req = tasks.recv()
+               except Exception:
+                   # channel closed
+                   break
+               resindex, start, end = req
+               chunk = data[start: end]
+               res = reduce_chunk(chunk)
+               results[resindex] = res
+           """))
+   t = threading.Thread(target=worker)
+   t.start()
+
+   for i in range(numchunks):
+       if not workers_running():
+           raise ...
+       start = i * chunksize
+       end = start + chunksize
+       if end > len(buf):
+           end = len(buf)
+       tasks.send((start, end, i))
+   tasks.close()
+   t.join()
+
+   use_results(results)
+
+
+Documentation
+=============
+
+The new stdlib docs page for the ``interpreters`` module will include
+the following:
+
+* (at the top) a clear note that support for multiple interpreters
+  is not required from extension modules
+* some explanation about what subinterpreters are
+* brief examples of how to use multiple interpreters
+  (and communicating between them)
+* a summary of the limitations of using multiple interpreters
+* (for extension maintainers) a link to the resources for ensuring
+  multiple interpreters compatibility
+* much of the API information in this PEP
+
+Docs about resources for extension maintainers already exist on the
+`Isolating Extension Modules <isolation-howto_>`_ howto page.  Any
+extra help will be added there.  For example, it may prove helpful
+to discuss strategies for dealing with linked libraries that keep
+their own subinterpreter-incompatible global state.
+
+.. _isolation-howto:
+   https://docs.python.org/3/howto/isolating-extensions.html
+
+Also, the ``ImportError`` for incompatible extension modules will be
+updated to clearly say it is due to missing multiple interpreters
+compatibility and that extensions are not required to provide it.  This
+will help set user expectations properly.
+
+
+Rejected Ideas
+==============
+
+See :pep:`554`.
+
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
