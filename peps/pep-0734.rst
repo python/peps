@@ -587,55 +587,104 @@ still be done through channels, set with the initializer.
 Examples
 --------
 
-Using interpreters as workers, with channels to communicate:
+The following examples demonstrate practical cases where multiple
+interpreters may be useful.
+
+Example 1:
+
+We have a stream of requests coming in that we will handle
+via workers in sub-threads.
+
+* each worker thread has its own interpreter
+* we use one channel to send tasks to workers and
+  another channel to return results
+* the results are handled in a dedicated thread
+* each worker keeps going until it receives a "stop" sentinel (``None``)
+* the results handler keeps going until all workers have stopped
 
 ::
 
+   import time
    import interpreters
-   import textwrap as tw
-   from mymodule import iter_requests
+   from mymodule import iter_requests, handle_result
 
    tasks_recv, tasks = interpreters.create_channel()
    results, results_send = interpreters.create_channel()
 
+   numworkers = 20
+   threads = []
+
+   def results_handler():
+       empty = object()
+       running = numworkers
+       while running:
+           res = results.recv_nowait(empty)
+           if res is empty:
+               # No workers have finished a request since last time.
+               time.sleep(0.1)
+           elif res is None:
+               # A worker has stopped.
+               running -= 1
+           else:
+               handle_result(res)
+       assert results.recv_nowait(empty) is empty
+   threads.append(threading.Thread(target=results_handler))
+
    def worker():
        interp = interpreters.create()
        interp.prepare___main__(tasks=tasks_recv, results=results_send)
-       interp.exec(tw.dedent("""
+       interp.exec("""if True:
            from mymodule import handle_request, capture_exception
 
            while True:
-               try:
-                   req = tasks.recv()
-               except Exception:
-                   # channel closed
+               req = tasks.recv()
+               if req is None:
+                   # Stop!
                    break
                try:
                    res = handle_request(req)
                except Exception as exc:
                    res = capture_exception(exc)
                results.send_nowait(res)
+           # Notify the results handler.
+           results.send_nowait(None)
            """))
-   threads = [threading.Thread(target=worker) for _ in range(20)]
+   threads.extend(threading.Thread(target=worker) for _ in range(numworkers))
+
    for t in threads:
        t.start()
 
    for req in iter_requests():
        tasks.send(req)
-   tasks.close()
+   # Send the "stop" signal.
+   for _ in range(numworkers):
+       tasks.send(None)
 
    for t in threads:
        t.join()
 
-Sharing a ``memoryview`` (imagine map-reduce):
+Example 2:
+
+This case is similar to the last as we have a bunch of workers
+in sub-threads.  However, this time we are chunking up a big array
+of data, where each worker processes one chunk at a time.  Copying
+that data to each interpreter would be exceptionally inefficient,
+so we take advantage of directly sharing ``memoryview`` buffers.
+
+* all the interpreters share the buffer of the source array
+* each one writes its results to a second shared buffer
+* we use a channel to send tasks to workers
+* only one worker will ever read any given index in the source array
+* only one worker will ever write to any given index in the results
+  (this is how we ensure thread-safety)
 
 ::
 
    import interpreters
    import queue
-   import textwrap as tw
    from mymodule import read_large_data_set, use_results
 
+   numworkers = 3
    data, chunksize = read_large_data_set()
    buf = memoryview(data)
    numchunks = (len(buf) + 1) / chunksize
@@ -646,21 +695,19 @@ Sharing a ``memoryview`` (imagine map-reduce):
    def worker(id):
        interp = interpreters.create()
        interp.prepare___main__(data=buf, results=results, tasks=tasks_recv)
-       interp.exec(tw.dedent("""
+       interp.exec("""if True:
            from mymodule import reduce_chunk
 
            while True:
-               try:
-                   req = tasks.recv()
-               except Exception:
-                   # channel closed
+               req = tasks.recv()
+               if res is None:
+                   # Stop!
                    break
                resindex, start, end = req
                chunk = data[start: end]
                res = reduce_chunk(chunk)
                results[resindex] = res
            """))
-   numworkers = 3
    threads = [threading.Thread(target=worker) for _ in range(numworkers)]
    for t in threads:
        t.start()
@@ -672,7 +719,10 @@ Sharing a ``memoryview`` (imagine map-reduce):
        if end > len(buf):
            end = len(buf)
        tasks.send((start, end, i))
-   tasks.close()
+   # Send the "stop" signal.
+   for _ in range(numworkers):
+       tasks.send(None)
+
    for t in threads:
        t.join()
 
