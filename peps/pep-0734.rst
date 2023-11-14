@@ -23,11 +23,9 @@ This PEP proposes to add a new module, ``interpreters``, to support
 inspecting, creating, and running code in multiple interpreters in the
 current process.  This includes ``Interpreter`` objects that represent
 the underlying interpreters.  The module will also provide a basic
-mechanism called "channels" for communication between interpreters.
-This includes ``SendChannel`` and ``RecvChannel`` objects to represent
-the pair of ends of each channel.  Finally, we will add a new
-``concurrent.futures.InterpreterPoolExecutor`` based on the
-``interpreters`` module.
+``Queue`` class for communication between interpreters.  Finally, we
+will add a new ``concurrent.futures.InterpreterPoolExecutor`` based
+on the ``interpreters`` module.
 
 
 Introduction
@@ -202,7 +200,7 @@ set one item at a time.  The main reason is for efficiency.
 To set a value in ``__main__.__dict__`` we must first switch to the
 target interpreter, which involves some non-negligible overhead.
 After setting the value we must switch back.  Furthermore, there
-is some overhead to the mechanism by which we send objects between
+is some overhead to the mechanism by which we pass objects between
 interpreters, which can be reduced in aggregate if multiple values
 are set at once.
 
@@ -217,30 +215,16 @@ is problematic since it's harder to distinguish between an error
 in the ``Interpreter.exec()`` call and an uncaught exception
 from the subinterpreter.
 
-Channels
---------
+Directly Shareable Objects
+--------------------------
 
-Channels are based on `CSP`_, as is Go's concurrency model (loosely).
-However, at it's core a channel is a simple FIFO queue, with the
-recv and send ends exposed distinctly, so reading about CSP should
-not be necessary.
-
-.. _CSP:
-   https://en.wikipedia.org/wiki/Communicating_sequential_processes
-
-Exposing the channel ends as distinct objects, rather than combined
-in one object, is a deliberate choice based on experience with Go's
-channels.  Go has both directional and bidirectional channels.  The
-directional channels make intentions clear and are easier to reason
-about.
-
-We cannot support directly sharing any and all objects through channels
+We cannot support directly sharing any and all objects through queues
 because all objects have at least some mutable state (e.g. refcount)
 which the GIL protects normally.  Furthermore, objects must only be
 deleted by the interpreter that created them, which makes direct
 sharing even more complex.
 
-Supporting indirect sharing of all objects in channels would be
+Supporting indirect sharing of all objects in queues would be
 possible by automatically pickling them if we can't use the more
 efficient mechanism.  However, it's helpful to know that only the
 efficient way is being used.  Furthermore, for mutable objects
@@ -251,7 +235,7 @@ include automatic pickling.
 Objects vs. ID Proxies
 ----------------------
 
-For both interpreters and channels, we provide objects that expose them
+For both interpreters and queues, we provide objects that expose them
 indirectly with ID-wrapping surrogates for the underlying state.
 In both cases the state is process-global and will be used by multiple
 interpreters.  Thus they aren't suitable to be implemented as
@@ -268,8 +252,8 @@ The module will:
 * expose the existing multiple interpreter support
 * introduce a basic mechanism for communicating between interpreters
 
-The module will wrap a new low-level ``_interpreters`` module and
-``_channels`` module (in the same way as the ``threading`` module).
+The module will wrap a new low-level ``_interpreters`` module
+(in the same way as the ``threading`` module).
 However, that low-level API is not intended for public use
 and thus not part of this proposal.
 
@@ -425,121 +409,100 @@ when debugging.
 Communicating Between Interpreters
 ----------------------------------
 
-The module introduces a basic communication mechanism called "channels".
+The module introduces a basic communication mechanism through special
+queues.
 
-A channel is a FIFO queue that exists outside any one interpreter.
-Channels have special accommodations for safely passing object data
-between interpreters, without violating interpreter isolation.
-This includes thread-safety.
+There are ``interpreters.Queue`` objects, but they only proxy
+the actual data structure: an unbounded FIFO queue that exists
+outside any one interpreter.  These queues have special accommodations
+for safely passing object data between interpreters, without violating
+interpreter isolation.  This includes thread-safety.
 
-As with other queues in Python, each sent object is added to the back
-of the channel's internal queue and each recv() pops the next one off
-the front of that queue.  Every sent object will be received.
+As with other queues in Python, for each "put" the object is added to
+the back and each "get" pops the next one off the front.  Every added
+object will be popped off in the order it was pushed on.
 
 Only objects that are specifically supported for passing
-between interpreters may be sent through a channel.  Note that the
-actual objects aren't send, but rather their underlying data.
-However, the received object will still be identical to the original.
+between interpreters may be sent through a ``Queue``.  Note that the
+actual objects aren't sent, but rather their underlying data.
+However, the popped object will still be identical to the original.
 See `Shareable Objects`_.
 
 The module defines the following functions:
 
-``create_channel() -> tuple[RecvChannel, SendChannel]``::
+``create_queue() -> Queue``::
 
-   Create a new channel, returning objects for the two ends.
+   Create a new queue.
 
-Channel Objects
----------------
+Queue Objects
+-------------
 
-The ``interpreters`` module exposes channels with objects for the two
-distinct ends, "send" and "recv", rather than a single object that
-combines both ends (like other queues).
+``Queue`` objects act as proxies for the underlying
+cross-interpreter-safe queues exposed by the ``interpreters`` module.
 
-The receiving end of a channel:
+``class Queue(id)``::
 
-``class RecvChannel(id)``::
-
-   A ``RecvChannel`` object is not normally created directly.
-   Instead, it should come from ``interpreters.create_channel()``.
+   A ``Queue`` object is not normally created directly.
+   Instead, it should come from ``interpreters.create_queue()``.
 
    Arguments:
 
-   ``id`` is a non-negative int or ``_channels.ChannelID`` corresponding
-   to the ID of an existing channel and is used to target the recv end
-   of that channel.  An ``int`` will be converted to a ``ChannelID``.
-   If a channel that ID does not exist then this raises ``ValueError`.
+   ``id`` is a non-negative int or ``_interpreters.QueueID``
+   corresponding to the ID of an existing cross-interpreter queue
+   and is used to target that queue.  An ``int`` will be converted
+   to a ``QueueID``.  If a queue with that ID does not exist
+   then this raises ``ValueError`.
 
    Attributes:
 
    ``id``::
 
-      (read-only) The target channel's ``ChannelID`` object.
+      (read-only) The target queue's ``QueueID`` object.
       It is an int-like object with some internal bookkeeping.
 
    Methods:
 
    ``__hash__()``::
 
-      Returns the hash of the channel's ``id``.  This is the same
+      Returns the hash of the queue's ``id``.  This is the same
       as the hash of the ID's integer value.
 
    ``__eq__(other)``::
 
       Returns ``other is self``.
 
-   ``recv() -> object``::
+   ``put(obj, timeout=None)``::
 
-      Get the next object from the channel.  Wait if none have been sent.
+      Add the `shareable object <Shareable Objects_>`_ (i.e. its data)
+      to the queue and wait for it to be received.  If a timeout is
+      provided and the object is not received in that time then raise
+      ``TimeoutError``.  The object will be removed from the queue at
+      that time.
 
-   ``recv_nowait(default=None) -> object``::
+      Note that other Python queue types will block only if there is
+      a max size set and the queue is full.  They do not block while
+      waiting for the object to be popped off.  In that regard think
+      of each ``Queue`` as having a max size of zero.
 
-      Like ``recv()``, but return the default instead of waiting.
+   ``put_nowait(obj) -> bool``::
 
-The sending end of a channel:
+      Like ``put()``, but return False if not received.
 
-``class SendChannel(id)``::
+   ``get(timeout=None) -> object``::
 
-   A ``SendChannel`` object is not normally created directly.
-   Instead, it should come from ``interpreters.create_channel()``.
+      Get the next object from the queue.  Wait while the queue is
+      empty.  If a timeout is provided and an object hasn't been added
+      to the queue in that time then raise ``interpreters.QueueEmpty``.
 
-   Arguments:
+   ``get_nowait([default]) -> object``::
 
-   ``id`` is a non-negative int or ``_channels.ChannelID`` corresponding
-   to the ID of an existing channel and is used to target the send end
-   of that channel.  An ``int`` will be converted to a ``ChannelID``.
-   If a channel that ID does not exist then this raises ``ValueError`.
-
-   Attributes:
-
-   ``id``::
-
-      (read-only) The target channel's ``ChannelID`` object.
-
-   Methods:
-
-   ``__hash__()``::
-
-      Returns the hash of the channel's ``id``.  This is the same
-      as the hash of the ID's integer value.
-
-   ``__eq__(other)``::
-
-      Returns ``other is self``.
-
-   ``send(obj)``::
-
-      Send the `shareable object <Shareable Objects_>`_ (i.e. its data)
-      to the receiving end of the channel and wait for it
-      to be received.
-
-   ``send_nowait(obj) -> bool``::
-
-      Like ``send()``, but return False if not received.
+      Like ``get()``, but return the default instead of waiting.
+      If no default is provided then raise ``interpreters.QueueEmpty``.
 
 Shareable Objects
 -----------------
 
-Both ``Interpreter.prepare___main__()`` and channels work only with
+Both ``Interpreter.prepare___main__()`` and ``Queue`` work only with
 "shareable" objects.
 
 A "shareable" object is one which may be passed from one interpreter
@@ -568,21 +531,21 @@ Here's the initial list of supported objects:
 * ``bool`` (``True``/``False``)
 * ``None``
 * ``tuple`` (only with shareable items)
-* channels (``SendChannel``/``RecvChannel``)
+* ``Queue``
 * ``memoryview`` (underlying buffer actually shared)
 
-Note that the last two on the list, channels and ``memoryview``, are
+Note that the last two on the list, queues and ``memoryview``, are
 technically mutable data types, whereas the rest are not.  When any
 interpreters share mutable data there is always a risk of data races.
 Cross-interpreter safety, including thread-safety, is a fundamental
-feature of channels.
+feature of queues.
 
 However, ``memoryview`` does not have any native accommodations.
 The user is responsible for managing thread safety, whether passing
-a token back and forth through a channel to indicate safety,
+a token back and forth through a queue to indicate safety,
 or by assigning sub-range exclusivity to individual interpreters.
 
-Regarding channels, the primary situation for sharing is where an
+Regarding queues, the primary situation for sharing is where an
 interpreter is using ``prepare___main__()`` to provide the target
 interpreter with their means of further communication.
 
@@ -598,7 +561,7 @@ InterpreterPoolExecutor
 The new ``concurrent.futures.InterpreterPoolExecutor`` will be
 a subclass of ``concurrent.futures.ThreadPoolExecutor``, where each
 worker executes tasks in its own subinterpreter.  Communication may
-still be done through channels, set with the initializer.
+still be done through ``Queue`` objects, set with the initializer.
 
 
 Examples
@@ -613,8 +576,8 @@ We have a stream of requests coming in that we will handle
 via workers in sub-threads.
 
 * each worker thread has its own interpreter
-* we use one channel to send tasks to workers and
-  another channel to return results
+* we use one queue to send tasks to workers and
+  another queue to return results
 * the results are handled in a dedicated thread
 * each worker keeps going until it receives a "stop" sentinel (``None``)
 * the results handler keeps going until all workers have stopped
@@ -625,36 +588,38 @@ via workers in sub-threads.
    import interpreters
    from mymodule import iter_requests, handle_result
 
-   tasks_recv, tasks = interpreters.create_channel()
-   results, results_send = interpreters.create_channel()
+   tasks = interpreters.create_queue()
+   results = interpreters.create_queue()
 
    numworkers = 20
    threads = []
 
    def results_handler():
-       empty = object()
        running = numworkers
        while running:
-           res = results.recv_nowait(empty)
-           if res is empty:
+           try:
+               res = results.get(timeout=0.1)
+           except interpreters.QueueEmpty:
                # No workers have finished a request since last time.
-               time.sleep(0.1)
-           elif res is None:
-               # A worker has stopped.
-               running -= 1
+               pass
            else:
-               handle_result(res)
-       assert results.recv_nowait(empty) is empty
+               if res is None:
+                   # A worker has stopped.
+                   running -= 1
+               else:
+                   handle_result(res)
+       empty = object()
+       assert results.get_nowait(empty) is empty
    threads.append(threading.Thread(target=results_handler))
 
    def worker():
        interp = interpreters.create()
-       interp.prepare___main__(tasks=tasks_recv, results=results_send)
+       interp.prepare___main__(tasks=tasks, results=results)
        interp.exec("""if True:
            from mymodule import handle_request, capture_exception
 
            while True:
-               req = tasks.recv()
+               req = tasks.get()
                if req is None:
                    # Stop!
                    break
@@ -662,9 +627,9 @@ via workers in sub-threads.
                    res = handle_request(req)
                except Exception as exc:
                    res = capture_exception(exc)
-               results.send_nowait(res)
+               results.put_nowait(res)
            # Notify the results handler.
-           results.send_nowait(None)
+           results.put_nowait(None)
            """))
    threads.extend(threading.Thread(target=worker) for _ in range(numworkers))
 
@@ -672,10 +637,10 @@ via workers in sub-threads.
        t.start()
 
    for req in iter_requests():
-       tasks.send(req)
+       tasks.put_nowait(req)
    # Send the "stop" signal.
    for _ in range(numworkers):
-       tasks.send(None)
+       tasks.put_nowait(None)
 
    for t in threads:
        t.join()
@@ -690,7 +655,7 @@ so we take advantage of directly sharing ``memoryview`` buffers.
 
 * all the interpreters share the buffer of the source array
 * each one writes its results to a second shared buffer
-* we use a channel to send tasks to workers
+* we use a queue to send tasks to workers
 * only one worker will ever read any given index in the source array
 * only one worker will ever write to any given index in the results
   (this is how we ensure thread-safety)
@@ -707,16 +672,16 @@ so we take advantage of directly sharing ``memoryview`` buffers.
    numchunks = (len(buf) + 1) / chunksize
    results = memoryview(b'\0' * numchunks)
 
-   tasks_recv, tasks = interpreters.create_channel()
+   tasks = interpreters.create_queue()
 
    def worker(id):
        interp = interpreters.create()
-       interp.prepare___main__(data=buf, results=results, tasks=tasks_recv)
+       interp.prepare___main__(data=buf, results=results, tasks=tasks)
        interp.exec("""if True:
            from mymodule import reduce_chunk
 
            while True:
-               req = tasks.recv()
+               req = tasks.get()
                if res is None:
                    # Stop!
                    break
@@ -735,10 +700,10 @@ so we take advantage of directly sharing ``memoryview`` buffers.
        end = start + chunksize
        if end > len(buf):
            end = len(buf)
-       tasks.send((start, end, i))
+       tasks.put_nowait((start, end, i))
    # Send the "stop" signal.
    for _ in range(numworkers):
-       tasks.send(None)
+       tasks.put_nowait(None)
 
    for t in threads:
        t.join()
