@@ -26,6 +26,12 @@ html: venv
 htmlview: html
 	$(PYTHON) -c "import os, webbrowser; webbrowser.open('file://' + os.path.realpath('build/index.html'))"
 
+## htmllive       to rebuild and reload HTML files in your browser
+.PHONY: htmllive
+htmllive: SPHINXBUILD = $(VENVDIR)/bin/sphinx-autobuild
+htmllive: SPHINXERRORHANDLING = --re-ignore="/\.idea/|/venv/|/pep-0000.rst|/topic/"
+htmllive: html
+
 ## dirhtml        to render PEPs to "index.html" files within "pep-NNNN" directories
 .PHONY: dirhtml
 dirhtml: BUILDER = dirhtml
