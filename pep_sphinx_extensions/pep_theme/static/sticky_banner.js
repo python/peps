@@ -22,6 +22,16 @@ document.addEventListener("DOMContentLoaded", () => {
     node.replaceChildren(text);
   }
 
+  const closeButton = document.querySelector('.close-button');
+  if (closeButton) {
+    closeButton.addEventListener('click', () => {
+      const stickyBanner = document.querySelector('.sticky-banner');
+      if (stickyBanner) {
+        stickyBanner.style.display = 'none';
+      }
+    });
+  }
+
   adjustBannerMargin();
   document.addEventListener("resize", adjustBannerMargin);
   document.addEventListener("load", adjustBannerMargin);
