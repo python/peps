@@ -34,6 +34,9 @@ class PEPBanner(rst.Directive):
         else:
             pre_text = self.admonition_pre_text
 
+        close_button_node = nodes.paragraph('', '', nodes.Text('×'), classes=['close-button'])
+        close_button_node['classes'].append('close-button')
+
         pre_text_node = nodes.paragraph(pre_text)
         pre_text_node.line = self.lineno
         pre_node, pre_msg = self.state.inline_text(pre_text, self.lineno)
@@ -50,6 +53,7 @@ class PEPBanner(rst.Directive):
             "\n".join(source_lines), classes=["pep-banner"] + self.css_classes)
 
         admonition_node.append(pre_text_node)
+        admonition_node.append(close_button_node)
         if self.content:
             self.state.nested_parse(
                 self.content, self.content_offset, admonition_node)
