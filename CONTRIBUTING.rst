@@ -54,7 +54,7 @@ this link**, as it does not provide the option to populate the PR template.
 
 However, you *can* use the ``gh`` command line tool. ``gh pr create`` will allow
 you to create a pull request, will prompt you for the template you wish to use,
-and then give you the option of continuing editing in your broswer.
+and then give you the option of continuing editing in your browser.
 
 Alternatively, after pushing your branch, you can visit
 `https://github.com/python/peps <https://github.com/python/peps>`__, and follow
