@@ -4,11 +4,18 @@
 """Configuration for building PEPs using Sphinx."""
 
 import os
+import re
 from pathlib import Path
 import sys
 
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(os.fspath(_ROOT))
+
+# monkey-patch the productionlist directive to allow hyphens in group names
+# see sphinx-doc/sphinx#11854
+from sphinx.domains import std
+
+std.token_re = re.compile(r'`((~?[\w-]*:)?\w+)`')
 
 # -- Project information -----------------------------------------------------
 
