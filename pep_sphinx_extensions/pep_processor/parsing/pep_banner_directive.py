@@ -6,6 +6,7 @@ from docutils import nodes
 from docutils.parsers import rst
 
 PYPA_SPEC_BASE_URL = "https://packaging.python.org/en/latest/specifications/"
+TYPING_SPEC_BASE_URL = "https://typing.readthedocs.io/en/latest/spec/"
 
 
 class PEPBanner(rst.Directive):
@@ -23,7 +24,6 @@ class PEPBanner(rst.Directive):
 
     admonition_class = nodes.important
     css_classes = []
-
 
     def run(self) -> list[nodes.admonition]:
 
@@ -81,7 +81,6 @@ class CanonicalDocBanner(PEPBanner):
     css_classes = ["canonical-doc", "sticky-banner"]
 
 
-
 class CanonicalPyPASpecBanner(PEPBanner):
     """Insert a specialized admonition for PyPA packaging specifications."""
 
@@ -103,3 +102,26 @@ class CanonicalPyPASpecBanner(PEPBanner):
     admonition_class = nodes.attention
 
     css_classes = ["canonical-pypa-spec", "sticky-banner"]
+
+
+class CanonicalTypingSpecBanner(PEPBanner):
+    """Insert a specialized admonition for the typing specification."""
+
+    admonition_pre_template = (
+        "This PEP is a historical document. "
+        "The up-to-date, canonical spec, {link_content}, is maintained on "
+        f"the `typing specs site <{TYPING_SPEC_BASE_URL}>`__."
+    )
+    admonition_pre_text = (
+        "This PEP is a historical document. "
+        "The up-to-date, canonical specifications are maintained on "
+        f"the `typing specs site <{TYPING_SPEC_BASE_URL}>`__."
+    )
+    admonition_post_text = (
+        "See the `typing specification update process "
+        "<https://typing.readthedocs.io/en/latest/spec/TODO.html>`__ "
+        "for how to propose changes."
+    )
+    admonition_class = nodes.attention
+
+    css_classes = ["canonical-typing-spec", "sticky-banner"]
