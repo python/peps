@@ -119,7 +119,7 @@ class CanonicalTypingSpecBanner(PEPBanner):
     )
     admonition_post_text = (
         "See the `typing specification update process "
-        "<https://typing.readthedocs.io/en/latest/spec/TODO.html>`__ "
+        "<https://typing.readthedocs.io/en/latest/spec/meta.html>`__ "
         "for how to propose changes."
     )
     admonition_class = nodes.attention
