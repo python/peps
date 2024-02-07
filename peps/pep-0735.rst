@@ -154,7 +154,7 @@ Use Cases
 ---------
 
 The following use cases are considered important targets for this PEP. They are
-defined in greater detail in the `Use Cases Appendix <use_cases>`_.
+defined in greater detail in the :ref:`Use Cases Appendix <use_cases>`.
 
 * Web Applications deployed via a non-python-packaging build process
 * Libraries with unpublished dev dependency groups
@@ -162,7 +162,6 @@ defined in greater detail in the `Use Cases Appendix <use_cases>`_.
 * *Input data* to lockfile generation (Dependency Groups should generally not
   be used as a location for locked dependency data)
 * Input data to an environment manager, such as tox, Nox, or Hatch
-* Embedded ``pyproject.toml`` data in scripts, as proposed in :pep:`723`
 * Configurable IDE discovery of test and linter requirements
 
 Regarding Poetry and PDM Dependency Groups
@@ -196,18 +195,35 @@ further:
 * installation of a Dependency Group does not imply installation of a package's
   dependencies (or the package itself)
 
+Future Compatibility & Invalid Data
+-----------------------------------
+
+Dependency Groups are intended to be extensible in future PEPs.
+However, Dependency Groups should also be usable by multiple tools in a
+single Python project.
+With multiple tools using the same data, it is possible that one implements
+a future PEP which extends Dependency Groups, while another does not.
+
+To support users in this case, this PEP defines and recommends validation
+behaviors in which tools only examine Dependency Groups which they are using.
+This allows multiple tools, using different versions of Dependency Groups data,
+to share a single table in ``pyproject.toml``.
+
 Specification
 =============
 
 This PEP defines a new section (table) in ``pyproject.toml`` files named
 ``dependency-groups``. The ``dependency-groups`` table contains an arbitrary
 number of user-defined keys, each of which has, as its value, a list of
-requirements (defined below).  These keys must match the following
-regular expression: ``[a-z0-9][a-z0-9-]*[a-z0-9]``. Meaning that they must be
-all lower-case alphanumerics, with ``-`` allowed only in the middle, and at
-least two characters long. These requirements are chosen so that the
-normalization rules used for PyPI package names are unnecessary as the names
-are already normalized.
+requirements (defined below). These keys must be
+`valid non-normalized names <https://packaging.python.org/en/latest/specifications/name-normalization/#valid-non-normalized-names>`__,
+and must be
+`normalized <https://packaging.python.org/en/latest/specifications/name-normalization/#normalization>`__
+before comparisons.
+
+Tools SHOULD prefer to present the original, non-normalized name to users by
+default. If duplicate names, after normalization, are encountered, tools SHOULD
+emit an error.
 
 Requirement lists under ``dependency-groups`` may contain strings, tables
 ("dicts" in Python), or a mix of strings and tables.
@@ -238,6 +254,34 @@ value is a string, the name of another Dependency Group.
 
 For example, ``{include = "test"}`` is an include which expands to the
 contents of the ``test`` Dependency Group.
+
+Includes are defined to be exactly equivalent to the contents of the named
+Dependency Group, inserted into the current group at the location of the include.
+For example, iif ``foo = ["a", "b"]`` is one group, and
+``bar = ["c", {include = "foo"}, "d"]`` is another, then ``bar`` should
+evaluate to ``["c", "a", "b", "d"]`` when Dependency Group Includes are expanded.
+
+Dependency Group Includes may specify the same package multiple times. Tools
+SHOULD NOT deduplicate or otherwise alter the list contents produced by the
+include. For example, given the following table:
+
+.. code:: toml
+
+    [dependency-groups]
+    group-a = ["foo"]
+    group-b = ["foo>1.0"]
+    group-c = ["foo<1.0"]
+    all = ["foo", {include = "group-a"}, {include = "group-b"}, {include = "group-c"}]
+
+The resolved value of ``all`` SHOULD be ``["foo", "foo", "foo>1.0", "foo<1.0"]``.
+Tools should handle such a list exactly as they would handle any other case in
+which they are asked to process the same requirement multiple times with
+different version constraints.
+
+Dependency Group Includes may include lists containing Dependency Group
+Includes, in which case those includes should be expanded as well. Dependency
+Group Includes MUST NOT include cycles, and tools SHOULD report an error if
+they detect a cycle.
 
 Example Dependency Groups Table
 -------------------------------
@@ -278,28 +322,13 @@ Package Building
 ----------------
 
 Build backends MUST NOT include Dependency Group data in built distributions as
-package metadata.
+package metadata. This means that PKG-INFO in sdists and METADATA in wheels
+do not include any referencable fields containing Dependency Groups.
 
-It is valid to use Dependency Groups in the evaluation of dynamic metadata.
-For example, a build backend may define ``dependencies`` as dynamic and use
-dependency groups to compute the value of ``dependencies``.
-
-For example, a build backend could define the following data to evaluate
-equivalently to ``dependencies=["aiohttp", "sqlalchemy"]``:
-
-.. code:: toml
-
-    [project]
-    dynamic = ["dependencies"]
-
-    [dependency-groups]
-    http = ["aiohttp"]
-    db = ["sqlalchemy"]
-
-    [tool.some-build-tool.dynamic]
-    dependencies = { dependency-groups = ["http", "db"] }
-
-Build backends may use Dependency Groups in this way.
+It is valid to use Dependency Groups in the evaluation of dynamic metadata, and
+``pyproject.toml`` files included in sdists will naturally still contain the
+``[dependency-groups]`` table. However, the table contents are not part of a
+published package's interfaces.
 
 Installing Dependency Groups
 ----------------------------
@@ -326,6 +355,30 @@ would be:
 Note that this is only an example. This PEP does not declare any requirements
 for how tools support the installation of Dependency Groups.
 
+Validation and Compatibility
+----------------------------
+
+Tools supporting Dependency Groups may want to validate data before using it.
+However, tools implementing such validation behavior should be careful to allow
+for future expansions to this spec, so that they do not unnecessarily emit
+errors or warnings in the presence of new syntax.
+
+Tools SHOULD error when evaluating or processing unrecognized data in
+Dependency Groups.
+
+Tools SHOULD NOT eagerly validate the list contents of **all** Dependency
+Groups.
+
+This means that in the presence of the following data, most tools will allow
+the ``foo`` group to be used, and will only error when the ``bar`` group is
+used:
+
+.. code-block:: toml
+
+    [dependency-groups]
+    foo = ["pyparsing"]
+    bar = [{set-phasers-to = "stun"}]
+
 Reference Implementation
 ========================
 
@@ -333,15 +386,37 @@ The following Reference Implementation prints the contents of a Dependency
 Group to stdout, newline delimited.
 The output is therefore valid ``requirements.txt`` data.
 
-Although this PEP does not specify that cyclic includes are forbidden, the
-Reference Implementation raises errors if they are encountered.
-
 .. code-block:: python
 
+    import re
     import sys
     import tomllib
+    from collections import defaultdict
 
     from packaging.requirements import Requirement
+
+
+    def _normalize_name(name: str) -> str:
+        return re.sub(r"[-_.]+", "-", name).lower()
+
+
+    def _normalize_group_names(dependency_groups: dict) -> dict:
+        original_names = defaultdict(list)
+        normalized_groups = {}
+
+        for group_name, value in dependency_groups.items():
+            normed_group_name = _normalize_name(group_name)
+            original_names[normed_group_name].append(group_name)
+            normalized_groups[normed_group_name] = value
+
+        errors = []
+        for normed_name, names in original_names.items():
+            if len(names) > 1:
+                errors.append(f"{normed_name} ({', '.join(names)})")
+        if errors:
+            raise ValueError(f"Duplicate dependency group names: {', '.join(errors)}")
+
+        return normalized_groups
 
 
     def _resolve_dependency_group(
@@ -369,7 +444,7 @@ Reference Implementation raises errors if they are encountered.
                 if tuple(item.keys()) != ("include",):
                     raise ValueError(f"Invalid dependency group item: {item}")
 
-                include_group = next(iter(item.values()))
+                include_group = _normalize_name(next(iter(item.values())))
                 realized_group.extend(
                     _resolve_dependency_group(
                         dependency_groups, include_group, past_groups + (group,)
@@ -393,7 +468,8 @@ Reference Implementation raises errors if they are encountered.
         with open("pyproject.toml", "rb") as fp:
             pyproject = tomllib.load(fp)
 
-        dependency_groups = pyproject["dependency-groups"]
+        dependency_groups_raw = pyproject["dependency-groups"]
+        dependency_groups = _normalize_group_names(dependency_groups_raw)
         print("\n".join(resolve(pyproject["dependency-groups"], sys.argv[1])))
 
 Backwards Compatibility
@@ -551,11 +627,25 @@ Dependabot will not flag dependencies which are pinned in ``tox.ini`` files.)
 Open Issues
 ===========
 
-Should ``include`` accept a list?
----------------------------------
+Should it be possible for a Dependency Group to include ``[project.dependencies]`` or vice-versa?
+-------------------------------------------------------------------------------------------------
 
-This would enable more compact includes of multiple other Dependency Groups, at
-the cost of a minor complication to the specification.
+A topic of debate is how -- or if -- Dependency Groups should interact with
+``[project.dependencies]`` and ``[project.optional-dependencies]``.
+
+An additional Dependency Object Specifier could be added for including
+``[project.dependencies]`` or ``[project.optional-dependencies]`` data to a
+Dependency Group. However, it is a goal of this spec that
+Dependency Groups should always be resolvable to a list of packages
+without the use of a build backend. Therefore, an inclusion of
+``[project.dependencies]`` or ``[project.optional-dependencies]`` would need to
+be defined carefully with respect to dynamic dependencies.
+
+The inclusion running in the opposite direction -- a ``[project.dependencies]``
+list containing a Dependency Group reference, possibly re-using Dependency
+Group Include objects as the mechanism -- is also possible but presents
+different challenges. Such an addition would introduce new syntax into the
+``[project]`` table, which not all tools would support at first.
 
 .. _prior_art:
 
@@ -958,10 +1048,10 @@ Web Applications
 A web application (e.g. a Django or Flask app) often does not need to build a
 distribution, but bundles and ships its source to a deployment toolchain.
 
-For example, a source code repository may define python packaging metadata as
+For example, a source code repository may define Python packaging metadata as
 well as containerization or other build pipeline metadata (``Dockerfile``,
 etc).
-The python application is built by copying the entire repository into a
+The Python application is built by copying the entire repository into a
 build context, installing dependencies, and bundling the result as a machine
 image or container.
 
@@ -976,9 +1066,9 @@ without relying on packaging metadata, and without trying to express their
 needs in packaging terms.
 
 Libraries
-'''''''''
+---------
 
-Libraries are python packages which build distributions (sdist and wheel) and
+Libraries are Python packages which build distributions (sdist and wheel) and
 publish them to PyPI.
 
 For libraries, Dependency Groups represent an alternative to ``extras`` for
@@ -1014,12 +1104,12 @@ install the appropriate Dependency Groups along with the library when needed,
 as in the case of ``test``.
 
 Data Science Projects
-'''''''''''''''''''''
+---------------------
 
 Data Science Projects typically take the form of a logical collection of
 scripts and utilities for processing and analyzing data, using a common
 toolchain. Components may be defined in the Jupyter Notebook format (ipynb),
-but rely on the same common core set of utlities.
+but rely on the same common core set of utilities.
 
 In such a project, there is no package to build or install. Therefore,
 ``pyproject.toml`` currently does not offer any solution for dependency
@@ -1057,7 +1147,7 @@ scripts. Such combinations of data are left as a problem for tool authors to
 solve, and perhaps eventually standardize.
 
 Lockfile Generation
-'''''''''''''''''''
+-------------------
 
 There are a number of tools which generate lockfiles in the Python ecosystem
 today. PDM and Poetry each use their own lockfile formats, and pip-tools
@@ -1098,7 +1188,7 @@ As two examples of how combinations might be locked:
   solution, rather than a set or matrix of solutions.)
 
 Environment Manager Inputs
-''''''''''''''''''''''''''
+--------------------------
 
 A common usage in tox, Nox, and Hatch is to install a set of dependencies into
 a testing environment.
@@ -1140,68 +1230,14 @@ In order for Dependency Groups to be a viable alternative for users of
 environment managers, the environment managers will need to support processing
 Dependency Groups similarly to how they support inline dependency declaration.
 
-Embedded ``pyproject.toml`` in Scripts
-''''''''''''''''''''''''''''''''''''''
-
-:pep:`723`, defines embedded ``pyproject.toml`` data within scripts. For this
-use case, it is necessary to declare the dependencies of a script in a data
-format which is also valid ``pyproject.toml`` content. However,
-``[project.dependencies]`` is considered inappropriate because a script is not
-a package -- and the ``[project]`` table is defined under constraints which
-reflect valid metadata for packages.
-
-:pep:`723` provisionally uses a ``[run.dependencies]`` table for this purpose,
-but Dependency Groups offer a more general solution to the problem of
-dependency declaration covering a broader set of use cases than the (informal)
-``[run]`` proposal.
-
-Rather than a singular group of dependencies, and a singular runtime context,
-Dependency Groups support multiple named groups for different purposes and
-environments.
-
-Because Dependency Groups are multiple, unlike ``[run.dependencies]``, it is
-necessary for any standard which wants to use Dependency Groups to define how
-it will leverage them.
-This PEP does not assign special meanings to any names for Dependency Groups,
-but it is valid for standards consuming Dependency Groups to define
-conventional names.
-
-To use Dependency Groups within :pep:`723`, there are two primary options:
-
-* declare, as part of the specification of :pep:`723`, that the ``run``
-  Dependency Group is conventionally the one which will be used
-
-* declare a mechanism for naming a Dependency Group to use
-
-For example, the following two ``pyproject.toml`` contents would be valid ways
-of declaring dependencies for a script:
-
-.. code-block:: toml
-
-    [dependency-groups]
-    run = ["numpy"]
-
-or
-
-.. code-block:: toml
-
-    [dependency-groups]
-    mygroupname = ["numpy"]
-    [run]
-    use-group = "mygroupname"
-
-This PEP declares no preference for how other standards consume this
-information, but aims to make such consumption feasible.
-
 IDE and Editor Use of Requirements Data
-'''''''''''''''''''''''''''''''''''''''
+---------------------------------------
 
-Similar to the :pep:`723` case above, IDE and Editor integrations may benefit
-from conventional name definitions or configurable ones.
+IDE and editor integrations may benefit from conventional or configurable name
+definitions for Dependency Groups which are used for integrations.
 
-However, there are at least two known scenarios in which it is valuable for an
-editor or IDE to be capable of discovering the non-published dependencies of a
-project:
+There are at least two known scenarios in which it is valuable for an editor or
+IDE to be capable of discovering the non-published dependencies of a project:
 
 * testing: IDEs such as VS Code support GUI interfaces for running particular
   tests
@@ -1212,6 +1248,23 @@ project:
 These cases could be handled by defining conventional group names like
 ``test``, ``lint``, and ``fix``, or by defining configuration mechanisms which
 allow the selection of Dependency Groups.
+
+For example, the following ``pyproject.toml`` declares the three aforementioned
+groups:
+
+.. code-block:: toml
+
+    [dependency-groups]
+    test = ["pytest", "pytest-timeout"]
+    lint = ["flake8", "mypy"]
+    fix = ["black", "isort", "pyupgrade"]
+
+This PEP makes no attempt to standardize such names or reserve them for such
+uses. IDEs may standardize or may allow users to configure the group names used
+for various purposes.
+
+This declaration allows the project author's knowledge of the appropriate tools
+for the project to be shared with all editors of that project.
 
 Copyright
 =========
