@@ -299,7 +299,7 @@ to mean something different (and map to a different core metadata field),
 with distinct and incompatible syntax and semantics, does not,
 and could cause confusion and ambiguity for readers and authors.
 
-Also, per the `project source metadata spec <pep621specdynamic_>`__,
+Also, per the `project source metadata spec <pyprojecttomldynamic_>`__,
 this would allow separately marking the ``[project]`` keys
 corresponding to the ``License`` and ``License-Expression`` metadata fields
 as ``dynamic``,
@@ -877,7 +877,7 @@ mechanism can be found.
 
 .. _choosealicense: https://choosealicense.com/
 .. _numpyissue: https://github.com/numpy/numpy/issues/8689
-.. _pep621specdynamic: https://packaging.python.org/en/latest/specifications/declaring-project-metadata/#dynamic
+.. _pyprojecttomldynamic: https://packaging.python.org/en/latest/specifications/pyproject-toml/#dynamic
 .. _pytorch: https://pypi.org/project/torch/
 .. _reusediscussion: https://github.com/pombredanne/spdx-pypi-pep/issues/7
 .. _scipyissue: https://github.com/scipy/scipy/issues/7093

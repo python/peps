@@ -155,7 +155,7 @@ globally in a shared documentation directory (e.g. ``/usr/share/doc``).
   SPDX license IDs and a
   `list of additional license identifiers <opensuselist_>`__.
 
-- `Gentoo ebuild <pycode_>`__ uses a ``LICENSE`` variable.
+- `Gentoo ebuild <gentoo_>`__ uses a ``LICENSE`` variable.
   This field is specified in `GLEP-0023 <glep23_>`__ and in the
   `Gentoo development manual <gentoodev_>`__.
   Gentoo also defines a list of allowed licenses and a license expression
