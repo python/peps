@@ -148,8 +148,8 @@ globally in a shared documentation directory (e.g. ``/usr/share/doc``).
   `License Texts <fedoratext_>`__ and use a
   `License field <fedoralicense_>`__ that must be filled
   with appropriate short license identifier(s) from an extensive list
-  of `"Good Licenses" <fedoralist_>`__. Fedora also defines its own
-  license expression syntax, similar to that of SPDX.
+  of `"Good Licenses" <fedoralist_>`__. Fedora uses SPDX
+  license expression syntax.
 
 - `OpenSUSE packages <opensuse_>`__ use SPDX license expressions with
   SPDX license IDs and a
