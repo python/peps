@@ -73,6 +73,8 @@ def setup(app: Sphinx) -> dict[str, bool]:
         "canonical-doc", pep_banner_directive.CanonicalDocBanner)
     app.add_directive(
         "canonical-pypa-spec", pep_banner_directive.CanonicalPyPASpecBanner)
+    app.add_directive(
+        "canonical-typing-spec", pep_banner_directive.CanonicalTypingSpecBanner)
 
     # Register event callbacks
     app.connect("builder-inited", _update_config_for_builder)  # Update configuration values for builder used
