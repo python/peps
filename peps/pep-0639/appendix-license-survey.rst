@@ -79,13 +79,13 @@ and this is another possible source of confusion:
   metadata directory, clobbering files with the same name, and dumps license
   files directly into the top-level ``.dist-info`` directory, but there is a
   `desire to resolve both these issues <setuptoolsfiles_>`__,
-  contingent on this PEP being accepted.
+  contingent on PEP 639 being accepted.
 
 - Both tools also support an older, singular ``license_file`` parameter that
   allows specifying only one license file to add to the distribution, which
   has been deprecated for some time but still sees `some use <pipsetup_>`__.
 
-- Following the publication of an earlier draft of this PEP, Setuptools
+- Following the publication of an earlier draft of PEP 639, Setuptools
   `added support <setuptoolspep639_>`__ for ``License-File`` in distribution
   metadata as described in this specification. This allows other tools
   consuming the resulting metadata to unambiguously locate the license file(s)
@@ -102,7 +102,7 @@ comprehensive `packaging guide <packagingguidetxt_>`__ state that it is
 important that every package include a license file. They point to the
 ``LICENSE.txt`` in the official PyPA sample project as an example, which is
 `explicitly listed <samplesetupcfg_>`__ under the ``license_files`` key in
-its ``setup.cfg``, following existing practice formally specified by this PEP.
+its ``setup.cfg``, following existing practice formally specified by PEP 639.
 
 Both the `beginner packaging tutorial <packagingtutkey_>`__ and the
 `sample project <samplesetuppy_>`__ only use classifiers to declare a
@@ -117,7 +117,7 @@ project uses a non-standard license (which the guide discourages).
 Python source code files
 ''''''''''''''''''''''''
 
-**Note:** Documenting licenses in source code is not in the scope of this PEP.
+**Note:** Documenting licenses in source code is not in the scope of PEP 639.
 
 Beside using comments and/or ``SPDX-License-Identifier`` conventions, the
 license is `sometimes <pycode_>`__ documented in Python code files using

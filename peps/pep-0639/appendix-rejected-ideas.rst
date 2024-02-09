@@ -16,14 +16,14 @@ Core metadata fields
 --------------------
 
 Potential alternatives to the structure, content and deprecation of the
-core metadata fields specified in this PEP.
+core metadata fields specified in :pep:`639`.
 
 
 Re-use the ``License`` field
 ''''''''''''''''''''''''''''
 
-Following `initial discussion <reusediscussion_>`__, earlier versions of this
-PEP proposed re-using the existing ``License`` field, which tools would
+Following `initial discussion <reusediscussion_>`__, earlier versions of
+PEP 639 proposed re-using the existing ``License`` field, which tools would
 attempt to parse as a SPDX license expression with a fallback to free text.
 Initially, this would merely cause a warning (or even pass silently),
 but would eventually be treated as an error by modern tooling.
@@ -45,12 +45,12 @@ didn't explicitly intend as an explicit SPDX identifier, but that happen
 to validate as one), and false negatives (expressions the author intended
 to be valid SPDX, but due to a typo or mistake are not), which are otherwise
 not clearly distinguishable from true positives and negatives, an ambiguity
-at odds with the goals of this PEP.
+at odds with the goals of PEP 639.
 
 Furthermore, it allows both the existing ``License`` field and
 the license classifiers to be more easily deprecated,
 with tools able to cleanly distinguish between packages intending to
-affirmatively conform to the updated specification in this PEP or not,
+affirmatively conform to the updated specification in PEP 639 or not,
 and adapt their behavior (warnings, errors, etc) accordingly.
 Otherwise, tools would either have to allow duplicative and potentially
 conflicting ``License`` fields and classifiers, or warn/error on the
@@ -64,7 +64,7 @@ based on its value rather than merely its presence.
 While this would mean the subset of existing distributions containing
 ``License`` fields valid as SPDX license expressions wouldn't automatically be
 recognized as such, this only requires appending a few characters to the key
-name in the project's source metadata, and this PEP provides extensive
+name in the project's source metadata, and PEP 639 provides extensive
 guidance on how this can be done automatically by tooling.
 
 Given all this, it was decided to proceed with defining a new,
@@ -98,7 +98,7 @@ classifiers could still be allowed together with the new
 ``License-Expression`` field, presumably with a warning. However, this
 could easily lead to inconsistent, and at the very least duplicative
 license metadata in no less than *three* different fields, which is
-squarely contrary to the goals of this PEP of making the licensing story
+squarely contrary to the goals of PEP 639 of making the licensing story
 simpler and unambiguous. Therefore, and in concert with clear community
 consensus otherwise, this idea was soundly rejected.
 
@@ -149,7 +149,7 @@ them right in the sidebar of every license page; the SPDX support in this
 PEP enables adding Python to that list.
 
 For current package maintainers who have specified a ``License`` or license
-classifiers, this PEP only recommends warnings and prohibits errors for
+classifiers, PEP 639 only recommends warnings and prohibits errors for
 all but publishing tools, which are allowed to error if their intended
 distribution platform(s) so requires. Once maintainers are ready to
 upgrade, for those already using SPDX license expressions (accidentally or not)
@@ -157,15 +157,15 @@ this only requires appending a few characters to the key name in the
 project's source metadata, and for those with license classifiers that
 map to a single unambiguous license, or another defined case (public domain,
 proprietary), they merely need to drop the classifier and paste in the
-corresponding license identifier. This PEP provides extensive guidance and
+corresponding license identifier. PEP 639 provides extensive guidance and
 examples, as will other resources, as well as explicit instructions for
 automated tooling to take care of this with no human changes needed.
 More complex cases where license metadata is currently specified may
 need a bit of human intervention, but in most cases tools will be able
-to provide a list of options following the mappings in this PEP, and
+to provide a list of options following the mappings in PEP 639, and
 these are typically the projects most likely to be constrained by the
 limitations of the existing license metadata, and thus most benefited
-by the new fields in this PEP.
+by the new fields in PEP 639.
 
 Finally, for unmaintained packages, those using tools supporting older
 metadata versions, or those who choose not to provide license metadata,
@@ -175,7 +175,7 @@ no changes are required regardless of the deprecation.
 Don't mandate validating new fields on PyPI
 '''''''''''''''''''''''''''''''''''''''''''
 
-Previously, while this PEP did include normative guidelines for packaging
+Previously, while PEP 639 did include normative guidelines for packaging
 publishing tools (such as Twine), it did not provide specific guidance
 for PyPI (or other package indices) as to whether and how they
 should validate the ``License-Expression`` or ``License-File`` fields,
@@ -203,7 +203,7 @@ as it is ultimately reliant on authors to declare them, but it improves
 assurance of this and allows doing so in the future if the community so
 decides.) To be clear, this would not require that any uploaded distribution
 have such metadata, only that if they choose to declare it per the new
-specification in this PEP, it is assured to be valid.
+specification in PEP 639, it is assured to be valid.
 
 
 Source metadata ``license`` key
@@ -216,7 +216,7 @@ Alternate possibilities related to the ``license`` key in the
 Add ``expression`` and ``files`` subkeys to table
 '''''''''''''''''''''''''''''''''''''''''''''''''
 
-A previous working draft of this PEP added ``expression`` and ``files`` subkeys
+A previous working draft of PEP 639 added ``expression`` and ``files`` subkeys
 to the existing ``license`` table in the project source metadata, to parallel
 the existing ``file`` and ``text`` subkeys. While this seemed perhaps the
 most obvious approach at first glance, it had several serious drawbacks
@@ -247,7 +247,7 @@ from both the core metadata and native formats of the various popular packaging
 tools that use it. Finally, this results in the spec being significantly more
 complex and convoluted to understand and implement than the alternatives.
 
-The approach this PEP now takes, using the reserved top-level string value
+The approach PEP 639 now takes, using the reserved top-level string value
 of the ``license`` key, adding a new ``license-files`` key
 and deprecating the ``license`` table subkeys (``text`` and ``file``),
 avoids most of the issues identified above,
@@ -258,7 +258,7 @@ It allows ``license`` and ``license-files`` to be tagged
 ``[project]`` table keys to core metadata fields,
 and reduces nesting by a level for both.
 Other than adding one extra key to the file, there was no significant
-apparent downside to this latter approach, so it was adopted for this PEP.
+apparent downside to this latter approach, so it was adopted for PEP 639.
 
 
 Add an ``expression`` subkey instead of a string value
@@ -267,7 +267,7 @@ Add an ``expression`` subkey instead of a string value
 Adding just an ``expression`` subkey to the ``license`` table,
 instead of using the reserved top-level string value,
 would be more explicit for readers and writers,
-in line with this PEP's goals.
+in line with PEP 639's goals.
 However, it still has the downsides listed above
 that are not specific to the inclusion of the ``files`` key.
 
@@ -286,11 +286,11 @@ given the top-level string value was specifically reserved for this purpose.
 Define a new top-level ``license-expression`` key
 '''''''''''''''''''''''''''''''''''''''''''''''''
 
-An earlier version of this PEP defined a new, top-level ``license-expression``
+An earlier version of PEP 639 defined a new, top-level ``license-expression``
 under the ``[project]`` table,
 rather than using the reserved string value of the ``license`` key.
 This was seen as clearer and more explicit for readers and writers,
-in line with the goals of this PEP.
+in line with the goals of PEP 639.
 
 Additionally, while differences from existing tool formats (and core metadata
 field names) have precedent in :pep:`621`,
@@ -304,7 +304,7 @@ this would allow separately marking the ``[project]`` keys
 corresponding to the ``License`` and ``License-Expression`` metadata fields
 as ``dynamic``,
 avoiding a potential concern with back-filling the ``License`` field
-from the ``License-Expression`` field as this PEP currently allows
+from the ``License-Expression`` field as PEP 639 currently allows
 without it as ``license`` as dynamic
 (which would not be possible, since they both map to the same top-level key).
 
@@ -336,7 +336,7 @@ explicitly specifying backfilling the ``License`` field when not ``dynamic``,
 and the fact that both fields are mutually exclusive,
 so there is little practical need to distinguish which is dynamic.
 
-Therefore, a top-level string value for ``license`` was adopted for this PEP,
+Therefore, a top-level string value for ``license`` was adopted for PEP 639,
 as an earlier working draft had temporarily specified.
 
 
@@ -385,19 +385,19 @@ the top-level string value of the ``license`` key.
 This would be more explicit that the filling will be done,
 as strictly speaking the ``license`` key is not (and cannot be) specified in
 ``pyproject.toml``, and satisfies a stricter interpretation of the letter
-of the previous :pep:`621` specification that this PEP revises.
+of the previous :pep:`621` specification that PEP 639 revises.
 
 However, this doesn't seem to be necessary, because it is simply using the
 static, verbatim literal value of the ``license`` key, as specified
-strictly in this PEP. Therefore, any conforming tool can trivially,
+strictly in PEP 639. Therefore, any conforming tool can trivially,
 deterministically and unambiguously derive this using only the static data
 in the ``pyproject.toml`` file itself.
 
 Furthermore, this actually adds significant ambiguity, as it means the value
 could get filled arbitrarily by other tools, which would in turn compromise
 and conflict with the value of the new ``License-Expression`` field, which is
-why such is explicitly prohibited by this PEP. Therefore, not marking it as
-``dynamic`` will ensure it is only handled in accordance with this PEP's
+why such is explicitly prohibited by PEP 639. Therefore, not marking it as
+``dynamic`` will ensure it is only handled in accordance with PEP 639's
 requirements.
 
 Finally, users explicitly being told to mark it as ``dynamic``, or not, to
@@ -518,7 +518,7 @@ raising an error if one is missing, and with ``globs``, checking glob syntax,
 excluding unwanted backup, temporary, or other such files (as current tools
 already do), and optionally warning if a glob doesn't match any files.
 This also avoids edge cases (e.g. paths that contain glob characters) and
-reliance on heuristics to determine interpretation—the very thing this PEP
+reliance on heuristics to determine interpretation—the very thing PEP 639
 seeks to avoid.
 
 
@@ -620,7 +620,7 @@ Finally, aside from adding an additional line of default-required boilerplate
 to the file, not defining the default as dynamic allows authors to clearly
 and unambiguously indicate when their build/packaging tools are going to be
 handling the inclusion of license files themselves rather than strictly
-conforming to the project source metadata portions of this PEP;
+conforming to the project source metadata portions of PEP 639;
 to do otherwise would defeat the primary purpose of the ``dynamic`` list
 as a marker and escape hatch.
 
@@ -635,7 +635,7 @@ and built distributions.
 Flatten license files in subdirectories
 '''''''''''''''''''''''''''''''''''''''
 
-Previous drafts of this PEP were silent on the issue of handling license files
+Previous drafts of PEP 639 were silent on the issue of handling license files
 in subdirectories. Currently, the `Wheel <wheelfiles_>`__ and (following its
 example) `Setuptools <setuptoolsfiles_>`__ projects flatten all license files
 into the ``.dist-info`` directory without preserving the source subdirectory
@@ -718,7 +718,7 @@ It does make the specification a bit more complex and less elegant, but
 implementation should remain equally simple. It does mean that wheels
 produced with following this change will have differently-located licenses
 than those prior, but as this was already true for those in subdirectories,
-and until this PEP there was no way of discovering these files or
+and until PEP 639 there was no way of discovering these files or
 accessing them programmatically, this doesn't seem likely to pose
 significant problems in practice. Given this will be much harder if not
 impossible to change later, once the status quo is standardized, tools are
@@ -728,7 +728,7 @@ using the core metadata, if we're going to change it, now would be the time
 (particularly since we're already introducing an edge-case change with how
 license files in subdirs are handled, along with other refinements).
 
-Therefore, the latter has been incorporated into current drafts of this PEP.
+Therefore, the latter has been incorporated into current drafts of PEP 639.
 
 
 Add new ``licenses`` category to wheel
@@ -744,9 +744,9 @@ platform-appropriate and flexible than just the ``.dist-info`` directory
 in the site path, and potentially be conceptually cleaner than including
 them there.
 
-However, at present, this PEP does not implement this idea, and it is
+However, at present, PEP 639 does not implement this idea, and it is
 deferred to a future one. It would add significant complexity and friction
-to this PEP, being primarily concerned with standardizing existing practice
+to PEP 639, being primarily concerned with standardizing existing practice
 and updating the core metadata specification. Furthermore, doing so would
 likely require modifying ``sysconfig`` and the install schemes specified
 therein, alongside Wheel, Installer and other tools, which would be a
@@ -767,7 +767,7 @@ accessing installed licenses programmatically would be more difficult, and a
 suitable install location and method would need to be created, discussed
 and decided that would avoid name clashes.
 
-Therefore, to keep this PEP in scope, the current approach was retained.
+Therefore, to keep PEP 639 in scope, the current approach was retained.
 
 
 Name the subdirectory ``license_files``
@@ -823,7 +823,7 @@ string. Therefore, this approach is rejected.
 Map identifiers to source files
 '''''''''''''''''''''''''''''''
 
-As discussed previously, file-level notices are out of scope for this PEP,
+As discussed previously, file-level notices are out of scope for PEP 639,
 and the existing ``SPDX-License-Identifier`` `convention <spdxid_>`__ can
 already be used if this is needed without further specification here.
 
@@ -831,14 +831,14 @@ already be used if this is needed without further specification here.
 Don't freeze compatibility with a specific SPDX version
 '''''''''''''''''''''''''''''''''''''''''''''''''''''''
 
-This PEP could omit specifying a specific SPDX specification version,
+PEP 639 could omit specifying a specific SPDX specification version,
 or one for the list of valid license identifiers, which would allow
 more flexible updates as the specification evolves without another
 PEP or equivalent.
 
 However, serious concerns were expressed about a future SPDX update breaking
 compatibility with existing expressions and identifiers, leaving current
-packages with invalid metadata per the definition in this PEP. Requiring
+packages with invalid metadata per the definition in PEP 639. Requiring
 compatibility with a specific version of these specifications here
 and a PEP or similar process to update it avoids this contingency,
 and follows the practice of other packaging ecosystems.
@@ -864,13 +864,13 @@ under different licenses than the project itself. An example cited was
 `PyTorch <pytorch_>`__, which contains CUDA from Nvidia, which is freely
 distributable but not open source. `NumPy <numpyissue_>`__ and
 `SciPy <scipyissue_>`__ also had similar issues, as reported by the
-original author of this PEP and now resolved for those cases.
+original author of PEP 639 and now resolved for those cases.
 
 However, given the inherent complexity here and a lack of an obvious
 mechanism to do so, the fact that each wheel would need its own license
 information, lack of support on PyPI for exposing license info on a
 per-distribution archive basis, and the relatively niche use case, it was
-determined to be out of scope for this PEP, and left to a future PEP
+determined to be out of scope for PEP 639, and left to a future PEP
 to resolve if sufficient need and interest exists and an appropriate
 mechanism can be found.
 
