@@ -11,7 +11,7 @@ allowing tools to infer the SPDX license identifier they correspond to,
 both for use when analyzing and auditing packages,
 and providing a semi-automated mechanism of filling the ``license`` key
 or the ``License-Expression`` field
-following the :ref:`specification above <639-spec-converting-metadata>`.
+following the :ref:`PEP 639 specification <639-spec-converting-metadata>`.
 
 Some legacy license classifiers intend to specify a particular license,
 but do not specify the particular version or variant, leading to a
