@@ -7,7 +7,7 @@ VENVDIR      = .venv
 BUILDDIR     = build
 SPHINXBUILD  = PATH=$(VENVDIR)/bin:$$PATH sphinx-build
 BUILDER      = html
-JOBS         = 8
+JOBS         = auto
 SOURCES      =
 SPHINXERRORHANDLING = -W --keep-going -w sphinx-warnings.txt
 
