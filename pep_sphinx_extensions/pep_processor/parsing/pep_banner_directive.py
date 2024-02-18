@@ -125,3 +125,30 @@ class CanonicalTypingSpecBanner(PEPBanner):
     admonition_class = nodes.attention
 
     css_classes = ["canonical-typing-spec", "sticky-banner"]
+
+
+class AbandonedBanner(PEPBanner):
+    """Insert an admonition for abandoned PEPs."""
+
+    admonition_class = nodes.warning
+    admonition_pre_template = "{link_content}"
+    admonition_pre_text = "This PEP has been abandoned."
+    css_classes = ["sticky-banner", "deprecated", "abandoned"]
+
+
+class RejectedBanner(PEPBanner):
+    """Insert an admonition for rejected PEPs."""
+
+    admonition_class = nodes.warning
+    admonition_pre_template = "{link_content}"
+    admonition_pre_text = "This PEP has been rejected."
+    css_classes = ["sticky-banner", "deprecated", "rejected"]
+
+
+class WithdrawnBanner(PEPBanner):
+    """Insert an admonition for withdrawn PEPs."""
+
+    admonition_class = nodes.warning
+    admonition_pre_template = "{link_content}"
+    admonition_pre_text = "This PEP has been withdrawn."
+    css_classes = ["sticky-banner", "deprecated", "withdrawn"]
