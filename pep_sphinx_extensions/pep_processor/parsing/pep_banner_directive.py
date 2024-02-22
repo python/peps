@@ -145,6 +145,15 @@ class RejectedBanner(PEPBanner):
     css_classes = ["sticky-banner", "deprecated", "rejected"]
 
 
+class SupersededBanner(PEPBanner):
+    """Insert an admonition for superseded PEPs."""
+
+    admonition_class = nodes.warning
+    admonition_pre_template = "{link_content}"
+    admonition_pre_text = "This PEP has been superseded."
+    css_classes = ["sticky-banner", "deprecated", "superseded"]
+
+
 class WithdrawnBanner(PEPBanner):
     """Insert an admonition for withdrawn PEPs."""
 

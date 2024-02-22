@@ -77,6 +77,7 @@ def setup(app: Sphinx) -> dict[str, bool]:
         "canonical-typing-spec", pep_banner_directive.CanonicalTypingSpecBanner)
     app.add_directive("abandoned", pep_banner_directive.AbandonedBanner)
     app.add_directive("rejected", pep_banner_directive.RejectedBanner)
+    app.add_directive("superseded", pep_banner_directive.SupersededBanner)
     app.add_directive("withdrawn", pep_banner_directive.WithdrawnBanner)
 
     # Register event callbacks
