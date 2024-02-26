@@ -127,15 +127,6 @@ class CanonicalTypingSpecBanner(PEPBanner):
     css_classes = ["canonical-typing-spec", "sticky-banner"]
 
 
-class AbandonedBanner(PEPBanner):
-    """Insert an admonition for abandoned PEPs."""
-
-    admonition_class = nodes.warning
-    admonition_pre_template = "{link_content}"
-    admonition_pre_text = "This PEP has been abandoned."
-    css_classes = ["sticky-banner", "deprecated", "abandoned"]
-
-
 class RejectedBanner(PEPBanner):
     """Insert an admonition for rejected PEPs."""
 
