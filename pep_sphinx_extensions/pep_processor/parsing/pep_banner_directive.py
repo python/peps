@@ -140,7 +140,7 @@ class SupersededBanner(PEPBanner):
     """Insert an admonition for superseded PEPs."""
 
     admonition_class = nodes.warning
-    admonition_pre_template = "{link_content}"
+    admonition_pre_template = "This PEP has been superseded by :pep:`{link_content}`."
     admonition_pre_text = "This PEP has been superseded."
     css_classes = ["sticky-banner", "deprecated", "superseded"]
 
