@@ -127,11 +127,18 @@ class CanonicalTypingSpecBanner(PEPBanner):
     css_classes = ["canonical-typing-spec", "sticky-banner"]
 
 
-class RejectedBanner(PEPBanner):
-    """Insert an admonition for rejected PEPs."""
+class DeprecatedBanner(PEPBanner):
+    """Generic admonition for deprecated PEPs."""
 
     admonition_class = nodes.warning
     admonition_pre_template = "{link_content}"
+    admonition_pre_text = "This PEP has been deprecated."
+    css_classes = ["sticky-banner", "deprecated"]
+
+
+class RejectedBanner(DeprecatedBanner):
+    """Insert an admonition for rejected PEPs."""
+
     admonition_pre_text = "This PEP has been rejected."
     css_classes = ["sticky-banner", "deprecated", "rejected"]
 
@@ -139,7 +146,6 @@ class RejectedBanner(PEPBanner):
 class SupersededBanner(PEPBanner):
     """Insert an admonition for superseded PEPs."""
 
-    admonition_class = nodes.warning
     admonition_pre_template = "This PEP has been superseded by :pep:`{link_content}`."
     admonition_pre_text = "This PEP has been superseded."
     css_classes = ["sticky-banner", "deprecated", "superseded"]
@@ -148,7 +154,5 @@ class SupersededBanner(PEPBanner):
 class WithdrawnBanner(PEPBanner):
     """Insert an admonition for withdrawn PEPs."""
 
-    admonition_class = nodes.warning
-    admonition_pre_template = "{link_content}"
     admonition_pre_text = "This PEP has been withdrawn."
     css_classes = ["sticky-banner", "deprecated", "withdrawn"]
