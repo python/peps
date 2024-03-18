@@ -10,6 +10,23 @@ There are multiple ways used or recommended to document licenses.
 This document contains the results of a comprehensive survey of license
 documentation in Python and other languages.
 
+The key takeaways from the survey, which have guided the recommendations of
+PEP 639 are as follows:
+
+- Most package formats use a single ``License`` field.
+
+- Many modern package systems use some form of :term:`license expression`
+  to optionally combine more than one :term:`license identifier` together.
+  SPDX and SPDX-like syntaxes are the most popular in use.
+
+- SPDX license identifiers are becoming the de facto way to reference common
+  licenses everywhere, whether or not a full license expression syntax is used.
+
+- Several package formats support documenting both a license expression and the
+  paths of the corresponding files that contain the license text. Most Free and
+  Open Source Software licenses require package authors to include their full
+  text in a :term:`Distribution Package`.
+
 
 .. _639-license-doc-python:
 
