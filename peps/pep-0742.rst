@@ -1,0 +1,493 @@
+PEP: 742
+Title: Narrowing types with TypeIs
+Author: Jelle Zijlstra <jelle.zijlstra@gmail.com>
+Discussions-To: https://discuss.python.org/t/pep-742-narrowing-types-with-typenarrower/45613
+Status: Accepted
+Type: Standards Track
+Topic: Typing
+Created: 07-Feb-2024
+Python-Version: 3.13
+Post-History: `11-Feb-2024 <https://discuss.python.org/t/pep-742-narrowing-types-with-typenarrower/45613>`__
+Replaces: 724
+Resolution: https://discuss.python.org/t/pep-742-narrowing-types-with-typeis/45613/35
+
+
+Abstract
+========
+
+This PEP proposes a new special form, ``TypeIs``, to allow annotating functions that can be used
+to narrow the type of a value, similar to the builtin :py:func:`isinstance`. Unlike the existing
+:py:data:`typing.TypeGuard` special form, ``TypeIs`` can narrow the type in both the ``if``
+and ``else`` branches of a conditional.
+
+
+Motivation
+==========
+
+Typed Python code often requires users to narrow the type of a variable based on a conditional.
+For example, if a function accepts a union of two types, it may use an :py:func:`isinstance` check
+to discriminate between the two types. Type checkers commonly support type narrowing based on various
+builtin function and operations, but occasionally, it is useful to use a user-defined function to
+perform type narrowing.
+
+To support such use cases, :pep:`647` introduced the :py:data:`typing.TypeGuard` special form, which
+allows users to define type guards::
+
+    from typing import assert_type, TypeGuard
+
+    def is_str(x: object) -> TypeGuard[str]:
+        return isinstance(x, str)
+
+    def f(x: object) -> None:
+        if is_str(x):
+            assert_type(x, str)
+        else:
+            assert_type(x, object)
+
+Unfortunately, the behavior of :py:data:`typing.TypeGuard` has some limitations that make it
+less useful for many common use cases, as explained also in the "Motivation" section of :pep:`724`.
+In particular:
+
+* Type checkers must use exactly the ``TypeGuard`` return type as the narrowed type if the
+  type guard returns ``True``. They cannot use pre-existing knowledge about the type of the
+  variable.
+* In the case where the type guard returns ``False``, the type checker cannot apply any
+  additional narrowing.
+
+The standard library function :py:func:`inspect.isawaitable` may serve as an example. It
+returns whether the argument is an awaitable object, and
+`typeshed <https://github.com/python/typeshed/blob/a4f81a67a07c18dd184dd068c459b02e71bcac22/stdlib/inspect.pyi#L219>`__
+currently annotates it as::
+
+    def isawaitable(object: object) -> TypeGuard[Awaitable[Any]]: ...
+
+A user `reported <https://github.com/python/mypy/issues/15520>`__ an issue to mypy about
+the behavior of this function. They observed the following behavior::
+
+    import inspect
+    from collections.abc import Awaitable
+    from typing import reveal_type
+
+    async def f(t: Awaitable[int] | int) -> None:
+        if inspect.isawaitable(t):
+            reveal_type(t)  # Awaitable[Any]
+        else:
+            reveal_type(t)  # Awaitable[int] | int
+
+This behavior is consistent with :pep:`647`, but it did not match the user's expectations.
+Instead, they would expect the type of ``t`` to be narrowed to ``Awaitable[int]`` in the ``if``
+branch, and to ``int`` in the ``else`` branch. This PEP proposes a new construct that does
+exactly that.
+
+Other examples of issues that arose out of the current behavior of ``TypeGuard`` include:
+
+* `Python typing issue <https://github.com/python/typing/issues/996>`__ (``numpy.isscalar``)
+* `Python typing issue <https://github.com/python/typing/issues/1351>`__ (:py:func:`dataclasses.is_dataclass`)
+* `Pyright issue <https://github.com/microsoft/pyright/issues/3450>`__ (expecting :py:data:`typing.TypeGuard` to work like :py:func:`isinstance`)
+* `Pyright issue <https://github.com/microsoft/pyright/issues/3466>`__ (expecting narrowing in the ``else`` branch)
+* `Mypy issue <https://github.com/python/mypy/issues/13957>`__ (expecting narrowing in the ``else`` branch)
+* `Mypy issue <https://github.com/python/mypy/issues/14434>`__ (combining multiple TypeGuards)
+* `Mypy issue <https://github.com/python/mypy/issues/15305>`__ (expecting narrowing in the ``else`` branch)
+* `Mypy issue <https://github.com/python/mypy/issues/11907>`__ (user-defined function similar to :py:func:`inspect.isawaitable`)
+* `Typeshed issue <https://github.com/python/typeshed/issues/8009>`__ (``asyncio.iscoroutinefunction``)
+
+Rationale
+=========
+
+The problems with the current behavior of :py:data:`typing.TypeGuard` compel us to improve
+the type system to allow a different type narrowing behavior. :pep:`724` proposed to change
+the behavior of the existing :py:data:`typing.TypeGuard` construct, but we :ref:`believe <pep-742-change-typeguard>`
+that the backwards compatibility implications of that change are too severe. Instead, we propose
+adding a new special form with the desired semantics.
+
+We acknowledge that this leads to an unfortunate situation where there are two constructs with
+a similar purpose and similar semantics. We believe that users are more likely to want the behavior
+of ``TypeIs``, the new form proposed in this PEP, and therefore we recommend that documentation
+emphasize ``TypeIs`` over ``TypeGuard`` as a more commonly applicable tool. However, the semantics of
+``TypeGuard`` are occasionally useful, and we do not propose to deprecate or remove it. In the long
+run, most users should use ``TypeIs``, and ``TypeGuard`` should be reserved for rare cases
+where its behavior is specifically desired.
+
+
+Specification
+=============
+
+A new special form, ``TypeIs``, is added to the :py:mod:`typing`
+module. Its usage, behavior, and runtime implementation are similar to
+those of :py:data:`typing.TypeGuard`.
+
+It accepts a single
+argument and can be used as the return type of a function. A function annotated as returning a
+``TypeIs`` is called a type narrowing function. Type narrowing functions must return ``bool``
+values, and the type checker should verify that all return paths return
+``bool``.
+
+Type narrowing functions must accept at least one positional argument. The type
+narrowing behavior is applied to the first positional argument passed to
+the function. The function may accept additional arguments, but they are
+not affected by type narrowing. If a type narrowing function is implemented as
+an instance method or class method, the first positional argument maps
+to the second parameter (after ``self`` or ``cls``).
+
+Type narrowing behavior
+-----------------------
+
+To specify the behavior of ``TypeIs``, we use the following terminology:
+
+* I = ``TypeIs`` input type
+* R = ``TypeIs`` return type
+* A = Type of argument passed to type narrowing function (pre-narrowed)
+* NP = Narrowed type (positive; used when ``TypeIs`` returned ``True``)
+* NN = Narrowed type (negative; used when ``TypeIs`` returned ``False``)
+
+.. code-block:: python
+
+    def narrower(x: I) -> TypeIs[R]: ...
+
+    def func1(val: A):
+        if narrower(val):
+            assert_type(val, NP)
+        else:
+            assert_type(val, NN)
+
+The return type ``R`` must be :ref:`consistent with <pep-483-gradual-typing>` ``I``. The type checker should
+emit an error if this condition is not met.
+
+Formally, type *NP* should be narrowed to :math:`A \land R`,
+the intersection of *A* and *R*, and type *NN* should be narrowed to
+:math:`A \land \neg R`, the intersection of *A* and the complement of *R*.
+In practice, the theoretic types for strict type guards cannot be expressed
+precisely in the Python type system. Type checkers should fall back on
+practical approximations of these types. As a rule of thumb, a type checker
+should use the same type narrowing logic -- and get results that are consistent
+with -- its handling of :py:func:`isinstance`. This guidance allows for changes and
+improvements if the type system is extended in the future.
+
+Examples
+--------
+
+Type narrowing is applied in both the positive and negative case::
+
+    from typing import TypeIs, assert_type
+
+    def is_str(x: object) -> TypeIs[str]:
+        return isinstance(x, str)
+
+    def f(x: str | int) -> None:
+        if is_str(x):
+            assert_type(x, str)
+        else:
+            assert_type(x, int)
+
+The final narrowed type may be narrower than **R**, due to the constraints of the
+argument's previously-known type::
+
+    from collections.abc import Awaitable
+    from typing import Any, TypeIs, assert_type
+    import inspect
+
+    def isawaitable(x: object) -> TypeIs[Awaitable[Any]]:
+        return inspect.isawaitable(x)
+
+    def f(x: Awaitable[int] | int) -> None:
+        if isawaitable(x):
+            # Type checkers may also infer the more precise type
+            # "Awaitable[int] | (int & Awaitable[Any])"
+            assert_type(x, Awaitable[int])
+        else:
+            assert_type(x, int)
+
+It is an error to narrow to a type that is not consistent with the input type::
+
+    from typing import TypeIs
+
+    def is_str(x: int) -> TypeIs[str]:  # Type checker error
+        ...
+
+Subtyping
+---------
+
+``TypeIs`` is also valid as the return type of a callable, for example
+in callback protocols and in the ``Callable`` special form. In these
+contexts, it is treated as a subtype of bool. For example, ``Callable[..., TypeIs[int]]``
+is assignable to ``Callable[..., bool]``.
+
+Unlike ``TypeGuard``, ``TypeIs`` is invariant in its argument type:
+``TypeIs[B]`` is not a subtype of ``TypeIs[A]``,
+even if ``B`` is a subtype of ``A``.
+To see why, consider the following example::
+
+    def takes_narrower(x: int | str, narrower: Callable[[object], TypeIs[int]]):
+        if narrower(x):
+            print(x + 1)  # x is an int
+        else:
+            print("Hello " + x)  # x is a str
+
+    def is_bool(x: object) -> TypeIs[bool]:
+        return isinstance(x, bool)
+
+    takes_narrower(1, is_bool)  # Error: is_bool is not a TypeIs[int]
+
+(Note that ``bool`` is a subtype of ``int``.)
+This code fails at runtime, because the narrower returns ``False`` (1 is not a ``bool``)
+and the ``else`` branch is taken in ``takes_narrower()``.
+If the call ``takes_narrower(1, is_bool)`` was allowed, type checkers would fail to
+detect this error.
+
+Backwards Compatibility
+=======================
+
+As this PEP only proposes a new special form, there are no implications on
+backwards compatibility.
+
+
+Security Implications
+=====================
+
+None known.
+
+
+How to Teach This
+=================
+
+Introductions to typing should cover ``TypeIs`` when discussing how to narrow types,
+along with discussion of other narrowing constructs such as :py:func:`isinstance`. The
+documentation should emphasize ``TypeIs`` over :py:data:`typing.TypeGuard`; while the
+latter is not being deprecated and its behavior is occasionally useful, we expect that the
+behavior of ``TypeIs`` is usually more intuitive, and most users should reach for
+``TypeIs`` first. The rest of this section contains some example content that could
+be used in introductory user-facing documentation.
+
+When to use ``TypeIs``
+----------------------
+
+Python code often uses functions like ``isinstance()`` to distinguish between
+different possible types of a value. Type checkers understand ``isinstance()``
+and various other checks and use them to narrow the type of a variable. However,
+sometimes you want to reuse a more complicated check in multiple places, or
+you use a check that the type checker doesn't understand. In these cases, you
+can define a ``TypeIs`` function to perform the check and allow type checkers
+to use it to narrow the type of a variable.
+
+A ``TypeIs`` function takes a single argument and is annotated as returning
+``TypeIs[T]``, where ``T`` is the type that you want to narrow to. The function
+must return ``True`` if the argument is of type ``T``, and ``False`` otherwise.
+The function can then be used in ``if`` checks, just like you would use ``isinstance()``.
+For example::
+
+    from typing import TypeIs, Literal
+
+    type Direction = Literal["N", "E", "S", "W"]
+
+    def is_direction(x: str) -> TypeIs[Direction]:
+        return x in {"N", "E", "S", "W"}
+
+    def maybe_direction(x: str) -> None:
+        if is_direction(x):
+            print(f"{x} is a cardinal direction")
+        else:
+            print(f"{x} is not a cardinal direction")
+
+Writing a safe ``TypeIs`` function
+----------------------------------
+
+A ``TypeIs`` function allows you to override your type checker's type narrowing
+behavior. This is a powerful tool, but it can be dangerous because an incorrectly
+written ``TypeIs`` function can lead to unsound type checking, and type checkers
+cannot detect such errors.
+
+For a function returning ``TypeIs[T]`` to be safe, it must return ``True`` if and only if
+the argument is compatible with type ``T``, and ``False`` otherwise. If this condition is
+not met, the type checker may infer incorrect types.
+
+Below are some examples of correct and incorrect ``TypeIs`` functions::
+
+    from typing import TypeIs
+
+    # Correct
+    def good_typeis(x: object) -> TypeIs[int]:
+        return isinstance(x, int)
+
+    # Incorrect: does not return True for all ints
+    def bad_typeis1(x: object) -> TypeIs[int]:
+        return isinstance(x, int) and x > 0
+
+    # Incorrect: returns True for some non-ints
+    def bad_typeis2(x: object) -> TypeIs[int]:
+        return isinstance(x, (int, float))
+
+This function demonstrates some errors that can occur when using a poorly written
+``TypeIs`` function. These errors are not detected by type checkers::
+
+    def caller(x: int | str, y: int | float) -> None:
+        if bad_typeis1(x):  # narrowed to int
+            print(x + 1)
+        else:  # narrowed to str (incorrectly)
+            print("Hello " + x)  # runtime error if x is a negative int
+
+        if bad_typeis2(y):  # narrowed to int
+            # Because of the incorrect TypeIs, this branch is taken at runtime if
+            # y is a float.
+            print(y.bit_count())  # runtime error: this method exists only on int, not float
+        else:  # narrowed to float (though never executed at runtime)
+            pass
+
+Here is an example of a correct ``TypeIs`` function for a more complicated type::
+
+    from typing import TypedDict, TypeIs
+
+    class Point(TypedDict):
+        x: int
+        y: int
+
+    def is_point(x: object) -> TypeIs[Point]:
+        return (
+            isinstance(x, dict)
+            and all(isinstance(key, str) for key in x)
+            and "x" in x
+            and "y" in x
+            and isinstance(x["x"], int)
+            and isinstance(x["y"], int)
+        )
+
+``TypeIs`` and ``TypeGuard``
+----------------------------
+
+``TypeIs`` and :py:data:`typing.TypeGuard` are both tools for narrowing the type of a variable
+based on a user-defined function. Both can be used to annotate functions that take an
+argument and return a boolean depending on whether the input argument is compatible with
+the narrowed type. These function can then be used in ``if`` checks to narrow the type
+of a variable.
+
+``TypeIs`` usually has the most intuitive behavior, but it
+introduces more restrictions. ``TypeGuard`` is the right tool to use if:
+
+* You want to narrow to a type that is not compatible with the input type, for example
+  from ``list[object]`` to ``list[int]``.  ``TypeIs`` only allows narrowing between
+  compatible types.
+* Your function does not return ``True`` for all input values that are compatible with
+  the narrowed type. For example, you could have a ``TypeGuard[int]`` that returns ``True``
+  only for positive integers.
+
+``TypeIs`` and ``TypeGuard`` differ in the following ways:
+
+* ``TypeIs`` requires the narrowed type to be a subtype of the input type, while
+  ``TypeGuard`` does not.
+* When a ``TypeGuard`` function returns ``True``, type checkers narrow the type of the
+  variable to exactly the ``TypeGuard`` type. When a ``TypeIs`` function returns ``True``,
+  type checkers can infer a more precise type combining the previously known type of the
+  variable with the ``TypeIs`` type. (Technically, this is known as an intersection type.)
+* When a ``TypeGuard`` function returns ``False``, type checkers cannot narrow the type of
+  the variable at all. When a ``TypeIs`` function returns ``False``, type checkers can narrow
+  the type of the variable to exclude the ``TypeIs`` type.
+
+This behavior can be seen in the following example::
+
+    from typing import TypeGuard, TypeIs, reveal_type, final
+
+    class Base: ...
+    class Child(Base): ...
+    @final
+    class Unrelated: ...
+
+    def is_base_typeguard(x: object) -> TypeGuard[Base]:
+        return isinstance(x, Base)
+
+    def is_base_typeis(x: object) -> TypeIs[Base]:
+        return isinstance(x, Base)
+
+    def use_typeguard(x: Child | Unrelated) -> None:
+        if is_base_typeguard(x):
+            reveal_type(x)  # Base
+        else:
+            reveal_type(x)  # Child | Unrelated
+
+    def use_typeis(x: Child | Unrelated) -> None:
+        if is_base_typeis(x):
+            reveal_type(x)  # Child
+        else:
+            reveal_type(x)  # Unrelated
+
+Reference Implementation
+========================
+
+The ``TypeIs`` special form `has been implemented <https://github.com/python/typing_extensions/pull/330>`__
+in the ``typing_extensions`` module and will be released in typing_extensions 4.10.0.
+
+Implementations are available for several type checkers:
+
+- Mypy: `pull request open <https://github.com/python/mypy/pull/16898>`__
+- Pyanalyze: `pull request <https://github.com/quora/pyanalyze/pull/718>`__
+- Pyright: `added in version 1.1.351 <https://github.com/microsoft/pyright/releases/tag/1.1.351>`__
+
+Rejected Ideas
+==============
+
+.. _pep-742-change-typeguard:
+
+Change the behavior of ``TypeGuard``
+------------------------------------
+
+:pep:`724` previously proposed changing the specified behavior of :py:data:`typing.TypeGuard` so
+that if the return type of the guard is consistent with the input type, the behavior proposed
+here for ``TypeIs`` would apply. This proposal has some important advantages: because it
+does not require any runtime changes, it requires changes only in type checkers, making it easier
+for users to take advantage of the new, usually more intuitive behavior.
+
+However, this approach has some major problems. Users who have written ``TypeGuard`` functions
+expecting the existing semantics specified in :pep:`647` would see subtle and potentially breaking
+changes in how type checkers interpret their code. The split behavior of ``TypeGuard``, where it
+works one way if the return type is consistent with the input type and another way if it is not,
+could be confusing for users. The Typing Council was unable to come to an agreement in favor of
+:pep:`724`; as a result, we are proposing this alternative PEP.
+
+Do nothing
+----------
+
+Both this PEP and the alternative proposed in :pep:`724` have shortcomings. The latter are
+discussed above. As for this PEP, it introduces two special forms with very similar semantics,
+and it potentially creates a long migration path for users currently using ``TypeGuard``
+who would be better off with different narrowing semantics.
+
+One way forward, then, is to do nothing and live with the current limitations of the type system.
+However, we believe that the limitations of the current ``TypeGuard``, as outlined in the "Motivation"
+section, are significant enough that it is worthwhile to change the type system to address them.
+If we do not make any change, users will continue to encounter the same unintuitive behaviors from
+``TypeGuard``, and the type system will be unable to properly represent common type narrowing functions
+like ``inspect.isawaitable``.
+
+Alternative names
+-----------------
+
+This PEP currently proposes the name ``TypeIs``, emphasizing that the special form ``TypeIs[T]``
+returns whether the argument is of type ``T``, and mirroring
+`TypeScript's syntax <https://www.typescriptlang.org/docs/handbook/2/narrowing.html#using-type-predicates>`__.
+Other names were considered, including in an earlier version of this PEP.
+
+Options include:
+
+* ``IsInstance`` (`post by Paul Moore <https://discuss.python.org/t/pep-724-stricter-type-guards/34124/60>`__):
+  emphasizes that the new construct behaves similarly to the builtin :py:func:`isinstance`.
+* ``Narrowed`` or ``NarrowedTo``: shorter than ``TypeNarrower`` but keeps the connection to "type narrowing"
+  (suggested by Eric Traut).
+* ``Predicate`` or ``TypePredicate``: mirrors TypeScript's name for the feature, "type predicates".
+* ``StrictTypeGuard`` (earlier drafts of :pep:`724`): emphasizes that the new construct performs a stricter
+  version of type narrowing than :py:data:`typing.TypeGuard`.
+* ``TypeCheck`` (`post by Nicolas Tessore <https://discuss.python.org/t/pep-724-stricter-type-guards/34124/59>`__):
+  emphasizes the binary nature of the check.
+* ``TypeNarrower``: emphasizes that the function narrows its argument type. Used in an earlier version of this PEP.
+
+Acknowledgments
+===============
+
+Much of the motivation and specification for this PEP derives from :pep:`724`. While
+this PEP proposes a different solution for the problem at hand, the authors of :pep:`724`, Eric Traut, Rich
+Chiodo, and Erik De Bonte, made a strong case for their proposal and this proposal
+would not have been possible without their work.
+
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.

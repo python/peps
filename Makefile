@@ -7,7 +7,7 @@ VENVDIR      = .venv
 BUILDDIR     = build
 SPHINXBUILD  = PATH=$(VENVDIR)/bin:$$PATH sphinx-build
 BUILDER      = html
-JOBS         = 8
+JOBS         = auto
 SOURCES      =
 SPHINXERRORHANDLING = -W --keep-going -w sphinx-warnings.txt
 
@@ -64,6 +64,7 @@ venv:
 		echo "venv already exists."; \
 		echo "To recreate it, remove it first with \`make clean-venv'."; \
 	else \
+		echo "Creating venv in $(VENVDIR)"; \
 		$(PYTHON) -m venv $(VENVDIR); \
 		$(VENVDIR)/bin/python3 -m pip install -U pip wheel; \
 		$(VENVDIR)/bin/python3 -m pip install -r requirements.txt; \
