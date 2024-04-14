@@ -1,0 +1,570 @@
+PEP: 744
+Title: JIT Compilation
+Author: Brandt Bucher <brandt@python.org>
+Discussions-To: https://discuss.python.org/t/pep-744-jit-compilation/50756
+Status: Draft
+Type: Informational
+Created: 11-Apr-2024
+Python-Version: 3.13
+Post-History: `11-Apr-2024 <https://discuss.python.org/t/pep-744-jit-compilation/50756>`__
+
+Abstract
+========
+
+Earlier this year, an `experimental "just-in-time" compiler
+<https://github.com/python/cpython/pull/113465>`__ was merged into CPython's
+``main`` development branch. While recent CPython releases have included other
+substantial internal changes, this addition represents a particularly
+significant departure from the way CPython has traditionally executed Python
+code. As such, it deserves wider discussion.
+
+This PEP aims to summarize the design decisions behind this addition, the
+current state of the implementation, and future plans for making the JIT a
+permanent, non-experimental part of CPython. It does *not* seek to provide a
+comprehensive overview of *how* the JIT works, instead focusing on the
+particular advantages and disadvantages of the chosen approach, as well as
+answering many questions that have been asked about the JIT since its
+introduction.
+
+Readers interested in learning more about the new JIT are encouraged to consult
+the following resources:
+
+- The `presentation <https://youtu.be/HxSHIpEQRjs>`__ which first introduced the
+  JIT at the 2023 CPython Core Developer Sprint. It includes relevant
+  background, a light technical introduction to the "copy-and-patch" technique
+  used, and an open discussion of its design amongst the core developers
+  present.
+
+- The `open access paper <https://dl.acm.org/doi/10.1145/3485513>`__ originally
+  describing copy-and-patch.
+
+- The `blog post <https://sillycross.github.io/2023/05/12/2023-05-12>`__ by the
+  paper's author detailing the implementation of a copy-and-patch JIT compiler
+  for Lua. While this is a great low-level explanation of the approach, note
+  that it also incorporates other techniques and makes implementation decisions
+  that are not particularly relevant to CPython's JIT.
+
+- The `implementation <#reference-implementation>`__ itself.
+
+Motivation
+==========
+
+Until this point, CPython has always executed Python code by compiling it to
+bytecode, which is interpreted at runtime. This bytecode is a more-or-less
+direct translation of the source code: it is untyped, and largely unoptimized.
+
+Since the Python 3.11 release, CPython has used a "specializing adaptive
+interpreter" (:pep:`659`), which `rewrites these bytecode instructions in-place
+<https://youtu.be/shQtrn1v7sQ>`__ with type-specialized versions as they run.
+This new interpreter delivers significant performance improvements, despite the
+fact that its optimization potential is limited by the boundaries of individual
+bytecode instructions. It also collects a wealth of new profiling information:
+the types flowing though a program, the memory layout of particular objects, and
+what paths through the program are being executed the most. In other words,
+*what* to optimize, and *how* to optimize it.
+
+Since the Python 3.12 release, CPython has generated this interpreter from a
+`C-like domain-specific language
+<https://github.com/python/cpython/blob/main/Python/bytecodes.c>`__ (DSL). In
+addition to taming some of the complexity of the new adaptive interpreter, the
+DSL also allows CPython's maintainers to avoid hand-writing tedious boilerplate
+code in many parts of the interpreter, compiler, and standard library that must
+be kept in sync with the instruction definitions. This ability to generate large
+amounts of runtime infrastructure from a single source of truth is not only
+convenient for maintenance; it also unlocks many possibilities for expanding
+CPython's execution in new ways. For instance, it makes it feasible to
+automatically generate tables for translating a sequence of instructions into an
+equivalent sequence of smaller "micro-ops", generate an optimizer for sequences
+of these micro-ops, and even generate an entire second interpreter for executing
+them.
+
+In fact, since early in the Python 3.13 release cycle, all CPython builds have
+included this exact micro-op translation, optimization, and execution machinery.
+However, it is disabled by default; the overhead of interpreting even optimized
+traces of micro-ops is just too large for most code. Heavier optimization
+probably won't improve the situation much either, since any efficiency gains
+made by new optimizations will likely be offset by the interpretive overhead of
+even smaller, more complex micro-ops.
+
+The most obvious strategy to overcome this new bottleneck is to statically
+compile these optimized traces. This presents opportunities to avoid several
+sources of indirection and overhead introduced by interpretation. In particular,
+it allows the removal of dispatch overhead between micro-ops (by replacing a
+generic interpreter with a straight-line sequence of hot code), instruction
+decoding overhead for individual micro-ops (by "burning" the values or addresses
+of arguments, constants, and cached values directly into machine instructions),
+and memory traffic (by moving data off of heap-allocated Python frames and into
+physical hardware registers).
+
+Since much of this data varies even between identical runs of a program and the
+existing optimization pipeline makes heavy use of runtime profiling information,
+it doesn't make much sense to compile these traces ahead of time. As has been
+demonstrated for many other dynamic languages (`and even Python itself
+<https://www.pypy.org>`__), the most promising approach is to compile the
+optimized micro-ops "just in time" for execution.
+
+Rationale
+=========
+
+Despite their reputation, JIT compilers are not magic "go faster" machines.
+Developing and maintaining any sort of optimizing compiler for even a single
+platform, let alone all of CPython's most popular supported platforms, is an
+incredibly complicated, expensive task. Using an existing compiler framework
+like LLVM can make this task simpler, but only at the cost of introducing heavy
+runtime dependencies and significantly higher JIT compilation overhead.
+
+It's clear that successfully compiling Python code at runtime requires not only
+high-quality Python-specific optimizations for the code being run, *but also*
+quick generation of efficient machine code for the optimized program. The Python
+core development team has the necessary skills and experience for the former (a
+middle-end tightly coupled to the interpreter), and copy-and-patch compilation
+provides an attractive solution for the latter. 
+
+In a nutshell, copy-and-patch allows a high-quality template JIT compiler to be
+generated from the same DSL used to generate the rest of the interpreter. For a
+widely-used, volunteer-driven project like CPython, this benefit cannot be
+overstated: CPython's maintainers, by merely editing the bytecode definitions,
+will also get the JIT backend updated "for free", for *all* JIT-supported
+platforms, at once. This is equally true whether instructions are being added,
+modified, or removed.
+
+Like the rest of the interpreter, the JIT compiler is generated at build time,
+and has no runtime dependencies. It supports a wide range of platforms (see the
+`Support`_ section below), and has comparatively low maintenance burden. In all,
+the current implementation is made up of about 900 lines of build-time Python
+code and 500 lines of runtime C code.
+
+Specification
+=============
+
+The JIT will become non-experimental once all of the following conditions are
+met:
+
+#. It provides a meaningful performance improvement for at least one popular
+   platform (realistically, on the order of 5%).
+
+#. It can be built, distributed, and deployed with minimal disruption.
+
+#. The Steering Council, upon request, has determined that it would provide more
+   value to the community if enabled than if disabled (considering tradeoffs
+   such as maintenance burden, memory usage, or the feasibility of alternate
+   designs).
+
+These criteria should be considered a starting point, and may be expanded over
+time. For example, discussion of this PEP may reveal that additional
+requirements (such as multiple committed maintainers, a security audit,
+documentation in the devguide, support for out-of-process debugging, or a
+runtime option to disable the JIT) should be added to this list.
+
+Until the JIT is non-experimental, it should *not* be used in production, and
+may be broken or removed at any time without warning.
+
+Once the JIT is no longer experimental, it should be treated in much the same
+way as other build options such as ``--enable-optimizations`` or ``--with-lto``.
+It may be a recommended (or even default) option for some platforms, and release
+managers *may* choose to enable it in official releases.
+
+Support
+-------
+
+The JIT has been developed for all of :pep:`11`'s current tier one platforms,
+most of its tier two platforms, and one of its tier three platforms.
+Specifically, CPython's ``main`` branch has `CI
+<https://github.com/python/cpython/blob/main/.github/workflows/jit.yml>`__
+building and testing the JIT for both release and debug builds on:
+
+- ``aarch64-apple-darwin/clang``
+
+- ``aarch64-pc-windows/msvc`` [#untested]_
+
+- ``aarch64-unknown-linux-gnu/clang`` [#emulated]_
+
+- ``aarch64-unknown-linux-gnu/gcc`` [#emulated]_
+
+- ``i686-pc-windows-msvc/msvc``
+
+- ``x86_64-apple-darwin/clang``
+
+- ``x86_64-pc-windows-msvc/msvc``
+
+- ``x86_64-unknown-linux-gnu/clang``
+
+- ``x86_64-unknown-linux-gnu/gcc``
+
+It's worth noting that some platforms, even future tier one platforms, may never
+gain JIT support. This can be for a variety of reasons, including insufficient
+LLVM support (``powerpc64le-unknown-linux-gnu/gcc``), inherent limitations of
+the platform (``wasm32-unknown-wasi/clang``), or lack of developer interest
+(``x86_64-unknown-freebsd/clang``).
+
+Once JIT support for a platform is added (meaning, the JIT builds successfully
+without displaying warnings to the user), it should be treated in much the same
+way as :pep:`11` prescribes: it should have reliable CI/buildbots, and JIT
+failures on tier one and tier two platforms should block releases. Though it's
+not necessary to update :pep:`11` to specify JIT support, it may be helpful to
+do so anyway. Otherwise, a list of supported platforms should be maintained in
+`the JIT's README
+<https://github.com/python/cpython/blob/main/Tools/jit/README.md>`__.
+
+Since it should always be possible to build CPython without the JIT, removing
+JIT support for a platform should *not* be considered a backwards-incompatible
+change. However, if it is reasonable to do so, the normal deprecation process
+should be followed as outlined in :pep:`387`.
+
+The JIT's build-time dependencies may be changed between releases, within
+reason.
+
+Backwards Compatibility
+=======================
+
+Due to the fact that the current interpreter and the JIT backend are both
+generated from the same specification, the behavior of Python code should be
+completely unchanged. In practice, observable differences that have been found
+and fixed during testing have tended to be bugs in the existing micro-op
+translation and optimization stages, rather than bugs in the copy-and-patch
+step.
+
+Debugging
+---------
+
+Tools that profile and debug Python code will continue to work fine. This
+includes in-process tools that use Python-provided functionality (like
+``sys.monitoring``, ``sys.settrace``, or  ``sys.setprofile``), as well as
+out-of-process tools that walk Python frames from the interpreter state.
+
+However, it appears that profilers and debuggers *for C code* are currently
+unable to trace back through JIT frames. Working with leaf frames is possible
+(this is how the JIT itself is debugged), though it is of limited utility due to
+the absence of proper debugging information for JIT frames.
+
+Since the code templates emitted by the JIT are compiled by Clang, it *may* be
+possible to allow JIT frames to be traced through by simply modifying the
+compiler flags to use frame pointers more carefully. It may also be possible to
+harvest and emit the debugging information produced by Clang. Neither of these
+ideas have been explored very deeply. 
+
+While this is an issue that *should* be fixed, fixing it is not a particularly
+high priority at this time. This is probably a problem best explored by somebody
+with more domain expertise in collaboration with those maintaining the JIT, who
+have little experience with the inner workings of these tools.
+
+Security Implications
+=====================
+
+This JIT, like any JIT, produces large amounts of executable data at runtime.
+This introduces a potential new attack surface to CPython, since a malicious
+actor capable of influencing the contents of this data is therefore capable of
+executing arbitrary code. This is a `well-known vulnerability
+<https://en.wikipedia.org/wiki/Just-in-time_compilation#Security>`__ of JIT
+compilers.
+
+In order to mitigate this risk, the JIT has been written with best practices in
+mind. In particular, the data in question is not exposed by the JIT compiler to
+other parts of the program while it remains writable, and at *no* point is the
+data both |wx|_.
+
+.. Apparently this how you hack together a formatted link:
+
+.. |wx| replace:: writable *and* executable
+.. _wx: https://en.wikipedia.org/wiki/W%5EX
+
+The nature of template-based JITs also seriously limits the kinds of code that
+can be generated, further reducing the likelihood of a successful exploit. As an
+additional precaution, the templates themselves are stored in static, read-only
+memory.
+
+However, it would be naive to assume that no possible vulnerabilities exist in
+the JIT, especially at this early stage. The author is not a security expert,
+but is available to join or work closely with the Python Security Response Team
+to triage and fix security issues as they arise.
+
+Apple Silicon
+--------------
+
+Though difficult to test without actually signing and packaging a macOS release,
+it *appears* that macOS releases should `enable the JIT Entitlement for the
+Hardened Runtime
+<https://developer.apple.com/documentation/apple-silicon/porting-just-in-time-compilers-to-apple-silicon#Enable-the-JIT-Entitlement-for-the-Hardened-Runtime>`__.
+
+This shouldn't make *installing* Python any harder, but may add additional steps
+for release managers to perform.
+
+How to Teach This
+=================
+
+Choose the sections that best describe you:
+
+- **If you are a Python programmer or end user...**
+  
+  - ...nothing changes for you. Nobody should be distributing JIT-enabled
+    CPython interpreters to you while it is still an experimental feature. Once
+    it is non-experimental, you will probably notice slightly better performance
+    and slightly higher memory usage. You shouldn't be able to observe any other
+    changes.
+
+- **If you maintain third-party packages...**
+
+  - ...nothing changes for you. There are no API or ABI changes, and the JIT is
+    not exposed to third-party code. You shouldn't need to change your CI
+    matrix, and you shouldn't be able to observe differences in the way your
+    packages work when the JIT is enabled.
+
+- **If you profile or debug Python code...**
+
+  - ...nothing changes for you. All Python profiling and tracing functionality
+    remains.
+  
+- **If you profile or debug C code...**
+
+  - ...currently, the ability to trace *through* JIT frames is limited. This may
+    cause issues if you need to observe the entire C call stack, rather than
+    just "leaf" frames. See the `Debugging`_ section above for more information.
+
+- **If you compile your own Python interpreter....**
+
+  - ...if you don't wish to build the JIT, you can simply ignore it. Otherwise,
+    you will need to `install a compatible version of LLVM
+    <https://github.com/python/cpython/blob/main/Tools/jit/README.md>`__, and
+    pass the appropriate flag to the build scripts. Your build may take up to a
+    minute longer. Note that the JIT should *not* be distributed to end users or
+    used in production while it is still in the experimental phase.
+
+- **If you're a maintainer of CPython (or a fork of CPython)...**
+
+  - **...and you change the bytecode definitions or the main interpreter
+    loop...**
+
+    - ...in general, the JIT shouldn't be much of an inconvenience to you
+      (depending on what you're trying to do). The micro-op interpreter isn't
+      going anywhere, and still offers a debugging experience similer to what
+      the main bytecode interpreter provides today. There is moderate likelihood
+      that larger changes to the interpreter (such as adding new local
+      variables, changing error handling and deoptimization logic, or changing
+      the micro-op format) will require changes to the C template used to
+      generate the JIT, which is meant to mimic the main interpreter loop. You
+      may also occasionally just get unlucky and break JIT code generation,
+      which will require you to either modify the Python build scripts yourself,
+      or solicit the help of somebody more familiar with them (see below).
+
+  - **...and you work on the JIT itself...**
+
+    - ...you hopefully already have a decent idea of what you're getting
+      yourself into. You will be regularly modifying the Python build scripts,
+      the C template used to generate the JIT, and the C code that actually
+      makes up the runtime portion of the JIT. You will also be dealing with
+      all sorts of crashes, stepping over machine code in a debugger, staring at
+      COFF/ELF/Mach-O dumps, developing on a wide range of platforms, and
+      generally being the point of contact for the people changing the bytecode
+      when CI starts failing on their PRs (see above). Ideally, you're at least
+      *familiar* with assembly, have taken a couple of courses with "compilers"
+      in their name, and have read a blog post or two about linkers.
+
+  - **...and you maintain other parts of CPython...**
+
+    - ...nothing changes for you. You shouldn't need to develop locally with JIT
+      builds. If you choose to do so (for example, to help reproduce and triage
+      JIT issues), your builds may take up to a minute longer each time the
+      relevant files are modified.
+
+Reference Implementation
+========================
+
+Key parts of the implementation include:
+
+- |readme|_: Instructions for how to build the JIT.
+  
+- |jit|_: The entire runtime portion of the JIT compiler.
+  
+- |jit_stencils|_: An example of the JIT's generated templates.
+  
+- |template|_: The code which is compiled to produce the JIT's templates.
+  
+- |targets|_: The code to compile and parse the templates at build time.
+
+.. |readme| replace:: ``Tools/jit/README.md``
+.. _readme: https://github.com/python/cpython/blob/main/Tools/jit/README.md
+
+.. |jit| replace:: ``Python/jit.c``
+.. _jit: https://github.com/python/cpython/blob/main/Python/jit.c
+
+.. |jit_stencils| replace:: ``jit_stencils.h``
+.. _jit_stencils: https://gist.github.com/brandtbucher/9d3cc396dcb15d13f7e971175e987f3a
+
+.. |template| replace:: ``Tools/jit/template.c``
+.. _template: https://github.com/python/cpython/blob/main/Tools/jit/template.c
+
+.. |targets| replace:: ``Tools/jit/_targets.py``
+.. _targets: https://github.com/python/cpython/blob/main/Tools/jit/_targets.py
+
+Rejected Ideas
+==============
+
+Maintain it outside of CPython
+------------------------------
+
+While it is *probably* possible to maintain the JIT outside of CPython, its
+implementation is tied tightly enough to the rest of the interpreter that
+keeping it up-to-date would probably be more difficult than actually developing
+the JIT itself. Additionally, contributors working on the existing micro-op
+definitions and optimizations would need to modify and build two separate
+projects to measure the effects of their changes under the JIT (whereas today,
+infrastructure exists to do this automatically for any proposed change).
+
+Releases of the separate "JIT" project would probably also need to correspond to
+specific CPython pre-releases and patch releases, depending on exactly what
+changes are present. Individual CPython commits between releases likely wouldn't
+have corresponding JIT releases at all, further complicating debugging efforts
+(such as bisection to find breaking changes upstream).
+
+Since the JIT is already quite stable, and the ultimate goal is for it to be a
+non-experimental part of CPython, keeping it in ``main`` seems to be the best
+path forward. With that said, the relevant code is organized in such a way that
+the JIT can be easily "deleted" if it does not end up meeting its goals.
+
+Turn it on by default
+---------------------
+
+On the other hand, some have suggested that the JIT should be enabled by default
+in its current form.
+
+Again, it is important to remember that a JIT is not a magic "go faster"
+machine; currently, the JIT is about as fast as the existing specializing
+interpreter. This may sound underwhelming, but it is actually a fairly
+significant achievement, and it's the main reason why this approach was
+considered viable enough to be merged into ``main`` for further development.
+
+While the JIT provides significant gains over the existing micro-op interpreter,
+it isn't yet a clear win when always enabled (especially considering its
+increased memory consumption and additional build-time dependencies). That's the
+purpose of this PEP: to clarify expectations about the objective criteria that
+should be met in order to "flip the switch".
+
+At least for now, having this in ``main``, but off by default, seems to be a
+good compromise between always turning it on and not having it available at all.
+
+Support multiple compiler toolchains
+------------------------------------
+
+Clang is specifically needed because it's the only C compiler with support for
+guaranteed tail calls (|musttail|_), which are required by CPython's
+`continuation-passing-style
+<https://en.wikipedia.org/wiki/Continuation-passing_style#Tail_calls>`__ approach
+to JIT compilation. Without it, the tail-recursive calls between templates could
+result in unbounded C stack growth (and eventual overflow).
+
+.. |musttail| replace:: ``musttail``
+.. _musttail: https://clang.llvm.org/docs/AttributeReference.html#musttail
+
+Since LLVM also includes other functionalities required by the JIT build process
+(namely, utilities for object file parsing and disassembly), and additional
+toolchains introduce additional testing and maintenance burden, it's convenient
+to only support one major version of one toolchain at this time.
+
+Compile the base interpreter's bytecode
+---------------------------------------
+
+Most of the prior art for copy-and-patch uses it as a fast baseline JIT, whereas
+CPython's JIT is using the technique to compile optimized micro-op traces.
+
+In practice, the new JIT currently sits somewhere between the "baseline" and
+"optimizing" compiler tiers of other dynamic language runtimes. This is because
+CPython uses its specializing adaptive interpreter to collect runtime profiling
+information, which is used to detect and optimize "hot" paths through the code.
+This step is carried out using self-modifying code, a technique which is much
+more difficult to implement with a JIT compiler.
+
+While it's *possible* to compile normal bytecode using copy-and-patch (in fact,
+early prototypes predated the micro-op interpreter and did exactly this), it
+just doesn't seem to provide enough optimization potential as the more granular
+micro-op format.
+
+Add GPU support
+---------------
+
+The JIT is currently CPU-only. It does not, for example, offload NumPy array
+computations to CUDA GPUs, as JITs like `Numba
+<https://numba.pydata.org/numba-doc/latest/cuda/overview.html>`__ do.
+
+There is already a rich ecosystem of tools for accelerating these sorts of
+specialized tasks, and CPython's JIT is not intended to replace them. Instead,
+it is meant to improve the performance of general-purpose Python code, which is
+less likely to benefit from deeper GPU integration.
+
+Open Issues
+===========
+
+Speed
+-----
+
+Currently, the JIT is `about as fast as the existing specializing interpreter 
+<https://github.com/faster-cpython/benchmarking-public/blob/main/configs.png>`__
+on most platforms. Improving this is obviously a top priority at this point,
+since providing a significant performance gain is the entire motivation for
+having a JIT at all. A number of proposed improvements are already underway, and
+this ongoing work is being tracked in `GH-115802
+<https://github.com/python/cpython/issues/115802>`__.
+
+Memory
+------
+
+Because it allocates additional memory for executable machine code, the JIT does
+use more memory than the existing interpreter at runtime. According to the
+official benchmarks, the JIT currently uses about `10-20% more memory than the
+base interpreter
+<https://github.com/faster-cpython/benchmarking-public/blob/main/memory_configs.png>`__.
+The upper end of this range is due to ``aarch64-apple-darwin``, which has larger
+page sizes (and thus, a larger minimum allocation granularity).
+
+However, these numbers should be taken with a grain of salt, as the benchmarks
+themselves don't actually have a very high baseline of memory usage. Since they
+have a higher ratio of code to data, the JIT's memory overhead is more
+pronounced than it would be in a typical workload where memory pressure is more
+likely to be a real concern.
+
+Not much effort has been put into optimizing the JIT's memory usage yet, so
+these numbers likely represent a maximum that will be reduced over time.
+Improving this is a medium priority, and is being tracked in `GH-116017
+<https://github.com/python/cpython/issues/116017>`__.
+
+Earlier versions of the JIT had a more complicated memory allocation scheme
+which imposed a number of fragile limitations on the size and layout of the
+emitted code, and significantly bloated the memory footprint of Python
+executable. These issues are no longer present in the current design.
+
+Dependencies
+------------
+
+Building the JIT adds between 3 and 60 seconds to the build process, depending
+on platform. It is only rebuilt whenever the generated files become out-of-date,
+so only those who are actively developing the main interpreter loop will be
+rebuilding it with any frequency.
+
+Unlike many other generated files in CPython, the JIT's generated files are not
+tracked by Git. This is because they contain compiled binary code templates
+specific to not only the host platform, but also the current build configuration
+for that platform. As such, hosting them would require a significant engineering
+effort in order to build and host dozens of large binary files for each commit
+that changes the generated code. While perhaps feasible, this is not a priority,
+since installing the required tools is not prohibitively difficult for most
+people building CPython, and the build step is not particularly time-consuming.
+
+Since some still remain interested in this possibility, discussion is being
+tracked in `GH-115869 <https://github.com/python/cpython/issues/115869>`__.
+
+Footnotes
+=========
+
+.. [#untested] Due to lack of available hardware, the JIT is built, but not
+   tested, for this platform.
+
+.. [#emulated] Due to lack of available hardware, the JIT is built using
+   cross-compilation and tested using hardware emulation for this platform. Some
+   tests are skipped because emulation causes them to fail. However, the JIT has
+   been successfully built and tested for this platform on non-emulated
+   hardware.
+
+Copyright
+=========
+
+This document is placed in the public domain or under the CC0-1.0-Universal
+license, whichever is more permissive.
