@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from docutils import nodes
 from docutils.parsers import rst
+from docutils.parsers.rst import directives
 
 PYPA_SPEC_BASE_URL = "https://packaging.python.org/en/latest/specifications/"
 TYPING_SPEC_BASE_URL = "https://typing.readthedocs.io/en/latest/spec/"
@@ -14,9 +15,9 @@ class PEPBanner(rst.Directive):
 
     has_content = True
     required_arguments = 0
-    optional_arguments = 1
-    final_argument_whitespace = True
-    option_spec = {}
+    option_spec = {
+        'related': directives.unchanged,
+    }
 
     admonition_pre_template = ""
     admonition_pre_text = ""
@@ -26,11 +27,9 @@ class PEPBanner(rst.Directive):
     css_classes = []
 
     def run(self) -> list[nodes.admonition]:
-
-        if self.arguments:
-            link_content = self.arguments[0]
+        if 'related' in self.options:
             pre_text = self.admonition_pre_template.format(
-                link_content=link_content)
+                link_content=self.options['related'])
         else:
             pre_text = self.admonition_pre_text
 
