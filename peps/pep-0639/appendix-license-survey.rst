@@ -11,7 +11,7 @@ This document contains the results of a comprehensive survey of license
 documentation in Python and other languages.
 
 The key takeaways from the survey, which have guided the recommendations of
-PEP 639 are as follows:
+PEP 639, are as follows:
 
 - Most package formats use a single ``License`` field.
 
