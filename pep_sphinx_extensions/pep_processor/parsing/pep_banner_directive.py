@@ -27,9 +27,9 @@ class PEPBanner(rst.Directive):
     css_classes = []
 
     def run(self) -> list[nodes.admonition]:
-        if 'related' in self.options:
+        if link_content := self.options.get('related', ''):
             pre_text = self.admonition_pre_template.format(
-                link_content=self.options['related'])
+                link_content=link_content)
         else:
             pre_text = self.admonition_pre_text
 
