@@ -39,8 +39,8 @@ dirhtml: html
 
 ## linkcheck      to check validity of links within PEP sources
 .PHONY: linkcheck
-check-links: BUILDER = linkcheck
-check-links: html
+linkcheck: BUILDER = linkcheck
+linkcheck: html
 
 ## check-links    (deprecated: use 'make linkcheck' alias instead)
 .PHONY: pages
