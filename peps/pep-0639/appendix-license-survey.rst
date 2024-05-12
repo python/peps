@@ -10,6 +10,23 @@ There are multiple ways used or recommended to document licenses.
 This document contains the results of a comprehensive survey of license
 documentation in Python and other languages.
 
+The key takeaways from the survey, which have guided the recommendations of
+PEP 639, are as follows:
+
+- Most package formats use a single ``License`` field.
+
+- Many modern package systems use some form of :term:`license expression`
+  to optionally combine more than one :term:`license identifier` together.
+  SPDX and SPDX-like syntaxes are the most popular in use.
+
+- SPDX license identifiers are becoming the de facto way to reference common
+  licenses everywhere, whether or not a full license expression syntax is used.
+
+- Several package formats support documenting both a license expression and the
+  paths of the corresponding files that contain the license text. Most Free and
+  Open Source Software licenses require package authors to include their full
+  text in a :term:`Distribution Package`.
+
 
 .. _639-license-doc-python:
 
@@ -18,14 +35,14 @@ License Documentation in Python
 
 .. _639-license-doc-core-metadata:
 
-Core metadata
+Core Metadata
 '''''''''''''
 
-There are two overlapping core metadata fields to document a license: the
+There are two overlapping Core Metadata fields to document a license: the
 license ``Classifier`` `strings <classifiers_>`__ prefixed with ``License ::``
 and the ``License`` `field <licensefield_>`__ as free text.
 
-The core metadata ``License`` field documentation is currently:
+The Core Metadata ``License`` field documentation is currently:
 
 .. code-block:: rst
 
@@ -148,14 +165,14 @@ globally in a shared documentation directory (e.g. ``/usr/share/doc``).
   `License Texts <fedoratext_>`__ and use a
   `License field <fedoralicense_>`__ that must be filled
   with appropriate short license identifier(s) from an extensive list
-  of `"Good Licenses" <fedoralist_>`__. Fedora also defines its own
-  license expression syntax, similar to that of SPDX.
+  of `"Good Licenses" <fedoralist_>`__. Fedora uses SPDX
+  license expression syntax.
 
 - `OpenSUSE packages <opensuse_>`__ use SPDX license expressions with
   SPDX license IDs and a
   `list of additional license identifiers <opensuselist_>`__.
 
-- `Gentoo ebuild <pycode_>`__ uses a ``LICENSE`` variable.
+- `Gentoo ebuild <gentoo_>`__ uses a ``LICENSE`` variable.
   This field is specified in `GLEP-0023 <glep23_>`__ and in the
   `Gentoo development manual <gentoodev_>`__.
   Gentoo also defines a list of allowed licenses and a license expression
