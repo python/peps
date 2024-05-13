@@ -175,7 +175,7 @@ the license files would be located at the paths:
     /setuptools-${VERSION}/setuptools/_vendor/packaging/LICENSE.BSD
 
 In the built wheel, with ``/`` being the root of the archive and
-``{version}`` as the previous, the license files would be stored at:
+``${VERSION}`` as the previous, the license files would be stored at:
 
 .. code-block:: shell
 
@@ -185,7 +185,7 @@ In the built wheel, with ``/`` being the root of the archive and
     /setuptools-${VERSION}.dist-info/licenses/setuptools/_vendor/packaging/LICENSE.BSD
 
 Finally, in the installed project, with ``site-packages`` being the site dir
-and ``{version}`` as the previous, the license files would be installed to:
+and ``${VERSION}`` as the previous, the license files would be installed to:
 
 .. code-block:: shell
 
