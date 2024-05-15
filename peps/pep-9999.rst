@@ -1,0 +1,469 @@
+PEP: 9999
+Title: Preventing task-cancellation bugs by limiting yield in async generators
+Author: Zac Hatfield-Dodds <zac@zhd.dev>,
+        Nathaniel J. Smith <njs@pobox.com>
+PEP-Delegate:
+Discussions-To: [URL]
+Status: Draft
+Type: Standards Track
+Created: 14-May-2024
+Python-Version: 3.14
+
+
+Abstract
+--------
+
+`Structured concurrency
+<https://vorpus.org/blog/notes-on-structured-concurrency-or-go-statement-considered-harmful/>`__
+is increasingly popular in Python.  Interfaces such as the ``asyncio.TaskGroup``
+and ``asyncio.timeout`` context managers support compositional reasoning, and
+allow developers to clearly scope the lifetimes of concurrent tasks. However,
+using ``yield`` to suspend a frame inside such a context (a "CancelScope")
+corrupts this structure, resulting in situations where the wrong task is
+canceled, timeouts are not respected, and exceptions are not properly propagated
+or handled.
+
+To address this issue, this PEP proposes a new ``sys.block_yields()`` context
+manager. When inside this context, attempting to ``yield`` will raise a
+RuntimeError, preventing the task from yielding across a scope boundary.
+Additionally, a mechanism will be provided to allow generator-based context
+managers to permit yields across a single call.  ``sys.block_yields()`` will be
+used by asyncio and downstream libraries to implement task groups, timeouts, and
+cancellation; and by ``contextlib`` etc. to convert generators into context
+managers which allow safe yields.
+
+Motivation
+----------
+
+Structured concurrency is increasingly popular in Python, in the form of newer
+``asyncio`` interfaces and third-party libraries such as Trio and anyio.  These
+interfaces support compositional reasoning, *so long as* users never write a
+``yield`` which takes control-flow across a ``CancelScope``.
+
+A ``CancelScope`` is a context manager which can… cancel… whatever work occurs
+within that context (...scope).  In asyncio, this is implicit in the design of
+``with asyncio.timeout():`` or ``async with asyncio.TaskGroup() as tg:``, which
+respectively cancel the contained work after the specified duration, or cancel
+sibling tasks when one of them raises an exception.  In Trio, the analogous
+``trio.fail_after`` and ``trio.open_nursery`` context managers work the same way
+by literally wrapping an instance of ``trio.CancelScope()``.  We'll generally
+use asyncio in our code samples, but say ``CancelScope`` to refer to the
+framework-independent concept.
+
+This structured approach works beautifully, unless you hit one specific sharp
+edge: breaking the nesting structure by ``yield``\ ing across the boundary of a
+``CancelScope``.  This has much the same effect on structured control flow as
+adding just a few cross-function ``goto``\ s, and the effects are truly dire:
+
+-  The wrong task can be canceled, whether due to a timeout, an error in a
+   sibling task, or an explicit request to cancel some other task
+
+-  Exceptions, including ``CancelledError``, can be delivered to the wrong task
+
+-  Exceptions can go missing entirely, being dropped instead of added to an
+   ``ExceptionGroup``
+
+Let's consider three examples, to see what this might look like in practice.
+
+Leaking a timeout to the outer scope
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Suppose that we want to iterate over an async iterator, but wait for at most
+``max_time`` seconds for each element.  We might naturally encapsulate the logic
+for doing so in an async generator, so that the call site can continue to use a
+straightforward ``async for`` loop:
+
+.. code-block:: python
+
+    async def iter_with_timeout(ait, max_time):
+        try:
+            while True:
+                with timeout(max_time):
+                    yield anext(ait)
+        except StopAsyncIteration:
+            return
+
+    async def fn():
+        async for elem in iter_with_timeout(ait, max_time=1.0):
+            await do_something_with(elem)
+
+Unfortunately, there's a bug in this version: the timeout might expire after the
+generator yields but before it is resumed!  In this case, we'll see a
+``CancelledError`` raised in the outer task, where it cannot be caught by the
+``with timeout(max_time):`` statement.
+
+The fix is fairly simple: get the next element inside the timeout context, and
+then yield *outside* that context.
+
+.. code-block:: python
+
+    async def correct_iter_with_timeout(ait, max_time):
+        try:
+            while True:
+                with timeout(max_time):
+                    tmp = anext(ait)
+                yield tmp
+        except StopAsyncIteration:
+            return
+
+Leaking background tasks -> breaks cancellation and exception handling
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Timeouts are not the only interface which wrap a ``CancelScope`` - and if you
+need some background worker tasks, you can't simply close the ``TaskGroup``
+before yielding.
+
+As an example, let's look at a fan-in generator, which we'll use to merge the
+feeds from several "sensors".  We'll also set up our mock sensors with a small
+buffer, so that we'll raise an error in the background task while control-flow
+is outside the ``combined_iterators`` generator.
+
+.. code-block:: python
+
+    import asyncio, itertools
+
+    async def mock_sensor(name):
+        for n in itertools.count():
+            await asyncio.sleep(0.1)
+            if n == 1 and name == "b":  # 'presence detection'
+                yield "PRESENT"
+            elif n == 3 and name == "a":  # inject a simple bug
+                print("oops, raising RuntimeError\n")
+                raise RuntimeError
+            else:
+                yield f"{name}-{n}"  # non-presence sensor data
+
+    async def move_elements_to_queue(ait, queue):
+        async for obj in ait:
+            await queue.put(obj)
+
+    async def combined_iterators(*aits):
+        """Combine async iterators by starting N tasks, each of
+        which move elements from one iterable to a shared queue."""
+        q = asyncio.Queue(maxsize=2)
+        async with asyncio.TaskGroup() as tg:
+            for ait in aits:
+                tg.create_task(move_elements_to_queue(ait, q))
+            while True:
+                yield await q.get()
+
+    async def turn_on_lights_when_someone_gets_home():
+        combined = combined_iterators(mock_sensor("a"), mock_sensor("b"))
+        async for event in combined:
+            print(event)
+            if event == "PRESENT":
+                break
+        print("main task sleeping for a bit")
+        await asyncio.sleep(1)  # do some other operation
+
+    asyncio.run(turn_on_lights_when_someone_gets_home())
+
+When we run this code, we see the expected sequence of observations, then a
+'detection', and then while the main task is sleeping we trigger that
+``RuntimeError`` in the background.  But… we don't actually observe the
+``RuntimeError``, not even as the ``__context__`` of another exception!
+
+.. code-block:: pycon
+
+    >> python3.11 demo.py
+    a-0
+    b-0
+    a-1
+    PRESENT
+    main task sleeping for a bit
+    oops, raising RuntimeError
+
+    Traceback (most recent call last):
+      File "demo.py", line 39, in <module>
+        asyncio.run(turn_on_lights_when_someone_gets_home())
+      ...
+      File "demo.py", line 37, in turn_on_lights_when_someone_gets_home
+        await asyncio.sleep(1)  # do some other operation
+        ^^^^^^^^^^^^^^^^^^^^^^
+      File ".../python3.11/asyncio/tasks.py", line 649, in sleep
+        return await future
+    asyncio.exceptions.CancelledError
+
+Here, again, the problem is that we've ``yield``\ ed across a ``CancelScope``;
+this time the scope which a ``TaskGroup`` uses to cancel sibling tasks when one
+of the child tasks raises an exception.  However, the ``CancelledError`` which
+was intended for the sibling task was instead injected into the *outer* task,
+and so we never got a chance to create and raise an ``ExceptionGroup(...,
+[RuntimeError()])``.
+
+In a user-defined context manager
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Yielding across a CancelScope can be safe, if and only if you're using the
+generator to implement a context manager - in this case any propagating
+exceptions will be redirected to the expected task.
+
+(footnote: via e.g. ``contextlib.[async]contextmanager``, or 'moral equivalents'
+such as ``@pytest.fixture``)
+
+We've also implemented a lint rule -- the amusingly named ``ASYNC101`` rule in
+`flake8-async <https://pypi.org/project/flake8-async/>`__ -- which warns against
+yielding across cancel scopes.  Could user education be sufficient to avoid
+these problems?  Unfortunately not: while it's safe to define context managers
+which yield across a cancel scope, that user-defined context manager now wraps a
+cancel scope, and is therefore unsafe to yield across!
+
+This regularly arises in practice, because 'run some background tasks for the
+duration of this context' is a very common pattern in structured concurrency.
+We saw that in ``combined_iterators()`` above; and have seen this bug in
+multiple implementations of the websocket protocol:
+
+.. code-block:: python
+
+    async def get_messages(websocket_url):
+        # The websocket protocol requires background tasks to manage the socket heartbeat
+        async with open_websocket(websocket_url) as ws:  # contains a TaskGroup!
+            while True:
+                yield await ws.get_message()
+
+    async with open_websocket(websocket_url) as ws:
+        async for message in get_messages(ws):
+            ...
+
+Restating the problem
+---------------------
+
+Here's the fundamental issue: yield suspends a call frame. It only makes sense
+to yield in a leaf frame -- i.e., if your call stack goes like A -> B -> C, then
+you can suspend C, but you can't suspend B while leaving C running.
+
+But, TaskGroup is a kind of "concurrent call" primitive, where a single frame
+can have multiple child frames that run concurrently. This means that if we
+allow people to mix yield and TaskGroup, then we can end up in exactly this
+situation, where B gets suspended but C is actively running. This is
+nonsensical, and causes serious practical problems (e.g., if C raises an
+exception, we have no way to propagate it).
+
+This is a fundamental incompatibility between generator control flow and
+structured concurrency control flow, not something we can fix by tweaking our
+APIs. The only solution seems to be to forbid yield inside a TaskGroup.
+Although timeouts don't leave a child task running, the close analogy and
+related problems lead us to conclude that yield should be forbidden inside all
+CancelScopes, not only TaskGroups.
+
+Solution
+--------
+
+We propose:
+
+1. a new context manager, ``with sys.block_yields(reason): ...`` which will
+   raise a RuntimeError if you attempt to yield across it.  CancelScope-like
+   context managers in asyncio and downstream code can then wrap this to block
+   yielding across *their* contexts.
+
+2. a mechanism by which generator-to-context-manager decorators can allow yields
+   across one call.  We're not yet sure what this should look like; the leading
+   candidates are
+
+3. a code-object attribute, ``fn.__code__.co_allow_yields = True``, or
+
+4. some sort of invocation flag, e.g. ``fn.__invoke_with_yields__``, to avoid
+   mutating a code object that might be shared between decorated and undecorated
+   functions
+
+Implementation
+--------------
+
+The new ``sys.block_yields`` context manager will require interpreter support.
+For each frame, we track the entries and exits of this context manager.
+
+We're not particularly attached to the exact representation; we'll discuss it as
+a stack (which would support clear error messages), but more compact
+representations such as pair-of-integers would also work.
+
+TODO: ask Mark Shannon about how to store this on the frame object
+
+-  When entering a newly-created or resumed frame, initialize empty stacks of
+   entries and exits.
+
+-  When returning from a frame, merge these stacks into that of the parent
+   frame.
+
+-  When yielding:
+
+-  if ``entries != [] and not frame.allow_yield_flag``, raise a ``RuntimeError``
+   instead of yielding (the new behavior this PEP proposes)
+
+-  otherwise, merge stacks into the parent frame as for a return.
+
+Because this is about yielding frames *within* a task, not switching between
+tasks, syntactic ``yield`` and ``yield from`` should be affected, but ``await``
+expressions should not.
+
+Worked examples
+~~~~~~~~~~~~~~~
+
+TODO: it'd be great to have diagrams for these.
+
+No-yield example
+^^^^^^^^^^^^^^^^
+
+-  enter frame
+
+-  use context manager
+
+   -  which calls ``__enter__``, which calls
+      ``sys.block_yields(reason).__enter__``, so there's multiple rounds of the
+      stack merging as this unwinds, to get the reason attached to the original
+      frame
+
+   -  then ``__exit__`` repeats that process, ending with the corresponding exit
+      on the stack.
+
+-  leave frame.  Entries and exits are balanced, so they don't propagate any
+   further.
+
+Attempts-to-yield example
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+-  enter frame
+
+-  use context manager
+
+   -  which calls ``__enter__``, which … as above
+
+   -  ``yield``: interpreter observes that ``frame.allow_yield_flag`` is not
+      set, and raises a RuntimeError.
+
+   -  then ``__exit__``, as above
+
+-  leave frame with an exception active, but still a balanced entry/exit stack
+
+Allowed-to-yield example
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+-  enter frame, which a decorator has marked as allowing yields.
+
+-  use context manager
+
+   -  which calls ``__enter__``, which … as above
+
+   -  ``yield`` -- this time it's allowed!
+
+   -  Our entry/exit stack is merged with the parent frame, adding one enter to
+      the parent stack, and this frame is suspended.
+
+   -  This frame is resumed (possibly with an exception active; it's a context
+      manager after all).  Our frame's stack is currently empty.
+
+   -  then ``__exit__``, as above
+
+-  leave frame, merging our exit into the parent frame's stack (rebalancing that
+   parent stack).
+
+Allowing yield for context managers
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+defining ``open_websocket_url``, how ``@asynccontextmanager`` sets the flag
+
+also show a third-party case such as ``@pytest.fixture``; we can't just
+special-case the contextlib decorators in the interpreter.
+
+Behavior if ``sys.block_yields`` is misused
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+While unwise, it's possible to call ``sys.block_yields.__enter__`` and
+``.__exit__`` in an order that does not correspond to any valid nesting, or get
+an invalid frame state in some other way.
+
+There are two ways ``sys.block_yields.__exit__`` could detect an invalid state.
+First, if yields are not blocked, we can simply raise an exception without
+changing the state.  Second, if an unexpected entry is at the top of the stack,
+we suggest popping that entry and raising an exception -- this ensures that
+out-of-order calls will still clear the stack, while still making it clear that
+something is wrong.
+
+(and if we choose e.g. an integer- rather than stack-based representation, such
+states may not be distinguishable from correct nesting at all, in which case the
+question will not arise)
+
+Anticipated uses
+----------------
+
+In the standard library, ``sys.block_yields`` would be used by
+``asyncio.TaskGroup``, ``asycio.timeout``, and ``asyncio.timeout_at``.
+Downstream, we expect to use it in ``trio.CancelScope``, async fixtures (in
+pytest-trio, anyio, etc.), and perhaps other places.
+
+We consider use-cases unrelated to async correctness, such as preventing
+``decimal.localcontext`` from leaking out of a generator, out of scope for this
+PEP.
+
+The generator-to-context-manager support would be used by
+``contextlib.(async)contextmanager``, and if necessary in ``(Async)ExitStack``.
+
+Teaching
+--------
+
+Async generators are very rarely taught to novice programmers.
+
+Most intermediate and advanced Python programmers will only interact with this
+PEP as users of ``TaskGroup``, ``timeout``, and ``@contextmanager``.  For this
+group, we expect a clear exception message and documentation to be sufficient.
+
+-  A new section will be added to the '\ `developing with asyncio
+   <https://docs.python.org/3/library/asyncio-dev.html>`__\ ' page, which
+   briefly states that async generators are not permitted to ``yield`` when
+   inside a "cancel scope" context, i.e. ``TaskGroup`` or ``timeout`` context
+   manager.  We anticipate that the problem-restatement and some parts of the
+   motivation section will provide a basis for these docs.  We may also suggest
+   refactoring affected code into a context manager which yields an async
+   iterable -- see below.
+
+-  In the docs for each context manager which wraps a cancel scope, and thus now
+   ``sys.block_yields``, include a standard sentence such as "If used within an
+   async generator, [it is an error to ``yield`` inside this context manager]."
+   with a hyperlink to the explanation above.
+
+For asyncio, Trio, curio, or other-framework maintainers who implement
+CancelScope semantics, we will ensure that the documentation of
+``sys.block_yields`` gives a full explanation distilled from the solution and
+implementation sections of this PEP.  We anticipate consulting most such
+maintainers for their feedback on the draft PEP.
+
+Consider making ``asyncio.Queue`` async-iterable
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When working in codebases which `avoid async generators entirely
+<https://discuss.python.org/t/using-exceptiongroup-at-anthropic-experience-report/20888>`__
+[footnote: see `experience report
+<https://discuss.python.org/t/using-exceptiongroup-at-anthropic-experience-report/20888>`__],
+we've found that an async context manager yielding an async iterable is a safe
+and ergonomic replacement for async generators -- and avoids the delayed-cleanup
+problems described in PEP-533, which this PEP will not solve.
+
+Trio (or anyio) `channels
+<https://trio.readthedocs.io/en/stable/reference-core.html#using-channels-to-pass-values-between-tasks>`__
+are particularly nice for this purpose, because the receive-side is async
+iterable and the send-side has a ``.close()`` method to signal when iteration
+should stop.  A send+receive pair of channels are otherwise almost identical to
+an ``asyncio.Queue``, and so *independently of this PEP* we recommend adding
+``Queue.__aiter__`` and ``Queue.close`` methods to support this design pattern.
+
+Rejected alternatives
+---------------------
+
+`PEP 533 <https://peps.python.org/pep-0533/>`__ - deterministic cleanup for
+iterators would ensure that misfired cancellations are eventually directed to
+the correct scope, but only after they had wreaked havoc elsewhere.  Plausibly
+still useful to ensure that cleanup is *timely*, but does not solve this
+problem.
+
+Note: `more\_itertools.with\_iter
+<https://more-itertools.readthedocs.io/en/stable/api.html#more_itertools.with_iter>`__
+seems wildly unsafe - should I report that??
+
+`PEP 568 <https://peps.python.org/pep-0568/>`__ - would make it possible to work
+around some bugs which this PEP makes impossible.  We recommend marking it as
+rejected.
+
+If you want more details on all the specific problems that arise, and how they
+relate to this proposal, and to PEP 533 and PEP 568, then see `this comment
+<https://github.com/python-trio/trio/issues/264#issuecomment-418989328>`__ and
+`this Discuss thread
+<https://discuss.python.org/t/preventing-yield-inside-certain-context-managers/1091>`__.
