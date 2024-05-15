@@ -17,16 +17,16 @@ Abstract
 the ``asyncio.TaskGroup`` and ``asyncio.timeout`` context managers support
 compositional reasoning, and allow developers to clearly scope the lifetimes of
 concurrent tasks. However, using ``yield`` to suspend a frame inside such a
-context (a "CancelScope") corrupts this structure, resulting in situations where
+context (a "cancel scope") corrupts this structure, resulting in situations where
 the wrong task is canceled, timeouts are not respected, and exceptions are not
 properly propagated or handled.
 
 To address this issue, this PEP proposes a new ``sys.block_yields()`` context
-manager. When inside this context, attempting to ``yield`` will raise a
-RuntimeError, preventing the task from yielding across a scope boundary.
-Additionally, a mechanism will be provided to allow generator-based context
-managers to permit yields across a single call.  ``sys.block_yields()`` will be
-used by asyncio and downstream libraries to implement task groups, timeouts, and
+manager. When syntatically inside this context, attempting to ``yield`` will
+raise a RuntimeError, preventing the task from yielding. Additionally, a
+mechanism will be provided for decorators such as ``@contextmanager`` to allow
+yields inside the decorated function.  ``sys.block_yields()`` will be used by
+asyncio and downstream libraries to implement task groups, timeouts, and
 cancellation; and by ``contextlib`` etc. to convert generators into context
 managers which allow safe yields.
 
@@ -36,32 +36,35 @@ Motivation
 ==========
 
 Structured concurrency is increasingly popular in Python, in the form of newer
-``asyncio`` interfaces and third-party libraries such as Trio and anyio.  These
-interfaces support compositional reasoning, *so long as* users never write a
-``yield`` which takes control-flow across a ``CancelScope``.
+:py:mod:`asyncio` interfaces and third-party libraries such as Trio and anyio.
+These interfaces support compositional reasoning, *so long as* users never write
+a ``yield`` which suspends a frame while inside a cancel scope.
 
-A ``CancelScope`` is a context manager which can... cancel... whatever work occurs
+A cancel scope is a context manager which can... cancel... whatever work occurs
 within that context (...scope).  In asyncio, this is implicit in the design of
 ``with asyncio.timeout():`` or ``async with asyncio.TaskGroup() as tg:``, which
 respectively cancel the contained work after the specified duration, or cancel
-sibling tasks when one of them raises an exception.  In Trio, the analogous
-``trio.fail_after`` and ``trio.open_nursery`` context managers work the same way
-by literally wrapping an instance of ``trio.CancelScope()``.  We'll generally
-use asyncio in our code samples, but say ``CancelScope`` to refer to the
-framework-independent concept.
+sibling tasks when one of them raises an exception.  The core functionality of
+a cancel scope is synchronous, but the user-facing context managers may be
+either sync or async. [#trio-cancel-scope]_
+
+.. [#trio-cancel-scope]
+    While cancel scopes are implicit in asyncio, the analogous
+    :py:func:`trio.fail_after` (sync) and :py:func:`trio.open_nursery` (async)
+    context managers literally wrap an instance of :py:class:`trio.CancelScope`.
+    We'll stick with asyncio for examples here, but say "cancel scope" when
+    referring to the framework-independent concept.
 
 This structured approach works beautifully, unless you hit one specific sharp
-edge: breaking the nesting structure by ``yield``\ ing across the boundary of a
-``CancelScope``.  This has much the same effect on structured control flow as
-adding just a few cross-function ``goto``\ s, and the effects are truly dire:
+edge: breaking the nesting structure by ``yield``\ ing inside a cancel scope.
+This has much the same effect on structured control flow as adding just a few
+cross-function ``goto``\ s, and the effects are truly dire:
 
--  The wrong task can be canceled, whether due to a timeout, an error in a
-   sibling task, or an explicit request to cancel some other task
-
--  Exceptions, including ``CancelledError``, can be delivered to the wrong task
-
--  Exceptions can go missing entirely, being dropped instead of added to an
-   ``ExceptionGroup``
+- The wrong task can be canceled, whether due to a timeout, an error in a
+  sibling task, or an explicit request to cancel some other task
+- Exceptions, including ``CancelledError``, can be delivered to the wrong task
+- Exceptions can go missing entirely, being dropped instead of added to an
+  ``ExceptionGroup``
 
 Let's consider three examples, to see what this might look like in practice.
 
@@ -109,13 +112,13 @@ then yield *outside* that context.
 Leaking background tasks (breaks cancellation and exception handling)
 ---------------------------------------------------------------------
 
-Timeouts are not the only interface which wrap a ``CancelScope`` - and if you
+Timeouts are not the only interface which wrap a cancel scope - and if you
 need some background worker tasks, you can't simply close the ``TaskGroup``
 before yielding.
 
 As an example, let's look at a fan-in generator, which we'll use to merge the
 feeds from several "sensors".  We'll also set up our mock sensors with a small
-buffer, so that we'll raise an error in the background task while control-flow
+buffer, so that we'll raise an error in the background task while control flow
 is outside the ``combined_iterators`` generator.
 
 .. code-block:: python
@@ -128,7 +131,7 @@ is outside the ``combined_iterators`` generator.
             if n == 1 and name == "b":  # 'presence detection'
                 yield "PRESENT"
             elif n == 3 and name == "a":  # inject a simple bug
-                print("oops, raising RuntimeError\n")
+                print("oops, raising RuntimeError")
                 raise RuntimeError
             else:
                 yield f"{name}-{n}"  # non-presence sensor data
@@ -184,17 +187,17 @@ When we run this code, we see the expected sequence of observations, then a
         return await future
     asyncio.exceptions.CancelledError
 
-Here, again, the problem is that we've ``yield``\ ed across a ``CancelScope``;
+Here, again, the problem is that we've ``yield``\ ed inside a cancel scope;
 this time the scope which a ``TaskGroup`` uses to cancel sibling tasks when one
 of the child tasks raises an exception.  However, the ``CancelledError`` which
 was intended for the sibling task was instead injected into the *outer* task,
-and so we never got a chance to create and raise an ``ExceptionGroup(...,
-[RuntimeError()])``.
+and so we never got a chance to create and raise an
+``ExceptionGroup(..., [RuntimeError()])``.
 
 In a user-defined context manager
 ---------------------------------
 
-Yielding across a CancelScope can be safe, if and only if you're using the
+Yielding inside a cancel scope can be safe, if and only if you're using the
 generator to implement a context manager - in this case any propagating
 exceptions will be redirected to the expected task. [#redirected]_
 
@@ -203,10 +206,9 @@ exceptions will be redirected to the expected task. [#redirected]_
 
 We've also implemented a lint rule -- the amusingly named ``ASYNC101`` rule in
 `flake8-async <https://pypi.org/project/flake8-async/>`__ -- which warns against
-yielding across cancel scopes.  Could user education be sufficient to avoid
-these problems?  Unfortunately not: while it's safe to define context managers
-which yield across a cancel scope, that user-defined context manager now wraps a
-cancel scope, and is therefore unsafe to yield across!
+yielding inside know cancel scopes.  Could user education be sufficient to avoid
+these problems?  Unfortunately not: user-defined context managers can also wrap
+a cancel scope, and it's infeasible to recognize or lint for all such cases.
 
 This regularly arises in practice, because 'run some background tasks for the
 duration of this context' is a very common pattern in structured concurrency.
@@ -244,17 +246,17 @@ structured concurrency control flow, not something we can fix by tweaking our
 APIs. The only solution seems to be to forbid yield inside a TaskGroup.
 Although timeouts don't leave a child task running, the close analogy and
 related problems lead us to conclude that yield should be forbidden inside all
-CancelScopes, not only TaskGroups.
+cancel scopes, not only TaskGroups.
 
-Solution
-========
+Specification
+=============
 
 We propose:
 
 1. a new context manager, ``with sys.block_yields(reason): ...`` which will
-   raise a RuntimeError if you attempt to yield across it.  CancelScope-like
-   context managers in asyncio and downstream code can then wrap this to block
-   yielding across *their* contexts.
+   raise a RuntimeError if you attempt to yield while inside it. [#also-sync]_
+   Cancel-scope-like context managers in asyncio and downstream code can then
+   wrap this to block yielding across *their* contexts.
 
 2. a mechanism by which generator-to-context-manager decorators can allow yields
    across one call.  We're not yet sure what this should look like; the leading
@@ -266,8 +268,13 @@ We propose:
       mutating a code object that might be shared between decorated and undecorated
       functions
 
+.. [#also-sync]
+    Note that this blocks yields in both sync and async generators, so that
+    downstream frameworks can define sync cancel scope countexts such as
+    :py:func:`trio.fail_after`.
+
 Implementation
-==============
+--------------
 
 The new ``sys.block_yields`` context manager will require interpreter support.
 For each frame, we track the entries and exits of this context manager.
@@ -437,7 +444,7 @@ group, we expect a clear exception message and documentation to be sufficient.
     <https://discuss.python.org/t/using-exceptiongroup-at-anthropic-experience-report/20888>`__
 
 For asyncio, Trio, curio, or other-framework maintainers who implement
-CancelScope semantics, we will ensure that the documentation of
+cancel scope semantics, we will ensure that the documentation of
 ``sys.block_yields`` gives a full explanation distilled from the solution and
 implementation sections of this PEP.  We anticipate consulting most such
 maintainers for their feedback on the draft PEP.
