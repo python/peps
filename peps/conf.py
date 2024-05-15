@@ -53,7 +53,7 @@ intersphinx_mapping = {
     'python': ('https://docs.python.org/3/', None),
     'packaging': ('https://packaging.python.org/en/latest/', None),
     'typing': ('https://typing.readthedocs.io/en/latest/', None),
-    'trio': ('https://typing.readthedocs.io/en/latest/', None),
+    'trio': ('https://trio.readthedocs.io/en/latest/', None),
     'devguide': ('https://devguide.python.org/', None),
     'py3.11': ('https://docs.python.org/3.11/', None),
     'py3.12': ('https://docs.python.org/3.12/', None),
