@@ -65,16 +65,28 @@ venv:
 		echo "To recreate it, remove it first with \`make clean-venv'."; \
 	else \
 		echo "Creating venv in $(VENVDIR)"; \
-		$(PYTHON) -m venv $(VENVDIR); \
-		$(VENVDIR)/bin/python3 -m pip install -U pip wheel; \
-		$(VENVDIR)/bin/python3 -m pip install -r requirements.txt; \
+		if uv --version > /dev/null; then \
+			uv venv $(VENVDIR); \
+			VIRTUAL_ENV=$(VENVDIR) uv pip install -r requirements.txt; \
+		else \
+			$(PYTHON) -m venv $(VENVDIR); \
+			$(VENVDIR)/bin/python3 -m pip install --upgrade pip; \
+			$(VENVDIR)/bin/python3 -m pip install -r requirements.txt; \
+		fi; \
 		echo "The venv has been created in the $(VENVDIR) directory"; \
 	fi
 
+.PHONY: ensure-pre-commit
+ensure-pre-commit: venv
+	if uv --version > /dev/null; then \
+		$(VENVDIR)/bin/python3 -m pre_commit --version > /dev/null || VIRTUAL_ENV=$(VENVDIR) uv pip install pre-commit; \
+	else \
+		$(VENVDIR)/bin/python3 -m pre_commit --version > /dev/null || $(VENVDIR)/bin/python3 -m pip install pre-commit; \
+	fi;
+
 ## lint           to lint all the files
 .PHONY: lint
-lint: venv
-	$(VENVDIR)/bin/python3 -m pre_commit --version > /dev/null || $(VENVDIR)/bin/python3 -m pip install pre-commit
+lint: ensure-pre-commit
 	$(VENVDIR)/bin/python3 -m pre_commit run --all-files
 
 ## test           to test the Sphinx extensions for PEPs
@@ -84,7 +96,7 @@ test: venv
 
 ## spellcheck     to check spelling
 .PHONY: spellcheck
-spellcheck: venv
+spellcheck: ensure-pre-commit
 	$(VENVDIR)/bin/python3 -m pre_commit --version > /dev/null || $(VENVDIR)/bin/python3 -m pip install pre-commit
 	$(VENVDIR)/bin/python3 -m pre_commit run --all-files --hook-stage manual codespell
 
