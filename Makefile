@@ -26,11 +26,15 @@ html: venv
 htmlview: html
 	$(PYTHON) -c "import os, webbrowser; webbrowser.open('file://' + os.path.realpath('build/index.html'))"
 
+.PHONY: ensure-sphinx-autobuild
+ensure-sphinx-autobuild: venv
+	$(VENVDIR)/bin/sphinx-autobuild --version > /dev/null || $(VENVDIR)/bin/python3 -m pip install sphinx-autobuild
+
 ## htmllive       to rebuild and reload HTML files in your browser
 .PHONY: htmllive
 htmllive: SPHINXBUILD = $(VENVDIR)/bin/sphinx-autobuild
 htmllive: SPHINXERRORHANDLING = --re-ignore="/\.idea/|/venv/|/pep-0000.rst|/topic/" --open-browser --delay 0
-htmllive: html
+htmllive: ensure-sphinx-autobuild html
 
 ## dirhtml        to render PEPs to "index.html" files within "pep-NNNN" directories
 .PHONY: dirhtml
