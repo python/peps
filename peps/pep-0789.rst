@@ -17,22 +17,23 @@ Abstract
 the ``asyncio.TaskGroup`` and ``asyncio.timeout`` context managers support
 compositional reasoning, and allow developers to clearly scope the lifetimes of
 concurrent tasks. However, using ``yield`` to suspend a frame inside such a
-context (a "cancel scope") corrupts this structure, resulting in situations where
-the wrong task is canceled, timeouts are not respected, and exceptions are not
-properly propagated or handled.
+context leads to situations where the wrong task is canceled, timeouts are
+ignored, and exceptions are mishandled. More fundamentally, suspending a frame
+inside a ``TaskGroup`` violates the structured concurrency design principle that
+child tasks are encapsulated within their parent frame.
 
-To address this issue, this PEP proposes a new ``sys.prevent_yields()`` context
+To address these issues, this PEP proposes a new ``sys.prevent_yields()`` context
 manager. When syntactically inside this context, attempting to ``yield`` will
 raise a RuntimeError, preventing the task from yielding. Additionally, a
 mechanism will be provided for decorators such as ``@contextmanager`` to allow
 yields inside the decorated function.  ``sys.prevent_yields()`` will be used by
 asyncio and downstream libraries to implement task groups, timeouts, and
-cancellation; and by ``contextlib`` etc. to convert generators into context
-managers which allow safe yields.
+cancellation; and a related mechanism by ``contextlib`` etc. to convert
+generators into context managers which allow safe yields.
 
 .. _Structured concurrency: https://vorpus.org/blog/notes-on-structured-concurrency-or-go-statement-considered-harmful/
 
-Motivation
+Background
 ==========
 
 Structured concurrency is increasingly popular in Python, in the form of newer
@@ -59,8 +60,6 @@ cross-function ``goto``\ s, and the effects are truly dire:
 - Exceptions can go missing entirely, being dropped instead of added to an
   ``ExceptionGroup``
 
-Let's consider three examples, to see what this might look like in practice.
-
 .. [#trio-cancel-scope]
     While cancel scopes are implicit in asyncio, the analogous
     :py:func:`trio:trio.fail_after` (sync) and :py:func:`trio:trio.open_nursery`
@@ -72,6 +71,35 @@ Let's consider three examples, to see what this might look like in practice.
 .. [#tg-cs]
     A ``TaskGroup`` is not _only_ a cancel scope, but preventing yields would
     resolve their further problem too.  See :ref:`just-deliver`.
+
+
+Problem statement
+=================
+
+Here's the fundamental issue: yield suspends a call frame. It only makes sense
+to yield in a leaf frame -- i.e., if your call stack goes like A -> B -> C, then
+you can suspend C, but you can't suspend B while leaving C running.
+
+But, TaskGroup is a kind of "concurrent call" primitive, where a single frame
+can have multiple child frames that run concurrently. This means that if we
+allow people to mix yield and TaskGroup, then we can end up in exactly this
+situation, where B gets suspended but C is actively running. This is
+nonsensical, and causes serious practical problems (e.g., if C raises an
+exception and A has returned, we have no way to propagate it).
+
+This is a fundamental incompatibility between generator control flow and
+structured concurrency control flow, not something we can fix by tweaking our
+APIs. The only solution seems to be to forbid yield inside a TaskGroup.
+
+Although timeouts don't leave a child task running, the close analogy and
+related problems lead us to conclude that yield should be forbidden inside all
+cancel scopes, not only TaskGroups.  See :ref:`just-deliver` for discussion.
+
+
+Motivating examples
+===================
+
+Let's consider three examples, to see what this might look like in practice.
 
 
 Leaking a timeout to the outer scope
@@ -211,11 +239,9 @@ future `perhaps the queue itself
         # async generators that don't `yield` inside a cancel scope are fine!
         while True:
             try:
-                item = await queue.get()
+                yield await queue.get()
             except asyncio.QueueShutDown:
                 return
-            yield item
-            queue.task_done()
 
     @asynccontextmanager  #  yield-in-cancel-scope is OK in a context manager
     async def combined_iterators(*aits):
@@ -236,14 +262,14 @@ In a user-defined context manager
 ---------------------------------
 
 Yielding inside a cancel scope can be safe, if and only if you're using the
-generator to implement a context manager - in this case any propagating
-exceptions will be redirected to the expected task. [#redirected]_
+generator to implement a context manager [#redirected]_ - in this case any
+propagating exceptions will be redirected to the expected task.
 
-We've also implemented a lint rule -- the amusingly named ``ASYNC101`` rule in
-`flake8-async <https://pypi.org/project/flake8-async/>`__ -- which warns against
-yielding inside know cancel scopes.  Could user education be sufficient to avoid
-these problems?  Unfortunately not: user-defined context managers can also wrap
-a cancel scope, and it's infeasible to recognize or lint for all such cases.
+We've also implemented the ``ASYNC101`` linter rule in `flake8-async
+<https://pypi.org/project/flake8-async/>`__, which warns against yielding in
+known cancel scopes.  Could user education be sufficient to avoid these
+problems?  Unfortunately not: user-defined context managers can also wrap a
+cancel scope, and it's infeasible to recognize or lint for all such cases.
 
 This regularly arises in practice, because 'run some background tasks for the
 duration of this context' is a very common pattern in structured concurrency.
@@ -267,31 +293,10 @@ multiple implementations of the websocket protocol:
     or moral equivalents such as ``@pytest.fixture``
 
 
-Restating the problem
-=====================
-
-Here's the fundamental issue: yield suspends a call frame. It only makes sense
-to yield in a leaf frame -- i.e., if your call stack goes like A -> B -> C, then
-you can suspend C, but you can't suspend B while leaving C running.
-
-But, TaskGroup is a kind of "concurrent call" primitive, where a single frame
-can have multiple child frames that run concurrently. This means that if we
-allow people to mix yield and TaskGroup, then we can end up in exactly this
-situation, where B gets suspended but C is actively running. This is
-nonsensical, and causes serious practical problems (e.g., if C raises an
-exception, we have no way to propagate it).
-
-This is a fundamental incompatibility between generator control flow and
-structured concurrency control flow, not something we can fix by tweaking our
-APIs. The only solution seems to be to forbid yield inside a TaskGroup.
-Although timeouts don't leave a child task running, the close analogy and
-related problems lead us to conclude that yield should be forbidden inside all
-cancel scopes, not only TaskGroups.
-
 Specification
 =============
 
-We propose:
+To prevent these problems, we propose:
 
 1. a new context manager, ``with sys.prevent_yields(reason): ...`` which will
    raise a RuntimeError if you attempt to yield while inside it. [#also-sync]_
@@ -400,25 +405,9 @@ Allowing yield for context managers
 ``@contextmanager`` to re-enable yields in the wrapped function.*
 
 - Explain and show a code sample of how ``@asynccontextmanager`` sets the flag
-- also show a third-party case such as ``@pytest.fixture`` to demonstrate that
-  we can't just have the interpreter special-case contextlib.
 
-
-Alternative implementation - inspecting bytecode
-------------------------------------------------
-
-Jelle Zijlstra has `sketched an alternative`_, where ``sys.prevent_yields``
-inspects the bytecode of callers until satisfied that there is no yield
-between the calling instruction pointer and the next context exit.
-It's not yet clear how this would work when user-defined context managers
-wrap ``sys.prevent_yields``.
-
-If implemented outside CPython, we'd expect challenges from the performance
-impact of de-optimization, as well as ongoing maintainence costs as the CPython
-bytecode continues to evolve.  As for tracking frames, we would also need an
-entirely different solution for other Python implemetations such as PyPy.
-
-.. _sketched an alternative: https://gist.github.com/JelleZijlstra/a53b17417c5189b487316628acc5555f
+Note that third-party decorators such as ``@pytest.fixture`` demonstrate that
+we can't just have the interpreter special-case contextlib.
 
 
 Behavior if ``sys.prevent_yields`` is misused
@@ -470,8 +459,27 @@ often enough to make it into production.
 
 We will seek community feedback on appropriate deprecation pathways for
 standard-library code, including the suggested length of any deprecation period.
+As an initial suggestion, we could make suspending stdlib contexts emit a
+DeprecationWarning only under asyncio debug mode in 3.14; then transition to
+warn-by-default and error under debug mode in 3.15; and finally a hard error in
+3.16.
+
 Irrespective of stdlib usage, downstream frameworks would adopt this
 functionality immediately.
+
+
+How widespread is this bug?
+---------------------------
+
+We don't have solid numbers here, but believe that many projects are affected
+in the wild.  After one moderate and one critical bug attributed to suspending
+a cancel scope at work, Zac developed tooling to enforce a company-wide ban
+on async generators.  When describing this PEP at PyCon, three attendees
+recognized the symptoms and concluded that they had likely been affected.
+
+*TODO: run the ASYNC101 lint rule across ecosystem projects, e.g. the aio-libs
+packages, and get some sense of frequency in widely-used PyPI packages?
+This would help inform the break/deprecation pathways for stdlib code.*
 
 
 How to Teach This
@@ -510,16 +518,19 @@ maintainers for their feedback on the draft PEP.
 Rejected alternatives
 =====================
 
-:pep:`533` - deterministic cleanup for iterators would ensure that misfired
-cancellations are eventually directed to the correct scope, but only after they
-had wreaked havoc elsewhere.  Plausibly still useful to ensure that cleanup is
-*timely*, but does not solve this problem.
+PEP 533, deterministic cleanup for iterators
+-----------------------------------------------
+:pep:`533` proposes adding ``__(a)iterclose__`` to the iterator protocol,
+essentially wrapping a ``with (a)closing(ait)`` around each (async) for loop.
+While this would be useful for ensuring timely and deterministic cleanup of
+resources held by iterators, the problem it aims to solve, it does not fully
+address the issues that motivate PEP 789.
 
-If you want more details on all the specific problems that arise, and how they
-relate to this proposal, and to PEP 533 and PEP 568, then see `this comment
-<https://github.com/python-trio/trio/issues/264#issuecomment-418989328>`__ and
-`this Discuss thread
-<https://discuss.python.org/t/preventing-yield-inside-certain-context-managers/1091>`__.
+Even with PEP 533, misfired cancellations would still be delivered to the wrong
+task and could wreak havoc before the iterator is closed. Moreover, it does not
+address the fundamental structured concurrency problem with ``TaskGroup``, where
+suspending a frame that owns a TaskGroup is incompatible with the model of child
+tasks being fully encapsulated within their parent frame.
 
 
 Deprecate async generators entirely
@@ -588,19 +599,7 @@ yield-within-with problems are not exclusive to async generators:
 
 While I've had good experiences in async Python without async generators
 [#exp-report]_, I'd prefer to fix the problem than remove them from the
-language.  However, if the Steering Council decided that reducing the frequency
-of the problem was worth the compatibility costs of removing async generators,
-I'd suggest two library features to partially replace them:
-
-1. Ergonomic async iterables in the standard library.  These would be nice
-   regardless, so `I've proposed <https://github.com/python/cpython/issues/119154>`__
-   adding ``__aiter__`` to ``asyncio.Queue``.
-
-2. An alternative convenient syntax to define async context managers with an
-   ``@asynccontextmanager`` decorator.  I think we could make this work by
-   injecting a magic awaitable as a positional-only first argument, but haven't
-   prototyped that yet.
-
+language.
 
 .. [#exp-report] see `Zac's experience report here
     <https://discuss.python.org/t/using-exceptiongroup-at-anthropic-experience-report/20888>`__
@@ -636,6 +635,28 @@ values to be produced by suspended child tasks - a prohibitive design problem.
 
 We don't think it's worth adding this much machinery to handle cancel scopes,
 while leaving task groups (and no-exception cases) broken.
+
+
+Alternative implementation - inspecting bytecode
+------------------------------------------------
+
+Jelle Zijlstra has `sketched an alternative`_, where ``sys.prevent_yields``
+inspects the bytecode of callers until satisfied that there is no yield between
+the calling instruction pointer and the next context exit. We expect that
+support for syntatically-nested context managers could be added fairly easily.
+
+However, it's not yet clear how this would work when user-defined context
+managers wrap ``sys.prevent_yields``.  Worse, this approach ignores explicit
+calls to ``__enter__()`` and ``__exit__()``, meaning that the context management
+protocol would vary depending on whether the ``with`` statement was used.
+
+The 'only pay if you use it' performance cost is very attractive.  However,
+inspecting frame objects is prohibitively expensive for core control-flow
+constructs, and causes whole-program slowdowns via de-optimization.
+On the other hand, adding interpreter support for better performance leads
+back to the same pay-regardless semantics as our preferred solution above.
+
+.. _sketched an alternative: https://gist.github.com/JelleZijlstra/a53b17417c5189b487316628acc5555f
 
 
 Copyright
