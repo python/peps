@@ -29,7 +29,7 @@ htmlview: html
 ## htmllive       to rebuild and reload HTML files in your browser
 .PHONY: htmllive
 htmllive: SPHINXBUILD = $(VENVDIR)/bin/sphinx-autobuild
-htmllive: SPHINXERRORHANDLING = --re-ignore="/\.idea/|/venv/|/pep-0000.rst|/topic/" --open-browser --delay 0
+htmllive: SPHINXERRORHANDLING = --re-ignore="/\.idea/|/venv/|/pep-0000.rst|/topic/" --open-browser --delay 0 --port 65121
 htmllive: html
 
 ## dirhtml        to render PEPs to "index.html" files within "pep-NNNN" directories
