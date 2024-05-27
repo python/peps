@@ -9,10 +9,10 @@ SPHINXBUILD  = PATH=$(VENVDIR)/bin:$$PATH sphinx-build
 BUILDER      = html
 JOBS         = auto
 SOURCES      =
-SPHINXERRORHANDLING = -W --keep-going -w sphinx-warnings.txt
+SPHINXERRORHANDLING = --fail-on-warning --keep-going --warning-file sphinx-warnings.txt
 
-ALLSPHINXOPTS = -b $(BUILDER) \
-                -j $(JOBS) \
+ALLSPHINXOPTS = --builder $(BUILDER) \
+                --jobs $(JOBS) \
                 $(SPHINXOPTS) $(SPHINXERRORHANDLING) \
                 peps $(BUILDDIR) $(SOURCES)
 
