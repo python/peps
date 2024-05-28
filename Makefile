@@ -26,13 +26,17 @@ html: venv
 htmlview: html
 	$(PYTHON) -c "import os, webbrowser; webbrowser.open('file://' + os.path.realpath('build/index.html'))"
 
+.PHONY: ensure-sphinx-autobuild
+ensure-sphinx-autobuild: venv
+	$(VENVDIR)/bin/sphinx-autobuild --version > /dev/null || $(VENVDIR)/bin/python3 -m pip install sphinx-autobuild
+
 ## htmllive       to rebuild and reload HTML files in your browser
 .PHONY: htmllive
 htmllive: SPHINXBUILD = $(VENVDIR)/bin/sphinx-autobuild
 # Arbitrarily selected ephemeral port between 49152–65535
 # to avoid conflicts with other processes:
 htmllive: SPHINXERRORHANDLING = --re-ignore="/\.idea/|/venv/|/pep-0000.rst|/topic/" --open-browser --delay 0 --port 55302
-htmllive: html
+htmllive: ensure-sphinx-autobuild html
 
 ## dirhtml        to render PEPs to "index.html" files within "pep-NNNN" directories
 .PHONY: dirhtml
@@ -41,8 +45,8 @@ dirhtml: html
 
 ## linkcheck      to check validity of links within PEP sources
 .PHONY: linkcheck
-check-links: BUILDER = linkcheck
-check-links: html
+linkcheck: BUILDER = linkcheck
+linkcheck: html
 
 ## check-links    (deprecated: use 'make linkcheck' alias instead)
 .PHONY: pages
