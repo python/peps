@@ -28,7 +28,7 @@ htmlview: html
 
 .PHONY: ensure-sphinx-autobuild
 ensure-sphinx-autobuild: venv
-	$(VENVDIR)/bin/sphinx-autobuild --version > /dev/null || $(VENVDIR)/bin/python3 -m pip install sphinx-autobuild
+	$(call ensure_package,sphinx-autobuild)
 
 ## htmllive       to rebuild and reload HTML files in your browser
 .PHONY: htmllive
@@ -82,17 +82,18 @@ venv:
 		echo "The venv has been created in the $(VENVDIR) directory"; \
 	fi
 
-.PHONY: ensure-pre-commit
-ensure-pre-commit: venv
+define ensure_package
 	if uv --version > /dev/null; then \
-		$(VENVDIR)/bin/python3 -m pre_commit --version > /dev/null || VIRTUAL_ENV=$(VENVDIR) uv pip install pre-commit; \
+		$(VENVDIR)/bin/python3 -m $(1) --version > /dev/null || VIRTUAL_ENV=$(VENVDIR) uv pip install $(1); \
 	else \
-		$(VENVDIR)/bin/python3 -m pre_commit --version > /dev/null || $(VENVDIR)/bin/python3 -m pip install pre-commit; \
-	fi;
+		$(VENVDIR)/bin/python3 -m $(1) --version > /dev/null || $(VENVDIR)/bin/python3 -m pip install $(1); \
+	fi
+endef
 
 ## lint           to lint all the files
 .PHONY: lint
-lint: ensure-pre-commit
+lint: venv
+	$(call ensure_package,pre_commit)
 	$(VENVDIR)/bin/python3 -m pre_commit run --all-files
 
 ## test           to test the Sphinx extensions for PEPs
@@ -102,8 +103,8 @@ test: venv
 
 ## spellcheck     to check spelling
 .PHONY: spellcheck
-spellcheck: ensure-pre-commit
-	$(VENVDIR)/bin/python3 -m pre_commit --version > /dev/null || $(VENVDIR)/bin/python3 -m pip install pre-commit
+spellcheck: venv
+	$(call ensure_package,pre_commit)
 	$(VENVDIR)/bin/python3 -m pre_commit run --all-files --hook-stage manual codespell
 
 .PHONY: help
