@@ -28,7 +28,7 @@ htmlview: html
 
 .PHONY: ensure-sphinx-autobuild
 ensure-sphinx-autobuild: venv
-	$(VENVDIR)/bin/sphinx-autobuild --version > /dev/null || $(VENVDIR)/bin/python3 -m pip install sphinx-autobuild
+	$(call ensure_package,sphinx-autobuild)
 
 ## htmllive       to rebuild and reload HTML files in your browser
 .PHONY: htmllive
@@ -71,16 +71,29 @@ venv:
 		echo "To recreate it, remove it first with \`make clean-venv'."; \
 	else \
 		echo "Creating venv in $(VENVDIR)"; \
-		$(PYTHON) -m venv $(VENVDIR); \
-		$(VENVDIR)/bin/python3 -m pip install -U pip wheel; \
-		$(VENVDIR)/bin/python3 -m pip install -r requirements.txt; \
+		if uv --version > /dev/null; then \
+			uv venv $(VENVDIR); \
+			VIRTUAL_ENV=$(VENVDIR) uv pip install -r requirements.txt; \
+		else \
+			$(PYTHON) -m venv $(VENVDIR); \
+			$(VENVDIR)/bin/python3 -m pip install --upgrade pip; \
+			$(VENVDIR)/bin/python3 -m pip install -r requirements.txt; \
+		fi; \
 		echo "The venv has been created in the $(VENVDIR) directory"; \
 	fi
+
+define ensure_package
+	if uv --version > /dev/null; then \
+		$(VENVDIR)/bin/python3 -m $(1) --version > /dev/null || VIRTUAL_ENV=$(VENVDIR) uv pip install $(1); \
+	else \
+		$(VENVDIR)/bin/python3 -m $(1) --version > /dev/null || $(VENVDIR)/bin/python3 -m pip install $(1); \
+	fi
+endef
 
 ## lint           to lint all the files
 .PHONY: lint
 lint: venv
-	$(VENVDIR)/bin/python3 -m pre_commit --version > /dev/null || $(VENVDIR)/bin/python3 -m pip install pre-commit
+	$(call ensure_package,pre_commit)
 	$(VENVDIR)/bin/python3 -m pre_commit run --all-files
 
 ## test           to test the Sphinx extensions for PEPs
@@ -91,7 +104,7 @@ test: venv
 ## spellcheck     to check spelling
 .PHONY: spellcheck
 spellcheck: venv
-	$(VENVDIR)/bin/python3 -m pre_commit --version > /dev/null || $(VENVDIR)/bin/python3 -m pip install pre-commit
+	$(call ensure_package,pre_commit)
 	$(VENVDIR)/bin/python3 -m pre_commit run --all-files --hook-stage manual codespell
 
 .PHONY: help
