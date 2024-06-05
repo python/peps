@@ -75,7 +75,7 @@ Additionally, this proposal identifies the following motivations:
   of the metadata needed by the index to verify an attestation's validity.
 
 This PEP proposes a generic attestation format, containing an
-:ref:`attestation payload for signature generation <payload-and-signature-generation>`,
+:ref:`attestation statement for signature generation <payload-and-signature-generation>`,
 with the expectation that index providers adopt the
 format with a suitable source of identity for signature verification, such as
 Trusted Publishing.
@@ -116,8 +116,8 @@ areas of Python packaging:
    metadata within the cryptographic envelope.
 
    For example, to prevent domain separation between a distribution's name and
-   its contents, this PEP proposes that digital attestations be performed over
-   ``HASH(name || HASH(contents))`` rather than just ``HASH(contents)``.
+   its contents, this PEP uses in-toto Statements to bind the distribution's
+   contents (via SHA256 digest) to its filename.
 
 
 Previous Work
@@ -265,13 +265,28 @@ object is provided as pseudocode below.
 
       verification_material: VerificationMaterial
       """
-      Cryptographic materials used to verify `message_signature`.
+      Cryptographic materials used to verify `envelope`.
       """
 
-      message_signature: str
+      envelope: Envelope
       """
-      The attestation's signature, as `base64(raw-sig)`, where `raw-sig`
-      is the raw bytes of the signing operation over the attestation payload.
+      The enveloped attestation statement and signature.
+      """
+
+
+  @dataclass
+  class Envelope:
+      statement: bytes
+      """
+      The attestation statement.
+
+      This is represented as opaque bytes on the wire (encoded as JSON),
+      but it MUST be an in-toto v1 Statement.
+      """
+
+      signature: bytes
+      """
+      A signature for the above statement.
       """
 
   @dataclass
@@ -307,63 +322,46 @@ object) by selecting a new version number.
 
 .. _payload-and-signature-generation:
 
-Attestation payload and signature generation
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Attestation statement and signature generation
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The *attestation payload* is the actual claim that is cryptographically signed
-over within the attestation object (as the ``message_signature``).
+The *attestation statement* is the actual claim that is cryptographically signed
+over within the attestation object (i.e., the ``envelope.statement``).
 
-The attestation payload is encoded as an :rfc:`8785` canonicalized JSON object,
-with the following pseudocode layout:
+The attestation statement is encoded as a
+`v1 in-toto Statement object <https://github.com/in-toto/attestation/blob/v1.0/spec/v1.0/statement.md>`__,
+in JSON form. When serialized the statement is treated as an opaque binary blob,
+avoiding the need for canonicalization. An example JSON-encoded statement is
+provided in :ref:`appendix-4`.
 
-.. code-block:: python
+In addition to being a v1 in-toto Statement, the attestation statement is constrained
+in the following ways:
 
-  @dataclass
-  class AttestationPayload:
-      distribution: str
-      """
-      The file name of the Python package distribution.
-      """
+* The in-toto ``subject`` **MUST** contain only a single subject.
+* ``subject[0].name`` **MUST** be the distribution's filename, appropriately
+  normalized. See below for notes on sdist and wheel filename normalization.
+* ``subject[0].digest`` **MUST** contain a SHA-256 digest. Other digests
+  **MAY** be present.
+* ``predicateType`` and ``predicate`` are **not** constrained. Attesting
+  parties may choose any predicate appropriate for their type of attestation
+  (e.g. publish attestations, build attestations, etc.).
 
-      digest: str
-      """
-      The SHA-256 digest of the distribution's contents, as a hexadecimal string.
-      """
+For the distribution's filename, normalization should be performed according to
+the :ref:`binary distribution format <packaging:binary-distribution-format>` or
+:ref:`source distribution format <packaging:source-distribution-format>`, as
+appropriate. In particular, the distribution name **MUST** be lowercased and
+normalized, per :ref:`name normalization <packaging:name-normalization>`,
+followed by replacing runs of ``-`` with ``_``. Similar, the distribution version
+**MUST** be normalized per the
+:ref:`version specification <packaging:version-specifiers>`.
 
-The value of ``distribution`` is the same distribution filename that appears
-in the :ref:`simple APIs <packaging:simple-repository-api>`. For example,
-``distribution`` would be ``sampleproject-1.2.0-py2.py3-none-any.whl`` for the
-following simple index entry:
+Examples of non-normalized filenames and their normalized equivalents are
+provided in :ref:`appendix-5`.
 
-.. code-block:: html
-
-  <a href="https://example.com/...">sampleproject-1.2.0-py2.py3-none-any.whl</a><br/>
-
-In practice, this means that ``distribution`` is defined by the PyPA's
-living specifications for
-:ref:`binary distributions <packaging:binary-distribution-format>` and
-:ref:`source distributions <packaging:source-distribution-format>`, although
-non-conforming distributions may be hosted by the index.
-
-The following pseudocode demonstrates the construction of an attestation
-payload and its signature:
-
-.. code-block:: python
-
-  def build_payload(dist: Path) -> AttestationPayload:
-      return AttestationPayload(
-        distribution=dist.name,
-        digest=sha256(dist.read_bytes()).hexdigest,
-      )
-
-  attestation_payload = build_payload("sampleproject-1.2.0-py2.py3-none-any.whl")
-
-  # canonical_json is a fictitious module that performs RFC 8785 canonical
-  # JSON serialization.
-  encoded_payload = canonical_json.dumps(asdict(attestation_payload))
-
-  raw_signature = signing_key.sign(encoded_payload, ECDSA(SHA2_256()))
-  message_signature = b64encode(raw_signature)
+The signature over this statement is constructed using the
+`v1 DSSE signature protocol <https://github.com/secure-systems-lab/dsse/blob/v1.0.0/protocol.md>`__,
+with a ``PAYLOAD_TYPE`` of ``application/vnd.in-toto+json`` and a ``PAYLOAD_BODY`` of the JSON-encoded
+statement above. No other ``PAYLOAD_TYPE`` is permitted.
 
 .. _provenance-object:
 
@@ -492,7 +490,8 @@ for changes to the provenance object include but are not limited to:
 Attestation verification
 ------------------------
 
-Verifying an attestation object requires verification of each of the following:
+Verifying an attestation object against a distribution file requires verification of each of the
+following:
 
 * ``version`` is ``1``. The verifier **MUST** reject any other version.
 * ``verification_material.certificate`` is a valid signing certificate, as
@@ -501,9 +500,12 @@ Verifying an attestation object requires verification of each of the following:
 * ``verification_material.certificate`` identifies an appropriate signing
   subject, such as the machine identity of the Trusted Publisher that published
   the package.
-* ``message_signature`` can be verified by ``verification_material.certificate``,
-  using the reconstructed attestation payload as the cleartext input. The
-  verifier **MUST** reconstruct the attestation payload itself.
+* ``envelope.statement`` is a well-formed in-toto v1 Statement, with a subject
+  and digest that match the distribution's filename and contents.
+* ``envelope.signature`` is a valid signature for ``envelope.statement``
+  corresponding to ``verification_material.certificate``,
+  as reconstituted via the
+  `v1 DSSE signature protocol <https://github.com/secure-systems-lab/dsse/blob/v1.0.0/protocol.md>`__.
 
 In addition to the above required steps, a verifier **MAY** additionally verify
 ``verification_material.transparency_entries`` on a policy basis, e.g. requiring
@@ -546,19 +548,6 @@ unstated presumption with earlier mechanisms, like PGP and wheel signatures.
 
 This PEP does not preclude or exclude future index trust mechanisms, such
 as :pep:`458` and/or :pep:`480`.
-
-Flexible attestations
----------------------
-
-This PEP specifies a fixed attestation payload (defined in
-:ref:`payload-and-signature-generation`), binding the contents of each uploaded
-file to its public name on the index. This payload format is fixed and
-inflexible to ease implementation, and to minimize additional mechanical
-changes to the index itself (e.g., needing to store and service detached
-attestation documents).
-
-This PEP does not preclude or exclude future more flexible attestation payload
-formats, such as ones built on `in-toto <https://in-toto.io/>`__.
 
 Recommendations
 ===============
@@ -698,6 +687,55 @@ reasons:
 
 These numbers are significantly worse in "pathological" cases, where projects
 have hundreds or thousands of releases and/or dozens of files per release.
+
+.. _appendix-4:
+
+Appendix 4: Example attestation statement
+=========================================
+
+Given a source distribution ``sampleproject-1.2.3.tar.gz`` with a SHA-256
+digest of ``e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855``,
+the following is an appropriate in-toto Statement, as a JSON object:
+
+.. code-block:: json
+
+  {
+    "_type": "https://in-toto.io/Statement/v1",
+    "subject": [
+      {
+        "name": "sampleproject-1.2.3.tar.gz",
+        "digest": {"sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+      }
+    ],
+    "predicateType": "https://some-arbitrary-predicate.example.com/v1",
+    "predicate": {
+      "something-else": "foo"
+    }
+  }
+
+.. _appendix-5:
+
+Appendix 5: Examples of distribution filename normalization
+===========================================================
+
+The following lists some examples of **non-normalized** distribution filenames,
+followed by their normalized counterparts.
+
+Non-normalized:
+
+.. code-block::
+
+  SampleProjectCapitalized-1.2.3.tar.gz
+  too-many-dashes-1.2.3.tar.gz
+  nonnormalized_version-1.2.3-PREVIEW1-py3-none-any.whl
+
+Normalized:
+
+.. code-block::
+
+  sampleprojectcapitalized-1.2.3.tar.gz
+  too_many_dashes-1.2.3.tar.gz
+  nonnormalized_version-1.2.3preview1-py3-none-any.whl
 
 Copyright
 =========
