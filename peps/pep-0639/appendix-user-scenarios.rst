@@ -16,7 +16,7 @@ User Scenarios
 --------------
 
 The following covers the range of common use cases from a user perspective,
-providing straightforward guidance for each. Do note that the following
+providing guidance for each. Do note that the following
 should **not** be considered legal advice, and readers should consult a
 licensed legal practitioner in their jurisdiction if they are unsure about
 the specifics for their situation.
@@ -50,8 +50,7 @@ To apply it, just paste `the text <chooseamitlicense_>`__ into a file named
 ``LICENSE.txt`` at the root of your repo, and add the year and your name to
 the copyright line. Then, just add ``license = "MIT"`` under
 ``[project]`` in your ``pyproject.toml`` if your packaging tool supports it,
-or in its config file/section (e.g. Setuptools ``license_expression = MIT``
-under ``[metadata]`` in ``setup.cfg``). You're done!
+or in its config file/section. You're done!
 
 
 I want to distribute my project under a specific license
@@ -62,8 +61,7 @@ file at the root of your repo, if you don't have it in a file starting with
 ``LICENSE`` or ``COPYING`` already, and add
 ``license = "LICENSE-ID"`` under ``[project]`` in your
 ``pyproject.toml`` if your packaging tool supports it, or else in its
-config file (e.g. for Setuptools, ``license_expression = LICENSE-ID``
-under ``[metadata]`` in ``setup.cfg``). You can find the ``LICENSE-ID``
+config file. You can find the ``LICENSE-ID``
 and copyable license text on sites like
 `ChooseALicense <choosealicenselist_>`__ or `SPDX <spdxlist_>`__.
 
@@ -80,7 +78,6 @@ functionality.
 
 In your project config file, enter your license expression under
 ``license`` (``[project]`` table in ``pyproject.toml``),
-``license_expression`` (Setuptools ``setup.cfg`` / ``setup.py``),
 or the equivalent for your packaging tool,
 and make sure to remove any legacy ``license`` table subkeys or
 ``License ::`` classifiers. Your existing ``license`` value may already
@@ -88,16 +85,12 @@ be valid as one (e.g. ``MIT``, ``Apache-2.0 OR BSD-2-Clause``, etc);
 otherwise, check the `SPDX license list <spdxlist_>`__ for the identifier
 that matches the license used in your project.
 
-If your license files begin with ``LICENSE``, ``COPYING``, ``NOTICE`` or
-``AUTHORS``, or you've already configured your packaging tool to add them
-(e.g. ``license_files`` in ``setup.cfg``), you should already be good to go.
-If not, make sure to list them under ``license-files.paths``
+Make sure to list your license files under ``license-files.paths``
 or ``license-files.globs`` under ``[project]`` in ``pyproject.toml``
-(if your tool supports it), or else in your tool's configuration file
-(e.g. ``license_files`` in ``setup.cfg`` for Setuptools).
+or else in your tool's configuration file.
 
 See the :ref:`639-example-basic` for a simple but complete real-world demo
-of how this works in practice, including some additional technical details.
+of how this works in practiced.
 Packaging tools may support automatically converting legacy licensing
 metadata; check your tool's documentation for more information.
 
@@ -107,8 +100,8 @@ My package includes other code under different licenses
 
 If your project includes code from others covered by different licenses,
 such as vendored dependencies or files copied from other open source
-software, you can construct a license expression (or have a tool
-help you do so) to describe the licenses involved and the relationship
+software, you can construct a license expression
+to describe the licenses involved and the relationship
 between them.
 
 In short, ``License-1 AND License-2`` mean that *both* licenses apply
@@ -121,19 +114,15 @@ complex situations.
 
 In your project config file, enter your license expression under
 ``license`` (``[project]`` table of ``pyproject.toml``),
-``license_expression`` (Setuptools ``setup.cfg`` / ``setup.py``),
 or the equivalent for your packaging tool,
 and make sure to remove any legacy ``license`` table subkeys
 or ``License ::`` classifiers.
 
 Also, make sure you add the full license text of all the licenses as files
-somewhere in your project repository. If all of them are in the root directory
-and begin with ``LICENSE``, ``COPYING``, ``NOTICE`` or ``AUTHORS``,
-they will be included automatically. Otherwise, you'll need to list the
+somewhere in your project repository. List the
 relative path or glob patterns to each of them under ``license-files.paths``
 or ``license-files.globs`` under ``[project]`` in ``pyproject.toml``
-(if your tool supports it), or else in your tool's configuration file
-(e.g. ``license_files`` in ``setup.cfg`` for Setuptools).
+(if your tool supports it), or else in your tool's configuration file.
 
 As an example, if your project was licensed MIT but incorporated
 a vendored dependency (say, ``packaging``) that was licensed under
@@ -146,8 +135,8 @@ as glob patterns, or
 ``["LICENSE.txt", "_vendor/LICENSE-APACHE.txt", "_vendor/LICENSE-BSD.txt"]``
 as literal file paths.
 
-See a fully worked out :ref:`639-example-advanced` for a comprehensive end-to-end
-application of this to a real-world complex project, with copious technical
+See a fully worked out :ref:`639-example-advanced` for an end-to-end
+application of this to a real-world complex project, with many technical
 details, and consult a `tutorial <spdxtutorial_>`__ for more help and examples
 using SPDX identifiers and expressions.
 

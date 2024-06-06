@@ -49,7 +49,7 @@ Or, in the ``[project]`` table of ``pyproject.toml``:
     [project]
     license = "MIT"
 
-The output core metadata for the distribution packages would then be:
+The output Core Metadata for the distribution packages would then be:
 
 .. code-block:: email
 
@@ -60,7 +60,7 @@ The ``LICENSE`` file would be stored at ``/setuptools-${VERSION}/LICENSE``
 in the sdist and ``/setuptools-${VERSION}.dist-info/licenses/LICENSE``
 in the wheel, and unpacked from there into the site directory (e.g.
 ``site-packages``) on installation; ``/`` is the root of the respective archive
-and ``${VERSION}`` the version of the Setuptools release in the core metadata.
+and ``${VERSION}`` the version of the Setuptools release in the Core Metadata.
 
 
 .. _639-example-advanced:
@@ -152,7 +152,7 @@ Or alternatively, matched via glob patterns, this could be:
         "setuptools/_vendor/LICENSE*",
     ]
 
-With either approach, the output core metadata in the distribution
+With either approach, the output Core Metadata in the distribution
 would be:
 
 .. code-block:: email
@@ -164,7 +164,7 @@ would be:
     License-File: setuptools/_vendor/packaging/LICENSE.BSD
 
 In the resulting sdist, with ``/`` as the root of the archive and ``${VERSION}``
-the version of the Setuptools release specified in the core metadata,
+the version of the Setuptools release specified in the Core Metadata,
 the license files would be located at the paths:
 
 .. code-block:: shell
@@ -175,7 +175,7 @@ the license files would be located at the paths:
     /setuptools-${VERSION}/setuptools/_vendor/packaging/LICENSE.BSD
 
 In the built wheel, with ``/`` being the root of the archive and
-``{version}`` as the previous, the license files would be stored at:
+``${VERSION}`` as the previous, the license files would be stored at:
 
 .. code-block:: shell
 
@@ -185,7 +185,7 @@ In the built wheel, with ``/`` being the root of the archive and
     /setuptools-${VERSION}.dist-info/licenses/setuptools/_vendor/packaging/LICENSE.BSD
 
 Finally, in the installed project, with ``site-packages`` being the site dir
-and ``{version}`` as the previous, the license files would be installed to:
+and ``${VERSION}`` as the previous, the license files would be installed to:
 
 .. code-block:: shell
 
