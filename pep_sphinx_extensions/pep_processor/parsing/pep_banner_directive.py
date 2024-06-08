@@ -108,17 +108,12 @@ class CanonicalTypingSpecBanner(PEPBanner):
     """Insert a specialized admonition for the typing specification."""
 
     admonition_pre_template = (
-        "This PEP is a historical document. "
-        "The up-to-date, canonical specs, {link_content}, are maintained at "
-        f"the `typing specs site <{TYPING_SPEC_BASE_URL}>`__ and the CPython "
-        "documentation."
+        "This PEP is a historical document: see {link_content} for up-to-date "
+        "specs and documentation. Canonical typing specs are maintained at "
+        f"the `typing specs site <{TYPING_SPEC_BASE_URL}>`__; "
+        "runtime typing behaviour is described in the CPython documentation."
     )
-    admonition_pre_text = (
-        "This PEP is a historical document. "
-        "The up-to-date, canonical specs, {link_content}, are maintained at "
-        f"the `typing specs site <{TYPING_SPEC_BASE_URL}>`__ and the CPython "
-        "documentation."
-    )
+    admonition_pre_text = admonition_pre_template
     admonition_post_text = (
         "See the `typing specification update process "
         "<https://typing.readthedocs.io/en/latest/spec/meta.html>`__ "
