@@ -20,6 +20,7 @@ master_doc = "contents"
 # Add any Sphinx extension module names here, as strings.
 extensions = [
     "pep_sphinx_extensions",
+    "sphinx.ext.extlinks",
     "sphinx.ext.intersphinx",
     "sphinx.ext.githubpages",
 ]
@@ -53,11 +54,20 @@ intersphinx_mapping = {
     'python': ('https://docs.python.org/3/', None),
     'packaging': ('https://packaging.python.org/en/latest/', None),
     'typing': ('https://typing.readthedocs.io/en/latest/', None),
+    'trio': ('https://trio.readthedocs.io/en/latest/', None),
     'devguide': ('https://devguide.python.org/', None),
     'py3.11': ('https://docs.python.org/3.11/', None),
     'py3.12': ('https://docs.python.org/3.12/', None),
 }
 intersphinx_disabled_reftypes = []
+
+# sphinx.ext.extlinks
+# This config is a dictionary of external sites,
+# mapping unique short aliases to a base URL and a prefix.
+# https://www.sphinx-doc.org/en/master/usage/extensions/extlinks.html
+extlinks = {
+    "pypi": ("https://pypi.org/project/%s/", "%s"),
+}
 
 # -- Options for HTML output -------------------------------------------------
 
