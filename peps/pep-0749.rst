@@ -390,6 +390,138 @@ More specifically:
   ``__dict__``. Writing to these attributes will directly update the ``__dict__``,
   without affecting the wrapped callable.
 
+Annotations and metaclasses
+===========================
+
+Testing of the initial implementation of this PEP revealed serious problems with
+the interaction between metaclasses and class annotations.
+
+Pre-existing bugs
+-----------------
+
+We found several bugs in the existing behavior of ``__annotations__`` on classes
+while investigating the behaviors to be specified in this PEP. Fixing these bugs
+on Python 3.13 and earlier is outside the scope of this PEP, but they are noted here
+to explain the corner cases that need to be dealt with.
+
+For context, on Python 3.10 through 3.13 the ``__annotations__`` dictionary is
+placed in the class namespace if the class has any annotations. If it does not,
+there is no ``__annotations__`` class dictionary key when the class is created,
+but accessing ``cls.__annotations__`` invokes a descriptor defined on ``type``
+that returns an empty dictionary and stores it in the class dictionary.
+On Python 3.9 and earlier, the behavior was different; see
+`gh-88067 <https://github.com/python/cpython/issues/88067>`__.
+
+The following code fails identically on Python 3.10 through 3.13::
+
+    class Meta(type): pass
+
+    class X(metaclass=Meta):
+        a: str
+
+    class Y(X): pass
+
+    Meta.__annotations__  # important
+    assert Y.__annotations__ == {}, Y.__annotations__  # fails: {'a': <class 'str'>}
+
+If the annotations on the metaclass ``M`` are accessed before the annotations
+on ``Y``, then the annotations for the base class ``X`` are leaked to ``Y``.
+However, if the metaclass's annotations are *not* accessed (i.e., the line ``Meta.__annotations__``
+above is removed), then the annotations for ``Y`` are correctly empty.
+
+Similarly, annotations from annotated metaclasses leak to unannotated
+classes that are instances of the metaclass::
+
+    class Meta(type):
+        a: str
+
+    class X(metaclass=Meta):
+        pass
+
+    assert X.__annotations__ == {}, X.__annotations__  # fails: {'a': <class 'str'>}
+
+The reason for these behaviors is that if the metaclass contains an
+``__annotations__`` entry in its class dictionary, this prevents
+instances of the metaclass from using the ``__annotations__`` data descriptor
+on the base :py:class:`type` class. In the first case, accessing ``Meta.__annotations__``
+sets ``Meta.__dict__["__annotations__"] = {}`` as a side effect. Then, looking
+up the ``__annotations__`` attribute on ``Y`` first sees the metaclass attribute,
+but skips it because it is a data descriptor. Next, it looks in the class dictionaries
+of the classes in its MRO, finds ``X.__annotations__``, and returns it.
+In the second example, there are no annotations anywhere in the MRO, so
+``type.__getattribute__`` falls back to returning the metaclass attribute.
+
+Metaclass behavior with PEP 649
+-------------------------------
+
+With :pep:`649` as originally specified, the behavior of class annotations
+in relation to metaclasses becomes even more erratic, because now ``__annotations__``
+is lazily added to the class dictionary even for classes with annotations.
+The new ``__annotate__`` attribute is also lazily created on classes without
+annotations, which causes further misbehaviors when metaclasses are involved.
+
+The cause of these problems is that we set the ``__annotate__`` and ``__annotations__``
+class dictionary entries only under some circumstances, and rely on descriptors
+defined on :py:class:`type` to fill them in if they are not set. This approach
+breaks down in the presence of metaclasses, because entries in the metaclass's own
+class dictionary can render the descriptors invisible. Two approaches for fixing
+this issue are:
+
+* Ensure that the entry is *always* present in the class dictionary, even if it
+  is empty or has not yet been evaluated. This means we do not have to rely on
+  the descriptors defined on :py:class:`type` to fill in the field, and
+  therefore the metaclass's attributes will not interfere.
+* Ensure that the entry is *never* present in the class dictionary, or at least
+  never added by logic in the language core. This means that the descriptors
+  on :py:class:`type` will always be used, without interference from the metaclass.
+
+The first approach is straightforward to implement for ``__annotate__``: it is
+already always set for classes with annotations, and we can set it explicitly
+to ``None`` for classes without annotations.
+
+``__annotations__`` causes more problems, because it must be lazily evaluated.
+Therefore, we cannot simply always put an annotations dictionary in the class
+dictionary. The alternative approach would be to never set ``__dict__["__annotations__"]``
+and use some other storage to store the cached annotations. This behavior
+change would have to apply even to classes defined under
+``from __future__ import annotations``, because otherwise there could be buggy
+behavior if a class is defined without ``from __future__ import annotations``
+but its metaclass does have the future enabled. As :pep:`649` previously noted,
+removing ``__annotations__`` from class dictionaries also has backwards compatibility
+implications: ``cls.__dict__.get("__annotations__")`` is a common idiom to
+retrieve annotations.
+
+Alex Waygood has suggested an approach that avoids these problems. On class
+creation, ``cls.__dict__["__annotations__"]`` is set to a special descriptor.
+On ``__get__``, the descriptor evaluates the annotations by calling ``__annotate__``
+and replaces itself with the result. The descriptor also behaves like a mapping,
+so that code that uses ``cls.__dict__["__annotations__"]`` will still usually
+work: treating the object as a mapping will evaluate the annotations and behave
+as if the descriptor itself was the annotations dictionary. (Code that assumes
+that ``cls.__dict__["__annotations__"]`` is specifically an instance of ``dict``
+may break, however.)
+
+While this approach introduces significant complexity, it fixes all known
+problems with metaclasses and it preserves backwards compatibility better
+than alternative ideas.
+
+Specification
+-------------
+
+Accessing ``.__annotations__`` on a class object always returns that class's
+annotations dictionary, which may be empty. Accessing ``.__annotate__`` on a
+class object returns ``None`` if the class has no annotations, and an annotation
+function that returns the class's annotations if it does have annotations.
+
+Classes always contain ``__annotations__`` and ``__annotate__`` keys in their
+class dictionaries. The ``__annotations__`` key may map either to an annotations
+dictionary or to a special descriptor that behaves like a mapping containing
+the annotations. The ``__annotate__`` key maps either to an annotation function
+or to ``None``.
+
+These guarantees do not apply if a class or metaclass explicitly sets
+``__annotations__`` or ``__annotate__``.
+
 Remove code flag for marking ``__annotate__`` functions
 =======================================================
 
@@ -695,7 +827,9 @@ Acknowledgments
 First of all, I thank Larry Hastings for writing :pep:`649`. This PEP modifies some of his
 initial decisions, but the overall design is still his.
 
-I thank Carl Meyer and Alex Waygood for feedback on early drafts of this PEP.
+I thank Carl Meyer and Alex Waygood for feedback on early drafts of this PEP. Alex Waygood,
+Alyssa Coghlan, and David Ellis provided insightful feedback and suggestions on the
+interaction between metaclasses and ``__annotations__``.
 
 Appendix
 ========
