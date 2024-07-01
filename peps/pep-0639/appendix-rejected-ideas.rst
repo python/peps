@@ -300,37 +300,6 @@ Therefore, for these reasons, we reject this here in favor of
 the reserved string value of the ``license`` key.
 
 
-Must be marked dynamic to back-fill
-'''''''''''''''''''''''''''''''''''
-
-The ``license`` key in the ``pyproject.toml`` could be required to be
-explicitly set to dynamic in order for the ``License`` Core Metadata field
-to be automatically back-filled from
-the top-level string value of the ``license`` key.
-This would be more explicit that the filling will be done,
-as strictly speaking the ``license`` key is not (and cannot be) specified in
-``pyproject.toml``, and satisfies a stricter interpretation of the letter
-of the previous :pep:`621` specification that PEP 639 revises.
-
-However, this doesn't seem to be necessary, because it is simply using the
-static, literal value of the ``license`` key, as specified
-strictly in PEP 639. Therefore, any conforming tool can
-deterministically derive this using only the static data
-in the ``pyproject.toml`` file itself.
-
-Furthermore, this actually adds significant ambiguity, as it means the value
-could get filled arbitrarily by other tools, which would in turn compromise
-and conflict with the value of the new ``License-Expression`` field, which is
-why such is explicitly prohibited by PEP 639. Therefore, not marking it as
-``dynamic`` will ensure it is only handled in accordance with PEP 639's
-requirements.
-
-Finally, users explicitly being told to mark it as ``dynamic``, or not, to
-control filling behavior seems to be a bit of a misuse of the ``dynamic``
-field as apparently intended, and prevents tools from adapting to best
-practices (fill, don't fill, etc.) as they develop and evolve over time.
-
-
 Source metadata ``license-files`` key
 -------------------------------------
 
@@ -736,6 +705,32 @@ and require tools to be compatible with it, while still allowing updates
 so long as they don't break backward compatibility. This enables
 tools to immediate take advantage of improvements and accept new
 licenses balancing flexibility and compatibility.
+
+
+Don't allow custom license identifiers
+''''''''''''''''''''''''''''''''''''''
+
+A previous draft of this PEP specified the possibility to use only two
+custom identifiers: ``LicenseRef-Public-Domain`` and ``LicenseRef-Proprietary``
+to handle the cases where projects have a license, but there is not a
+recognized SPDX license identifier for it.
+The custom identifiers cannot be checked for correctness and users may think
+they always have to prepend identifiers with ``LicenseRef``.
+This would lead to tools producing invalid metadata.
+
+However, Python packages are produced in many open and close
+environments,
+where it may be impossible to declare the license using only the small subset
+of the allowed custom identifiers and where, for various reasons,
+it's not possible to add the license to the SPDX license list.
+
+The custom license identifiers are explicitly allowed and described in the
+official SPDX specification and they can be syntactically validated although
+not case-normalized.
+
+Therefore, with acknowledgement that the custom identifiers can't be fully
+validated and may contain mistakes, it was decided to allow
+them in line with the official SPDX specification.
 
 
 .. _639-rejected-ideas-difference-license-source-binary:
