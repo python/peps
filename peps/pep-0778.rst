@@ -1,0 +1,261 @@
+PEP: 778
+Title: Supporting Symlinks in Wheels
+Author: Ethan Smith <ethan@ethanhs.me>
+Sponsor: Barry Warsaw <barry@python.org>
+PEP-Delegate: Paul Moore <p.f.moore@gmail.com>
+Status: Draft
+Type: Standards Track
+Topic: Packaging
+Content-Type: text/x-rst
+Requires: 777
+Created: 18-May-2024
+
+Abstract
+========
+
+Wheels currently do not handle symlinks well, copying content instead of making symlinks when
+installed. To properly handle distributing libraries in wheels, we propose a new ``LINKS``
+metadata file to handle symlinks in a platform portable manner. This specification requires
+a new wheel major version, discussed in :pep:`777`.
+
+Motivation
+==========
+
+Today, symlinks in wheels get created as copies of files, as `the zipfile module
+<https://docs.python.org/3/library/zipfile.html>`_ in CPython `does not support handling symlinks
+in-place <https://github.com/python/cpython/issues/82102>`_ for security reasons.
+
+This `presents problems to projects that would like to ship large compiled libraries
+<https://pypackaging-native.github.io/other_issues/#lack-of-support-for-symlinks-in-wheels>`_ in
+wheels, as they must choose to either greatly increase the install size of the project on disk,
+or omit the symlink and potentially break some downstream use cases.
+
+To ship a library that can properly be loaded for runtime use or build time linking on Unix, a
+library should follow conventions of Unix loader and linker search. The two main file names for
+the loader to use is the "soname" and the "real name". The "soname" is a file like
+``libfoo.so.3`` where ``3`` is a number that is incremented when the interface of the library
+changes. The "real name" is a file named like ``libfoo.so.3.1.4``, where the extra version
+information lets the loader find a specific version of a library. Finally, when compiling code to
+link against a library, the linker searches for a "linker name", named like ``libfoo.so``. A more
+detailed description is described in `this Linux documentation on shared libraries
+<https://tldp.org/HOWTO/Program-Library-HOWTO/shared-libraries.html>`_. To fully support all
+runtime and build time use cases, a project requires shipping all 3 files. Normally, this is
+handled on Unix by using symlinks, so that the library is not duplicated on disk 3 times.
+
+Returning to Python packaging, there are many popular projects which ship binary libraries, such as
+``numpy``, ``scipy``, and ``pyarrow``. Other site-packages ``dlopen`` libraries in other wheels, such as
+``pytorch`` and ``jax``. These projects currently rely on a single library in the wheel, but
+this can cause the linker to find the wrong library if there are system libraries that have a
+"real name" library version available.
+
+There is also the potential benefit that symlinks in wheels would allow for simpler editable
+installs by simply placing a symlink in the user's ``site-packages`` directory, but this PEP
+leaves that as an open question to be explored in a future PEP.
+
+Rationale
+=========
+
+To support the 3 main namings of a library used in loading and library linking on Unix, we
+propose adding support for symlinks in Python wheels. To allow for tracking symlinks made, and to
+potentially support other platforms that may not support Unix symlinks directly, we propose the
+use of a new wheel metadata file ``LINKS``, which will exist in the ``.dist-info`` directory alongside
+``METADATA``, ``RECORD``, and other metadata files.
+
+Using a ``LINKS`` file will allow for more cross-platform uses of symlink-like usage. On Windows,
+symlinks require either `a group policy allowing the user to make symlinks
+<https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/create-symbolic-links>`_
+(e.g. by enabling `Dev Mode
+<https://learn.microsoft.com/en-us/windows/apps/get-started/enable-your-device-for-development>`_)
+or Administrative permissions. This means that it may be the case that symlinks are unsupported on
+some user systems. By using a ``LINKS`` file, installers will be able to potentially use other
+methods of handlings symlinks, such as junctions on Windows, where otherwise the installer would
+have to fail.
+
+This PEP also describes checks that installers must make when installing an updated wheel. These
+checks exist to handle security risks from allowing wheels to install symlinks. For more
+information on why these checks are important, see `Security Implications`_.
+
+Specification
+=============
+
+Wheel Major Version Bump
+------------------------
+
+This PEP requires a wheel major version bump, so the ``Wheel-Version`` for wheels generated with
+``LINKS`` **MUST** be at least version ``2.0``, so that older installers do not silently fail to
+install symlinks and break user environments. For more see :pep:`777`.
+
+New ``LINKS`` Metadata File
+---------------------------
+
+To enable cross-platform symlinks, this PEP introduces a new wheel metadata file, ``LINKS``. An
+example of a ``LINKS`` file is below::
+
+    my_package/libfoo.so.3.1.4,my_package/libfoo.so.3
+    my_package/libfoo.so.3,my_package/libfoo.so
+
+The format of ``LINKS``, as can seen above, is ``source_path,target_path`` where ``source_path``
+is a path relative to the root of any namespace or package root in the wheel. ``target_path`` is a
+*non-dangling* path (i.e. a path that exists on the filesystem after the wheel's contents are
+extracted) in a package or namespace of any package in the wheel. This means that if a wheel
+contains multiple packages, all paths in packages in the wheel are acceptable.
+
+Installer Behavior Specification
+--------------------------------
+
+Installers **MUST** resolve the paths of any link contained in the ``LINKS`` file *before*
+deciding if any ``source_path`` or ``target_path`` are valid. Installers **MUST** verify that
+``source_path`` and ``target_path`` are located inside any namespace or package coming from the
+wheel.  Installers **MUST** reject cyclic symlinks in wheels. Installers **MAY** error if a long
+chain of symlinks (symlinks pointing to symlinks many times repeated) exceeds a limit set by the
+installer.
+
+Installers **MUST** follow the following steps when handling a wheel with symlinks:
+
+1. Check for the existance of a ``LINKS`` file in the ``.dist-info``. If it does not exist,
+   no further steps are required.
+2. Extract all files in the wheel packages and data directory as in wheel 1.x.
+3. Verify that for each ``source_path`` and ``target_path`` pairs, the ``target_path`` exists in
+   one of the package namespaces just extracted.
+4. Next, check that the installer can make some kind of link for each pair in the site directory.
+   If the installer cannot make a link for the file/folder ``target_path`` for the current
+   platform, an error **MUST** be raised. An example of a failure mode would be a UNIX symlink to
+   a file target, where the installer is running on Windows and the installer cannot make
+   symlinks but can make junctions. In this case the installer **MUST** error because it cannot
+   handle the link.
+5. Finally, the installer **MUST** add a platform-relevant link between ``source_path`` and
+   ``target_path``.
+
+Installers **MUST NOT** by default copy files instead of generating a symlink when handling
+symlinks. Installers **MAY** have such behavior available under an alternate configuration or
+command line flag.
+
+Build Backend Specification
+---------------------------
+
+When creating a wheel, build backends **MUST** treat symlinks in the same way as its target when
+deciding whether to include the symlink in a wheel. Build backends **MUST** verify that there are
+no dangling symlinks in the ``LINKS`` file. Build backends **SHOULD** recognize platform-relevant
+symlinks that would be included in builds. On Unix this is typically symlinks, on Windows this
+includes symlinks and junctions.
+
+Backwards Compatibility
+=======================
+
+Introducing symlinks would require an increment to the wheel format major version. This would mean
+new wheels that use the new wheel format would raise an error on older installer tools, per the
+`wheel specification
+<https://packaging.python.org/en/latest/specifications/binary-distribution-format/#file-contents>`_.
+
+Please see :pep:`777` on "Wheel 2.0".
+
+Security Implications
+=====================
+
+Symlinks can be quite dangerous if not handled carefully. A simple example would be if a user were
+to run ``sudo pip install malicious``, and there were no protections, then the malicious package
+could overwrite ``/etc/shadow`` and replace the password hash on the system, allowing malicious
+logins.
+
+This PEP lists several requirements on checks to run by installers on symlinks in wheels to ensure
+attacks like the one described above cannot happen. This means it is **critical** that installers
+carefully implement these security safeguards and prevent malicious use on package installation.
+
+In particular, the following checks **MUST** be made by installers:
+
+1. That the symlinks do not point outside of any packages or namespaces coming from the wheel
+2. That the symlinks are not dangling (the target exists at install time)
+3. That the symlinks are not cyclical, stopping after a certain depth of checking to avoid denial
+   of service requests
+
+Do not follow symlinks on removal.
+
+How to Teach This
+=================
+
+End users should, once the changes have propagated through the ecosystem, transparently experience
+the benefits of symlinks in wheels. It is important for installers to give clear error messages if
+symlinks are unsupported on the platform, and explain why installation has failed.
+
+For people building libraries, documentation on ``packaging.python.org`` should describe the use
+cases and caveats (especially platform suppport) of symlinks in wheels. Otherwise it should be
+handled transparently by build backends in the same way any normal file would be handled.
+
+Reference Implementation
+========================
+
+TODO
+
+Rejected Ideas
+==============
+
+Just Use Unix Symlinks Everywhere
+---------------------------------
+
+This PEP wants to allow for ``LINKS`` to be used for a potential future :pep:`660` editable
+installation. This future PEP should support Windows, so it may need to use junctions.
+
+Don't Use Junctions in ``LINKS``
+--------------------------------
+
+Junctions are a limited way to support symlinks between folders on Windows. They do not support
+files. This PEP allows for junctions as users may wish to only link folders to a different
+location, and future :pep:`660` implementations may need to rely on this feature.
+
+Put symlinks in the ``RECORD`` Metadata File
+--------------------------------------------
+
+While this could be done, it would clutter the ``RECORD`` file. Furthermore the most
+straightforward implementation would place the target at the end of the record. This would
+make it harder to scan across the line and visually see what symlinks exist in the wheel.
+
+Library Maintainers Should Use Python to Locate Libraries
+---------------------------------------------------------
+
+Using Python to locate libraries would be much easier. However, some libraries like ``libtorch``
+are used by extension modules and themselves require loading dependencies. Some compiled libraries
+cannot use Python to find their loader dependencies.
+
+Include Support for Hardlinks
+-----------------------------
+
+This PEP does not specify any behavior around hardlinks. This is intentional. This is left as an
+extension to a future PEP.
+
+Open Issues
+===========
+
+PEP 660 and Deferring Editable Installation Support
+------------------------------------------------------
+
+This PEP leaves the specification and implementation of a :pep:`660` editable installation
+mechanism as unresolved for a later PEP, should we specify that here?
+
+Security
+--------
+
+This PEP needs to be reviewed to make sure it would not allow for new security vulnerabilities.
+Are there other restrictions we should place on the source or target of symlinks to protect users?
+
+Allow inter-package symlinks
+----------------------------
+
+This could be useful for projects that want to shard dependencies such as large libraries between
+wheels but make them available in the main parent wheel.
+
+The Format of ``LINKS``
+-----------------------
+
+Currently the format is derived from ``RECORD``, but perhaps a better format exists.
+
+Previous Discussion
+===================
+
+https://discuss.python.org/t/symbolic-links-in-wheels/1945/25
+
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
