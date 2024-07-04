@@ -476,6 +476,22 @@ the preferred subkey when it was not, and didn't describe the format of the
 string entry similarly to the existing ``globs``.
 
 
+Use a default value for ``license-files`` if not specified
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+A previous draft of the PEP proposed a default value for detecting
+license files in case the users have not declared any and not marked the key
+as dynamic.
+That value was defined as an array of globs:
+``["LICEN[CS]E*", "COPYING*", "NOTICE*", "AUTHORS*"]``
+
+However, this would create an exception among the existing metadata,
+as no other key has got implicit defaults defined. Implicit values in
+pyproject.toml keys are delegated to the ``dynamic`` field,
+which is specified as being calculated. Also, the values were chosen
+arbitrarily, without a strong justification why they should pose a standard.
+
+
 Must be marked dynamic to use defaults
 ''''''''''''''''''''''''''''''''''''''
 
