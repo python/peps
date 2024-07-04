@@ -149,66 +149,23 @@ Alternative possibilities related to the ``license`` key in the
 ``pyproject.toml`` project source metadata.
 
 
-Add ``expression`` and ``files`` subkeys to table
-'''''''''''''''''''''''''''''''''''''''''''''''''
+Add new subkeys to table
+''''''''''''''''''''''''
 
-A previous draft of PEP 639 added ``expression`` and ``files`` subkeys
-to the existing ``license`` table in the project source metadata, to parallel
-the existing ``file`` and ``text`` subkeys. While this seemed the
-most obvious approach at first glance, it had serious drawbacks
-relative to that ultimately taken here.
+There were proposals to add various subkeys to the table.
+Combining different types of metadata which require different handling,
+adding new guidance regarding the subkeys mutual exclusivity and
+the possibility to define some of them as dynamic would make the
+transition harder and create more confusion rather than clarity for the users.
+This approach has been rejected in favour of more flat ``pyproject.toml``
+design, clear mapping between ``pyproject.toml`` keys and Core Metadata fields,
+and increased readability of the separate keys.
 
-This means two very different types of metadata are being
-specified under the same top-level key that require very different handling,
-and unlike the previous arrangement, the subkeys were not mutually
-exclusive and could both be specified at once, with some subkeys potentially
-being dynamic and others static, and mapping to different Core Metadata fields.
+Rejected proposals:
 
-There are further downsides to this as well. Both users and tools would need to
-keep track of which fields are mutually exclusive with which of the others,
-greatly increasing complexity, and the probability
-of errors. Having so many different fields under the
-same key leads to a much more complex mapping between
-``[project]`` keys and Core Metadata fields, not in keeping with :pep:`621`.
-This causes the ``[project]`` table naming and structure to diverge further
-from both the Core Metadata and native formats of the various popular packaging
-tools that use it. Finally, this results in the spec being significantly more
-complex to understand and implement than the alternatives.
-
-The approach PEP 639 now takes, using the reserved top-level string value
-of the ``license`` key, adding a new ``license-files`` key
-and deprecating the ``license`` table subkeys (``text`` and ``file``),
-avoids most of the issues identified above,
-and results in a much clearer and cleaner design overall.
-It allows ``license`` and ``license-files`` to be tagged
-``dynamic`` independently, separates two independent types of metadata
-(syntactically and semantically), restores a closer to 1:1 mapping of
-``[project]`` table keys to Core Metadata fields,
-and reduces nesting by a level for both.
-Other than adding one extra key to the file, there was no significant
-apparent downside to this latter approach, so it was adopted for PEP 639.
-
-
-Add an ``expression`` subkey instead of a string value
-''''''''''''''''''''''''''''''''''''''''''''''''''''''
-
-Adding just an ``expression`` subkey to the ``license`` table,
-instead of using the top-level string value,
-would be more explicit for readers and writers,
-in line with PEP 639's goals.
-However, it still has the downsides listed above
-that are not specific to the inclusion of the ``files`` key.
-
-Relative to a flat string value,
-it adds complexity and an extra level of nesting,
-and requires users and tools to remember and handle
-the mutual exclusivity of the subkeys
-and remember which are deprecated,
-instead of cleanly deprecating the table subkeys as a whole.
-Furthermore, it is less clearly the "default" choice for modern use,
-given users tend to gravitate toward the most obvious option.
-Finally, it seems reasonable to follow the suggested guidance in :pep:`621`,
-given the top-level string value was specifically reserved for this purpose.
+- add ``expression`` and ``files`` subkeys to table
+- add an ``expression`` subkey instead of a string value
+- add a ``type`` key to treat ``text`` as expression
 
 
 Define a new top-level ``license-expression`` key
@@ -265,39 +222,6 @@ so there is little practical need to distinguish which is dynamic.
 
 Therefore, a top-level string value for ``license`` was adopted for PEP 639,
 as an earlier working draft had temporarily specified.
-
-
-Add a ``type`` key to treat ``text`` as expression
-''''''''''''''''''''''''''''''''''''''''''''''''''
-
-Instead of using the reserved top-level string value
-of the ``license`` key in the ``[project]`` table,
-one could add a ``type`` subkey to the ``license`` table
-to control whether ``text`` (or a string value)
-is interpreted as free-text or a license expression. This could make
-backward compatibility a bit easier, as older tools could ignore
-it and always treat ``text`` as ``license``, while newer tools would
-know to treat it as a license expression, if ``type`` was set appropriately.
-Indeed, :pep:`621` seems to suggest something of this sort as a possible
-way that SPDX license expressions could be implemented.
-
-However, it has got all the same downsides as in the previous item,
-including greater complexity, a more complex mapping between the project
-source metadata and Core Metadata and inconsistency between the presentation
-in tool config, project source metadata and Core Metadata,
-a harder deprecation, further bikeshedding over what to name it,
-and inability to mark one but not the other as dynamic, among others.
-
-In addition, while theoretically a little easier in the short
-term, in the long term it would mean users would always have to remember
-to specify the correct ``type`` to ensure their license expression is
-interpreted correctly, which adds work and potential for error; we could
-never safely change the default while being confident that users
-understand that what they are entering is unambiguously a license expression,
-with all the false positive and false negative issues as above.
-
-Therefore, for these reasons, we reject this here in favor of
-the reserved string value of the ``license`` key.
 
 
 Source metadata ``license-files`` key
