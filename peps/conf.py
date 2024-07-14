@@ -30,7 +30,7 @@ source_suffix = {
     ".rst": "pep",
 }
 
-# List of patterns (relative to source dir) to ignore when looking for source files.
+# List of patterns (relative to source dir) to include when looking for source files.
 include_patterns = [
     # Required for Sphinx
     "contents.rst",
@@ -38,9 +38,12 @@ include_patterns = [
     "pep-????.rst",
     # PEP ancillary files
     "pep-????/*.rst",
+    # PEPs API
+    "api/*.rst",
     # Documentation
     "docs/*.rst",
 ]
+# And to ignore when looking for source files.
 exclude_patterns = [
     # PEP Template
     "pep-0012/pep-NNNN.rst",
