@@ -54,14 +54,14 @@ nitpicky = True
 
 # Intersphinx configuration
 intersphinx_mapping = {
-    'python': ('https://docs.python.org/3/', None),
-    'packaging': ('https://packaging.python.org/en/latest/', None),
-    'typing': ('https://typing.readthedocs.io/en/latest/', None),
-    'trio': ('https://trio.readthedocs.io/en/latest/', None),
-    'devguide': ('https://devguide.python.org/', None),
-    'py3.11': ('https://docs.python.org/3.11/', None),
-    'py3.12': ('https://docs.python.org/3.12/', None),
-    'py3.13': ('https://docs.python.org/3.13/', None),
+    "python": ("https://docs.python.org/3/", None),
+    "packaging": ("https://packaging.python.org/en/latest/", None),
+    "typing": ("https://typing.readthedocs.io/en/latest/", None),
+    "trio": ("https://trio.readthedocs.io/en/latest/", None),
+    "devguide": ("https://devguide.python.org/", None),
+    "py3.11": ("https://docs.python.org/3.11/", None),
+    "py3.12": ("https://docs.python.org/3.12/", None),
+    "py3.13": ("https://docs.python.org/3.13/", None),
 }
 intersphinx_disabled_reftypes = []
 
@@ -89,4 +89,5 @@ html_permalinks = False  # handled in the PEPContents transform
 html_baseurl = "https://peps.python.org"  # to create the CNAME file
 gettext_auto_build = False  # speed-ups
 
-templates_path = [os.fspath(_PSE_PATH / "pep_theme" / "templates")]  # Theme template relative paths from `confdir`
+# Theme template relative paths from `confdir`
+templates_path = [os.fspath(_PSE_PATH / "pep_theme" / "templates")]
