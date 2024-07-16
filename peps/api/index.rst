@@ -27,9 +27,10 @@ The structure is like:
        "superseded_by": string | null,
        "url": string
      },
+   }
 
 Date values are formatted as DD-MMM-YYYY,
-and multiple dates are combied in a comma-separated list.
+and multiple dates are combined in a comma-separated list.
 
 For example:
 
