@@ -7,7 +7,7 @@ There is a read-only API of published PEPs available at:
 
 The structure is like:
 
-.. code-block:: json
+.. code-block:: javascript
 
    {
      "<PEP number>": {
