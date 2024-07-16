@@ -10,6 +10,32 @@ The structure is like:
 .. code-block:: json
 
    {
+     "<PEP number>": {
+       "number": integer,
+       "title": string,
+       "authors": string,
+       "discussions_to": string | null,
+       "status": "Accepted" | "Active" | "Deferred" | "Draft" | "Final" | "Provisional" | "Rejected" | "Superseded" | "Withdrawn",
+       "type": "Informational" | "Process" | "Standards Track",
+       "topic": "governance" | "packaging" | "release" | "typing" | "",
+       "created": string,
+       "python_version": string | null,
+       "post_history": string,
+       "resolution": string | null,
+       "requires": string | null,
+       "replaces": string | null,
+       "superseded_by": string | null,
+       "url": string
+     },
+
+Date values are formatted as DD-MMM-YYYY,
+and multiple dates are combied in a comma-separated list.
+
+For example:
+
+.. code-block:: json
+
+   {
      "8": {
        "number": 8,
        "title": "Style Guide for Python Code",
