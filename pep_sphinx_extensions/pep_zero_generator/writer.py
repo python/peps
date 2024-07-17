@@ -169,6 +169,13 @@ class PEPZeroWriter:
                 self.emit_newline()
             self.emit_newline()
 
+            self.emit_title("API")
+            self.emit_text(
+                "The `PEPS API <api/peps.json>`__ is a JSON file of metadata about "
+                "all the published PEPs. :doc:`Read more here <api/index>`."
+            )
+            self.emit_newline()
+
         # PEPs by category
         self.emit_title("Index by Category")
         meta, info, provisional, accepted, open_, finished, historical, deferred, dead = _classify_peps(peps)
