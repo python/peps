@@ -232,17 +232,30 @@ Alternatives considered for the ``license-files`` key in the
 path/glob type handling.
 
 
-Add a ``type`` subkey to ``license-files``
-''''''''''''''''''''''''''''''''''''''''''
+Define mutually exclusve ``paths`` and ``globs`` subkeys to ``license-files``
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 
-Instead of defining mutually exclusive ``paths`` and ``globs`` subkeys
-of the ``license-files`` ``[project]`` table key, we could
-achieve the same effect with a ``files`` subkey for the list and
-a ``type`` subkey for how to interpret it. However, it offers no
-real advantage in exchange for requiring more keystrokes,
-increased complexity, as well as less flexibility in allowing both,
-or another additional subkey in the future, as well as the need to bikeshed
-over the subkey name. Therefore, it was rejected.
+A previous draft of the PEP specified mutually exclusive ``paths`` and
+``globs`` subkeys of the ``license-files`` ``[project]`` table key.
+This was proposed to achieve the maximum clarity of the defined values for
+both users and tools.
+Allowing license files to be specified as literal paths would avoid edge cases,
+such as those containing glob characters
+(or those confusingly similar to them, as described in :pep:`672`).
+
+However, this approach introduces an extra level of nesting - in the very same
+way that PEP 639 removes from the ``license`` key. This creates more burden
+on project authors who need to disambiguate and choose one or the other
+approach to specify their license files location. It was pointed out that
+it is easily possible to incorrectly assume that paths also support
+globs.
+
+Therfore, it was decided against this approach in favor of a flat array value
+which simplifies the specification and implementation,
+and more closely matches the configuration format of existing tools.
+The PEP recommends not to use other than alphanumerical symbols and dot
+(``.``) in the filenames to not create confusion
+when interpreting glob patterns.
 
 
 Only accept verbatim paths
@@ -267,137 +280,9 @@ legal file, creating the package illegal to distribute.
 Tools can still determine the files to be included,
 based only on the glob patterns the user specified and the
 filenames in the package, without installing it, executing its code or even
-examining its files. Furthermore, tools are explicitly allowed to warn
-if specified glob patterns don't match any files.
+examining its files.
 And, of course, sdists, wheels and others will have the full static list
 of files specified in their distribution metadata.
-
-Perhaps most importantly, this would also exclude the currently specified
-default value widely used by the most popular tools, and thus
-be a major break to backward compatibility.
-And of course, authors are welcome to specify their license
-files explicitly via the ``paths`` table subkey, once they are aware of it and
-find it suitable for their project.
-
-
-Only accept glob patterns
-'''''''''''''''''''''''''
-
-Conversely, all ``license-files`` strings could be treated as glob patterns.
-This would slightly simplify the spec and implementation, avoid an extra level
-of nesting, and more closely match the configuration format of existing tools.
-
-However, for the cost of a few characters, it ensures users are aware
-whether they are entering globs or verbatim paths. Furthermore, allowing
-license files to be specified as literal paths avoids edge cases, such as those
-containing glob characters (or those confusingly or even maliciously similar
-to them, as described in :pep:`672`).
-
-Including an explicit ``paths`` value ensures that the resulting
-``License-File`` metadata is correct, complete and purely static in the
-strictest sense of the term, with all license paths explicitly specified
-in the ``pyproject.toml`` file, guaranteed to be included and with an early
-error if any are missing. This is not practical to do, at least without
-serious limitations for many workflows, if we must assume the items
-are glob patterns rather than literal paths.
-
-This allows tools to locate them and know the exact values of the
-``License-File`` Core Metadata fields without having to traverse the
-source tree of the project and match globs, potentially allowing
-more reliable programmatic inspection and processing.
-
-Therefore, given the relatively small cost and the significant benefits,
-this approach was not adopted.
-
-
-Infer whether paths or globs
-''''''''''''''''''''''''''''
-
-It was considered whether to simply allow specifying an array of strings
-directly for the ``license-files`` key, rather than making it a table with
-explicit ``paths`` and ``globs``. This would be simpler and avoid
-an extra level of nesting, and more closely match the configuration format
-of existing tools. However, it was ultimately rejected in favor of separate,
-mutually exclusive ``paths`` and ``globs`` table subkeys.
-
-In practice, it only saves six extra characters in the ``pyproject.toml``
-(``license-files = [...]`` vs ``license-files.globs = [...]``), but allows
-the user to explicitly declare their intent and serves as an unambiguous
-indicator for tools to parse them as globs rather than verbatim paths.
-
-This, in turn, allows for clearly specified tool
-behaviors for each case, many of which would be unreliable or impossible
-without it and
-behave more intuitively overall. These include, with ``paths``,
-guaranteeing that each specified file is included and immediately
-raising an error if one is missing, and with ``globs``, checking glob syntax,
-excluding unwanted backup, temporary, or other such files,
-and optionally warning if a glob doesn't match any files.
-This also avoids edge cases (e.g. paths that contain glob characters) and
-reliance on heuristics to determine interpretation.
-
-
-.. _639-license-files-allow-flat-array:
-
-Also allow a flat array value
-'''''''''''''''''''''''''''''
-
-Initially, after deciding to define ``license-files`` as a table of ``paths``
-and ``globs``, thought was given to making a top-level string array under the
-``license-files`` key mean one or the other (probably ``globs``, to match most
-current tools). This is slightly shorter, indicates to
-the users which one is a preferred one, and allows a cleaner handling of
-the empty case.
-
-However, this only saves six characters in the best case, and there
-isn't an obvious choice.
-
-Flat may be better than nested, but in the face of ambiguity, users
-may not resist the temptation to guess. Requiring users to explicitly specify
-one or the other ensures they are aware of how their inputs will be handled,
-and is more readable for others. It also makes
-the spec and tool implementation slightly more complicated, and it can always
-be added in the future, but not removed without breaking backward
-compatibility. And finally, for the "preferred" option, it means there is
-more than one obvious way to do it.
-
-Therefore, per :pep:`20`, the Zen of Python, this approach is rejected.
-
-
-Allow both ``paths`` and ``globs`` subkeys
-''''''''''''''''''''''''''''''''''''''''''
-
-Allowing both ``paths`` and ``globs`` subkeys to be specified under the
-``license-files`` table was considered, as it could potentially allow
-more flexible handling for particularly complex projects.
-
-However, given the existing proposed approach already matches or exceeds the
-capabilities of those offered in tools' config files, there isn't
-clear demand for this, and it adds a large
-amount of complexity in tool implementations and ``pyproject.toml``
-for relatively minimal gain.
-
-There would be many more edge cases to deal with, such as how to handle files
-matched by both lists, and it conflicts with the current
-specification for how tools should behave, such as when
-no files match.
-
-Like the previous, if there is a clear need for it, it can be always allowed
-in the future in a backward-compatible manner,
-while the same is not true of disallowing it.
-Therefore, it was decided to require the two subkeys to be mutually exclusive.
-
-
-Rename ``paths`` subkey to ``files``
-''''''''''''''''''''''''''''''''''''
-
-Initially, the name ``files`` was considered instead of the ``paths`` for the
-subkey of ``license-files`` table. However, ``paths`` was ultimately
-chosen to avoid duplication between
-the table name (``license-files``) and the subkey name (``files``), i.e.
-``license-files.files = ["LICENSE.txt"]``. It made it seem like
-the preferred subkey when it was not, and didn't describe the format of the
-string entry similarly to the existing ``globs``.
 
 
 Use a default value for ``license-files`` if not specified
