@@ -187,6 +187,10 @@ The module will contain the following functionality:
   module, or class. This will replace :py:func:`inspect.get_annotations`. The latter
   will delegate to the new function. It may eventually be deprecated, but to
   minimize disruption, we do not propose an immediate deprecation.
+* ``get_annotate_function()``: A function that returns the ``__annotate__`` function
+  of an object, if it has one, or ``None`` if it does not. This is usually equivalent
+  to accessing the ``.__annotate__`` attribute, except in the presence of metaclasses
+  (see :ref:`below <pep749-metaclasses>`).
 * ``Format``: an enum that contains the possible formats of annotations. This will
   replace the ``VALUE``, ``FORWARDREF``, and ``SOURCE`` formats in :pep:`649`.
   PEP 649 proposed to make these values global members of the :py:mod:`inspect`
@@ -390,6 +394,8 @@ More specifically:
   ``__dict__``. Writing to these attributes will directly update the ``__dict__``,
   without affecting the wrapped callable.
 
+.. _pep749-metaclasses:
+
 Annotations and metaclasses
 ===========================
 
@@ -457,52 +463,61 @@ returning the metaclass attribute.
 Metaclass behavior with PEP 649
 -------------------------------
 
-With :pep:`649` as originally specified, the behavior of class annotations
-in relation to metaclasses becomes even more erratic, because now ``__annotations__``
-is only lazily added to the class dictionary even for classes with annotations.
-The new ``__annotate__`` attribute is also lazily created on classes without
-annotations, which causes further misbehaviors when metaclasses are involved.
+With :pep:`649`, the behavior of accessing the ``.__annotations__`` attribute
+on classes when metaclasses are involved becomes even more erratic, because now
+``__annotations__`` is only lazily added to the class dictionary even for classes
+with annotations. The new ``__annotate__`` attribute is also lazily created
+on classes without annotations, which causes further misbehaviors when
+metaclasses are involved.
 
 The cause of these problems is that we set the ``__annotate__`` and ``__annotations__``
 class dictionary entries only under some circumstances, and rely on descriptors
-defined on :py:class:`type` to fill them in if they are not set. This approach
-breaks down in the presence of metaclasses, because entries in the metaclass's own
-class dictionary can render the descriptors invisible. Approaches for fixing
-this issue include:
+defined on :py:class:`type` to fill them in if they are not set. When normal
+attribute lookup is used, this approach breaks down in the presence of
+metaclasses, because entries in the metaclass's own class dictionary can render
+the descriptors invisible.
+
+While we considered several approaches that would allow ``cls.__annotations__``
+and ``cls.__annotate__`` to work reliably when ``cls`` is a type with a custom
+metaclass, any such approach would expose significant complexity to advanced users.
+Instead, we recommend a simpler approach that confines the complexity to the
+``annotationlib`` module: in ``annotationlib.get_annotations``, we bypass normal
+attribute lookup by using the ``type.__annotations__`` descriptor directly.
+
+Specification
+-------------
+
+Users should always use ``annotationlib.get_annotations`` to access the
+annotations of a class object, and ``annotationlib.get_annotate_function``
+to access the ``__annotate__`` function. These functions will return only
+the class's own annotations, even when metaclasses are involved.
+
+The behavior of accessing the ``__annotations__`` and ``__annotate__``
+attributes on classes with a metaclass other than ``builtins.type`` is
+unspecified. The documentation should warn against direct use of these
+attributes and recommend using the ``annotationlib`` module instead.
+
+Similarly, the presence of ``__annotations__`` and ``__annotate__`` keys
+in the class dictionary is an implementation detail and should not be relied
+upon.
+
+Rejected alternatives
+---------------------
+
+We considered two broad approaches for dealing with the behavior
+of the ``__annotations__`` and ``__annotate__`` entries in classes:
 
 * Ensure that the entry is *always* present in the class dictionary, even if it
   is empty or has not yet been evaluated. This means we do not have to rely on
   the descriptors defined on :py:class:`type` to fill in the field, and
-  therefore the metaclass's attributes will not interfere.
+  therefore the metaclass's attributes will not interfere. (Prototype
+  in `gh-120719 <https://github.com/python/cpython/pull/120719>`__.)
 * Ensure that the entry is *never* present in the class dictionary, or at least
   never added by logic in the language core. This means that the descriptors
   on :py:class:`type` will always be used, without interference from the metaclass.
-* Bypass normal attribute lookup when accessing these attributes, instead
-  invoking the base class descriptor (from e.g., ``type.__dict__["__annotations__"]``)
-  directly.
+  (Prototype in `gh-120816 <https://github.com/python/cpython/pull/120816>`__.)
 
-The third approach could be used in abstractions like ``annotationlib.get_annotations``,
-but it would mean that accessing ``cls.__annotations__`` or ``cls.__annotate__``
-would be unsafe in some cases. This would create an unacceptable inconsistency
-in the language.
-
-The first approach is straightforward to implement for ``__annotate__``: it is
-already always set for classes with annotations, and we can set it explicitly
-to ``None`` for classes without annotations.
-
-``__annotations__`` causes more problems, because it must be lazily evaluated.
-Therefore, we cannot simply always put an annotations dictionary in the class
-dictionary. The alternative approach would be to never set ``__dict__["__annotations__"]``
-and use some other storage to store the cached annotations. This behavior
-change would have to apply even to classes defined under
-``from __future__ import annotations``, because otherwise there could be buggy
-behavior if a class is defined without ``from __future__ import annotations``
-but its metaclass does have the future enabled. As :pep:`649` previously noted,
-removing ``__annotations__`` from class dictionaries also has backwards compatibility
-implications: ``cls.__dict__.get("__annotations__")`` is a common idiom to
-retrieve annotations.
-
-Alex Waygood has suggested an approach that avoids these problems. When a
+Alex Waygood suggested an implementation using the first approach. When a
 heap type (such as a class created through the ``class`` statement) is created,
 ``cls.__dict__["__annotations__"]`` is set to a special descriptor.
 On ``__get__``, the descriptor evaluates the annotations by calling ``__annotate__``
@@ -514,29 +529,27 @@ as if the descriptor itself was the annotations dictionary. (Code that assumes
 that ``cls.__dict__["__annotations__"]`` is specifically an instance of ``dict``
 may break, however.)
 
-While this approach introduces significant complexity, it fixes all known
-problems with metaclasses and it preserves backwards compatibility better
-than alternative ideas.
+This approach is also straightforward to implement for ``__annotate__``: this
+attribute is already always set for classes with annotations, and we can set
+it explicitly to ``None`` for classes without annotations.
 
-Specification
--------------
+While this approach would fix the known edge cases with metaclasses, it
+introduces significant complexity to all classes, including a new built-in type
+(for the annotations descriptor) with unusual behavior.
 
-Accessing ``.__annotations__`` on a class object that is not a
-:py:ref:`static type <static-types>` always returns that class's
-annotations dictionary, which may be empty. On static types,
-the attribute does not exist. Accessing ``.__annotate__`` on a
-class object returns ``None`` if the class has no annotations, and an annotation
-function that returns the class's annotations if it does have annotations.
+The alternative approach would be to never set ``__dict__["__annotations__"]``
+and use some other storage to store the cached annotations. This behavior
+change would have to apply even to classes defined under
+``from __future__ import annotations``, because otherwise there could be buggy
+behavior if a class is defined without ``from __future__ import annotations``
+but its metaclass does have the future enabled. As :pep:`649` previously noted,
+removing ``__annotations__`` from class dictionaries also has backwards compatibility
+implications: ``cls.__dict__.get("__annotations__")`` is a common idiom to
+retrieve annotations.
 
-Classes that are not :py:ref:`static types <static-types>` always contain
-``__annotations__`` and ``__annotate__`` keys in their
-class dictionaries. The ``__annotations__`` key may map either to an annotations
-dictionary or to a special descriptor that behaves like a mapping containing
-the annotations. The ``__annotate__`` key maps either to an annotation function
-or to ``None``.
-
-These guarantees do not apply if a class or metaclass explicitly sets
-``__annotations__`` or ``__annotate__``.
+This approach would also mean that accessing ``.__annotations__`` on an instance
+of an annotated class no longer works. While this behavior is not documented,
+it is a long-standing feature of Python and is relied upon by some users.
 
 Remove code flag for marking ``__annotate__`` functions
 =======================================================
