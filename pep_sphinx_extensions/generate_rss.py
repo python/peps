@@ -50,14 +50,21 @@ def pep_creation(full_path: Path) -> dt.datetime:
 
 
 def pep_abstract(document: nodes.document) -> str:
-    """Return the first paragraph of the PEP abstract"""
+    """Return the first paragraph of the PEP abstract.
+    If not found, return the first paragraph of the introduction.
+    """
+    introduction = ""
     for node in document.findall(nodes.section):
         title_node = node.next_node(nodes.title)
         if title_node is None:
             continue
+
         if title_node.astext() == "Abstract":
             return node.next_node(nodes.paragraph).astext().strip().replace("\n", " ")
-    return ""
+        elif title_node.astext() == "Introduction":
+            introduction = node.next_node(nodes.paragraph).astext().strip().replace("\n", " ")
+
+    return introduction
 
 
 def _generate_items(doctree_dir: Path):
