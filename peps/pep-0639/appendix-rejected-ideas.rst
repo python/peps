@@ -149,66 +149,23 @@ Alternative possibilities related to the ``license`` key in the
 ``pyproject.toml`` project source metadata.
 
 
-Add ``expression`` and ``files`` subkeys to table
-'''''''''''''''''''''''''''''''''''''''''''''''''
+Add new subkeys to table
+''''''''''''''''''''''''
 
-A previous draft of PEP 639 added ``expression`` and ``files`` subkeys
-to the existing ``license`` table in the project source metadata, to parallel
-the existing ``file`` and ``text`` subkeys. While this seemed the
-most obvious approach at first glance, it had serious drawbacks
-relative to that ultimately taken here.
+There were proposals to add various subkeys to the table.
+Combining different types of metadata which require different handling,
+adding new guidance regarding the subkeys mutual exclusivity and
+the possibility to define some of them as dynamic would make the
+transition harder and create more confusion rather than clarity for the users.
+This approach has been rejected in favour of more flat ``pyproject.toml``
+design, clear mapping between ``pyproject.toml`` keys and Core Metadata fields,
+and increased readability of the separate keys.
 
-This means two very different types of metadata are being
-specified under the same top-level key that require very different handling,
-and unlike the previous arrangement, the subkeys were not mutually
-exclusive and could both be specified at once, with some subkeys potentially
-being dynamic and others static, and mapping to different Core Metadata fields.
+Rejected proposals:
 
-There are further downsides to this as well. Both users and tools would need to
-keep track of which fields are mutually exclusive with which of the others,
-greatly increasing complexity, and the probability
-of errors. Having so many different fields under the
-same key leads to a much more complex mapping between
-``[project]`` keys and Core Metadata fields, not in keeping with :pep:`621`.
-This causes the ``[project]`` table naming and structure to diverge further
-from both the Core Metadata and native formats of the various popular packaging
-tools that use it. Finally, this results in the spec being significantly more
-complex to understand and implement than the alternatives.
-
-The approach PEP 639 now takes, using the reserved top-level string value
-of the ``license`` key, adding a new ``license-files`` key
-and deprecating the ``license`` table subkeys (``text`` and ``file``),
-avoids most of the issues identified above,
-and results in a much clearer and cleaner design overall.
-It allows ``license`` and ``license-files`` to be tagged
-``dynamic`` independently, separates two independent types of metadata
-(syntactically and semantically), restores a closer to 1:1 mapping of
-``[project]`` table keys to Core Metadata fields,
-and reduces nesting by a level for both.
-Other than adding one extra key to the file, there was no significant
-apparent downside to this latter approach, so it was adopted for PEP 639.
-
-
-Add an ``expression`` subkey instead of a string value
-''''''''''''''''''''''''''''''''''''''''''''''''''''''
-
-Adding just an ``expression`` subkey to the ``license`` table,
-instead of using the top-level string value,
-would be more explicit for readers and writers,
-in line with PEP 639's goals.
-However, it still has the downsides listed above
-that are not specific to the inclusion of the ``files`` key.
-
-Relative to a flat string value,
-it adds complexity and an extra level of nesting,
-and requires users and tools to remember and handle
-the mutual exclusivity of the subkeys
-and remember which are deprecated,
-instead of cleanly deprecating the table subkeys as a whole.
-Furthermore, it is less clearly the "default" choice for modern use,
-given users tend to gravitate toward the most obvious option.
-Finally, it seems reasonable to follow the suggested guidance in :pep:`621`,
-given the top-level string value was specifically reserved for this purpose.
+- add ``expression`` and ``files`` subkeys to table
+- add an ``expression`` subkey instead of a string value
+- add a ``type`` key to treat ``text`` as expression
 
 
 Define a new top-level ``license-expression`` key
@@ -267,39 +224,6 @@ Therefore, a top-level string value for ``license`` was adopted for PEP 639,
 as an earlier working draft had temporarily specified.
 
 
-Add a ``type`` key to treat ``text`` as expression
-''''''''''''''''''''''''''''''''''''''''''''''''''
-
-Instead of using the reserved top-level string value
-of the ``license`` key in the ``[project]`` table,
-one could add a ``type`` subkey to the ``license`` table
-to control whether ``text`` (or a string value)
-is interpreted as free-text or a license expression. This could make
-backward compatibility a bit easier, as older tools could ignore
-it and always treat ``text`` as ``license``, while newer tools would
-know to treat it as a license expression, if ``type`` was set appropriately.
-Indeed, :pep:`621` seems to suggest something of this sort as a possible
-way that SPDX license expressions could be implemented.
-
-However, it has got all the same downsides as in the previous item,
-including greater complexity, a more complex mapping between the project
-source metadata and Core Metadata and inconsistency between the presentation
-in tool config, project source metadata and Core Metadata,
-a harder deprecation, further bikeshedding over what to name it,
-and inability to mark one but not the other as dynamic, among others.
-
-In addition, while theoretically a little easier in the short
-term, in the long term it would mean users would always have to remember
-to specify the correct ``type`` to ensure their license expression is
-interpreted correctly, which adds work and potential for error; we could
-never safely change the default while being confident that users
-understand that what they are entering is unambiguously a license expression,
-with all the false positive and false negative issues as above.
-
-Therefore, for these reasons, we reject this here in favor of
-the reserved string value of the ``license`` key.
-
-
 Source metadata ``license-files`` key
 -------------------------------------
 
@@ -308,17 +232,30 @@ Alternatives considered for the ``license-files`` key in the
 path/glob type handling.
 
 
-Add a ``type`` subkey to ``license-files``
-''''''''''''''''''''''''''''''''''''''''''
+Define mutually exclusve ``paths`` and ``globs`` subkeys to ``license-files``
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 
-Instead of defining mutually exclusive ``paths`` and ``globs`` subkeys
-of the ``license-files`` ``[project]`` table key, we could
-achieve the same effect with a ``files`` subkey for the list and
-a ``type`` subkey for how to interpret it. However, it offers no
-real advantage in exchange for requiring more keystrokes,
-increased complexity, as well as less flexibility in allowing both,
-or another additional subkey in the future, as well as the need to bikeshed
-over the subkey name. Therefore, it was rejected.
+A previous draft of the PEP specified mutually exclusive ``paths`` and
+``globs`` subkeys of the ``license-files`` ``[project]`` table key.
+This was proposed to achieve the maximum clarity of the defined values for
+both users and tools.
+Allowing license files to be specified as literal paths would avoid edge cases,
+such as those containing glob characters
+(or those confusingly similar to them, as described in :pep:`672`).
+
+However, this approach introduces an extra level of nesting - in the very same
+way that PEP 639 removes from the ``license`` key. This creates more burden
+on project authors who need to disambiguate and choose one or the other
+approach to specify their license files location. It was pointed out that
+it is easily possible to incorrectly assume that paths also support
+globs.
+
+Therfore, it was decided against this approach in favor of a flat array value
+which simplifies the specification and implementation,
+and more closely matches the configuration format of existing tools.
+The PEP recommends not to use other than alphanumerical symbols and dot
+(``.``) in the filenames to not create confusion
+when interpreting glob patterns.
 
 
 Only accept verbatim paths
@@ -343,137 +280,25 @@ legal file, creating the package illegal to distribute.
 Tools can still determine the files to be included,
 based only on the glob patterns the user specified and the
 filenames in the package, without installing it, executing its code or even
-examining its files. Furthermore, tools are explicitly allowed to warn
-if specified glob patterns don't match any files.
+examining its files.
 And, of course, sdists, wheels and others will have the full static list
 of files specified in their distribution metadata.
 
-Perhaps most importantly, this would also exclude the currently specified
-default value widely used by the most popular tools, and thus
-be a major break to backward compatibility.
-And of course, authors are welcome to specify their license
-files explicitly via the ``paths`` table subkey, once they are aware of it and
-find it suitable for their project.
 
+Use a default value for ``license-files`` if not specified
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 
-Only accept glob patterns
-'''''''''''''''''''''''''
+A previous draft of the PEP proposed a default value for detecting
+license files in case the users have not declared any and not marked the key
+as dynamic.
+That value was defined as an array of globs:
+``["LICEN[CS]E*", "COPYING*", "NOTICE*", "AUTHORS*"]``
 
-Conversely, all ``license-files`` strings could be treated as glob patterns.
-This would slightly simplify the spec and implementation, avoid an extra level
-of nesting, and more closely match the configuration format of existing tools.
-
-However, for the cost of a few characters, it ensures users are aware
-whether they are entering globs or verbatim paths. Furthermore, allowing
-license files to be specified as literal paths avoids edge cases, such as those
-containing glob characters (or those confusingly or even maliciously similar
-to them, as described in :pep:`672`).
-
-Including an explicit ``paths`` value ensures that the resulting
-``License-File`` metadata is correct, complete and purely static in the
-strictest sense of the term, with all license paths explicitly specified
-in the ``pyproject.toml`` file, guaranteed to be included and with an early
-error if any are missing. This is not practical to do, at least without
-serious limitations for many workflows, if we must assume the items
-are glob patterns rather than literal paths.
-
-This allows tools to locate them and know the exact values of the
-``License-File`` Core Metadata fields without having to traverse the
-source tree of the project and match globs, potentially allowing
-more reliable programmatic inspection and processing.
-
-Therefore, given the relatively small cost and the significant benefits,
-this approach was not adopted.
-
-
-Infer whether paths or globs
-''''''''''''''''''''''''''''
-
-It was considered whether to simply allow specifying an array of strings
-directly for the ``license-files`` key, rather than making it a table with
-explicit ``paths`` and ``globs``. This would be simpler and avoid
-an extra level of nesting, and more closely match the configuration format
-of existing tools. However, it was ultimately rejected in favor of separate,
-mutually exclusive ``paths`` and ``globs`` table subkeys.
-
-In practice, it only saves six extra characters in the ``pyproject.toml``
-(``license-files = [...]`` vs ``license-files.globs = [...]``), but allows
-the user to explicitly declare their intent and serves as an unambiguous
-indicator for tools to parse them as globs rather than verbatim paths.
-
-This, in turn, allows for clearly specified tool
-behaviors for each case, many of which would be unreliable or impossible
-without it and
-behave more intuitively overall. These include, with ``paths``,
-guaranteeing that each specified file is included and immediately
-raising an error if one is missing, and with ``globs``, checking glob syntax,
-excluding unwanted backup, temporary, or other such files,
-and optionally warning if a glob doesn't match any files.
-This also avoids edge cases (e.g. paths that contain glob characters) and
-reliance on heuristics to determine interpretation.
-
-
-.. _639-license-files-allow-flat-array:
-
-Also allow a flat array value
-'''''''''''''''''''''''''''''
-
-Initially, after deciding to define ``license-files`` as a table of ``paths``
-and ``globs``, thought was given to making a top-level string array under the
-``license-files`` key mean one or the other (probably ``globs``, to match most
-current tools). This is slightly shorter, indicates to
-the users which one is a preferred one, and allows a cleaner handling of
-the empty case.
-
-However, this only saves six characters in the best case, and there
-isn't an obvious choice.
-
-Flat may be better than nested, but in the face of ambiguity, users
-may not resist the temptation to guess. Requiring users to explicitly specify
-one or the other ensures they are aware of how their inputs will be handled,
-and is more readable for others. It also makes
-the spec and tool implementation slightly more complicated, and it can always
-be added in the future, but not removed without breaking backward
-compatibility. And finally, for the "preferred" option, it means there is
-more than one obvious way to do it.
-
-Therefore, per :pep:`20`, the Zen of Python, this approach is rejected.
-
-
-Allow both ``paths`` and ``globs`` subkeys
-''''''''''''''''''''''''''''''''''''''''''
-
-Allowing both ``paths`` and ``globs`` subkeys to be specified under the
-``license-files`` table was considered, as it could potentially allow
-more flexible handling for particularly complex projects.
-
-However, given the existing proposed approach already matches or exceeds the
-capabilities of those offered in tools' config files, there isn't
-clear demand for this, and it adds a large
-amount of complexity in tool implementations and ``pyproject.toml``
-for relatively minimal gain.
-
-There would be many more edge cases to deal with, such as how to handle files
-matched by both lists, and it conflicts with the current
-specification for how tools should behave, such as when
-no files match.
-
-Like the previous, if there is a clear need for it, it can be always allowed
-in the future in a backward-compatible manner,
-while the same is not true of disallowing it.
-Therefore, it was decided to require the two subkeys to be mutually exclusive.
-
-
-Rename ``paths`` subkey to ``files``
-''''''''''''''''''''''''''''''''''''
-
-Initially, the name ``files`` was considered instead of the ``paths`` for the
-subkey of ``license-files`` table. However, ``paths`` was ultimately
-chosen to avoid duplication between
-the table name (``license-files``) and the subkey name (``files``), i.e.
-``license-files.files = ["LICENSE.txt"]``. It made it seem like
-the preferred subkey when it was not, and didn't describe the format of the
-string entry similarly to the existing ``globs``.
+However, this would create an exception among the existing metadata,
+as no other key has got implicit defaults defined. Implicit values in
+pyproject.toml keys are delegated to the ``dynamic`` field,
+which is specified as being calculated. Also, the values were chosen
+arbitrarily, without a strong justification why they should pose a standard.
 
 
 Must be marked dynamic to use defaults
