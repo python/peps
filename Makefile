@@ -50,12 +50,6 @@ dirhtml: html
 linkcheck: BUILDER = linkcheck
 linkcheck: html
 
-## check-links    (deprecated: use 'make linkcheck' alias instead)
-.PHONY: check-links
-check-links:
-	@echo "\033[0;33mError:\033[0;31m 'make check-links' \033[0;33mis deprecated, use\033[0;32m 'make linkcheck' \033[0;33malias instead\033[0m"
-	@exit 1
-
 ## clean          to remove the venv and build files
 .PHONY: clean
 clean: clean-venv
