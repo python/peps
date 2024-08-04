@@ -127,29 +127,30 @@ Putting it all together, our ``setup.cfg`` would be:
         setuptools/_vendor/packaging/LICENSE.APACHE
         setuptools/_vendor/packaging/LICENSE.BSD
 
-In the ``[project]`` table of ``pyproject.toml``, with license files
-specified explicitly via the ``paths`` subkey, this would look like:
+In the ``[project]`` table of ``pyproject.toml``, license files
+can be specified via glob patterns:
 
 .. code-block:: toml
 
     [project]
     license = "MIT AND (Apache-2.0 OR BSD-2-Clause)"
-    license-files.paths = [
+    license-files = [
+        "LICENSE*",
+        "setuptools/_vendor/LICENSE*",
+    ]
+
+Or alternatively, they can be specified explicitly (paths will be interpreted
+as glob patterns):
+
+.. code-block:: toml
+
+    [project]
+    license = "MIT AND (Apache-2.0 OR BSD-2-Clause)"
+    license-files = [
         "LICENSE",
         "setuptools/_vendor/LICENSE",
         "setuptools/_vendor/LICENSE.APACHE",
         "setuptools/_vendor/LICENSE.BSD",
-    ]
-
-Or alternatively, matched via glob patterns, this could be:
-
-.. code-block:: toml
-
-    [project]
-    license = "MIT AND (Apache-2.0 OR BSD-2-Clause)"
-    license-files.globs = [
-        "LICENSE*",
-        "setuptools/_vendor/LICENSE*",
     ]
 
 With either approach, the output Core Metadata in the distribution
@@ -211,6 +212,7 @@ Some additional examples of valid ``License-Expression`` values:
     License-Expression: GPL-3.0-only WITH Classpath-Exception-2.0 OR BSD-3-Clause
     License-Expression: LicenseRef-Public-Domain OR CC0-1.0 OR Unlicense
     License-Expression: LicenseRef-Proprietary
+    License-Expression: LicenseRef-Custom-License
 
 
 .. _packaginglicense: https://github.com/pypa/packaging/blob/21.2/LICENSE
