@@ -250,7 +250,7 @@ approach to specify their license files location. It was pointed out that
 it is easily possible to incorrectly assume that paths also support
 globs.
 
-Therfore, it was decided against this approach in favor of a flat array value
+Therefore, it was decided against this approach in favor of a flat array value
 which simplifies the specification and implementation,
 and more closely matches the configuration format of existing tools.
 The PEP recommends not to use other than alphanumerical symbols and dot
