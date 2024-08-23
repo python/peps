@@ -459,7 +459,7 @@ Name the subdirectory ``license_files``
 
 Both ``licenses`` and ``license_files`` have been suggested as potential
 names for the root license directory inside ``.dist-info`` of wheels and
-installed projects. An initial draft of the PEP specified the former
+installed projects. An initial draft of the PEP specified the latter
 due to being slightly clearer and consistent with the
 name of the Core Metadata field (``License-File``)
 and the ``[project]`` table key (``license-files``).
@@ -543,7 +543,7 @@ The custom identifiers cannot be checked for correctness and users may think
 they always have to prepend identifiers with ``LicenseRef``.
 This would lead to tools producing invalid metadata.
 
-However, Python packages are produced in many open and close
+However, Python packages are produced in many open and closed
 environments,
 where it may be impossible to declare the license using only the small subset
 of the allowed custom identifiers and where, for various reasons,

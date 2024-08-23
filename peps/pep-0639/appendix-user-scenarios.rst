@@ -49,8 +49,9 @@ widely used and allows anyone to do whatever they want with your work
 To apply it, just paste `the text <chooseamitlicense_>`__ into a file named
 ``LICENSE.txt`` at the root of your repo, and add the year and your name to
 the copyright line. Then, just add ``license = "MIT"`` under
-``[project]`` in your ``pyproject.toml`` if your packaging tool supports it,
-or in its config file/section. You're done!
+``[project]`` in your ``pyproject.toml``. If your packaging tool does not
+support the ``license`` project field in ``pyproject.toml``, you should use the
+equivalent license field in your tool's configuration. You're done!
 
 
 I want to distribute my project under a specific license
@@ -85,9 +86,9 @@ be valid as one (e.g. ``MIT``, ``Apache-2.0 OR BSD-2-Clause``, etc);
 otherwise, check the `SPDX license list <spdxlist_>`__ for the identifier
 that matches the license used in your project.
 
-Make sure to list your license files under ``license-files.paths``
-or ``license-files.globs`` under ``[project]`` in ``pyproject.toml``
-or else in your tool's configuration file.
+Make sure to list your license files under ``license-files`` under
+``[project]`` in ``pyproject.toml`` or the equivalent in your packaging tool's
+configuration file.
 
 See the :ref:`639-example-basic` for a simple but complete real-world demo
 of how this works in practiced.
@@ -120,9 +121,9 @@ or ``License ::`` classifiers.
 
 Also, make sure you add the full license text of all the licenses as files
 somewhere in your project repository. List the
-relative path or glob patterns to each of them under ``license-files.paths``
-or ``license-files.globs`` under ``[project]`` in ``pyproject.toml``
-(if your tool supports it), or else in your tool's configuration file.
+relative path or glob patterns to each of them in ``license-files`` under
+``[project]`` in ``pyproject.toml``
+(if your tool supports it), or the equivalent in your tool's configuration file.
 
 As an example, if your project was licensed MIT but incorporated
 a vendored dependency (say, ``packaging``) that was licensed under
