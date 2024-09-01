@@ -1,0 +1,169 @@
+PEP: 755
+Title: Safer mutability semantics for the buffer protocol
+Author: Samuel Eisenhandler <sgeisenhandler@gmail.com>
+Sponsor: Petr Viktorin <encukou@gmail.com>
+Status: Draft
+Type: Standards Track
+Created: 01-Sep-2024
+Python-Version: 3.14
+
+Abstract
+========
+
+This document proposes the introduction of new mutability semantics to the
+`buffer protocol <https://docs.python.org/3/c-api/buffer.html>`_. Objects that
+support the new semantics may export two "kinds" of buffers:
+
+* immutable buffers: these come with a promise that the underlying bytes will
+  never change while the buffer is held
+* exclusive buffers: these come with a promise that only the holder of the exclusive
+  buffer will be able to write to or read from the underlying bytes while the
+  buffer is held
+
+Motivation
+==========
+
+The existing semantics for mutability in the buffer protocol make it easy to
+accidentally cause undefined behavior. If multiple extension modules each have
+mutable buffers exported from the same object and one of those extension modules
+drops the GIL, data races are bound to occur.
+
+Several people have expressed that the existing semantics can encourage C-level
+undefined behavior and some have proposed solutions:
+
+* `Alex Gaynor <https://alexgaynor.net/2022/oct/23/buffers-on-the-edge/>`_
+  describes the challenges associated with the buffer protocol in the presence
+  of concurrency and proposes a high-level solution having the buffer protocol
+  implement Rust-like mutable XOR shared semantics.
+* `Petr Viktorin <https://discuss.python.org/t/introspection-and-mutable-xor-shared-semantics-for-pybuffer/20314>`_
+  responds to Alex's post and proposes a sketch for a solution that enables
+  callers to request immutable or exclusive buffers.
+* `LWN discussion <https://lwn.net/Articles/950583/>`_ surrounding "wrangling the
+  Python C API" and the ergonomics of Rust bindings.
+
+The Rust programming language provides a useful model for thinking about
+mutability and aliasing. There are two kinds of references: immutable references
+("shared borrows") and mutable references ("exclusive borrows"). While an
+immutable reference exists, nothing should be able to mutate the referent, and
+while a mutable reference exists, nothing else should be able to mutate or even
+*view* the referent. While moving toward Rust-like semantics for the buffer
+protocol makes writing Python extension modules in Rust more ergonomic, that is
+a side-effect of the primary goal of making it easier to write safe Python
+extension modules in *any* language, including C.
+
+The existing flags for the buffer protocol enable callers to request a
+```WRITABLE`` <https://docs.python.org/3/c-api/buffer.html#c.PyBUF_WRITABLE>`_
+buffer and if the object does not support exporting writable buffers, the call
+will fail. However, even when a caller does not request a writable buffer, they
+may receive one. The new semantics are much stricter about which callers receive
+writable buffers which should make it much easier to reason about the presence
+of data races and/or mutable aliasing across multiple Python extension modules.
+
+These semantics place the burden of maintaining invariants on the exporter. If
+the exporter does not maintain the invariants, the caller may encounter
+undefined behavior. In exchange, callers receive stronger guarantees about
+operations that may safely be performed on the buffer without requiring
+additional synchronization.
+
+
+Specification
+=============
+
+We propose to add two new bit flags to the buffer interface:
+
+* ``PyBUF_IMMUTABLE``: indicates that if the ``PyObject_GetBuffer`` call succeeds,
+  *nothing* can change the memory while the buffer is held
+* ``PyBUF_EXCLUSIVE``: indicates that if the ``PyObject_GetBuffer`` call succeeds,
+  *only this consumer* can read or write to the memory while the buffer is held
+
+Additionally, we will add a bit field ``potential_pybuf_flags`` to ``PyBufferProcs``
+to enable implementers of the buffer protocol to indicate which semantics they
+support:
+
+.. code-block:: c
+    typedef struct {
+        getbufferproc bf_getbuffer;
+        releasebufferproc bf_releasebuffer;
+        uint32_t potential_pybuf_flags;
+    } PyBufferProcs;
+
+
+- a ``0`` bit in ``potential_pybuf_flags`` indicates that the corresponding flag is
+  not supported
+- a ``1`` bit in ``potential_pybuf_flags`` indicates that the flag *might* be
+  supported by the instance; ``PyObject_GetBuffer`` will check it and fail if it
+  can't honor the request
+
+In this proposal, there is no way to indicate that a flag is always supported.
+We found no use case that isn’t served by
+`LBYL <https://docs.python.org/3/glossary.html#term-LBYL>`_ – calling
+``PyObject_GetBuffer``. (The use case for ``potential_pybuf_flags`` itself is
+checking whether the exporter will even look at a given bit in the
+``PyObject_GetBuffer`` request.)
+
+For backwards compatibility, if a class is created with
+``potential_pybuf_flags=0``, this indicates that the new flags are not supported.
+To support existing flags, we also introduce a new macro ``PyBUF_OPT_OUT`` with all
+existing flags set to 1. In both ``PyType_Ready`` and ``PyObject_GetBuffer``, we
+use ``PyBUF_OPT_OUT`` as the "default" value for ``potential_pybuf_flags``. However,
+if *any* flags are specified in ``potential_pybuf_flags``, we do not make any
+adjustments.
+
+Because the new semantics require a promise from the exporter, we cannot
+trivially support them for all objects that currently support the buffer
+protocol. Callers may still choose to check if the new flags are potentially supported
+before including them in a ``PyObject_GetBuffer`` call.
+
+We propose to add support for the ``PyBUF_IMMUTABLE`` flag to the builtin ``bytes``
+type (which already only supports exporting read-only buffers).
+
+Out of Scope
+============
+
+There are no plans add support for the new flags to the following types:
+
+* ``bytearray``
+* ``memoryview``
+* ``array.array``
+
+Additionally, we do not plan to add support for mechanisms to track
+current exports of slices of memory as part of this proposal.
+
+Backwards Compatibility
+=======================
+
+Backwards compatibility was a requirement of our design, and the changes we
+propose in this PEP will not break any existing code:
+
+* ``potential_pybuf_flags=0`` in the ``tp_get_buffer`` field of a type means that
+  the new flags are not supported by the type. Similarly, we use a default value
+  for ``potential_pybuf_flags`` in ``PyType_Ready`` and ``PyObject_GetBuffer`` to ensure that
+  any existing ``PyObject_GetBuffer`` calls should continue to behave as expected. One notable
+  exception is if a caller was passing flags with bits that were not previously specified
+  in the flags present in ``pybuffer.h``, these calls will now fail.
+- ``PyObject_GetBuffer`` will reject calls that request unsupported flags.
+
+Reference Implementation
+========================
+
+The current prototype implementation can be found here:
+https://github.com/python/cpython/compare/main...sgeisenh:cpython:main
+
+The implementation demonstrates the intended behavior of the new flags and contains
+some extremely basic tests.
+
+Footnotes
+=========
+
+.. [1] The following are some informal discussions of deficiencies in the buffer protocol:
+    * https://alexgaynor.net/2022/oct/23/buffers-on-the-edge/
+    * https://discuss.python.org/t/introspection-and-mutable-xor-shared-semantics-for-pybuffer/20314
+    * https://lwn.net/Articles/950583/
+
+.. [2] `Discourse discussion of early draft <https://discuss.python.org/t/pep-draft-safer-mutability-semantics-for-the-buffer-protocol/42346>`_
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
