@@ -1,0 +1,284 @@
+PEP: 757
+Title: C API to import-export Python integers
+Author: Sergey B Kirpichev <skirpichev@gmail.com>,
+        Victor Stinner <vstinner@python.org>
+PEP-Delegate: C API Working Group
+Status: Draft
+Type: Standards Track
+Created: 13-Sep-2024
+Python-Version: 3.14
+
+.. highlight:: c
+
+
+Abstract
+========
+
+Add a new C API to import and export Python integers, ``int`` objects:
+especially ``PyLongWriter_Create()`` and ``PyLong_AsDigitArray()``
+functions.
+
+
+Rationale
+=========
+
+Projects such as `gmpy2 <https://github.com/aleaxit/gmpy>`_, `SAGE
+<https://www.sagemath.org/>`_ and `python-flint
+<https://github.com/flintlib/python-flint>`_ access directly Python
+"internals" (the ``PyLongObject`` structure) or use an inefficient
+temporary format (hex strings for python-flint) to import and
+export Python ``int`` objects.  The Python ``int`` implementation
+changed in Python 3.12 to add a tag and "compact values".
+
+In the 3.13 alpha 1 release, the private undocumented ``_PyLong_New()``
+function has been removed, but it is being used by these projects to
+import Python integers. The private function has been reverted in 3.13
+alpha 2.
+
+A public efficient abstraction is needed to interface Python with these
+projects without exposing implementation details. It would allow Python
+to change its internals without breaking these projects.
+
+
+Specification
+=============
+
+Layout API
+----------
+
+API::
+
+    typedef struct PyLongLayout {
+        // Bits per digit
+        uint8_t bits_per_digit;
+
+        // Digit size in bytes
+        uint8_t digit_size;
+
+        // Digits order:
+        // * 1 for most significant digit first (big endian)
+        // * -1 for least significant digit first (little endian)
+        int8_t digits_order;
+
+        // Endian:
+        // * 1 for most significant byte first (big endian)
+        // * -1 for least significant byte first (little endian)
+        int8_t endian;
+    } PyLongLayout;
+
+    PyAPI_FUNC(const PyLongLayout*) PyLong_GetNativeLayout(void);
+
+Data needed by `GMP <https://gmplib.org/>`_ import-export functions.
+
+PyLong_GetNativeLayout()
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+API: ``const PyLongLayout* PyLong_GetNativeLayout(void)``.
+
+Get the native layout of Python ``int`` objects.
+
+
+Export API
+----------
+
+Export a Python integer as an digits array::
+
+    typedef struct PyLong_DigitArray {
+        // Strong reference to the Python int object.
+        PyObject *obj;
+
+        // 1 if the number is negative, 0 otherwise.
+        int negative;
+
+        // Number of digits in the 'digits' array.
+        Py_ssize_t ndigits;
+
+        // Read-only array of unsigned digits.
+        const void *digits;
+    } PyLong_DigitArray;
+
+    PyAPI_FUNC(int) PyLong_AsDigitArray(
+        PyObject *obj,
+        PyLong_DigitArray *array);
+    PyAPI_FUNC(void) PyLong_FreeDigitArray(
+        PyLong_DigitArray *array);
+
+On CPython 3.14, no memory copy is needed, it's just a thin wrapper to
+expose Python int internal digits array.
+
+``PyLong_DigitArray.obj`` stores a strong reference to the Python
+``int`` object to make sure that that structure remains valid until
+``PyLong_FreeDigitArray()`` is called.
+
+
+PyLong_AsDigitArray()
+^^^^^^^^^^^^^^^^^^^^^
+
+API: ``int PyLong_AsDigitArray(PyObject *obj, PyLong_DigitArray *array)``.
+
+Export a Python ``int`` object as an digits array.
+
+On success, set *\*array* and return 0.
+On error, set an exception and return -1.
+
+This function always succeeds if *obj* is a Python ``int`` object or a
+subclass.
+
+``PyLong_FreeDigitArray()`` must be called once done with using
+*array*.
+
+
+PyLong_FreeDigitArray()
+^^^^^^^^^^^^^^^^^^^^^^^
+
+API: ``void PyLong_FreeDigitArray(PyLong_DigitArray *array)``.
+
+Release the export *array* created by ``PyLong_AsDigitArray()``.
+
+
+Import API
+----------
+
+Import a Python integer from an digits array::
+
+    // A Python integer writer instance.
+    // The instance must be destroyed by PyLongWriter_Finish().
+    typedef struct PyLongWriter PyLongWriter;
+
+    PyAPI_FUNC(PyLongWriter*) PyLongWriter_Create(
+        int negative,
+        Py_ssize_t ndigits,
+        void **digits);
+    PyAPI_FUNC(PyObject*) PyLongWriter_Finish(PyLongWriter *writer);
+    PyAPI_FUNC(void) PyLongWriter_Discard(PyLongWriter *writer);
+
+On CPython 3.14, the implementation is a thin wrapper to the private
+``_PyLong_New()`` function.
+
+``PyLongWriter_Finish()`` takes care of normalizing the digits and
+convert the object to a compact integer if needed.
+
+
+PyLongWriter_Create()
+^^^^^^^^^^^^^^^^^^^^^
+
+API: ``PyLongWriter* PyLongWriter_Create(int negative, Py_ssize_t ndigits, void **digits)``.
+
+Create a ``PyLongWriter``.
+
+On success, set *\*digits* and return a writer.
+On error, set an exception and return ``NULL``.
+
+*negative* is ``1`` if the number is negative, or ``0`` otherwise.
+
+*ndigits* is the number of digits in the *digits* array. It must be
+greater than or equal to 0.
+
+The caller must initialize the digits array *digits* and then call
+``PyLongWriter_Finish()`` to get a Python ``int``. Digits must be
+in the range [``0``; ``PyLong_BASE - 1``]. Unused digits must be set to
+``0``.
+
+
+PyLongWriter_Finish()
+^^^^^^^^^^^^^^^^^^^^^
+
+API: ``PyObject* PyLongWriter_Finish(PyLongWriter *writer)``.
+
+Finish a ``PyLongWriter`` created by ``PyLongWriter_Create()``.
+
+On success, return a Python ``int`` object.
+On error, set an exception and return ``NULL``.
+
+
+PyLongWriter_Discard()
+^^^^^^^^^^^^^^^^^^^^^^
+
+API: ``void PyLongWriter_Discard(PyLongWriter *writer)``.
+
+Discard the internal object and destroy the writer instance.
+
+
+Optimize small integers
+=======================
+
+Proposed API are efficient for large integers. Compared to accessing
+directly Python internals, the proposed API can have a significant
+performance overhead on small integers.
+
+For small integers of a few digits (ex: 1 or 2 digits), existing APIs
+can be used. Examples to import / export:
+
+* ``PyLong_FromUInt64()`` / ``PyLong_AsUInt64()``;
+* ``PyLong_FromLong()`` / ``PyLong_AsLong()`` or ``PyLong_AsInt()``;
+* ``PyUnstable_PyLong_IsCompact()`` and
+  ``PyUnstable_PyLong_CompactValue()``;
+* ``PyLong_FromNativeBytes()`` / ``PyLong_AsNativeBytes()``;
+* etc.
+
+
+Implementation
+==============
+
+* CPython:
+
+  * https://github.com/python/cpython/pull/121339
+  * https://github.com/vstinner/cpython/pull/5
+
+* gmpy:
+
+  * https://github.com/aleaxit/gmpy/pull/495
+
+
+Benchmarks
+==========
+
+https://github.com/capi-workgroup/decisions/issues/35#issuecomment-2330815352
+
+
+Backwards Compatibility
+=======================
+
+There is no impact on the backward compatibility, only new APIs are
+added.
+
+Rejected Ideas
+==============
+
+Support arbitrary layout
+------------------------
+
+It would be convenient to support arbitrary layout to import-export
+Python integers.
+
+For example, it was proposed to add a *layout* parameter to
+``PyLongWriter_Create()`` and a *layout* member to the
+``PyLong_DigitArray`` structure.
+
+The problem is that it's more complex to implement and not really
+needed. What's strictly needed is only an API to import-export using the
+Python "native" layout.
+
+If later there are use cases for arbitrary layouts, new APIs can be
+added.
+
+
+Discussions
+===========
+
+* https://github.com/capi-workgroup/decisions/issues/35
+* https://github.com/python/cpython/pull/121339
+* https://github.com/python/cpython/issues/102471
+* `Add public function PyLong_GetDigits()
+  <https://github.com/capi-workgroup/decisions/issues/31>`_
+* `Consider restoring _PyLong_New() function as public
+  <https://github.com/python/cpython/issues/111415>`_
+* `gh-106320: Remove private _PyLong_New() function
+  <https://github.com/python/cpython/pull/108604>`_
+
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
