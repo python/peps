@@ -17,8 +17,7 @@ Abstract
 ========
 
 Add a new C API to import and export Python integers, :class:`int` objects:
-especially ``PyLongWriter_Create()`` and ``PyLong_AsDigitArray()``
-functions.
+especially ``PyLongWriter_Create()`` and ``PyLong_Export()`` functions.
 
 
 Rationale
@@ -89,9 +88,12 @@ Export API
 
 Export a Python integer as a digits array::
 
-    typedef struct PyLong_DigitArray {
+    typedef struct PyLongExport {
+        // use value, if digits set to NULL.
+        int64_t value;
+
         // 1 if the number is negative, 0 otherwise.
-        int negative;
+        uint8_t negative;
 
         // Number of digits in the 'digits' array.
         Py_ssize_t ndigits;
@@ -101,49 +103,47 @@ Export a Python integer as a digits array::
 
         // Member used internally, must not be used for other purpose.
         Py_uintptr_t _reserved;
-    } PyLong_DigitArray;
+    } PyLongExport;
 
-    PyAPI_FUNC(int) PyLong_AsDigitArray(
-        PyObject *obj,
-        PyLong_DigitArray *array);
-    PyAPI_FUNC(void) PyLong_FreeDigitArray(
-        PyLong_DigitArray *array);
+    int PyLong_Export(PyObject *obj, PyLongExport *array);
 
 On CPython 3.14, no memory copy is needed, it's just a thin wrapper to
 expose Python int internal digits array.
 
-``PyLong_DigitArray.obj`` stores a strong reference to the Python
-:class:`int` object to make sure that that structure remains valid until
-``PyLong_FreeDigitArray()`` is called.
+``PyLongExport._reserved``, if ``digits`` not ``NULL``, stores a strong
+reference to the Python :class:`int` object to make sure that that structure
+remains valid until ``PyLong_FreeExport()`` is called.
 
 
-PyLong_AsDigitArray()
-^^^^^^^^^^^^^^^^^^^^^
+PyLong_Export()
+^^^^^^^^^^^^^^^
 
 API::
 
-    int PyLong_AsDigitArray(PyObject *obj, PyLong_DigitArray *array)
+    int PyLong_Export(PyObject *obj, PyLongExport *array)
 
 Export a Python :class:`int` object as a digits array.
 
 On success, set *\*array* and return 0.
 On error, set an exception and return -1.
 
-This function always succeeds if *obj* is a Python :class:`int` object or a
-subclass.
+If ``array->digits`` set to ``NULL``, caller must use instead ``array->value``
+to get value of an :class:`int` object.
 
-``PyLong_FreeDigitArray()`` must be called once done with using
-*array*.
+CPython implementation detail: This function always succeeds if *obj* is a
+Python :class:`int` object or a subclass.
+
+``PyLong_FreeExport()`` must be called once done with using *array*.
 
 
-PyLong_FreeDigitArray()
-^^^^^^^^^^^^^^^^^^^^^^^
+PyLong_FreeExport()
+^^^^^^^^^^^^^^^^^^^
 
 API::
 
-    void PyLong_FreeDigitArray(PyLong_DigitArray *array)
+    void PyLong_FreeExport(PyLongExport *array)
 
-Release the export *array* created by ``PyLong_AsDigitArray()``.
+Free the export *array* created by ``PyLong_Export()``.
 
 
 Import API
@@ -223,7 +223,7 @@ directly Python internals, the proposed API can have a significant
 performance overhead on small integers.
 
 For small integers of a few digits (for example, 1 or 2 digits), existing APIs
-can be used. Examples to import / export:
+can be used
 
 * :external+py3.14:c:func:`PyLong_FromUInt64()` / :external+py3.14:c:func:`PyLong_AsUInt64()`;
 * :c:func:`PyLong_FromLong()` / :c:func:`PyLong_AsLong()` or :c:func:`PyLong_AsInt()`;
@@ -248,33 +248,43 @@ Implementation
 Benchmarks
 ==========
 
-Export: PyLong_AsDigitArray() with gmpy2
-----------------------------------------
+Export: PyLong_Export() with gmpy2
+----------------------------------
 
 Code::
 
     static void
     mpz_set_PyLong(mpz_t z, PyObject *obj)
     {
-        int overflow;
-        long val = PyLong_AsLongAndOverflow(obj, &overflow);
+        const PyLongLayout* layout = PyLong_GetNativeLayout();
+        static PyLongExport long_export;
 
-        if (overflow) {
-            const PyLongLayout* layout = PyLong_GetNativeLayout();
-            static PyLong_DigitArray long_export;
-
-            PyLong_AsDigitArray(obj, &long_export);
-            mpz_import(z, long_export.ndigits, layout->endian,
-                       layout->digit_size, layout->digits_order,
+        PyLong_Export(obj, &long_export);
+        if (long_export.digits) {
+            mpz_import(z, long_export.ndigits, layout->digits_order,
+                       layout->digit_size, layout->endian,
                        layout->digit_size*8 - layout->bits_per_digit,
                        long_export.digits);
             if (long_export.negative) {
                 mpz_neg(z, z);
             }
-            PyLong_FreeDigitArray(&long_export);
+            PyLong_FreeExport(&long_export);
         }
         else {
-            mpz_set_si(z, val);
+            if (LONG_MIN <= long_export.value && long_export.value <= LONG_MAX) {
+                mpz_set_si(z, long_export.value);
+            }
+            else {
+                mpz_import(z, 1, -1, sizeof(int64_t), 0, 0,
+                           &long_export.value);
+                if (long_export.value < 0) {
+                    mpz_t tmp;
+                    mpz_init(tmp);
+                    mpz_ui_pow_ui(tmp, 2, 8*sizeof(size_t));
+                    mpz_sub(z, z, tmp);
+                    mpz_clear(tmp);
+                }
+            }
         }
     }
 
@@ -403,7 +413,7 @@ Python integers.
 
 For example, it was proposed to add a *layout* parameter to
 ``PyLongWriter_Create()`` and a *layout* member to the
-``PyLong_DigitArray`` structure.
+``PyLongExport`` structure.
 
 The problem is that it's more complex to implement and not really
 needed. What's strictly needed is only an API to import-export using the
