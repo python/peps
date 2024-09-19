@@ -34,7 +34,7 @@ ensure-sphinx-autobuild: venv
 
 ## htmllive       to rebuild and reload HTML files in your browser
 .PHONY: htmllive
-htmllive: SPHINXBUILD = $(VENVDIR)/bin/sphinx-autobuild
+htmllive: SPHINXBUILD = PATH=$(VENVDIR)/bin:$$PATH sphinx-autobuild
 # Arbitrarily selected ephemeral port between 49152–65535
 # to avoid conflicts with other processes:
 htmllive: SPHINXERRORHANDLING = --re-ignore="/\.idea/|/venv/|/pep-0000.rst|/topic/" --open-browser --delay 0 --port 55302
@@ -53,7 +53,7 @@ linkcheck: html
 ## clean          to remove the venv and build files
 .PHONY: clean
 clean: clean-venv
-	-rm -rf build topic
+	-rm -rf $(BUILDDIR) topic
 
 ## clean-venv     to remove the venv
 .PHONY: clean-venv
@@ -89,11 +89,11 @@ _ensure-package: venv
 
 .PHONY: _ensure-pre-commit
 _ensure-pre-commit:
-	make _ensure-package PACKAGE=pre-commit
+	$(MAKE) _ensure-package PACKAGE=pre-commit
 
 .PHONY: _ensure-sphinx-autobuild
 _ensure-sphinx-autobuild:
-	make _ensure-package PACKAGE=sphinx-autobuild
+	$(MAKE) _ensure-package PACKAGE=sphinx-autobuild
 
 ## lint           to lint all the files
 .PHONY: lint
