@@ -28,10 +28,6 @@ html: venv
 htmlview: html
 	$(PYTHON) -c "import os, webbrowser; webbrowser.open('file://' + os.path.realpath('build/index.html'))"
 
-.PHONY: ensure-sphinx-autobuild
-ensure-sphinx-autobuild: venv
-	$(call ensure_package,sphinx-autobuild)
-
 ## htmllive       to rebuild and reload HTML files in your browser
 .PHONY: htmllive
 htmllive: SPHINXBUILD = PATH=$(VENVDIR)/bin:$$PATH sphinx-autobuild
