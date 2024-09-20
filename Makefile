@@ -103,8 +103,7 @@ test: venv
 
 ## spellcheck     to check spelling
 .PHONY: spellcheck
-spellcheck: venv
-	$(call ensure_package,pre_commit)
+spellcheck: _ensure-pre-commit
 	$(VENVDIR)/bin/python3 -m pre_commit run --all-files --hook-stage manual codespell
 
 .PHONY: help
