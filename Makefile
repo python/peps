@@ -49,7 +49,7 @@ linkcheck: html
 ## clean          to remove the venv and build files
 .PHONY: clean
 clean: clean-venv
-	-rm -rf $(BUILDDIR) topic
+	-rm -rf $(BUILDDIR)
 
 ## clean-venv     to remove the venv
 .PHONY: clean-venv
