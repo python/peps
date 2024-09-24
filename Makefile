@@ -3,12 +3,14 @@
 # You can set these variables from the command line.
 PYTHON       = python3
 VENVDIR      = .venv
+UV           = uv
 # synchronise with render.yml -> deploy step
 BUILDDIR     = build
 SPHINXBUILD  = PATH=$(VENVDIR)/bin:$$PATH sphinx-build
 BUILDER      = html
 JOBS         = auto
 SOURCES      =
+REQUIREMENTS = requirements.txt
 SPHINXERRORHANDLING = --fail-on-warning --keep-going --warning-file sphinx-warnings.txt
 
 ALLSPHINXOPTS = --builder $(BUILDER) \
@@ -26,17 +28,13 @@ html: venv
 htmlview: html
 	$(PYTHON) -c "import os, webbrowser; webbrowser.open('file://' + os.path.realpath('build/index.html'))"
 
-.PHONY: ensure-sphinx-autobuild
-ensure-sphinx-autobuild: venv
-	$(call ensure_package,sphinx-autobuild)
-
 ## htmllive       to rebuild and reload HTML files in your browser
 .PHONY: htmllive
-htmllive: SPHINXBUILD = $(VENVDIR)/bin/sphinx-autobuild
+htmllive: SPHINXBUILD = PATH=$(VENVDIR)/bin:$$PATH sphinx-autobuild
 # Arbitrarily selected ephemeral port between 49152–65535
 # to avoid conflicts with other processes:
 htmllive: SPHINXERRORHANDLING = --re-ignore="/\.idea/|/venv/|/pep-0000.rst|/topic/" --open-browser --delay 0 --port 55302
-htmllive: ensure-sphinx-autobuild html
+htmllive: _ensure-sphinx-autobuild html
 
 ## dirhtml        to render PEPs to "index.html" files within "pep-NNNN" directories
 .PHONY: dirhtml
@@ -48,15 +46,10 @@ dirhtml: html
 linkcheck: BUILDER = linkcheck
 linkcheck: html
 
-## check-links    (deprecated: use 'make linkcheck' alias instead)
-.PHONY: pages
-check-links: linkcheck
-	@echo "\033[0;33mWarning:\033[0;31m 'make check-links' \033[0;33mis deprecated, use\033[0;32m 'make linkcheck' \033[0;33malias instead\033[0m"
-
 ## clean          to remove the venv and build files
 .PHONY: clean
 clean: clean-venv
-	-rm -rf build topic
+	-rm -rf $(BUILDDIR)
 
 ## clean-venv     to remove the venv
 .PHONY: clean-venv
@@ -71,29 +64,36 @@ venv:
 		echo "To recreate it, remove it first with \`make clean-venv'."; \
 	else \
 		echo "Creating venv in $(VENVDIR)"; \
-		if uv --version > /dev/null; then \
-			uv venv $(VENVDIR); \
-			VIRTUAL_ENV=$(VENVDIR) uv pip install -r requirements.txt; \
+		if $(UV) --version >/dev/null 2>&1; then \
+			$(UV) venv $(VENVDIR); \
+			VIRTUAL_ENV=$(VENVDIR) $(UV) pip install -r $(REQUIREMENTS); \
 		else \
 			$(PYTHON) -m venv $(VENVDIR); \
 			$(VENVDIR)/bin/python3 -m pip install --upgrade pip; \
-			$(VENVDIR)/bin/python3 -m pip install -r requirements.txt; \
+			$(VENVDIR)/bin/python3 -m pip install -r $(REQUIREMENTS); \
 		fi; \
 		echo "The venv has been created in the $(VENVDIR) directory"; \
 	fi
 
-define ensure_package
-	if uv --version > /dev/null; then \
-		$(VENVDIR)/bin/python3 -m $(1) --version > /dev/null || VIRTUAL_ENV=$(VENVDIR) uv pip install $(1); \
+.PHONY: _ensure-package
+_ensure-package: venv
+	if $(UV) --version >/dev/null 2>&1; then \
+		VIRTUAL_ENV=$(VENVDIR) $(UV) pip install $(PACKAGE); \
 	else \
-		$(VENVDIR)/bin/python3 -m $(1) --version > /dev/null || $(VENVDIR)/bin/python3 -m pip install $(1); \
+		$(VENVDIR)/bin/python3 -m pip install $(PACKAGE); \
 	fi
-endef
+
+.PHONY: _ensure-pre-commit
+_ensure-pre-commit:
+	$(MAKE) _ensure-package PACKAGE=pre-commit
+
+.PHONY: _ensure-sphinx-autobuild
+_ensure-sphinx-autobuild:
+	$(MAKE) _ensure-package PACKAGE=sphinx-autobuild
 
 ## lint           to lint all the files
 .PHONY: lint
-lint: venv
-	$(call ensure_package,pre_commit)
+lint: _ensure-pre-commit
 	$(VENVDIR)/bin/python3 -m pre_commit run --all-files
 
 ## test           to test the Sphinx extensions for PEPs
@@ -103,8 +103,7 @@ test: venv
 
 ## spellcheck     to check spelling
 .PHONY: spellcheck
-spellcheck: venv
-	$(call ensure_package,pre_commit)
+spellcheck: _ensure-pre-commit
 	$(VENVDIR)/bin/python3 -m pre_commit run --all-files --hook-stage manual codespell
 
 .PHONY: help
