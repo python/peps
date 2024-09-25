@@ -133,6 +133,7 @@ class PEPZeroWriter:
         self.emit_newline()
 
     def write_numerical_index(self, peps: list[PEP]) -> str:
+        """Write PEPs by number."""
         self.emit_text(".. _numerical-index:")
         self.emit_newline()
 
@@ -190,7 +191,10 @@ class PEPZeroWriter:
         # PEPs by number
         if is_pep0:
             self.emit_title("Numerical Index")
-            self.emit_text("All PEPs :ref:`sorted by number <numerical-index>`.")
+            self.emit_text(
+                "The :doc:`numerical index </numerical>` contains "
+                "a table of all PEPs :ref:`sorted by number <numerical-index>`."
+            )
             self.emit_newline()
 
         # PEPs by category
