@@ -193,7 +193,7 @@ class PEPZeroWriter:
             self.emit_title("Numerical Index")
             self.emit_text(
                 "The :doc:`numerical index </numerical>` contains "
-                "a table of all PEPs :ref:`sorted by number <numerical-index>`."
+                "a table of all PEPs, ordered by number."
             )
             self.emit_newline()
 
