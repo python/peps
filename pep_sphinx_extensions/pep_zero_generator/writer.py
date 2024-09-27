@@ -132,6 +132,18 @@ class PEPZeroWriter:
             self.emit_text("     -")
         self.emit_newline()
 
+    def write_numerical_index(self, peps: list[PEP]) -> str:
+        """Write PEPs by number."""
+        self.emit_text(".. _numerical-index:")
+        self.emit_newline()
+
+        self.emit_title("Numerical Index")
+        self.emit_table(peps)
+        self.emit_newline()
+
+        numerical_index_string = "\n".join(self.output)
+        return numerical_index_string
+
     def write_pep0(
         self,
         peps: list[PEP],
@@ -139,7 +151,7 @@ class PEPZeroWriter:
         intro: str = INTRO,
         is_pep0: bool = True,
         builder: str = None,
-    ):
+    ) -> str:
         if len(peps) == 0:
             return ""
 
@@ -176,6 +188,15 @@ class PEPZeroWriter:
             )
             self.emit_newline()
 
+        # PEPs by number
+        if is_pep0:
+            self.emit_title("Numerical Index")
+            self.emit_text(
+                "The :doc:`numerical index </numerical>` contains "
+                "a table of all PEPs, ordered by number."
+            )
+            self.emit_newline()
+
         # PEPs by category
         self.emit_title("Index by Category")
         meta, info, provisional, accepted, open_, finished, historical, deferred, dead = _classify_peps(peps)
@@ -200,12 +221,6 @@ class PEPZeroWriter:
                 self.emit_subtitle(category)
                 self.emit_text("None.")
                 self.emit_newline()
-
-        self.emit_newline()
-
-        # PEPs by number
-        self.emit_title("Numerical Index")
-        self.emit_table(peps)
 
         self.emit_newline()
 
@@ -264,7 +279,7 @@ class PEPZeroWriter:
             self.emit_newline()
             self.emit_newline()
 
-        pep0_string = "\n".join(map(str, self.output))
+        pep0_string = "\n".join(self.output)
         return pep0_string
 
 
