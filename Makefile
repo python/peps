@@ -28,13 +28,9 @@ html: venv
 htmlview: html
 	$(PYTHON) -c "import os, webbrowser; webbrowser.open('file://' + os.path.realpath('build/index.html'))"
 
-.PHONY: ensure-sphinx-autobuild
-ensure-sphinx-autobuild: venv
-	$(call ensure_package,sphinx-autobuild)
-
 ## htmllive       to rebuild and reload HTML files in your browser
 .PHONY: htmllive
-htmllive: SPHINXBUILD = $(VENVDIR)/bin/sphinx-autobuild
+htmllive: SPHINXBUILD = PATH=$(VENVDIR)/bin:$$PATH sphinx-autobuild
 # Arbitrarily selected ephemeral port between 49152–65535
 # to avoid conflicts with other processes:
 htmllive: SPHINXERRORHANDLING = --re-ignore="/\.idea/|/venv/|/pep-0000.rst|/topic/" --open-browser --delay 0 --port 55302
@@ -53,7 +49,7 @@ linkcheck: html
 ## clean          to remove the venv and build files
 .PHONY: clean
 clean: clean-venv
-	-rm -rf build topic
+	-rm -rf $(BUILDDIR)
 
 ## clean-venv     to remove the venv
 .PHONY: clean-venv
@@ -89,11 +85,11 @@ _ensure-package: venv
 
 .PHONY: _ensure-pre-commit
 _ensure-pre-commit:
-	make _ensure-package PACKAGE=pre-commit
+	$(MAKE) _ensure-package PACKAGE=pre-commit
 
 .PHONY: _ensure-sphinx-autobuild
 _ensure-sphinx-autobuild:
-	make _ensure-package PACKAGE=sphinx-autobuild
+	$(MAKE) _ensure-package PACKAGE=sphinx-autobuild
 
 ## lint           to lint all the files
 .PHONY: lint
@@ -107,8 +103,7 @@ test: venv
 
 ## spellcheck     to check spelling
 .PHONY: spellcheck
-spellcheck: venv
-	$(call ensure_package,pre_commit)
+spellcheck: _ensure-pre-commit
 	$(VENVDIR)/bin/python3 -m pre_commit run --all-files --hook-stage manual codespell
 
 .PHONY: help
