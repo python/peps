@@ -209,7 +209,7 @@ class PEPZeroWriter:
             ("Finished PEPs (done, with a stable interface)", finished),
             ("Historical Meta-PEPs and Informational PEPs", historical),
             ("Deferred PEPs (postponed pending further research or updates)", deferred),
-            ("Abandoned, Withdrawn, and Rejected PEPs", dead),
+            ("Rejected, Superseded, and Withdrawn PEPs", dead),
         ]
         for (category, peps_in_category) in pep_categories:
             # For sub-indices, only emit categories with entries.
