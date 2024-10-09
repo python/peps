@@ -47,7 +47,9 @@ from March 10, 2024 to September 10, 2024.
 .. image:: appendix-dl-by-installer.png
   :class: invert-in-dark-mode
   :width: 600
-  :alt: A pie chart breaking down PyPI downloads by installer
+  :alt: A pie chart breaking down PyPI downloads by installer. pip makes up
+        87.5%, uv makes up 4.8%, poetry makes up 3.0%, requests makes up 1.6%,
+        and "null" makes up 2.1%.
 
 As can be seen above, pip is the most popular installer in this time frame.
 For simplicity's sake, this analysis will focus on pip installations when
@@ -62,7 +64,9 @@ in four years.
 .. image:: appendix-dl-by-pip-version.png
   :class: invert-in-dark-mode
   :width: 600
-  :alt: A pie chart breaking down PyPI downloads by pip major version
+  :alt: A pie chart breaking down PyPI downloads by pip major version. 24.x
+        makes up 47.7%, 23.x makes up 19.9%, 22.x makes up 10.5%, 21.x makes up
+        13.9%, 20.x makes up 5.4%, and 9.x makes up 1.9%.
 
 Over two thirds of users currently run pip from this year or last. However,
 about 7% are on a version that is at least four years old(!). This indicates that
