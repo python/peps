@@ -11,7 +11,7 @@ Appendix: Analysis of Installer Usage on PyPI
     could affect the numbers in this analysis. Consider the numbers as trends
     rather than concrete reliable figures.
 
-One pertinent question to PEP 777 is how frequently Python users update their
+One pertinent question to :pep:`777` is how frequently Python users update their
 installer. If users update quite frequently, compatibility concerns are not as
 important; users will be up-to-date by the time new features get added. On the
 other hand, if users are frequently using older installers, then incompatible
@@ -21,7 +21,9 @@ of up-to-date vs outdated installers, we can use PyPI download statistics.
 PyPI publishes a `BigQuery dataset <https://console.cloud.google.com/marketplace/product/gcp-public-data-pypi/pypi>`_,
 which contains information about each download PyPI receives, including
 installer name and version when available. The following query was used to
-collect the data for this analysis::
+collect the data for this analysis:
+
+.. code-block:: sql
 
     #standardSQL
     SELECT
@@ -43,28 +45,30 @@ breakdown by installer name of all downloads on PyPI for the six month period
 from March 10, 2024 to September 10, 2024.
 
 .. image:: appendix-dl-by-installer.png
+  :class: invert-in-dark-mode
   :width: 600
   :alt: A pie chart breaking down PyPI downloads by installer
 
-As can be seen above, ``pip`` is the most popular installer in this time frame.
-For simplicity's sake, this analysis will focus on ``pip`` installations when
-considering how up-to-date installers are. ``pip`` has existed for a long
-time, so analyzing the version of ``pip`` used to download packages should
+As can be seen above, pip is the most popular installer in this time frame.
+For simplicity's sake, this analysis will focus on pip installations when
+considering how up-to-date installers are. pip has existed for a long
+time, so analyzing the version of pip used to download packages should
 provide an idea of how frequently users update their installers. Below is a
 chart breaking down installations in PyPI over the same six month period, now
-grouped by pip installer major version. ``pip`` uses calendar versioning, so
-an installation from ``pip`` 20.x means that the user has not updated their pip
+grouped by pip installer major version. pip uses calendar versioning, so
+an installation from pip 20.x means that the user has not updated their pip
 in four years.
 
 .. image:: appendix-dl-by-pip-version.png
+  :class: invert-in-dark-mode
   :width: 600
   :alt: A pie chart breaking down PyPI downloads by pip major version
 
-Over two thirds of users currently run ``pip`` from this year or last. However,
+Over two thirds of users currently run pip from this year or last. However,
 about 7% are on a version that is at least four years old(!). This indicates that
 there is a long tail of users who do not regularly update their installers.
 
 Coming back to the initial question for PEP 777, it appears that caution should
 be taken when publishing wheels with major version 2 to PyPI, as they are
 likely to cause issues with a small but significant proportion of users who do
-not regularly update their ``pip``.
+not regularly update their pip.
