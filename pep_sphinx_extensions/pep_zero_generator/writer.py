@@ -201,7 +201,7 @@ class PEPZeroWriter:
         self.emit_title("Index by Category")
         meta, info, provisional, accepted, open_, finished, historical, deferred, dead = _classify_peps(peps)
         pep_categories = [
-            ("Meta-PEPs (PEPs about PEPs or Processes)", meta),
+            ("Process and Meta-PEPs", meta),
             ("Other Informational PEPs", info),
             ("Provisional PEPs (provisionally accepted; interface may still change)", provisional),
             ("Accepted PEPs (accepted; may not be implemented yet)", accepted),
