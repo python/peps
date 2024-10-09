@@ -63,6 +63,9 @@ def write_peps_json(peps: list[parser.PEP], path: Path) -> None:
 def create_pep_zero(app: Sphinx, env: BuildEnvironment, docnames: list[str]) -> None:
     peps = _parse_peps(Path(app.srcdir))
 
+    numerical_index_text = writer.PEPZeroWriter().write_numerical_index(peps)
+    subindices.update_sphinx("numerical", numerical_index_text, docnames, env)
+
     pep0_text = writer.PEPZeroWriter().write_pep0(peps, builder=env.settings["builder"])
     pep0_path = subindices.update_sphinx("pep-0000", pep0_text, docnames, env)
     peps.append(parser.PEP(pep0_path))
