@@ -61,7 +61,7 @@ in four years.
   :alt: A pie chart breaking down PyPI downloads by pip major version
 
 Over two thirds of users currently run ``pip`` from this year or last. However,
-about 7% are on a version that is four years or older(!). This indicates that
+about 7% are on a version that is at least four years old(!). This indicates that
 there is a long tail of users who do not regularly update their installers.
 
 Coming back to the initial question for PEP 777, it appears that caution should
