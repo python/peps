@@ -183,7 +183,7 @@ class PEPZeroWriter:
 
             self.emit_title("API")
             self.emit_text(
-                "The `PEPS API <api/peps.json>`__ is a JSON file of metadata about "
+                "The `PEPS API </api/peps.json>`__ is a JSON file of metadata about "
                 "all the published PEPs. :doc:`Read more here <api/index>`."
             )
             self.emit_newline()
