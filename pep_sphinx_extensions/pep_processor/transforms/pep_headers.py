@@ -116,7 +116,6 @@ class PEPHeaders(transforms.Transform):
             elif name in {"discussions-to", "resolution", "post-history"}:
                 # Prettify mailing list and Discourse links
                 for node in para:
-                    print(name, para, node)
                     if (not isinstance(node, nodes.reference)
                             or not node["refuri"]):
                         continue
