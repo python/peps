@@ -434,7 +434,7 @@ def _validate_resolution(line_num: int, line: str) -> MessageIterator:
     elif prefix and postfix:
         post_date, post_url = line[1:-4].split(" <")
         yield from _date(line_num, post_date, "Resolution")
-        yield from _thread(line_num, post_url, "Resolution")
+        yield from _thread(line_num, post_url, "Resolution", allow_message=True)
     else:
         yield line_num, "Resolution line must be a link or both start with “`” and end with “>`__”"
 
