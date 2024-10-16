@@ -80,6 +80,20 @@ def test_validate_post_history_valid(body: str):
 
 
 @pytest.mark.parametrize(
+    "body",
+    [
+        "31-Jul-2015 <https://discuss.python.org/t/123456>`__,",
+        "`31-Jul-2015 <https://discuss.python.org/t/123456>",
+    ],
+)
+def test_validate_post_history_unbalanced_link(body: str):
+    warnings = [warning for (_, warning) in check_peps._validate_post_history(1, body)]
+    assert warnings == [
+        "post line must be a date or both start with “`” and end with “>`__”"
+    ], warnings
+
+
+@pytest.mark.parametrize(
     "line",
     [
         "https://mail.python.org/archives/list/list-name@python.org/thread/abcXYZ123",
@@ -116,6 +130,20 @@ def test_validate_resolution_valid(line: str):
 def test_validate_resolution_invalid(line: str):
     warnings = [warning for (_, warning) in check_peps._validate_resolution(1, line)]
     assert warnings == ["Resolution must be a valid thread URL"], warnings
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "01-Jan-2000 <https://mail.python.org/pipermail/list-name/0000-Month/0123456.html>`__",
+        "`01-Jan-2000 <https://mail.python.org/pipermail/list-name/0000-Month/0123456.html>",
+    ],
+)
+def test_validate_resolution_unbalanced_link(line: str):
+    warnings = [warning for (_, warning) in check_peps._validate_resolution(1, line)]
+    assert warnings == [
+        "Resolution line must be a link or both start with “`” and end with “>`__”"
+    ], warnings
 
 
 @pytest.mark.parametrize(
