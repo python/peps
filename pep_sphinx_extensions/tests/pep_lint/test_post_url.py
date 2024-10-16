@@ -90,6 +90,7 @@ def test_validate_post_history_valid(body: str):
         "https://mail.python.org/archives/list/list-name@python.org/message/abcXYZ123/#Anchor",
         "https://mail.python.org/archives/list/list-name@python.org/message/abcXYZ123#Anchor123",
         "https://mail.python.org/archives/list/list-name@python.org/message/abcXYZ123/#Anchor123",
+        "`16-Oct-2024 <https://mail.python.org/archives/list/list-name@python.org/thread/abcXYZ123>`__",
     ],
 )
 def test_validate_resolution_valid(line: str):

@@ -407,7 +407,7 @@ def _validate_python_version(line_num: int, line: str) -> MessageIterator:
 
 
 def _validate_post_history(line_num: int, body: str) -> MessageIterator:
-    """'Post-History' must be '`DD-mmm-YYYY <Thread URL>`__, …'"""
+    """'Post-History' must be '`DD-mmm-YYYY <Thread URL>`__, …' or `DD-mmm-YYYY`"""
 
     if body == "":
         return
@@ -422,18 +422,40 @@ def _validate_post_history(line_num: int, body: str) -> MessageIterator:
                 yield from _date(offset, post_date, "Post-History")
                 yield from _thread(offset, post_url, "Post-History")
             else:
-                yield offset, f"post line must be a date or both start with “`” and end with “>`__”"
+                yield offset, "post line must be a date or both start with “`” and end with “>`__”"
 
 
 def _validate_resolution(line_num: int, line: str) -> MessageIterator:
-    """'Resolution' must be a direct thread/message URL"""
+    """'Resolution' must be a direct thread/message URL or a link with a date."""
 
-    yield from _thread(line_num, line, "Resolution", allow_message=True)
+    prefix, postfix = (line.startswith("`"), line.endswith(">`__"))
+    if not prefix and not postfix:
+        yield from _thread(line_num, line, "Resolution", allow_message=True)
+    elif prefix and postfix:
+        post_date, post_url = line[1:-4].split(" <")
+        yield from _date(line_num, post_date, "Resolution")
+        yield from _thread(line_num, post_url, "Resolution")
+    else:
+        yield line_num, "Resolution line must be a link or both start with “`” and end with “>`__”"
 
 
 ########################
 #  Validation Helpers  #
 ########################
+
+def _validate_link_or_thread(text: str, header: str, offset: int, *, allow_message: bool = False) -> MessageIterator:
+    prefix, postfix = (text.startswith("`"), text.endswith(">`__"))
+    if not prefix and not postfix:
+        if header == "Resolution":
+            yield from _thread(line_num, line, "Resolution", allow_message=True)
+        yield from _date(offset, text, header)
+    elif prefix and postfix:
+        post_date, post_url = text[1:-4].split(" <")
+        yield from _date(offset, post_date, header)
+        yield from _thread(offset, post_url, header)
+    else:
+        yield offset, f"{header} line must be a date or both start with “`” and end with “>`__”"
+
 
 def _pep_num(line_num: int, pep_number: str, prefix: str) -> MessageIterator:
     if pep_number == "":
