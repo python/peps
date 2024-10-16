@@ -443,19 +443,6 @@ def _validate_resolution(line_num: int, line: str) -> MessageIterator:
 #  Validation Helpers  #
 ########################
 
-def _validate_link_or_thread(text: str, header: str, offset: int, *, allow_message: bool = False) -> MessageIterator:
-    prefix, postfix = (text.startswith("`"), text.endswith(">`__"))
-    if not prefix and not postfix:
-        if header == "Resolution":
-            yield from _thread(line_num, line, "Resolution", allow_message=True)
-        yield from _date(offset, text, header)
-    elif prefix and postfix:
-        post_date, post_url = text[1:-4].split(" <")
-        yield from _date(offset, post_date, header)
-        yield from _thread(offset, post_url, header)
-    else:
-        yield offset, f"{header} line must be a date or both start with “`” and end with “>`__”"
-
 
 def _pep_num(line_num: int, pep_number: str, prefix: str) -> MessageIterator:
     if pep_number == "":
