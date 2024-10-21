@@ -52,6 +52,17 @@ exclude_patterns = [
 # Warn on missing references
 nitpicky = True
 
+nitpick_ignore = [
+    # Standard C types
+    ("c:type", "int8_t"),
+    ("c:type", "uint8_t"),
+    ("c:type", "int64_t"),
+]
+for role, name in list(nitpick_ignore):
+    if role in ("c:type", "c:struct"):
+        nitpick_ignore.append(("c:identifier", name))
+del role, name
+
 # Intersphinx configuration
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3/", None),
@@ -62,6 +73,7 @@ intersphinx_mapping = {
     "py3.11": ("https://docs.python.org/3.11/", None),
     "py3.12": ("https://docs.python.org/3.12/", None),
     "py3.13": ("https://docs.python.org/3.13/", None),
+    "py3.14": ("https://docs.python.org/3.14/", None),
 }
 intersphinx_disabled_reftypes = []
 

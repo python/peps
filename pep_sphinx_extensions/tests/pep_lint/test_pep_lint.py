@@ -2,6 +2,8 @@ from pathlib import Path
 
 import check_peps  # NoQA: inserted into sys.modules in conftest.py
 
+from ..conftest import PEP_ROOT
+
 PEP_9002 = Path(__file__).parent.parent / "peps" / "pep-9002.rst"
 
 
@@ -46,3 +48,10 @@ def test_with_fake_pep():
         (20, "Resolution must be a valid thread URL"),
         (23, "Use the :pep:`NNN` role to refer to PEPs"),
     ]
+
+
+def test_skip_direct_pep_link_check():
+    filename = PEP_ROOT / "pep-0009.rst"  # in SKIP_DIRECT_PEP_LINK_CHECK
+    content = filename.read_text(encoding="utf-8").splitlines()
+    warnings = list(check_peps.check_peps(filename, content))
+    assert warnings == []
