@@ -69,4 +69,3 @@ for clock_id_text in clock_ids:
     test_clock(name, gettime)
     resolution = time.clock_getres(clock_id)
     print("- announced resolution: %s" % format_duration(resolution))
-

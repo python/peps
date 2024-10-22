@@ -180,7 +180,7 @@ in line with the goals of PEP 639.
 While differences from existing tool formats (and Core Metadata
 field names) have precedent in :pep:`621`, repurposing an existing key to mean
 something different (and map to a different Core Metadata field),
-with distinct and incompatible syntax does not, 
+with distinct and incompatible syntax does not,
 and could cause ambiguity for readers and authors.
 
 Also, per the `project source metadata spec <pyprojecttomldynamic_>`__,
