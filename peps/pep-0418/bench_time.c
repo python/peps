@@ -185,4 +185,3 @@ int main()
     benchmark("time()", bench_time, 0);
     return 0;
 }
-
