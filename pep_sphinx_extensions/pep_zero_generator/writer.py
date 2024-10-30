@@ -183,7 +183,7 @@ class PEPZeroWriter:
 
             self.emit_title("API")
             self.emit_text(
-                "The `PEPS API <api/peps.json>`__ is a JSON file of metadata about "
+                "The `PEPS API </api/peps.json>`__ is a JSON file of metadata about "
                 "all the published PEPs. :doc:`Read more here <api/index>`."
             )
             self.emit_newline()
@@ -201,7 +201,7 @@ class PEPZeroWriter:
         self.emit_title("Index by Category")
         meta, info, provisional, accepted, open_, finished, historical, deferred, dead = _classify_peps(peps)
         pep_categories = [
-            ("Meta-PEPs (PEPs about PEPs or Processes)", meta),
+            ("Process and Meta-PEPs", meta),
             ("Other Informational PEPs", info),
             ("Provisional PEPs (provisionally accepted; interface may still change)", provisional),
             ("Accepted PEPs (accepted; may not be implemented yet)", accepted),
@@ -209,7 +209,7 @@ class PEPZeroWriter:
             ("Finished PEPs (done, with a stable interface)", finished),
             ("Historical Meta-PEPs and Informational PEPs", historical),
             ("Deferred PEPs (postponed pending further research or updates)", deferred),
-            ("Abandoned, Withdrawn, and Rejected PEPs", dead),
+            ("Rejected, Superseded, and Withdrawn PEPs", dead),
         ]
         for (category, peps_in_category) in pep_categories:
             # For sub-indices, only emit categories with entries.
