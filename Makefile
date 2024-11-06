@@ -33,7 +33,7 @@ htmlview: html
 htmllive: SPHINXBUILD = PATH=$(VENVDIR)/bin:$$PATH sphinx-autobuild
 # Arbitrarily selected ephemeral port between 49152–65535
 # to avoid conflicts with other processes:
-htmllive: SPHINXERRORHANDLING = --re-ignore="/\.idea/|/venv/|/pep-0000.rst|/topic/" --open-browser --delay 0 --port 55302
+htmllive: SPHINXERRORHANDLING = --re-ignore="/\.idea/|/venv/|/numerical.rst|/pep-0000.rst|/topic/" --open-browser --delay 0 --port 55302
 htmllive: _ensure-sphinx-autobuild html
 
 ## dirhtml        to render PEPs to "index.html" files within "pep-NNNN" directories
