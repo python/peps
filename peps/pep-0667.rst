@@ -1,13 +1,16 @@
 PEP: 667
 Title: Consistent views of namespaces
-Author: Mark Shannon <mark@hotpy.org>
-Status: Draft
+Author: Mark Shannon <mark@hotpy.org>,
+        Tian Gao <gaogaotiantian@hotmail.com>
+Discussions-To: https://discuss.python.org/t/46631
+Status: Final
 Type: Standards Track
-Content-Type: text/x-rst
 Created: 30-Jul-2021
 Python-Version: 3.13
-Post-History: 20-Aug-2021
+Post-History: 20-Aug-2021, 22-Feb-2024
+Resolution:  `25-Apr-2024 <https://discuss.python.org/t/46631/25>`__
 
+.. canonical-doc:: :external+py3.13:func:`locals`
 
 Abstract
 ========
@@ -29,25 +32,26 @@ consistent regardless of threading or coroutines.
 
 The ``locals()`` function will act the same as it does now for class
 and modules scopes. For function scopes it will return an instantaneous
-snapshot of the underlying ``frame.f_locals``.
+snapshot of the underlying ``frame.f_locals`` rather than implicitly
+refreshing a single shared dictionary cached on the frame object.
+
+.. _pep-667-motivation:
 
 Motivation
 ==========
 
-The current implementation of ``locals()`` and ``frame.f_locals`` is slow,
-inconsistent and buggy.
+The implementation of ``locals()`` and ``frame.f_locals`` in releases up to and
+including Python 3.12 is slow, inconsistent and buggy.
 We want to make it faster, consistent, and most importantly fix the bugs.
 
-For example::
+For example, when attempting to manipulate local variables via frame objects::
 
     class C:
         x = 1
         sys._getframe().f_locals['x'] = 2
         print(x)
 
-prints ``2``
-
-but::
+prints ``2``, but::
 
     def f():
         x = 1
@@ -55,56 +59,267 @@ but::
         print(x)
     f()
 
-prints ``1``
+prints ``1``.
 
-This is inconsistent, and confusing.
-With this PEP both examples would print ``2``.
+This is inconsistent, and confusing. Worse than that, the Python 3.12 behavior can
+result in strange `bugs <https://github.com/python/cpython/issues/74929>`__.
 
-Worse than that, the current behavior can result in strange bugs [1]_
+With this PEP both examples would print ``2`` as the function level
+change would be written directly to the optimized local variables in
+the frame rather than to a cached dictionary snapshot.
 
-There are no compensating advantages for the current behavior;
+There are no compensating advantages for the Python 3.12 behavior;
 it is unreliable and slow.
+
+The ``locals()`` builtin has its own undesirable behaviours. Refer to :pep:`558`
+for additional details on those concerns.
+
+
+.. _pep-667-rationale:
 
 Rationale
 =========
 
-The current implementation of ``frame.f_locals`` returns a dictionary
-that is created on the fly from the array of local variables.
+Making the ``frame.f_locals`` attribute a write-through proxy
+-------------------------------------------------------------
+
+The Python 3.12 implementation of ``frame.f_locals`` returns a dictionary
+that is created on the fly from the array of local variables. The
+``PyFrame_LocalsToFast()`` C API is then called by debuggers and trace
+functions that want to write their changes back to the array (until
+Python 3.11, this API was called implicitly after every trace function
+invocation rather than being called explicitly by the trace functions).
+
 This can result in the array and dictionary getting out of sync with
-each other. Writes to the ``f_locals`` may not show up as
-modifications to local variables. Writes to local variables can get lost.
+each other. Writes to the ``f_locals`` frame attribute may not show up as
+modifications to local variables if ``PyFrame_LocalsToFast()`` is never
+called. Writes to local variables can get lost if a dictionary snapshot
+created before the variables were modified is written back to the frame
+(since *every* known variable stored in the snapshot is written back to
+the frame, even if the value stored on the frame had changed since the
+snapshot was taken).
 
 By making ``frame.f_locals`` return a view on the
 underlying frame, these problems go away. ``frame.f_locals`` is always in
 sync with the frame because it is a view of it, not a copy of it.
 
+Making the ``locals()`` builtin return independent snapshots
+------------------------------------------------------------
+
+:pep:`558` considered three potential options for standardising the behavior of the
+``locals()`` builtin in :term:`optimized scopes <py3.13:optimized scope>`:
+
+* retain the historical behaviour of having each call to ``locals()`` on a given frame
+  update a single shared snapshot of the local variables
+* make ``locals()`` return write-through proxy instances (similar
+  to ``frame.f_locals``)
+* make ``locals()`` return genuinely independent snapshots so that
+  attempts to change the values of local variables via ``exec()``
+  would be *consistently* ignored rather than being accepted in some circumstances
+
+The last option was chosen as the one which could most easily be explained in the
+language reference, and memorised by users:
+
+* the ``locals()`` builtin gives an instantaneous snapshot of the local variables in
+  optimized scopes, and read/write access in other scopes; and
+* ``frame.f_locals`` gives read/write access to the local variables in all scopes,
+  including optimized scopes
+
+This approach allows the intent of a piece of code to be clearer than it would be if both
+APIs granted full read/write access in optimized scopes, even when write access wasn't
+needed or desired. For additional details on this design decision, refer to :pep:`558`,
+especially the :ref:`pep-558-motivation` section and :ref:`pep-558-exec-eval-impact`.
+
+This approach is not without its drawbacks, which are covered
+in the Backwards Compatibility section below.
+
 Specification
 =============
 
-Python
-------
+Python API
+----------
 
-``frame.f_locals`` will return a view object on the frame that
-implements the ``collections.abc.Mapping`` interface.
+.. _pep-667-f_locals-spec:
 
-For module and class scopes ``frame.f_locals`` will be a dictionary,
-for function scopes it will be a custom class.
+The ``frame.f_locals`` attribute
+''''''''''''''''''''''''''''''''
+
+For module and class scopes (including ``exec()`` and ``eval()``
+invocations), ``frame.f_locals`` is a direct
+reference to the local variable namespace used in code execution.
+
+For function scopes (and other :term:`optimized scopes <py3.13:optimized scope>`)
+it will be an instance of a new write-through proxy type that can directly modify
+the optimized local variable storage array in the underlying frame, as well as the
+contents of any cell references to non-local variables.
+
+The view objects fully implement the ``collections.abc.Mapping`` interface,
+and also implement the following mutable mapping operations:
+
+* using assignment to add new key/value pairs
+* using assignment to update the value associated with a key
+* conditional assignment via the ``setdefault()`` method
+* bulk updates via the ``update()`` method
+
+Views of different frames compare unequal even if they have the same contents.
+
+All writes to the ``f_locals`` mapping will be immediately visible
+in the underlying variables. All changes to the underlying variables
+will be immediately visible in the mapping.
+
+The ``f_locals`` object will be a full mapping, and can have arbitrary
+key-value pairs added to it. New names added via the proxies
+will be stored in a dedicated shared dictionary stored on the
+underlying frame object (so all proxy instances for a given frame
+will be able to access any names added this way).
+
+Extra keys (which do not correspond to local variables on the underlying
+frame) may be removed as usual with ``del`` statements or the ``pop()``
+method.
+
+Using ``del``, or the ``pop()`` method, to remove keys that correspond to local
+variables on the underlying frame is NOT supported, and attempting to do so
+will raise ``ValueError``.
+Local variables can only be set to ``None`` (or some other value) via the proxy,
+they cannot be unbound completely.
+
+The ``clear()`` method is NOT implemented on the write-through proxies, as it
+is unclear how it should handle the inability to delete entries corresponding
+to local variables.
+
+To maintain backwards compatibility, proxy APIs that need to produce a
+new mapping (such as ``copy()``) will produce regular builtin ``dict``
+instances, rather than write-through proxy instances.
+
+To avoid introducing a circular reference between frame objects and the
+write-through proxies, each access to ``frame.f_locals`` returns a *new*
+write-through proxy instance.
+
+The ``locals()`` builtin
+''''''''''''''''''''''''
 
 ``locals()`` will be defined as::
 
     def locals():
         frame = sys._getframe(1)
         f_locals = frame.f_locals
-        if frame.is_function():
+        if frame._is_optimized(): # Not an actual frame method
             f_locals = dict(f_locals)
         return f_locals
 
-All writes to the ``f_locals`` mapping will be immediately visible
-in the underlying variables. All changes to the underlying variables
-will be immediately visible in the mapping. The ``f_locals`` object will
-be a full mapping, and can have arbitrary key-value pairs added to it.
+For module and class scopes (including ``exec()`` and ``eval()``
+invocations), ``locals()`` continues to return a direct
+reference to the local variable namespace used in code execution
+(which is also the same value reported by ``frame.f_locals``).
 
-For example::
+In :term:`optimized scopes <py3.13:optimized scope>`,
+each call to ``locals()`` will produce an *independent*
+snapshot of the local variables.
+
+The ``eval()`` and ``exec()`` builtins
+''''''''''''''''''''''''''''''''''''''
+
+Because this PEP changes the behavior of ``locals()``, the
+behavior of ``eval()`` and ``exec()`` also changes.
+
+Assuming a function ``_eval()`` which performs the job of
+``eval()`` with explicit namespace arguments, ``eval()``
+can be defined as follows::
+
+    FrameProxyType = type((lambda: sys._getframe().f_locals)())
+
+    def eval(expression, /, globals=None, locals=None):
+        if globals is None:
+            # No globals -> use calling frame's globals
+            _calling_frame = sys._getframe(1)
+            globals = _calling_frame.f_globals
+            if locals is None:
+                # No globals or locals -> use calling frame's locals
+                locals = _calling_frame.f_locals
+                if isinstance(locals, FrameProxyType):
+                    # Align with locals() builtin in optimized frame
+                    locals = dict(locals)
+        elif locals is None:
+            # Globals but no locals -> use same namespace for both
+            locals = globals
+        return _eval(expression, globals, locals)
+
+The specified argument handling for ``exec()`` is similarly updated.
+
+(In Python 3.12 and earlier, it was not possible to provide ``locals``
+to ``eval()`` or ``exec()`` without also providing ``globals`` as these
+were previously positional-only arguments. Independently of this
+PEP, Python 3.13 updated these builtins to accept keyword arguments)
+
+C API
+-----
+
+Additions to the ``PyEval`` C API
+'''''''''''''''''''''''''''''''''
+
+Three new C-API functions will be added::
+
+    PyObject *PyEval_GetFrameLocals(void)
+    PyObject *PyEval_GetFrameGlobals(void)
+    PyObject *PyEval_GetFrameBuiltins(void)
+
+``PyEval_GetFrameLocals()`` is equivalent to: ``locals()``.
+``PyEval_GetFrameGlobals()`` is equivalent to: ``globals()``.
+
+All of these functions will return a new reference.
+
+``PyFrame_GetLocals`` C API
+'''''''''''''''''''''''''''
+
+The existing ``PyFrame_GetLocals(f)`` C API is equivalent to ``f.f_locals``.
+Its return value will be as described above for accessing ``f.f_locals``.
+
+This function returns a new reference, so it is able to accommodate the
+creation of a new write-through proxy instance on each call in an
+optimized scope.
+
+Deprecated C APIs
+'''''''''''''''''
+
+The following C API functions will be deprecated, as they return borrowed references::
+
+   PyEval_GetLocals()
+   PyEval_GetGlobals()
+   PyEval_GetBuiltins()
+
+The following functions (which return new references) should be used instead::
+
+   PyEval_GetFrameLocals()
+   PyEval_GetFrameGlobals()
+   PyEval_GetFrameBuiltins()
+
+The following C API functions will become no-ops, and will be deprecated without
+replacement::
+
+    PyFrame_FastToLocalsWithError()
+    PyFrame_FastToLocals()
+    PyFrame_LocalsToFast()
+
+All of the deprecated functions will be marked as deprecated in the Python 3.13 documentation.
+
+Of these functions, only ``PyEval_GetLocals()`` poses any significant maintenance burden.
+Accordingly, calls to ``PyEval_GetLocals()`` will emit ``DeprecationWarning`` in Python
+3.14, with a target removal date of Python 3.16 (two releases after Python 3.14).
+Alternatives are recommended as described in :ref:`pep-667-pyeval-getlocals-compatibility`.
+
+Summary of Changes
+==================
+
+This section summarises how the specified behaviour in Python 3.13 and later
+differs from the historical behaviour in Python 3.12 and earlier versions.
+
+Python API changes
+------------------
+
+``frame.f_locals`` changes
+''''''''''''''''''''''''''
+
+Consider the following example::
 
     def l():
         "Get the locals of caller"
@@ -119,99 +334,233 @@ For example::
         y
         print(locals(), x)
 
+Given the changes in this PEP,
 ``test()`` will print ``{'x': 2, 'y': 4, 'z': 5} 2``.
 
-In Python 3.10, the above will fail with an ``UnboundLocalError``,
+In Python 3.12, this example will fail with an ``UnboundLocalError``,
 as the definition of ``y`` by ``l()['y'] = 4`` is lost.
 
-If the second-to-last line were changed from ``y`` to ``z``, this would be a
-``NameError``, as it is today. Keys added to ``frame.f_locals`` that are not
-lexically local variables remain visible in ``frame.f_locals``, but do not
-dynamically become local variables.
+If the second-to-last line were changed from ``y`` to ``z``, this will still
+raise ``NameError``, as it does in Python 3.12.
+Keys added to ``frame.f_locals`` that are not lexically local variables
+remain visible in ``frame.f_locals``,
+but do not dynamically become local variables.
 
-C-API
------
+.. _pep-667-locals-changes:
 
-Extensions to the API
-'''''''''''''''''''''
+``locals()`` changes
+''''''''''''''''''''
 
-Four new C-API functions will be added::
+Consider the following example::
 
-    PyObject *PyEval_GetFrameLocals(void)
-    PyObject *PyEval_GetFrameGlobals(void)
-    PyObject *PyEval_GetFrameBuiltins(void)
-    PyObject *PyFrame_GetLocals(PyFrameObject *f)
+    def f():
+        exec("x = 1")
+        print(locals().get("x"))
+    f()
 
-``PyEval_GetFrameLocals()`` is equivalent to: ``locals()``.
-``PyEval_GetFrameGlobals()`` is equivalent to: ``globals()``.
+Given the changes in this PEP, this will *always* print ``None``
+(regardless of whether ``x`` is a defined local variable in the function),
+as the explicit call to ``locals()`` produces a distinct snapshot from
+the one implicitly used in the ``exec()`` call.
 
-``PyFrame_GetLocals(f)`` is equivalent to: ``f.f_locals``.
+In Python 3.12, the exact example shown would print ``1``, but seemingly
+unrelated changes to the definition of the function involved could make
+it print ``None`` instead (:ref:`pep-558-exec-eval-impact` in PEP 558
+goes into more detail on that topic).
 
-All these functions will return a new reference.
+``eval()`` and ``exec()`` changes
+'''''''''''''''''''''''''''''''''
 
-Changes to existing APIs
-''''''''''''''''''''''''
+The primary change affecting ``eval()`` and ``exec()`` is shown
+in the ":ref:`pep-667-locals-changes`" example: repeatedly
+accessing ``locals()`` in an optimized scope will no longer
+implicitly share a common underlying namespace.
 
-The following C-API functions will be deprecated, as they return borrowed references::
+C API changes
+-------------
 
-   PyEval_GetLocals()
-   PyEval_GetGlobals()
-   PyEval_GetBuiltins()
+``PyFrame_GetLocals`` change
+''''''''''''''''''''''''''''
 
-They will be removed in 3.15.
+``PyFrame_GetLocals`` can already return arbitrary mappings in Python 3.12,
+as ``exec()`` and ``eval()`` accept arbitrary mappings as their ``locals`` argument,
+and metaclasses may return arbitrary mappings from their ``__prepare__`` methods.
 
-The following functions should be used instead::
+Returning a frame locals proxy in optimized scopes just adds another case where
+something other than a builtin dictionary will be returned.
 
-   PyEval_GetFrameLocals()
-   PyEval_GetFrameGlobals()
-   PyEval_GetFrameBuiltins()
+``PyEval_GetLocals`` change
+'''''''''''''''''''''''''''
 
-which return new references.
-
-The semantics of ``PyEval_GetLocals()`` is changed as it now returns a
-view of the frame locals, not a dictionary.
-
-The following three functions will become no-ops, and will be deprecated::
-
-    PyFrame_FastToLocalsWithError()
-    PyFrame_FastToLocals()
-    PyFrame_LocalsToFast()
-
-They will be removed in 3.15.
-
-Behavior of f_locals for optimized functions
---------------------------------------------
-
-Although ``f.f_locals`` behaves as if it were the namespace of the function,
-there will be some observable differences.
-For example, ``f.f_locals is f.f_locals`` may be ``False``.
-
-However ``f.f_locals == f.f_locals`` will be ``True``, and
-all changes to the underlying variables, by any means, will be
-always be visible.
+The semantics of ``PyEval_GetLocals()`` are technically unchanged, but they do change in
+practice as the dictionary cached on optimized frames is no longer shared with other
+mechanisms for accessing the frame locals (``locals()`` builtin, ``PyFrame_GetLocals``
+function, frame ``f_locals`` attributes).
 
 Backwards Compatibility
 =======================
 
-Python
-------
+Python API compatibility
+------------------------
 
-The current implementation has many corner cases and oddities.
-Code that works around those may need to be changed.
+The implementation used in versions up to and including Python 3.12 has many
+corner cases and oddities. Code that works around those may need to be changed.
 Code that uses ``locals()`` for simple templating, or print debugging,
 will continue to work correctly. Debuggers and other tools that use
 ``f_locals`` to modify local variables, will now work correctly,
 even in the presence of threaded code, coroutines and generators.
 
-C-API
------
+``frame.f_locals`` compatibility
+--------------------------------
 
-PyEval_GetLocals
-''''''''''''''''
+Although ``f.f_locals`` behaves as if it were the namespace of the function,
+there will be some observable differences.
+For example, ``f.f_locals is f.f_locals`` will be ``False`` for optimized
+frames, as each access to the attribute produces a new write-through proxy
+instance.
 
-Because ``PyEval_GetLocals()`` returns a borrowed reference, it requires
-the dictionary to be cached on the frame, extending its lifetime and
-creating a cycle. ``PyEval_GetFrameLocals()`` should be used instead.
+However ``f.f_locals == f.f_locals`` will be ``True``, and
+all changes to the underlying variables, by any means, including the
+addition of new variable names as mapping keys, will always be visible.
+
+``locals()`` compatibility
+''''''''''''''''''''''''''
+
+``locals() is locals()`` will be ``False`` for optimized frames, so
+code like the following will raise ``KeyError`` instead of returning
+``1``::
+
+    def f():
+        locals()["x"] = 1
+        return locals()["x"]
+
+To continue working, such code will need to explicitly store the namespace
+to be modified in a local variable, rather than relying on the previous
+implicit caching on the frame object::
+
+    def f():
+        ns = {}
+        ns["x"] = 1
+        return ns["x"]
+
+While this technically isn't a formal backwards compatibility break
+(since the behaviour of writing back to ``locals()`` was explicitly
+documented as undefined), there is definitely some code that relies
+on the existing behaviour. Accordingly, the updated behaviour will
+be explicitly noted in the documentation as a change and it will be
+covered in the Python 3.13 porting guide.
+
+To work with a copy of ``locals()`` in optimized scopes on all
+versions without making redundant copies on Python 3.13+, users
+will need to define a version-dependent helper function that only
+makes an explicit copy on Python versions prior to Python 3.13::
+
+    if sys.version_info >= (3, 13):
+        def _ensure_func_snapshot(d):
+            return d # 3.13+ locals() already returns a snapshot
+    else:
+        def _ensure_func_snapshot(d):
+            return dict(d) # Create snapshot on older versions
+
+    def f():
+        ns = _ensure_func_snapshot(locals())
+        ns["x"] = 1
+        return ns
+
+In other scopes, ``locals().copy()`` can continue to be called
+unconditionally without introducing any redundant copies.
+
+Impact on ``exec()`` and ``eval()``
+'''''''''''''''''''''''''''''''''''
+
+Even though this PEP does not modify ``exec()`` or ``eval()`` directly,
+the semantic change to ``locals()`` impacts the behavior of ``exec()``
+and ``eval()`` as they default to running code in the calling namespace.
+
+This poses a potential compatibility issue for some code, as with the
+previous implementation that returns the same dict when ``locals()`` is called
+multiple times in function scope, the following code usually worked due to
+the implicitly shared local variable namespace::
+
+    def f():
+        exec('a = 0')  # equivalent to exec('a = 0', globals(), locals())
+        exec('print(a)')  # equivalent to exec('print(a)', globals(), locals())
+        print(locals())  # {'a': 0}
+        # However, print(a) will not work here
+    f()
+
+With the semantic changes to ``locals()`` in this PEP, the ``exec('print(a)')'`` call
+will fail with ``NameError``, and ``print(locals())`` will report an empty dictionary, as
+each line will be using its own distinct snapshot of the local variables rather than
+implicitly sharing a single cached snapshot stored on the frame object.
+
+A shared namespace across ``exec()`` calls can still be obtained by using explicit
+namespaces rather than relying on the previously implicitly shared frame namespace::
+
+    def f():
+        ns = {}
+        exec('a = 0', locals=ns)
+        exec('print(a)', locals=ns)  # 0
+    f()
+
+You can even reliably change the variables in the local scope by explicitly using
+``frame.f_locals``, which was not possible before (even using ``ctypes`` to
+invoke ``PyFrame_LocalsToFast`` was subject to the state inconsistency problems
+discussed elsewhere in this PEP)::
+
+    def f():
+        a = None
+        exec('a = 0', locals=sys._getframe().f_locals)
+        print(a)  # 0
+    f()
+
+The behavior of ``exec()`` and ``eval()`` for module and class scopes (including
+nested invocations) is not changed, as the behaviour of ``locals()`` in those
+scopes is not changing.
+
+Impact on other code execution APIs in the standard library
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+``pdb`` and ``bdb`` use the ``frame.f_locals`` API, and hence will be able to
+reliably update local variables even in optimized frames. Implementing this
+PEP will resolve several longstanding bugs in these modules relating to threads,
+generators, coroutines, and other mechanisms that allow concurrent code execution
+while the debugger is active.
+
+Other code execution APIs in the standard library (such as the ``code`` module)
+do not implicitly access ``locals()`` *or* ``frame.f_locals``, but the behaviour
+of explicitly passing these namespaces will change as described in the rest of
+this PEP (passing ``locals()`` in optimized scopes will no longer implicitly
+share the code execution namespace across calls, passing ``frame.f_locals``
+in optimized scopes will allow reliable modification of local variables and
+nonlocal cell references).
+
+C API compatibility
+-------------------
+
+.. _pep-667-pyeval-getlocals-compatibility:
+
+``PyEval_GetLocals`` compatibility
+''''''''''''''''''''''''''''''''''
+
+``PyEval_GetLocals()`` has never historically distinguished between whether it was
+emulating ``locals()`` or ``sys._getframe().f_locals`` at the Python level, as they all
+returned references to the same shared cache of the local variable bindings.
+
+With this PEP, ``locals()`` changes to return independent snapshots on each call for
+optimized frames, and ``frame.f_locals`` (along with ``PyFrame_GetLocals``) changes to
+return new write-through proxy instances.
+
+Because ``PyEval_GetLocals()`` returns a borrowed reference, it isn't possible to update
+its semantics to align with either of those alternatives, leaving it as the only remaining
+API that requires a shared cache dictionary stored on the frame object.
+
+While this technically leaves the semantics of the function unchanged, it no longer allows
+extra dict entries to be made visible to users of the other APIs, as those APIs are no longer
+accessing the same underlying cache dictionary.
+
+When ``PyEval_GetLocals()`` is being used as an equivalent to the Python ``locals()``
+builtin, ``PyEval_GetFrameLocals()`` should be used instead.
 
 This code::
 
@@ -223,30 +572,43 @@ This code::
 
 should be replaced with::
 
+    // Equivalent to "locals()" in Python code
     locals = PyEval_GetFrameLocals();
     if (locals == NULL) {
         goto error_handler;
     }
 
-PyFrame_FastToLocals, etc.
-''''''''''''''''''''''''''
+When ``PyEval_GetLocals()`` is being used as an equivalent to calling
+``sys._getframe().f_locals`` in Python, it should be replaced by calling
+``PyFrame_GetLocals()`` on the result of ``PyEval_GetFrame()``.
 
-These functions were designed to convert the internal "fast" representation
-of the locals variables of a function to a dictionary, and vice versa.
+In these cases, the original code should be replaced with::
 
-Calls to them are no longer required. C code that directly accesses the
-``f_locals`` field of a frame should be modified to call
-``PyFrame_GetLocals()`` instead::
-
-    PyFrame_FastToLocals(frame);
-    PyObject *locals = frame.f_locals;
-    Py_INCREF(locals);
-
-becomes::
-
-    PyObject *locals = PyFrame_GetLocals(frame);
-    if (frame == NULL)
+    // Equivalent to "sys._getframe()" in Python code
+    frame = PyEval_GetFrame();
+    if (frame == NULL) {
         goto error_handler;
+    }
+    // Equivalent to "frame.f_locals" in Python code
+    locals = PyFrame_GetLocals(frame);
+    frame = NULL; // Minimise visibility of borrowed reference
+    if (locals == NULL) {
+        goto error_handler;
+    }
+
+Impact on PEP 709 inlined comprehensions
+----------------------------------------
+
+For inlined comprehensions within a function, ``locals()`` currently behaves the
+same inside or outside of the comprehension, and this will not change. The
+behavior of ``locals()`` inside functions will generally change as specified in
+the rest of this PEP.
+
+For inlined comprehensions at module or class scope, calling ``locals()`` within
+the inlined comprehension returns a new dictionary for each call. This PEP will
+make ``locals()`` within a function also always return a new dictionary for each
+call, improving consistency; class or module scope inlined comprehensions will
+appear to behave as if the inlined comprehension is still a distinct function.
 
 Implementation
 ==============
@@ -304,7 +666,7 @@ They serve only to illustrate the proposed design.
     class FrameLocalsProxy:
         "Implements collections.MutableMapping."
 
-        __slots__ "_frame"
+        __slots__ = ("_frame", )
 
         def __init__(self, frame:FrameType):
             self._frame = frame
@@ -386,6 +748,8 @@ C API
         PyFrameObject * = ...; // Get the current frame.
         if (frame->_locals_cache == NULL) {
             frame->_locals_cache = PyEval_GetFrameLocals();
+        } else {
+            PyDict_Update(frame->_locals_cache, PyFrame_GetLocals(frame));
         }
         return frame->_locals_cache;
     }
@@ -393,81 +757,76 @@ C API
 As with all functions that return a borrowed reference, care must be taken to
 ensure that the reference is not used beyond the lifetime of the object.
 
-Impact on PEP 709 inlined comprehensions
-========================================
+Implementation Notes
+====================
 
-For inlined comprehensions within a function, ``locals()`` currently behaves the
-same inside or outside of the comprehension, and this will not change. The
-behavior of ``locals()`` inside functions will generally change as specified in
-the rest of this PEP.
+When accepted, the PEP text suggested that ``PyEval_GetLocals`` would start returning a
+cached instance of the new write-through proxy, while the implementation sketch indicated
+it would continue to return a dictionary snapshot cached on the frame instance. This
+discrepancy was identified while implementing the PEP, and
+`resolved by the Steering Council <https://github.com/python/steering-council/issues/245#issuecomment-2179005461>`__
+in favour of retaining the Python 3.12 behaviour of returning a dictionary snapshot
+cached on the frame instance.
+The PEP text has been updated accordingly.
 
-For inlined comprehensions at module or class scope, currently calling
-``locals()`` within the inlined comprehension returns a new dictionary for each
-call. This PEP will make ``locals()`` within a function also always return a new
-dictionary for each call, improving consistency; class or module scope inlined
-comprehensions will appear to behave as if the inlined comprehension is still a
-distinct function.
+During the discussions of the C API clarification, it also became apparent that the
+rationale behind ``locals()`` being updated to return independent snapshots in
+:term:`optimized scopes <py3.13:optimized scope>` wasn't clear, as it had been inherited
+from the original :pep:`558` discussions rather than being independently covered in this
+PEP. The PEP text has been updated to better cover this change, with additional updates
+to the Specification and Backwards Compatibility sections to cover the impact on code
+execution APIs that default to executing code in the ``locals()`` namespace. Additional
+motivation and rationale details have also been added to :pep:`558`.
+
+In 3.13.0, the write-through proxies did not allow deletion of even extra variables
+with ``del`` and ``pop()``. This was subsequently reported as a
+`compatibility regression <https://github.com/python/cpython/issues/125590>`__,
+and `resolved <https://github.com/python/cpython/pull/125616>`__ as now described
+in :ref:`pep-667-f_locals-spec`.
 
 Comparison with PEP 558
 =======================
 
-This PEP and :pep:`558` share a common goal:
+This PEP and :pep:`558` shared a common goal:
 to make the semantics of  ``locals()`` and ``frame.f_locals()``
 intelligible, and their operation reliable.
 
+The key difference between this PEP and PEP 558 is that
+PEP 558 attempted to store extra variables inside a full
+internal dictionary copy of the local variables in an effort
+to improve backwards compatibility with the legacy
+``PyEval_GetLocals()`` API, whereas this PEP does not (it stores
+the extra local variables in a dedicated dictionary accessed
+solely via the new frame proxy objects, and copies them to the
+``PyEval_GetLocals()`` shared dict only when requested).
 
-The key difference between this PEP and :pep:`558` is that
-:pep:`558` keeps an internal copy of the local variables,
-whereas this PEP does not.
+PEP 558 did not specify exactly when that internal copy was
+updated, making the behavior of PEP 558 impossible to reason
+about in several cases where this PEP remains well specified.
 
-:pep:`558` does not specify exactly when the internal copy is
-updated, making the behavior of :pep:`558` impossible to reason about.
+PEP 558 also proposed the introduction of some additional Python
+scope introspection interfaces to the C API that would allow
+extension modules to more easily determine whether the currently
+active Python scope is optimized or not, and hence whether
+the C API's ``locals()`` equivalent returns a direct reference
+to the frame's local execution namespace or a shallow copy of
+the frame's local variables and nonlocal cell references.
+Whether or not to add such introspection APIs is independent
+of the proposed changes to ``locals()`` and ``frame.f_locals``
+and hence no such proposals have been included in this PEP.
 
-Open Issues
-===========
+PEP 558 was
+:pep:`ultimately withdrawn <558#pep-withdrawal>`
+in favour of this PEP.
 
-Have locals() return a mapping proxy
-------------------------------------
+Reference Implementation
+========================
 
-An alternative way to define ``locals()`` would be simply as::
-
-    def locals():
-        return sys._getframe(1).f_locals
-
-This would be simpler and easier to understand. However,
-there would be backwards compatibility issues when ``locals()`` is assigned
-to a local variable or passed to ``eval`` or ``exec``.
-
-Lifetime of the mapping proxy
------------------------------
-
-Each read of the ``f_locals`` attributes creates a new mapping proxy.
-This is done to avoid creating a reference cycle.
-
-An alternative would be to cache the proxy on the frame, so that
-``frame.f_locals is frame.f_locals`` would be true.
-The downside of this is that the reference cycle would delay collection
-of both the frame and mapping proxy until the next cycle collection.
-
-``PyEval_GetLocals()`` already creates a cycle, as it returns a borrowed reference.
-
-
-References
-==========
-
-.. [1] https://bugs.python.org/issue30744
+The implementation is in development as a `draft pull request on GitHub
+<https://github.com/python/cpython/pull/115153>`__.
 
 Copyright
 =========
 
 This document is placed in the public domain or under the
 CC0-1.0-Universal license, whichever is more permissive.
-
-..
-    Local Variables:
-    mode: indented-text
-    indent-tabs-mode: nil
-    sentence-end-double-space: t
-    fill-column: 70
-    coding: utf-8
-    End:

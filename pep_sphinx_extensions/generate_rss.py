@@ -50,14 +50,21 @@ def pep_creation(full_path: Path) -> dt.datetime:
 
 
 def pep_abstract(document: nodes.document) -> str:
-    """Return the first paragraph of the PEP abstract"""
+    """Return the first paragraph of the PEP abstract.
+    If not found, return the first paragraph of the introduction.
+    """
+    introduction = ""
     for node in document.findall(nodes.section):
         title_node = node.next_node(nodes.title)
         if title_node is None:
             continue
+
         if title_node.astext() == "Abstract":
             return node.next_node(nodes.paragraph).astext().strip().replace("\n", " ")
-    return ""
+        elif title_node.astext() == "Introduction":
+            introduction = node.next_node(nodes.paragraph).astext().strip().replace("\n", " ")
+
+    return introduction
 
 
 def _generate_items(doctree_dir: Path):
@@ -102,7 +109,7 @@ def create_rss_feed(doctree_dir: Path, output_dir: Path):
 <rss xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/" version="2.0">
   <channel>
     <title>Newest Python PEPs</title>
-    <link>https://peps.python.org/peps.rss</link>
+    <link>https://peps.python.org/</link>
     <description>{RSS_DESCRIPTION}</description>
     <atom:link href="https://peps.python.org/peps.rss" rel="self"/>
     <docs>https://cyber.harvard.edu/rss/rss.html</docs>
