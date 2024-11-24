@@ -119,6 +119,9 @@ class PEPHeaders(transforms.Transform):
                     if (not isinstance(node, nodes.reference)
                             or not node["refuri"]):
                         continue
+                    # If the Resolution header is already a link, don't prettify it
+                    if name == "resolution" and node["refuri"] != node[0]:
+                        continue
                     # Have known mailto links link to their main list pages
                     if node["refuri"].lower().startswith("mailto:"):
                         node["refuri"] = _generate_list_url(node["refuri"])
