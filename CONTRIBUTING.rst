@@ -37,11 +37,30 @@ which don't significantly impair meaning and understanding.
 
 If you're still unsure, we encourage you to reach out first before opening a
 PR here. For example, you could contact the PEP author(s), propose your idea in
-a discussion venue appropriate to the PEP (such as `Typing-SIG
-<https://mail.python.org/archives/list/typing-sig@python.org/>`__ for static
+a discussion venue appropriate to the PEP (such as `Typing Discourse
+<https://discuss.python.org/c/typing/>`__ for static
 typing, or `Packaging Discourse <https://discuss.python.org/c/packaging/>`__
 for packaging), or `open an issue <https://github.com/python/peps/issues>`__.
 
+Opening a pull request
+----------------------
+
+The PEPs repository defines a set of pull request templates, which should be
+used when opening a PR.
+
+If you use Git from the command line, you may be accustomed to creating PRs
+by following the URL that is provided after pushing a new branch. **Do not use
+this link**, as it does not provide the option to populate the PR template.
+
+However, you *can* use the ``gh`` command line tool. ``gh pr create`` will allow
+you to create a pull request, will prompt you for the template you wish to use,
+and then give you the option of continuing editing in your browser.
+
+Alternatively, after pushing your branch, you can visit
+`https://github.com/python/peps <https://github.com/python/peps>`__, and follow
+the link in the notification about recent changes to your branch to
+create a new PR. The in-browser interface will allow you to select a PR template
+for your new PR.
 
 Commit messages and PR titles
 -----------------------------
@@ -56,7 +75,7 @@ the Readme/Contributing Guide, issue/PR template, etc., with ``Meta:``.
 Sign the Contributor License Agreement
 --------------------------------------
 
-All contributors need to sign the 
+All contributors need to sign the
 `PSF Contributor Agreement <https://www.python.org/psf/contrib/contrib-form/>`_.
 to ensure we legally accept your work.
 

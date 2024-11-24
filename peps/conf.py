@@ -20,6 +20,7 @@ master_doc = "contents"
 # Add any Sphinx extension module names here, as strings.
 extensions = [
     "pep_sphinx_extensions",
+    "sphinx.ext.extlinks",
     "sphinx.ext.intersphinx",
     "sphinx.ext.githubpages",
 ]
@@ -29,7 +30,7 @@ source_suffix = {
     ".rst": "pep",
 }
 
-# List of patterns (relative to source dir) to ignore when looking for source files.
+# List of patterns (relative to source dir) to include when looking for source files.
 include_patterns = [
     # Required for Sphinx
     "contents.rst",
@@ -37,9 +38,12 @@ include_patterns = [
     "pep-????.rst",
     # PEP ancillary files
     "pep-????/*.rst",
+    # PEPs API
+    "api/*.rst",
     # Documentation
     "docs/*.rst",
 ]
+# And to ignore when looking for source files.
 exclude_patterns = [
     # PEP Template
     "pep-0012/pep-NNNN.rst",
@@ -48,15 +52,38 @@ exclude_patterns = [
 # Warn on missing references
 nitpicky = True
 
+nitpick_ignore = [
+    # Standard C types
+    ("c:type", "int8_t"),
+    ("c:type", "uint8_t"),
+    ("c:type", "int64_t"),
+]
+for role, name in list(nitpick_ignore):
+    if role in ("c:type", "c:struct"):
+        nitpick_ignore.append(("c:identifier", name))
+del role, name
+
 # Intersphinx configuration
 intersphinx_mapping = {
-    'python': ('https://docs.python.org/3/', None),
-    'packaging': ('https://packaging.python.org/en/latest/', None),
-    'devguide': ('https://devguide.python.org/', None),
-    'py3.11': ('https://docs.python.org/3.11/', None),
-    'py3.12': ('https://docs.python.org/3.12/', None),
+    "python": ("https://docs.python.org/3/", None),
+    "packaging": ("https://packaging.python.org/en/latest/", None),
+    "typing": ("https://typing.readthedocs.io/en/latest/", None),
+    "trio": ("https://trio.readthedocs.io/en/latest/", None),
+    "devguide": ("https://devguide.python.org/", None),
+    "py3.11": ("https://docs.python.org/3.11/", None),
+    "py3.12": ("https://docs.python.org/3.12/", None),
+    "py3.13": ("https://docs.python.org/3.13/", None),
+    "py3.14": ("https://docs.python.org/3.14/", None),
 }
 intersphinx_disabled_reftypes = []
+
+# sphinx.ext.extlinks
+# This config is a dictionary of external sites,
+# mapping unique short aliases to a base URL and a prefix.
+# https://www.sphinx-doc.org/en/master/usage/extensions/extlinks.html
+extlinks = {
+    "pypi": ("https://pypi.org/project/%s/", "%s"),
+}
 
 # -- Options for HTML output -------------------------------------------------
 
@@ -74,4 +101,5 @@ html_permalinks = False  # handled in the PEPContents transform
 html_baseurl = "https://peps.python.org"  # to create the CNAME file
 gettext_auto_build = False  # speed-ups
 
-templates_path = [os.fspath(_PSE_PATH / "pep_theme" / "templates")]  # Theme template relative paths from `confdir`
+# Theme template relative paths from `confdir`
+templates_path = [os.fspath(_PSE_PATH / "pep_theme" / "templates")]

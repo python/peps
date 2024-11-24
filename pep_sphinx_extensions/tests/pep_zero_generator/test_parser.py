@@ -40,15 +40,35 @@ def test_pep_equal():
     assert pep_a == pep_b
 
 
-def test_pep_details(monkeypatch):
-    pep8 = parser.PEP(PEP_ROOT / "pep-0008.rst")
+@pytest.mark.parametrize(
+    ("test_input", "expected"),
+    [
+        (
+            "pep-0008.rst",
+            {
+                "authors": "Guido van Rossum, Barry Warsaw, Alyssa Coghlan",
+                "number": 8,
+                "shorthand": ":abbr:`PA (Process, Active)`",
+                "title": "Style Guide for Python Code",
+                "python_version": "",
+            },
+        ),
+        (
+            "pep-0719.rst",
+            {
+                "authors": "Thomas Wouters",
+                "number": 719,
+                "shorthand": ":abbr:`IA (Informational, Active)`",
+                "title": "Python 3.13 Release Schedule",
+                "python_version": "3.13",
+            },
+        ),
+    ],
+)
+def test_pep_details(test_input, expected):
+    pep = parser.PEP(PEP_ROOT / test_input)
 
-    assert pep8.details == {
-        "authors": "Guido van Rossum, Barry Warsaw, Nick Coghlan",
-        "number": 8,
-        "shorthand": ":abbr:`PA (Process, Active)`",
-        "title": "Style Guide for Python Code",
-    }
+    assert pep.details == expected
 
 
 @pytest.mark.parametrize(
