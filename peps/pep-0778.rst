@@ -30,7 +30,7 @@ Debugging Python processes in production and live environments presents unique
 challenges. Developers often need to analyze application behavior without
 stopping or restarting services, which is especially crucial for
 high-availability systems. Common scenarios include diagnosing deadlocks,
-inspecting memory usage, or investigating unexpected behavior in real-time. 
+inspecting memory usage, or investigating unexpected behavior in real-time.
 
 Very few Python tools can attach to running processes, primarily because doing
 so requires deep expertise in both operating system debugging interfaces and
@@ -52,10 +52,10 @@ layer of complexity. Not only do they need to implement the above mechanism,
 they must also understand and safely interact with CPython's runtime state,
 including the interpreter loop, garbage collector, thread state, and reference
 counting system. This combination of low-level system manipulation and
-high-level interpreter knowledge makes implementing Python debugging tools
+deep domain specific interpreter knowledge makes implementing Python debugging tools
 exceptionally difficult.
 
-The few tools that do attempt this must resort to suboptimal and unsafe methods,
+The few tools that do attempt this resort to suboptimal and unsafe methods,
 using system debuggers like gdb and lldb to forcefully inject code. This
 approach is fundamentally unsafe because the injected code can execute at any
 point during the interpreter's execution cycle - even during critical operations
@@ -80,7 +80,7 @@ Rationale
 
 Rather than forcing tools to work around interpreter limitations with unsafe
 code injection, we can extend CPython with a proper debugging interface that
-guarantees safe execution. By adding minimal thread state fields and integrating
+guarantees safe execution. By adding a few thread state fields and integrating
 with the interpreter's existing evaluation loop, we can ensure debugging
 operations only occur at well-defined safe points. This eliminates the
 possibility of crashes and corruption while maintaining zero overhead during
@@ -97,7 +97,7 @@ already `been implemented in PyPy <https://github.com/pypy/pypy/pull/5135>`__,
 proving both its feasibility and effectiveness. Their implementation
 demonstrates that we can provide safe debugging capabilities with zero runtime
 overhead during normal execution.  The proposed mechanism not only reduces risks
-associated with current debugging practices but also lays the foundation for
+associated with current debugging approaches but also lays the foundation for
 future enhancements. For instance, this framework could enable integration with
 popular observability tools, providing real-time insights into interpreter
 performance or memory usage. One compelling use case for this interface is
@@ -120,7 +120,7 @@ state to coordinate debugging operations.
 
 The mechanism works by having debuggers write to specific memory locations in
 the target process that the interpreter then checks during its normal execution
-cycle. When the interpreter detects a debugger wants to attach, it executes the
+cycle. When the interpreter detects that a debugger wants to attach, it executes the
 requested operations only when it's safe to do so - that is, when no internal
 locks are held and all data structures are in a consistent state.
 
@@ -160,16 +160,18 @@ debugger support:
 .. code-block:: C
 
     struct _debugger_support {
-        uint64_t eval_breaker;           /* Location of the eval breaker flag */
-        uint64_t remote_debugger_support; /* Offset to our support structure */
-        uint64_t debugger_pending_call;   /* Where to write the pending flag */
-        uint64_t debugger_script;    /* Where to write the script */
+        uint64_t eval_breaker;            // Location of the eval breaker flag
+        uint64_t remote_debugger_support; // Offset to our support structure
+        uint64_t debugger_pending_call;   // Where to write the pending flag
+        uint64_t debugger_script;         // Where to write the script
     } debugger_support;
 
 These offsets allow debuggers to locate critical debugging control structures in
-the target process's memory space. The offsets are relative to the relevant
-structure address, making them valid regardless of where structures are actually
-loaded in memory.
+the target process's memory space. The ``eval_breaker`` and ``remote_debugger_support``
+offsets are relative to each ``PyThreadState``, while the ``debugger_pending_call``
+and ``debugger_script`` offsets are relative to each ``_PyRemoteDebuggerSupport``
+structure, allowing the new structure and its fields to be found regardless of
+where they are in memory.
 
 Attachment Protocol
 -------------------
@@ -178,39 +180,43 @@ When a debugger wants to attach to a Python process, it follows these steps:
 1. Locate ``PyRuntime`` structure in the process:
    - Find Python binary (executable or libpython) in process memory (OS dependent process)
    - Extract ``.PyRuntime`` section offset from binary's format (ELF/Mach-O/PE)
-   - Calculate the actual ``PyRuntime`` address in the running process by relocating the offset to the binary's load address 
+   - Calculate the actual ``PyRuntime`` address in the running process by relocating the offset to the binary's load address
 
-2. Access debug offset information by read ``_Py_DebugOffsets`` table from located ``PyRuntime`` structure.
-  
-3. Use the offsets to locate the debugger interface structure withing the desired thread state.
+2. Access debug offset information by reading the ``_Py_DebugOffsets`` at the start of the ``PyRuntime`` structure.
 
-4. Write control information:
-   - Write python code to be executed.
+3. Use the offsets to locate the desired thread state
+
+4. Use the offsets to locate the debugger interface fields within that thread state
+
+5. Write control information:
+   - Write python code to be executed into the ``debugger_script`` field in ``_PyRemoteDebuggerSupport``
    - Set ``debugger_pending_call`` flag in ``_PyRemoteDebuggerSupport``
    - Set ``_PY_EVAL_PLEASE_STOP_BIT`` in the ``eval_breaker`` field
-   - Wait for the interpreter to reach next safe point and execute debugger code
+
+Once the interpreter reaches the next safe point, it will execute the script
+provided by the debugger.
 
 Interpreter Integration
 -----------------------
 
 The interpreter's regular evaluation loop already includes a check of the
-eval_breaker flag for handling signals, periodic tasks, and other interrupts. We
+``eval_breaker`` flag for handling signals, periodic tasks, and other interrupts. We
 leverage this existing mechanism by checking for debugger pending calls only
 when the ``eval_breaker`` is set, ensuring zero overhead during normal execution.
-This check has no overhead. Indeed, profiling with Linux perf shows this branch
+This check has no overhead. Indeed, profiling with Linux ``perf`` shows this branch
 is highly predictable - the ``debugger_pending_call`` check is never taken during
 normal execution, allowing modern CPUs to effectively speculate past it.
 
 
 When a debugger has set both the ``eval_breaker`` flag and ``debugger_pending_call``,
 the interpreter will execute the provided debugging code at the next safe point
-and executes the provided code. This all happens in a completely safe context as
-any of the operations that happen in the eval breaker as the interpreter is in a
-consistent state:
+and executes the provided code. This all happens in a completely safe context, since
+the interpreter is guaranteed to be in a consistent state whenever the eval breaker
+is checked.
 
 .. code-block:: c
 
-    /* In ceval.c */
+    // In ceval.c
     if (tstate->eval_breaker) {
         if (tstate->remote_debugger_support.debugger_pending_call) {
             tstate->remote_debugger_support.debugger_pending_call = 0;
@@ -228,27 +234,29 @@ Python API
 ----------
 
 To support safe execution of Python code in a remote process without having to
-re-implement all these steps in every tool, this proposal extends the sys module
+re-implement all these steps in every tool, this proposal extends the ``sys`` module
 with a new function. This function allows debuggers or external tools to execute
 arbitrary Python code within the context of a specified Python process:
 
 .. code-block:: python
 
   def remote_exec(pid: int, code: str) -> None:
-   Executes a block of Python code in a remote Python process, identified by its process ID. 
+      """
+      Executes a block of Python code in a given remote Python process.
 
-   Args: 
-        pid (int): The process ID of the target Python interpreter. 
-        code (str): A string containing the Python code to be executed. 
+      Args:
+           pid (int): The process ID of the target Python process.
+           code (str): A string containing the Python code to be executed.
+      """
 
 An example usage of the API would look like:
 
 .. code-block:: python
 
-   import sys
+    import sys
     # Execute a print statement in a remote Python process with PID 12345
     try:
-        sys.remote_execute(12345, "print('Hello from remote execution!')")
+        sys.remote_exec(12345, "print('Hello from remote execution!')")
     except Exception as e:
         print(f"Failed to execute code: {e}")
 
@@ -274,8 +282,9 @@ debuggers and tools. Some examples are:
   are used to read and write memory from another process. These operations are
   controlled by ptrace access mode checks - the same ones that govern debugger
   attachment. A process can only read from or write to another process's memory
-  if it has the appropriate permissions (typically requiring the same user ID as
-  the target process or ``CAP_SYS_PTRACE`` capability).
+  if it has the appropriate permissions (typically requiring either root or the
+  ``CAP_SYS_PTRACE`` capability, though less security minded distributions may
+  allow any process running as the same uid to attach).
 
 * On macOS, the interface would leverage ``mach_vm_read_overwrite()`` and
   ``mach_vm_write()`` through the Mach task system. These operations require
@@ -319,7 +328,7 @@ How to Teach This
 =================
 
 For tool authors, this interface becomes the standard way to implement debugger
-attachment, replacing unsafe system debugger approaches.A section in the Python
+attachment, replacing unsafe system debugger approaches. A section in the Python
 Developer Guide could describe the internal workings of the mechanism, including
 the ``debugger_support`` offsets and how to interact with them using system
 APIs.
