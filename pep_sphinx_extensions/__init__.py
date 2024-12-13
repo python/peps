@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from docutils.writers.html5_polyglot import HTMLTranslator
-from docutils import nodes
 from sphinx import environment
 
 from pep_sphinx_extensions.generate_rss import (
@@ -26,9 +25,6 @@ from pep_sphinx_extensions.pep_processor.parsing import (
 )
 from pep_sphinx_extensions.pep_processor.transforms import pep_references
 from pep_sphinx_extensions.pep_zero_generator.pep_index_generator import create_pep_zero
-
-from sphinx.locale import _ as sphinx_gettext
-from sphinx.util.docutils import SphinxDirective
 
 if TYPE_CHECKING:
     from sphinx.application import Sphinx
@@ -73,29 +69,6 @@ def set_description(
         context["description"] = "Python Enhancement Proposals (PEPs)"
 
 
-class ImplementationDetail(SphinxDirective):
-
-    has_content = True
-    final_argument_whitespace = True
-
-    # This text is copied to templates/dummy.html
-    label_text = sphinx_gettext('CPython implementation detail:')
-
-    def run(self):
-        self.assert_has_content()
-        pnode = nodes.compound(classes=['impl-detail'])
-        content = self.content
-        add_text = nodes.strong(self.label_text, self.label_text)
-        self.state.nested_parse(content, self.content_offset, pnode)
-        content = nodes.inline(pnode[0].rawsource, translatable=True)
-        content.source = pnode[0].source
-        content.line = pnode[0].line
-        content += pnode[0].children
-        pnode[0].replace_self(nodes.paragraph(
-            '', '', add_text, nodes.Text(' '), content, translatable=False))
-        return [pnode]
-
-
 def setup(app: Sphinx) -> dict[str, bool]:
     """Initialize Sphinx extension."""
 
@@ -127,8 +100,6 @@ def setup(app: Sphinx) -> dict[str, bool]:
     app.add_directive("rejected", pep_banner_directive.RejectedBanner)
     app.add_directive("superseded", pep_banner_directive.SupersededBanner)
     app.add_directive("withdrawn", pep_banner_directive.WithdrawnBanner)
-
-    app.add_directive('impl-detail', ImplementationDetail)
 
     # Register event callbacks
     app.connect("builder-inited", _update_config_for_builder)  # Update configuration values for builder used
