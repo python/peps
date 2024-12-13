@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from docutils.writers.html5_polyglot import HTMLTranslator
+from docutils import nodes
 from sphinx import environment
 
 from pep_sphinx_extensions.generate_rss import (
@@ -25,6 +26,9 @@ from pep_sphinx_extensions.pep_processor.parsing import (
 )
 from pep_sphinx_extensions.pep_processor.transforms import pep_references
 from pep_sphinx_extensions.pep_zero_generator.pep_index_generator import create_pep_zero
+
+from sphinx.locale import _ as sphinx_gettext
+from sphinx.util.docutils import SphinxDirective
 
 if TYPE_CHECKING:
     from sphinx.application import Sphinx
