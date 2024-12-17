@@ -77,7 +77,6 @@ class CanonicalDocBanner(PEPBanner):
     admonition_post_text = (
         "See :pep:`1` for how to propose changes."
     )
-
     css_classes = ["canonical-doc", "sticky-banner"]
 
 
@@ -99,8 +98,6 @@ class CanonicalPyPASpecBanner(PEPBanner):
         "<https://www.pypa.io/en/latest/specifications/#handling-fixes-and-other-minor-updates>`__ "
         "for how to propose changes."
     )
-    admonition_class = nodes.attention
-
     css_classes = ["canonical-pypa-spec", "sticky-banner"]
 
 
@@ -119,8 +116,6 @@ class CanonicalTypingSpecBanner(PEPBanner):
         "<https://typing.readthedocs.io/en/latest/spec/meta.html>`__ "
         "for how to propose changes to the typing spec."
     )
-    admonition_class = nodes.attention
-
     css_classes = ["canonical-typing-spec", "sticky-banner"]
 
 
