@@ -1,10 +1,12 @@
 PEP: 768
 Title: Safe external debugger interface for CPython
 Author: Pablo Galindo Salgado <pablogsal@python.org>, Matt Wozniski <godlygeek@gmail.com>, Ivona Stojanovic <stojanovic.i@hotmail.com>
+Discussions-To: https://discuss.python.org/t/pep-768-safe-external-debugger-interface-for-cpython/73969
 Status: Draft
 Type: Standards Track
 Created: 25-Nov-2024
 Python-Version: 3.14
+Post-History: `11-Dec-2024 <https://discuss.python.org/t/pep-768-safe-external-debugger-interface-for-cpython/73969>`__
 
 Abstract
 ========
@@ -145,7 +147,7 @@ provides Python code to be executed when the interpreter reaches a safe point.
 
 The value for ``MAX_SCRIPT_SIZE`` will be a trade-off between binary size and
 how big debugging scripts can be. As most of the logic should be in libraries
-and arbitrary code can be executed with very short ammount of Python we are
+and arbitrary code can be executed with very short amount of Python we are
 proposing to start with 4kb initially. This value can be extended in the future
 if we ever need to.
 
@@ -169,7 +171,7 @@ debugger support:
         uint64_t eval_breaker;            // Location of the eval breaker flag
         uint64_t remote_debugger_support; // Offset to our support structure
         uint64_t debugger_pending_call;   // Where to write the pending flag
-        uint64_t debugger_script;         // Where to write the script
+        uint64_t debugger_script;         // Where to write the script path
     } debugger_support;
 
 These offsets allow debuggers to locate critical debugging control structures in
@@ -197,8 +199,8 @@ When a debugger wants to attach to a Python process, it follows these steps:
 
 5. Write control information:
 
-   - Write a string of Python code to be executed into the ``debugger_script``
-     field in ``_PyRemoteDebuggerSupport``.
+   - Write a filename containing Python code to be executed into the
+     ``debugger_script`` field in ``_PyRemoteDebuggerSupport``.
    - Set ``debugger_pending_call`` flag in ``_PyRemoteDebuggerSupport``
    - Set ``_PY_EVAL_PLEASE_STOP_BIT`` in the ``eval_breaker`` field
 
@@ -218,10 +220,12 @@ normal execution, allowing modern CPUs to effectively speculate past it.
 
 
 When a debugger has set both the ``eval_breaker`` flag and ``debugger_pending_call``,
-the interpreter will execute the provided debugging code at the next safe point
-and executes the provided code. This all happens in a completely safe context, since
-the interpreter is guaranteed to be in a consistent state whenever the eval breaker
-is checked.
+the interpreter will execute the provided debugging code at the next safe point.
+This all happens in a completely safe context, since the interpreter is
+guaranteed to be in a consistent state whenever the eval breaker is checked.
+
+An audit event will be raised before the code is executed, allowing this mechanism
+to be audited or disabled if desired by a system's administrator.
 
 .. code-block:: c
 
@@ -229,11 +233,22 @@ is checked.
     if (tstate->eval_breaker) {
         if (tstate->remote_debugger_support.debugger_pending_call) {
             tstate->remote_debugger_support.debugger_pending_call = 0;
-            if (tstate->remote_debugger_support.debugger_script[0]) {
-               if (PyRun_SimpleString(tstate->remote_debugger_support.debugger_script)<0) {
-                   PyErr_Clear();
-               };
-               // ...
+            const char *path = tstate->remote_debugger_support.debugger_script;
+            if (*path) {
+                if (0 != PySys_Audit("debugger_script", "%s", path)) {
+                    PyErr_Clear();
+                } else {
+                    FILE* f = fopen(path, "r");
+                    if (!f) {
+                        PyErr_SetFromErrno(OSError);
+                    } else {
+                        PyRun_AnyFile(f, path);
+                        fclose(f);
+                    }
+                    if (PyErr_Occurred()) {
+                        PyErr_WriteUnraisable(...);
+                    }
+                }
             }
         }
     }
@@ -279,6 +294,30 @@ An example usage of the API would look like:
     except Exception as e:
         print(f"Failed to execute code: {e}")
 
+Configuration API
+-----------------
+
+To allow redistributors, system administrators, or users to disable this
+mechanism, several methods will be provided to control the behavior of the
+interpreter:
+
+A new ``PYTHON_DISABLE_REMOTE_DEBUG`` environment variable will
+be provided to control the behaviour at runtime. If set to any value (including an empty string), the
+interpreter will ignore any attempts to attach a debugger using this mechanism.
+
+This environment variable will be added together with a new ``-X disable-remote-debug``
+flag to the Python interpreter to allow users to disable this feature at runtime.
+
+Additionally a new  ``--without-remote-debug`` flag will be added to the
+``configure`` script to allow redistributors to build Python without support for
+remote debugging if they so desire.
+
+A new flag indicating the status of remote debugging will be made available via
+the debug offsets so tools can query if a remote process has disabled the
+feature. This way, tools can offer a useful error message explaining why they
+won't work, instead of believing that they have attached and then never having
+their script run.
+
 
 Backwards Compatibility
 =======================
@@ -290,11 +329,20 @@ mechanism piggybacks on existing interpreter safe points.
 Security Implications
 =====================
 
-This interface does not introduce new security concerns as it relies entirely on
-existing operating system security mechanisms for process memory access. Although
-the PEP doesn't specify how memory should be written to the target process, in practice
-this will be done using standard system calls that are already being used by other
-debuggers and tools. Some examples are:
+This interface does not introduce new security concerns as it is only usable by
+processes that can already write to arbitrary memory within a given process and
+execute arbitrary code on the machine (in order to create the file containing
+the Python code to be executed).
+
+Furthermore, the execution of the code is gated by the interpreter's
+audit hooks, which can be used to monitor or prevent the execution of the code
+in sensitive environments.
+
+Existing operating system security mechanisms are effective for guarding
+against attackers gaining arbitrary memory write access. Although the PEP
+doesn't specify how memory should be written to the target process, in practice
+this will be done using standard system calls that are already being used by
+other debuggers and tools. Some examples are:
 
 * On Linux, the `process_vm_readv() <https://man7.org/linux/man-pages/man2/process_vm_readv.2.html>`__
   and `process_vm_writev() <https://man7.org/linux/man-pages/man2/process_vm_writev.2.html>`__ system calls
@@ -325,14 +373,17 @@ All mechanisms ensure that:
 1. Only authorized processes can read/write memory
 2. The same security model that governs traditional debugger attachment applies
 3. No additional attack surface is exposed beyond what the OS already provides for debugging
+4. Even if an attacker can write arbitrary memory, they cannot escalate this
+   to arbitrary code execution unless they already have filesystem access
 
 The memory operations themselves are well-established and have been used safely
 for decades in tools like GDB, LLDB, and various system profilers.
 
 It's important to note that any attempt to attach to a Python process via this
-mechanism would be detectable by system-level monitoring tools. This
-transparency provides an additional layer of accountability, allowing
-administrators to audit debugging operations in sensitive environments.
+mechanism would be detectable by system-level monitoring tools as well as by
+Python audit hooks. This transparency provides an additional layer of
+accountability, allowing administrators to audit debugging operations in
+sensitive environments.
 
 Further, the strict reliance on OS-level security controls ensures that existing
 system policies remain effective. For enterprise environments, this means
@@ -343,7 +394,36 @@ or macOS's ``taskgated`` to restrict debugger access will equally govern the
 proposed interface.
 
 By maintaining compatibility with existing security frameworks, this design
-ensures that adopting the new interface requires no changes to established
+ensures that adopting the new interface requires no changes to established.
+
+Security scenarios
+------------------
+
+* For an external attacker, the ability to write to arbitrary memory in a
+  process is already a severe security issue. This interface does not introduce
+  any new attack surface, as the attacker would already have the ability to
+  execute arbitrary code in the process. This interface behaves in exactly
+  the same way as existing debuggers, and does not introduce any new additional
+  security risks.
+* For an attacker who has gained arbitrary memory write access to a process but
+  not arbitrary code execution, this interface does not allow them to escalate.
+  The ability to calculate and write to specific memory locations is required,
+  which is not available without compromising other machine resources that
+  are external to the Python process.
+  
+Additionally, the fact that the code to be executed is gated by the interpreter's
+audit hooks means that the execution of the code can be monitored and controlled
+by system administrators. This means that even if the attacker has compromised the
+application **and the filesystem**, leveraging this interface for malicious
+purposes provides a very risky proposition for an attacker, as they risk
+exposing their actions to system administrators that could not only detect the
+attack but also take action to prevent it.
+
+Finally, is important to note that if an attacker has arbitrary memory write
+access to a process and has compromised the filesystem, they can already
+escalate to arbitrary code execution using other existing mechanisms, so this
+interface does not introduce any new risks in this scenario.
+
 
 How to Teach This
 =================
@@ -367,22 +447,27 @@ can be found `here
 Rejected Ideas
 ==============
 
-Using a path as the debugger input
-----------------------------------
+Writing Python code into the buffer
+-----------------------------------
 
-We have selected that the mechanism for executing remote code is that tools
-write the code directly in the remote process to eliminate a possible security
-vulnerability in which the file to be executed can be altered by parties other
-than the debugger process if permissions are not set correctly or filesystem
-configurations allow for this to happen. It is also trivial to write code that
-executes the contents of a file so the current mechanism doesn't disallow tools
-that want to just execute files to just do so if they are ok with the security
-profile of such operation.
+We have chosen to have debuggers write the code to be executed into a file
+whose path is written into a buffer in the remote process. This has been deemed
+more secure than writing the Python code to be executed itself into a buffer in
+the remote process, because it means that an attacker who has gained arbitrary
+writes in a process but not arbitrary code execution or file system
+manipulation can't escalate to arbitrary code execution through this interface.
+
+This does require the attaching debugger to pay close attention to filesystem
+permissions when creating the file containing the code to be executed, however.
+If an attacker has the ability to overwrite the file, or to replace a symlink
+in the file path to point to somewhere attacker controlled, this would allow
+them to force their malicious code to be executed rather than the code the
+debugger intends to run.
 
 Thanks
 ======
 
-We would like to thank Carl Friedrich Bolz-Tereick for his insightful comments and suggestions
+We would like to thank CF Bolz-Tereick for their insightful comments and suggestions
 when discussing this proposal.
 
 
