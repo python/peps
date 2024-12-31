@@ -40,6 +40,7 @@ htmllive: _ensure-sphinx-autobuild html
 .PHONY: dirhtml
 dirhtml: BUILDER = dirhtml
 dirhtml: html
+dirhtml: mv $(BUILDDIR)/404/index.html $(BUILDDIR)/404.html
 
 ## linkcheck      to check validity of links within PEP sources
 .PHONY: linkcheck
