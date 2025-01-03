@@ -1,0 +1,1574 @@
+PEP: 748
+Title: A Unified TLS API for Python
+Author: Joop van de Pol <joop.vandepol@trailofbits.com>,
+        William Woodruff <william@yossarian.net>
+Sponsor: Alyssa Coghlan <ncoghlan@gmail.com>
+Discussions-To: https://discuss.python.org/t/pre-pep-discussion-revival-of-pep-543/51263
+Status: Draft
+Type: Standards Track
+Created: 27-Jun-2024
+Python-Version: 3.14
+Post-History: `17-Apr-2024 <https://discuss.python.org/t/pre-pep-discussion-revival-of-pep-543/51263>`__
+Replaces: 543
+
+Abstract
+========
+
+This PEP defines a standard TLS interface in the form of a collection of
+protocol classes. This interface will allow Python implementations and
+third-party libraries to provide bindings to TLS libraries other than OpenSSL.
+
+These bindings can be used by tools that expect the interface provided by the
+Python standard library, with the goal of reducing the dependence of the Python
+ecosystem on OpenSSL.
+
+Rationale
+=========
+
+It has become increasingly clear that robust and user-friendly TLS support is an
+extremely important part of the ecosystem of any popular programming language.
+For most of its lifetime, this role in the Python ecosystem has primarily been
+served by the :mod:`ssl` module, which provides a Python API to the `OpenSSL
+library <https://www.openssl.org/>`_.
+
+Because the :mod:`ssl` module is distributed with the Python standard library,
+it has become the overwhelmingly most popular method for handling TLS in Python.
+A majority of Python libraries, both in the standard library and
+on the Python Package Index, rely on the :mod:`ssl` module for their TLS
+connectivity.
+
+Unfortunately, the preeminence of the :mod:`ssl` module has had a number of
+tied the entire Python
+ecosystem tightly to OpenSSL. This has forced Python users to use OpenSSL even
+in situations where it may provide a worse user experience than alternative TLS
+implementations, which imposes a cognitive burden and makes it hard to provide
+“platform-native” experiences.
+
+Problems
+--------
+
+The fact that the :mod:`ssl` module is built into the standard library has meant
+that all standard-library Python networking libraries are entirely reliant on
+the OpenSSL that the Python implementation has been linked against. This leads
+to the following issues:
+
+* It is difficult to take advantage of new, higher-security TLS without
+  recompiling Python to get a new OpenSSL. While there are third-party bindings
+  to OpenSSL (e.g. `pyOpenSSL <https://pypi.org/project/pyOpenSSL/>`_), these
+  need to be shimmed into a format that the standard library understands,
+  forcing projects that want to use them to maintain substantial compatibility
+  layers.
+
+* Windows distributions of Python need to be shipped with a copy of
+  OpenSSL. This puts the CPython development team in the position of being
+  OpenSSL redistributors, potentially needing to ship security updates to the
+  Windows Python distributions when OpenSSL vulnerabilities are released.
+
+* macOS distributions of Python need either to be shipped with a copy
+  of OpenSSL or linked against the system OpenSSL library. Apple has formally
+  deprecated linking against the system OpenSSL library, and even if they had
+  not, that library version has been unsupported by upstream for nearly one year
+  as of the time of writing. The CPython development team has started shipping
+  newer OpenSSLs with the Python available from python.org, but this has the
+  same problem as with Windows.
+
+* Users may wish to integrate with TLS libraries other than OpenSSL for other
+  reasons, such as maintenance burden versus a system-provided implementation,
+  or because OpenSSL is simply too large and unwieldy for their platform (e.g.
+  for embedded Python). Those users are left with the requirement to use
+  third-party networking libraries that can interact with their preferred TLS
+  library or to shim their preferred library into the OpenSSL-specific
+  :mod:`ssl` module API.
+
+Additionally, the :mod:`ssl` module as implemented today limits the ability of
+CPython itself to add support for alternative TLS implementations, or remove
+OpenSSL support entirely, should either of these become necessary or useful. The
+:mod:`ssl` module exposes too many OpenSSL-specific function calls and features
+to easily map to an alternative TLS implementation.
+
+Proposal
+========
+
+This PEP proposes to introduce a few new Protocol Classes in Python 3.14 to
+provide TLS functionality that is not so strongly tied to OpenSSL. It also
+proposes to update standard library modules to use only the interface exposed by
+these protocol classes wherever possible. There are three goals here:
+
+1. To provide a common API surface for both core and third-party developers to
+   target their TLS implementations to. This allows TLS developers to provide
+   interfaces that can be used by most Python code, and allows network
+   developers to have an interface that they can target that will work with a
+   wide range of TLS implementations.
+
+1. To provide an API that has few or no OpenSSL-specific concepts leak through.
+   The :mod:`ssl` module today has a number of warts caused by leaking OpenSSL
+   concepts through to the API: the new protocol classes would remove those
+   specific concepts.
+
+1. To provide a path for the core development team to make OpenSSL one of many
+   possible TLS implementations, rather than requiring that it be present on a
+   system in order for Python to have TLS support.
+
+The proposed interface is laid out below.
+
+Interfaces
+----------
+
+There are several interfaces that require standardization. Those interfaces are:
+
+1. Configuring TLS, currently implemented by the :class:`~ssl.SSLContext` class
+   in the :mod:`ssl` module.
+
+1. Providing an in-memory buffer for doing in-memory encryption or decryption
+   with no actual I/O (necessary for asynchronous I/O models), currently
+   implemented by the :class:`~ssl.SSLObject` class in the :mod:`ssl` module.
+
+1. Wrapping a socket object, currently implemented by the
+   :class:`~ssl.SSLSocket` class in the :mod:`ssl` module.
+
+1. Applying TLS configuration to the wrapping objects in (2) and (3). Currently
+   this is also implemented by the SSLContext class in the :mod:`ssl` module.
+
+1. Specifying TLS cipher suites. There is currently no code for doing this in
+   the standard library: instead, the standard library uses OpenSSL cipher suite
+   strings.
+
+1. Specifying application-layer protocols that can be negotiated during the TLS
+   handshake.
+
+1. Specifying TLS versions.
+
+1. Reporting errors to the caller, currently implemented by the
+   :class:`~ssl.SSLError` class in the :mod:`ssl` module.
+
+1. Specifying certificates to load, either as client or server certificates.
+
+1. Specifying which trust database should be used to validate certificates
+   presented by a remote peer.
+
+1. Finding a way to get hold of these interfaces at run time.
+
+For the sake of simplicity, this PEP proposes to remove interfaces (3) and (4),
+and replace them by a simpler interface that returns a socket which ensures that
+all communication through the socket is protected by TLS. In other words, this
+interface treats concepts such as socket initialization, the TLS handshake,
+Server Name Indication (SNI), etc., as an atomic part of creating a client or
+server connection. However, in-memory buffers are still supported, as they are
+useful for asynchronous communication.
+
+Obviously, (5) doesn't require a protocol class: instead, it requires a richer
+API for configuring supported cipher suites that can be easily updated with
+supported cipher suites for different implementations.
+
+(9) is a thorny problem, because in an ideal world the private keys associated
+with these certificates would never end up in-memory in the Python process
+(that is, the TLS library would collaborate with a Hardware Security Module
+(HSM) to provide the private key in such a way that it cannot be extracted
+from process memory). Thus, we need to provide an extensible model of
+providing certificates that allows concrete implementations the ability to
+provide this higher level of security, while also allowing a lower bar for
+those implementations that cannot. This lower bar would be the same as the
+status quo: that is, the certificate may be loaded from an in-memory buffer,
+from a file on disk, or additionally referenced by some arbitrary ID
+corresponding to a system certificate store.
+
+(10) also represents an issue because different TLS implementations vary wildly
+in how they allow users to select trust stores. Some implementations have
+specific trust store formats that only they can use (such as the OpenSSL CA
+directory format that is created by c_rehash), and others may not allow you
+to specify a trust store that does not include their default trust store.
+On the other hand, most implementations will support some form of loading custom
+DER- or PEM-encoded certificates.
+
+For this reason, we need to provide a model that assumes very little about the
+form that trust stores take, while maintaining type-compatibility with other
+implementations. The sections “Certificate”, “Private Keys”, and “Trust Store”
+below go into more detail about how this is achieved.
+
+Finally, this API will split the responsibilities currently assumed by the
+:class:`~ssl.SSLContext` object: specifically, the responsibility for holding
+and managing configuration and the responsibility for using that configuration
+to build buffers or sockets.
+
+This is necessary primarily for supporting functionality like Server Name
+Indication (SNI). In OpenSSL (and thus in the :mod:`ssl` module), the server has
+the ability to modify the TLS configuration in response to the client telling
+the server what hostname it is trying to reach. This is mostly used to change
+the certificate chain so as to present the correct TLS certificate chain for the
+given hostname. The specific mechanism by which this is done is by returning a
+new :class:`~ssl.SSLContext` object with the appropriate configuration as part
+of a user-provided SNI callback function.
+
+This is not a model that maps well to other TLS implementations, and puts a
+burden on users to write callback functions. Instead, we propose that the
+concrete implementations handle SNI transparently for every user after receiving
+the relevant certificates.
+
+For this reason, we split the responsibility of :class:`~ssl.SSLContext` into
+two separate objects, which are each split into server and client versions. The
+``TLSServerConfiguration`` and ``TLSClientConfiguration`` objects act as
+containers for a TLS configuration: the ClientContext and ServerContext objects
+are instantiated with a ``TLSClientConfiguration`` and
+``TLSServerConfiguration`` object, respectively, and are used to create buffers
+or sockets. All four objects would be immutable.
+
+.. note::
+
+    The following API declarations uniformly use type hints to aid reading.
+
+Configuration
+~~~~~~~~~~~~~
+
+The ``TLSServerConfiguration`` and ``TLSClientConfiguration`` concrete classes
+define objects that can hold and manage TLS configuration. The goals of these
+classes are as follows:
+
+1. To provide a method of specifying TLS configuration that avoids the risk of
+   errors in typing (this excludes the use of a simple dictionary).
+
+1. To provide an object that can be safely compared to other configuration
+   objects to detect changes in TLS configuration, for use with the SNI
+   callback.
+
+These classes are not protocol classes, primarily because they are not expected to
+have implementation-specific behavior. The responsibility for transforming a
+``TLSServerConfiguration``  or ``TLSClientConfiguration`` object into a useful
+set of configurations for a given TLS implementation belongs to the Context
+objects discussed below.
+
+These classes have one other notable property: they are immutable. This is a
+desirable trait for a few reasons. The most important one is that immutability
+by default is a good engineering practice. As a side benefit, it allows these
+objects to be used as dictionary keys, which is potentially useful for specific
+TLS implementations and their SNI configuration. On top of this, it frees
+implementations from needing to worry about their configuration objects being
+changed under their feet, which allows them to avoid needing to carefully
+synchronize changes between their concrete data structures and the configuration
+object.
+
+These objects are extendable: that is, future releases of Python may add
+configuration fields to these objects as they become useful. For
+backwards-compatibility purposes, new fields are only appended to these objects.
+Existing fields will never be removed, renamed, or reordered. They are split
+between client and server to minimize API confusion.
+
+The ``TLSClientConfiguration`` class would be defined by the following code:
+
+.. code-block:: python
+
+    class TLSClientConfiguration:
+        __slots__ = (
+            "_certificate_chain",
+            "_ciphers",
+            "_inner_protocols",
+            "_lowest_supported_version",
+            "_highest_supported_version",
+            "_trust_store",
+        )
+
+        def __init__(
+            self,
+            certificate_chain: SigningChain | None = None,
+            ciphers: Sequence[CipherSuite] | None = None,
+            inner_protocols: Sequence[NextProtocol | bytes] | None = None,
+            lowest_supported_version: TLSVersion | None = None,
+            highest_supported_version: TLSVersion | None = None,
+            trust_store: TrustStore | None = None,
+        ) -> None:
+            if inner_protocols is None:
+                inner_protocols = []
+
+            self._certificate_chain = certificate_chain
+            self._ciphers = ciphers
+            self._inner_protocols = inner_protocols
+            self._lowest_supported_version = lowest_supported_version
+            self._highest_supported_version = highest_supported_version
+            self._trust_store = trust_store
+
+        @property
+        def certificate_chain(self) -> SigningChain | None:
+            return self._certificate_chain
+
+        @property
+        def ciphers(self) -> Sequence[CipherSuite | int] | None:
+            return self._ciphers
+
+        @property
+        def inner_protocols(self) -> Sequence[NextProtocol | bytes]:
+            return self._inner_protocols
+
+        @property
+        def lowest_supported_version(self) -> TLSVersion | None:
+            return self._lowest_supported_version
+
+        @property
+        def highest_supported_version(self) -> TLSVersion | None:
+            return self._highest_supported_version
+
+        @property
+        def trust_store(self) -> TrustStore | None:
+            return self._trust_store
+
+The ``TLSServerConfiguration`` object is similar to the client one, except that
+it takes a ``Sequence[SigningChain]`` as the ``certificate_chain`` parameter.
+
+Context
+~~~~~~~
+
+We define two Context protocol classes. These protocol classes define objects
+that allow configuration of TLS to be applied to specific connections. They can
+be thought of as factories for ``TLSSocket`` and ``TLSBuffer`` objects.
+
+Unlike the current :mod:`ssl` module, we provide two context classes instead of
+one. Specifically, we provide the ``ClientContext`` and ``ServerContext``
+classes. This simplifies the APIs (for example, there is no sense in the server
+providing the ``server_hostname`` parameter to
+:meth:`~ssl.SSLContext.wrap_socket`, but because there is only one context class
+that parameter is still available), and ensures that implementations know as
+early as possible which side of a TLS connection they will serve. Additionally,
+it allows implementations to opt-out of one or either side of the connection.
+
+As much as possible implementers should aim to make these classes immutable:
+that is, they should prefer not to allow users to mutate their internal state
+directly, instead preferring to create new contexts from new TLSConfiguration
+objects. Obviously, the protocol classes cannot enforce this constraint, and so
+they do not attempt to.
+
+The ``ClientContext`` protocol class has the following class definition:
+
+.. code-block:: python
+
+    class ClientContext(Protocol):
+        @abstractmethod
+        def __init__(self, configuration: TLSClientConfiguration) -> None:
+            """Create a new client context object from a given TLS client configuration."""
+            ...
+
+        @property
+        @abstractmethod
+        def configuration(self) -> TLSClientConfiguration:
+            """Returns the TLS client configuration that was used to create the client context."""
+            ...
+
+        @abstractmethod
+        def connect(self, address: tuple[str | None, int]) -> TLSSocket:
+            """Creates a TLSSocket that behaves like a socket.socket, and
+            contains information about the TLS exchange
+            (cipher, negotiated_protocol, negotiated_tls_version, etc.).
+            """
+            ...
+
+        @abstractmethod
+        def create_buffer(self, server_hostname: str) -> TLSBuffer:
+            """Creates a TLSBuffer that acts as an in-memory channel,
+            and contains information about the TLS exchange
+            (cipher, negotiated_protocol, negotiated_tls_version, etc.)."""
+            ...
+
+The ``ServerContext`` is similar, taking a ``TLSServerConfiguration`` instead.
+
+Socket
+~~~~~~
+
+The context can be used to create sockets, which have to follow the
+specification of the ``TLSSocket`` protocol class. Specifically, implementations
+need to implement the following:
+
+* ``recv`` and ``send``
+* ``listen`` and ``accept``
+* ``close``
+* ``getsockname``
+* ``getpeername``
+
+They also need to implement some interfaces that give information about the TLS
+connection, such as:
+
+* The underlying context object that was used to create this socket
+* The negotiated cipher
+* The negotiated "next" protocol
+* The negotiated TLS version
+
+The following code describes these functions in more detail:
+
+.. code-block:: python
+
+    class TLSSocket(Protocol):
+        """This class implements a socket.socket-like object that creates an OS
+        socket, wraps it in an SSL context, and provides read and write methods
+        over that channel."""
+
+        @abstractmethod
+        def __init__(self, *args: tuple, **kwargs: tuple) -> None:
+            """TLSSockets should not be constructed by the user.
+            The implementation should implement a method to construct a TLSSocket
+            object and call it in ClientContext.connect() and
+            ServerContext.connect()."""
+            ...
+
+        @abstractmethod
+        def recv(self, bufsize: int) -> bytes:
+            """Receive data from the socket. The return value is a bytes object
+            representing the data received. Should not work before the handshake
+            is completed."""
+            ...
+
+        @abstractmethod
+        def send(self, bytes: bytes) -> int:
+            """Send data to the socket. The socket must be connected to a remote socket."""
+            ...
+
+        @abstractmethod
+        def close(self, force: bool = False) -> None:
+            """Shuts down the connection and mark the socket closed.
+            If force is True, this method should send the close_notify alert and shut down
+            the socket without waiting for the other side.
+            If force is False, this method should send the close_notify alert and raise
+            the WantReadError exception until a corresponding close_notify alert has been
+            received from the other side.
+            In either case, this method should return WantWriteError if sending the
+            close_notify alert currently fails."""
+            ...
+
+        @abstractmethod
+        def listen(self, backlog: int) -> None:
+            """Enable a server to accept connections. If backlog is specified, it
+            specifies the number of unaccepted connections that the system will allow
+            before refusing new connections."""
+            ...
+
+        @abstractmethod
+        def accept(self) -> tuple[TLSSocket, tuple[str | None, int]]:
+            """Accept a connection. The socket must be bound to an address and listening
+            for connections. The return value is a pair (conn, address) where conn is a
+            new TLSSocket object usable to send and receive data on the connection, and
+            address is the address bound to the socket on the other end of the connection."""
+            ...
+
+        @abstractmethod
+        def getsockname(self) -> tuple[str | None, int]:
+            """Return the local address to which the socket is connected."""
+            ...
+
+        @abstractmethod
+        def getpeercert(self) -> bytes | None:
+            """
+            Return the raw DER bytes of the certificate provided by the peer
+            during the handshake, if applicable.
+            """
+            ...
+
+        @abstractmethod
+        def getpeername(self) -> tuple[str | None, int]:
+            """Return the remote address to which the socket is connected."""
+            ...
+
+        @property
+        @abstractmethod
+        def context(self) -> ClientContext | ServerContext:
+            """The ``Context`` object this socket is tied to."""
+            ...
+
+        @abstractmethod
+        def cipher(self) -> CipherSuite | int | None:
+            """
+            Returns the CipherSuite entry for the cipher that has been negotiated on the connection.
+
+            If no connection has been negotiated, returns ``None``. If the cipher negotiated is not
+            defined in CipherSuite, returns the 16-bit integer representing that cipher directly.
+            """
+            ...
+
+        @abstractmethod
+        def negotiated_protocol(self) -> NextProtocol | bytes | None:
+            """
+            Returns the protocol that was selected during the TLS handshake.
+
+            This selection may have been made using ALPN or some future
+            negotiation mechanism.
+
+            If the negotiated protocol is one of the protocols defined in the
+            ``NextProtocol`` enum, the value from that enum will be returned.
+            Otherwise, the raw bytestring of the negotiated protocol will be
+            returned.
+
+            If ``Context.set_inner_protocols()`` was not called, if the other
+            party does not support protocol negotiation, if this socket does
+            not support any of the peer's proposed protocols, or if the
+            handshake has not happened yet, ``None`` is returned.
+            """
+            ...
+
+        @property
+        @abstractmethod
+        def negotiated_tls_version(self) -> TLSVersion | None:
+            """The version of TLS that has been negotiated on this connection."""
+            ...
+
+Buffer
+~~~~~~
+
+The context can also be used to create buffers, which have to follow the
+specification of the ``TLSBuffer`` protocol class. Specifically, implementations
+need to implement the following:
+
+* ``read`` and ``write``
+* ``do_handshake``
+* ``shutdown``
+* ``process_incoming`` and ``process_outgoing``
+* ``incoming_bytes_buffered`` and ``outgoing_bytes_buffered``
+* ``getpeercert``
+
+Similarly to the socket case, they also need to implement some interfaces that
+give information about the TLS connection, such as:
+
+* The underlying context object that was used to create this buffer
+* The negotiated cipher
+* The negotiated "next" protocol
+* The negotiated TLS version
+
+The following code describes these functions in more detail:
+
+.. code-block:: python
+
+    class TLSBuffer(Protocol):
+        """This class implements an in memory-channel that creates two buffers,
+        wraps them in an SSL context, and provides read and write methods over
+        that channel."""
+
+        @abstractmethod
+        def read(self, amt: int, buffer: Buffer | None) -> bytes | int:
+            """
+            Read up to ``amt`` bytes of data from the input buffer and return
+            the result as a ``bytes`` instance. If an optional buffer is
+            provided, the result is written into the buffer and the number of
+            bytes is returned instead.
+
+            Once EOF is reached, all further calls to this method return the
+            empty byte string ``b''``.
+
+            May read "short": that is, fewer bytes may be returned than were
+            requested.
+
+            Raise ``WantReadError`` or ``WantWriteError`` if there is
+            insufficient data in either the input or output buffer and the
+            operation would have caused data to be written or read.
+
+            May raise ``RaggedEOF`` if the connection has been closed without a
+            graceful TLS shutdown. Whether this is an exception that should be
+            ignored or not is up to the specific application.
+
+            As at any time a re-negotiation is possible, a call to ``read()``
+            can also cause write operations.
+            """
+            ...
+
+        @abstractmethod
+        def write(self, buf: Buffer) -> int:
+            """
+            Write ``buf`` in encrypted form to the output buffer and return the
+            number of bytes written. The ``buf`` argument must be an object
+            supporting the buffer interface.
+
+            Raise ``WantReadError`` or ``WantWriteError`` if there is
+            insufficient data in either the input or output buffer and the
+            operation would have caused data to be written or read. In either
+            case, users should endeavour to resolve that situation and then
+            re-call this method. When re-calling this method users *should*
+            re-use the exact same ``buf`` object, as some implementations require that
+            the exact same buffer be used.
+
+            This operation may write "short": that is, fewer bytes may be
+            written than were in the buffer.
+
+            As at any time a re-negotiation is possible, a call to ``write()``
+            can also cause read operations.
+            """
+            ...
+
+        @abstractmethod
+        def do_handshake(self) -> None:
+            """
+            Performs the TLS handshake. Also performs certificate validation
+            and hostname verification.
+            """
+            ...
+
+        @abstractmethod
+        def cipher(self) -> CipherSuite | int | None:
+            """
+            Returns the CipherSuite entry for the cipher that has been
+            negotiated on the connection. If no connection has been negotiated,
+            returns ``None``. If the cipher negotiated is not defined in
+            CipherSuite, returns the 16-bit integer representing that cipher
+            directly.
+            """
+            ...
+
+        @abstractmethod
+        def negotiated_protocol(self) -> NextProtocol | bytes | None:
+            """
+            Returns the protocol that was selected during the TLS handshake.
+            This selection may have been made using ALPN, NPN, or some future
+            negotiation mechanism.
+
+            If the negotiated protocol is one of the protocols defined in the
+            ``NextProtocol`` enum, the value from that enum will be returned.
+            Otherwise, the raw bytestring of the negotiated protocol will be
+            returned.
+
+            If ``Context.set_inner_protocols()`` was not called, if the other
+            party does not support protocol negotiation, if this socket does
+            not support any of the peer's proposed protocols, or if the
+            handshake has not happened yet, ``None`` is returned.
+            """
+            ...
+
+        @property
+        @abstractmethod
+        def context(self) -> ClientContext | ServerContext:
+            """
+            The ``Context`` object this buffer is tied to.
+            """
+            ...
+
+        @property
+        @abstractmethod
+        def negotiated_tls_version(self) -> TLSVersion | None:
+            """
+            The version of TLS that has been negotiated on this connection.
+            """
+            ...
+
+        @abstractmethod
+        def shutdown(self) -> None:
+            """
+            Performs a clean TLS shut down. This should generally be used
+            whenever possible to signal to the remote peer that the content is
+            finished.
+            """
+            ...
+
+        @abstractmethod
+        def process_incoming(self, data_from_network: bytes) -> None:
+            """
+            Receives some TLS data from the network and stores it in an
+            internal buffer.
+
+            If the internal buffer is overfull, this method will raise
+            ``WantReadError`` and store no data. At this point, the user must
+            call ``read`` to remove some data from the internal buffer
+            before repeating this call.
+            """
+            ...
+
+        @abstractmethod
+        def incoming_bytes_buffered(self) -> int:
+            """
+            Returns how many bytes are in the incoming buffer waiting to be processed.
+            """
+            ...
+
+        @abstractmethod
+        def process_outgoing(self, amount_bytes_for_network: int) -> bytes:
+            """
+            Returns the next ``amt`` bytes of data that should be written to
+            the network from the outgoing data buffer, removing it from the
+            internal buffer.
+            """
+            ...
+
+        @abstractmethod
+        def outgoing_bytes_buffered(self) -> int:
+            """
+            Returns how many bytes are in the outgoing buffer waiting to be sent.
+            """
+            ...
+
+        @abstractmethod
+        def getpeercert(self) -> bytes | None:
+            """
+            Return the raw DER bytes of the certificate provided by the peer
+            during the handshake, if applicable.
+            """
+            ...
+
+
+Cipher Suites
+~~~~~~~~~~~~~
+
+Supporting cipher suites in a truly library-agnostic fashion is a remarkably
+difficult undertaking. Different TLS implementations often have radically
+different APIs for specifying cipher suites, but more problematically these APIs
+frequently differ in capability as well as in style.
+
+Below are examples of different cipher suite selection APIs. These examples are
+not intended to obligate implementation against each API, only to illuminate the
+constraints imposed by each.
+
+OpenSSL
+^^^^^^^
+
+OpenSSL uses a well-known cipher string format. This format has been adopted as
+a configuration language by most products that use OpenSSL, including Python.
+This format is relatively easy to read, but has a number of downsides: it is a
+string, which makes it easy to provide bad inputs; it lacks much
+detailed validation, meaning that it is possible to configure OpenSSL in a way
+that doesn't allow it to negotiate any cipher at all; and it allows specifying
+cipher suites in a number of different ways that make it tricky to parse. The
+biggest problem with this format is that there is no formal specification for
+it, meaning that the only way to parse a given string the way OpenSSL would is
+to get OpenSSL to parse it.
+
+OpenSSL's cipher strings can look like this:
+
+.. code-block:: python
+
+    "ECDH+AESGCM:ECDH+CHACHA20:DH+AESGCM:DH+CHACHA20:ECDH+AES256:DH+AES256:ECDH+AES128:DH+AES:RSA+AESGCM:RSA+AES:!aNULL:!eNULL:!MD5"
+
+
+This string demonstrates some of the complexity of the OpenSSL format. For
+example, it is possible for one entry to specify multiple cipher suites: the
+entry ``ECDH+AESGCM`` means “all ciphers suites that include both elliptic-curve
+Diffie-Hellman key exchange and AES in Galois Counter Mode”. More explicitly,
+that will expand to four cipher suites:
+
+
+.. code-block:: python
+
+    "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256"
+
+
+That makes parsing a complete OpenSSL cipher string extremely tricky. Add to the
+fact that there are other meta-characters, such as “!” (exclude all cipher
+suites that match this criterion, even if they would otherwise be included:
+“!MD5” means that no cipher suites using the MD5 hash algorithm should be
+included), “-” (exclude matching ciphers if they were already included, but
+allow them to be re-added later if they get included again), and “+” (include
+the matching ciphers, but place them at the end of the list), and you get an
+extremely complex format to parse. On top of this complexity it should be noted
+that the actual result depends on the OpenSSL version, as an OpenSSL cipher
+string is valid so long as it contains at least one cipher that OpenSSL
+recognizes.
+
+OpenSSL also uses different names for its ciphers than the names used in the
+relevant specifications. See the manual page for ``ciphers(1)`` for more
+details.
+
+The actual API inside OpenSSL for the cipher string is simple:
+
+.. code-block:: c
+
+    char *cipher_list = <some cipher list>;
+    int rc = SSL_CTX_set_cipher_list(context, cipher_list);
+
+
+This means that any format that is used by this module must be able to be
+converted to an OpenSSL cipher string for use with OpenSSL.
+
+Network Framework
+^^^^^^^^^^^^^^^^^
+
+Network Framework is the macOS (10.15+) system TLS library. This library is
+substantially more restricted than OpenSSL in many ways, as it has a much more
+restricted class of users. One of these substantial restrictions is in
+controlling supported cipher suites.
+
+Ciphers in Network Framework are represented by a Objective-C ``uint16_t`` enum.
+This enum has one entry per cipher suite, with no aggregate entries, meaning
+that it is not possible to reproduce the meaning of an OpenSSL cipher string
+like ``“ECDH+AESGCM”`` without hand-coding which categories each enum member
+falls into.
+
+However, the names of most of the enum members are in line with the formal names
+of the cipher suites: that is, the cipher suite that OpenSSL calls
+``“ECDHE-ECDSA-AES256-GCM-SHA384”`` is called
+``“tls_ciphersuite_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384”`` in Network Framework.
+
+The API for configuring cipher suites inside Network Framework is simple:
+
+.. code-block:: c
+
+    void sec_protocol_options_append_tls_ciphersuite(sec_protocol_options_t options, tls_ciphersuite_t ciphersuite);
+
+SChannel
+^^^^^^^^
+
+SChannel is the Windows system TLS library.
+
+SChannel has extremely restrictive support for controlling available TLS cipher
+suites, and additionally adopts a third method of expressing what TLS cipher
+suites are supported.
+
+Specifically, SChannel defines a set of ``ALG_ID`` constants (C unsigned ints).
+Each of these constants does not refer to an entire cipher suite, but instead an
+individual algorithm. Some examples are ``CALG_3DES`` and ``CALG_AES_256``,
+which refer to the bulk encryption algorithm used in a cipher suite,
+``CALG_ECDH_EPHEM`` and ``CALG_RSA_KEYX`` which refer to part of the key
+exchange algorithm used in a cipher suite, ``CALG_SHA_256`` and ``CALG_SHA_384``
+which refer to the message authentication code used in a cipher suite, and
+``CALG_ECDSA`` and ``CALG_RSA_SIGN`` which refer to the signing portions of the
+key exchange algorithm.
+
+In earlier versions of the SChannel API, these constants were used to define the
+algorithms that could be used. The latest version, however, uses these constants
+to prohibit which algorithms can be used.
+
+This can be thought of as the half of OpenSSL's functionality that Network
+Framework doesn't have: Network Framework only allows specifying exact cipher
+suites (and a limited number of pre-defined cipher suite groups), whereas
+SChannel only allows specifying parts of the cipher suite, while OpenSSL allows
+both.
+
+Determining which cipher suites are allowed on a given connection is done by
+providing a pointer to an array of these ``ALG_ID`` constants. This means that
+any suitable API must allow the Python code to determine which ``ALG_ID``
+constants must be provided.
+
+Network Security Services (NSS)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+NSS is Mozilla's crypto and TLS library. It's used in Firefox, Thunderbird, and
+as an alternative to OpenSSL in multiple libraries, e.g. curl.
+
+By default, NSS comes with secure configuration of allowed ciphers. On some
+platforms such as Fedora, the list of enabled ciphers is globally configured in
+a system policy. Generally, applications should not modify cipher suites unless
+they have specific reasons to do so.
+
+NSS has both process global and per-connection settings for cipher suites. It
+does not have a concept of :class:`~ssl.SSLContext` like OpenSSL. A
+:class:`~ssl.SSLContext`-like behavior can be easily emulated. Specifically,
+ciphers can be enabled or disabled globally with
+``SSL_CipherPrefSetDefault(PRInt32 cipher, PRBool enabled)``, and
+``SSL_CipherPrefSet(PRFileDesc *fd, PRInt32 cipher, PRBool enabled)`` for a
+connection. The cipher ``PRInt32`` number is a signed 32-bit integer that
+directly corresponds to an registered IANA id, e.g. ``0x1301`` is
+``TLS_AES_128_GCM_SHA256``. Contrary to OpenSSL, the preference order of ciphers
+is fixed and cannot be modified at runtime.
+
+Like Network Framework, NSS has no API for aggregated entries. Some consumers of
+NSS have implemented custom mappings from OpenSSL cipher names and rules to NSS
+ciphers, e.g. ``mod_nss``.
+
+Proposed Interface
+^^^^^^^^^^^^^^^^^^
+
+The proposed interface for the new module is influenced by the combined set of
+limitations of the above implementations. Specifically, as every implementation
+except OpenSSL requires that each individual cipher be provided, there is no
+option but to provide that lowest common denominator approach.
+
+The simplest approach is to provide an enumerated type that includes a large
+subset of the cipher suites defined for TLS. The values of the enum members will
+be their two-octet cipher identifier as used in the TLS handshake, stored as a
+16 bit integer. The names of the enum members will be their IANA-registered
+cipher suite names.
+
+As of now, the `IANA cipher suite registry
+<https://www.iana.org/assignments/tls-parameters/tls-parameters.xhtml#tls-parameters-4>`_
+contains over 320 cipher suites. A large portion of the cipher suites are
+irrelevant for TLS connections to network services. Other suites specify
+deprecated and insecure algorithms that are no longer provided by recent
+versions of implementations. The enum contains the five fixed cipher suites
+defined for TLS v1.3. For TLS v1.2, it only contains the cipher suites that
+correspond to the TLS v1.3 cipher suites, with ECDHE key exchange (for perfect
+forward secrecy) and ECDSA or RSA signatures, which are an additional ten cipher
+suites.
+
+In addition to this enum, the interface defines a default cipher suite list for
+TLS v1.2, which includes only those defined cipher suites based on AES-GCM or
+ChaCha20-Poly1305. The default cipher suite list for TLS v1.3 will
+comprise the five cipher suites defined in the specification.
+
+The current enum is quite restricted, including only cipher suites that provide
+forward secrecy. Because the enum doesn't contain every defined cipher, and also
+to allow for forward-looking applications, all parts of this API that accept
+``CipherSuite`` objects will also accept raw 16-bit integers directly.
+
+.. code-block:: python
+
+    class CipherSuite(IntEnum):
+        """
+        Known cipher suites.
+
+        See: <https://www.iana.org/assignments/tls-parameters/tls-parameters.xhtml>
+        """
+
+        TLS_AES_128_GCM_SHA256 = 0x1301
+        TLS_AES_256_GCM_SHA384 = 0x1302
+        TLS_CHACHA20_POLY1305_SHA256 = 0x1303
+        TLS_AES_128_CCM_SHA256 = 0x1304
+        TLS_AES_128_CCM_8_SHA256 = 0x1305
+        TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 = 0xC02B
+        TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384 = 0xC02C
+        TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 = 0xC02F
+        TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384 = 0xC030
+        TLS_ECDHE_ECDSA_WITH_AES_128_CCM = 0xC0AC
+        TLS_ECDHE_ECDSA_WITH_AES_256_CCM = 0xC0AD
+        TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8 = 0xC0AE
+        TLS_ECDHE_ECDSA_WITH_AES_256_CCM_8 = 0xC0AF
+        TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256 = 0xCCA8
+        TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256 = 0xCCA9
+
+
+For Network Framework, these enum members directly refer to the values of the
+cipher suite constants. For example, Network Framework defines the cipher suite
+enum member ``tls_ciphersuite_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384`` as having
+the value ``0xC02C``. Not coincidentally, that is identical to its value in the
+above enum. This makes mapping between Network Framework and the above enum very
+easy indeed.
+
+For SChannel there is no easy direct mapping, due to the fact that SChannel
+configures ciphers, instead of cipher suites. This represents an ongoing concern
+with SChannel, which is that it is very difficult to configure in a specific
+manner compared to other TLS implementations.
+
+For the purposes of this PEP, any SChannel implementation will need to determine
+which ciphers to choose based on the enum members. This may be more open than
+the actual cipher suite list actually wants to allow, or it may be more
+restrictive, depending on the choices of the implementation. This PEP recommends
+that it be more restrictive, but of course this cannot be enforced.
+
+Finally, we expect that for most users, secure defaults will be enough. When
+specifying no list of ciphers, the implementations should use secure defaults
+(possibly derived from system recommended settings).
+
+Protocol Negotiation
+~~~~~~~~~~~~~~~~~~~~
+
+ALPN allows for protocol negotiation as part of the HTTP/2 handshake. While ALPN
+is at a fundamental level built on top of bytestrings, string-based APIs are
+frequently problematic as they allow for errors in typing that can be hard to
+detect.
+
+For this reason, this module will define a type that protocol negotiation
+implementations can pass and be passed. This type would wrap a bytestring to
+allow for aliases for well-known protocols. This allows us to avoid the problems
+inherent in typos for well-known protocols, while allowing the full
+extensibility of the protocol negotiation layer if needed by letting users pass
+byte strings directly.
+
+.. code-block:: python
+
+    class NextProtocol(Enum):
+        """The underlying negotiated ("next") protocol."""
+
+        H2 = b"h2"
+        H2C = b"h2c"
+        HTTP1 = b"http/1.1"
+        WEBRTC = b"webrtc"
+        C_WEBRTC = b"c-webrtc"
+        FTP = b"ftp"
+        STUN = b"stun.nat-discovery"
+        TURN = b"stun.turn"
+
+TLS Versions
+~~~~~~~~~~~~
+
+It is often useful to be able to restrict the versions of TLS you're willing to
+support. There are many security advantages in refusing to use old versions of
+TLS, and some misbehaving servers will mishandle TLS clients advertising support
+for newer versions.
+
+The following enumerated type can be used to gate TLS versions. Forward-looking
+applications should almost never set a maximum TLS version unless they
+absolutely must, as a TLS implementation that is newer than the Python that uses
+it may support TLS versions that are not in this enumerated type.
+
+Additionally, this enumerated type defines two additional flags that can always
+be used to request either the lowest or highest TLS version supported by an
+implementation. As for cipher suites, we expect that for most users, secure
+defaults will be enough. When specifying no list of TLS versions, the
+implementations should use secure defaults (possibly derived from system
+recommended settings).
+
+.. code-block:: python
+
+    class TLSVersion(Enum):
+        """
+        TLS versions.
+
+        The `MINIMUM_SUPPORTED` and `MAXIMUM_SUPPORTED` variants are "open ended",
+        and refer to the "lowest mutually supported" and "highest mutually supported"
+        TLS versions, respectively.
+        """
+
+        MINIMUM_SUPPORTED = "MINIMUM_SUPPORTED"
+        TLSv1_2 = "TLSv1.2"
+        TLSv1_3 = "TLSv1.3"
+        MAXIMUM_SUPPORTED = "MAXIMUM_SUPPORTED"
+
+Errors
+~~~~~~
+
+This module would define four base classes for use with error handling. Unlike
+many of the other classes defined here, these classes are not abstract, as they
+have no behavior. They exist simply to signal certain common behaviors. TLS
+implementations should subclass these exceptions in their own packages, but
+needn't define any behavior for them.
+
+In general, concrete implementations should subclass these exceptions rather
+than throw them directly. This makes it moderately easier to determine which
+concrete TLS implementation is in use during debugging of unexpected errors.
+However, this is not mandatory.
+
+The definitions of the errors are below:
+
+.. code-block:: python
+
+    class TLSError(Exception):
+        """
+        The base exception for all TLS related errors from any implementation.
+
+        Catching this error should be sufficient to catch *all* TLS errors,
+        regardless of what implementation is used.
+        """
+
+
+    class WantWriteError(TLSError):
+        """
+        A special signaling exception used only when non-blocking or buffer-only I/O is used.
+
+        This error signals that the requested
+        operation cannot complete until more data is written to the network,
+        or until the output buffer is drained.
+
+        This error is should only be raised when it is completely impossible
+        to write any data. If a partial write is achievable then this should
+        not be raised.
+        """
+
+
+    class WantReadError(TLSError):
+        """
+        A special signaling exception used only when non-blocking or buffer-only I/O is used.
+
+        This error signals that the requested
+        operation cannot complete until more data is read from the network, or
+        until more data is available in the input buffer.
+
+        This error should only be raised when it is completely impossible to
+        write any data. If a partial write is achievable then this should not
+        be raised.
+        """
+
+
+    class RaggedEOF(TLSError):
+        """A special signaling exception used when a TLS connection has been
+        closed gracelessly: that is, when a TLS CloseNotify was not received
+        from the peer before the underlying TCP socket reached EOF. This is a
+        so-called "ragged EOF".
+
+        This exception is not guaranteed to be raised in the face of a ragged
+        EOF: some implementations may not be able to detect or report the
+        ragged EOF.
+
+        This exception is not always a problem. Ragged EOFs are a concern only
+        when protocols are vulnerable to length truncation attacks. Any
+        protocol that can detect length truncation attacks at the application
+        layer (e.g. HTTP/1.1 and HTTP/2) is not vulnerable to this kind of
+        attack and so can ignore this exception.
+        """
+
+
+    class ConfigurationError(TLSError):
+        """An special exception that implementations can use when the provided
+        configuration uses features not supported by that implementation."""
+
+
+Certificates
+~~~~~~~~~~~~
+
+This module would define a concrete certificate class. This class would have
+almost no behavior, as the goal of this module is not to provide all possible
+relevant cryptographic functionality that could be provided by X.509
+certificates. Instead, all we need is the ability to signal the source of a
+certificate to a concrete implementation.
+
+For that reason, this certificate class defines three attributes, corresponding
+to the three envisioned constructors: certificates from files, certificates from
+memory, or certificates from arbitrary identifiers. It is possible that
+implementations do not support all of these constructors, and they can
+communicate this to users as described in the “Runtime” section below.
+Certificates from arbitrary identifiers, in particular, are expected to be
+useful primarily to users seeking to build integrations on top of HSMs, TPMs,
+SSMs, and similar.
+
+Specifically, this class does not parse any provided input to validate that it
+is a correct certificate, and also does not provide any form of introspection
+into a particular certificate. TLS implementations are not required to provide
+such introspection either. Peer certificates that are received during the
+handshake are provided as raw DER bytes.
+
+.. code-block:: python
+
+    class Certificate:
+        """Object representing a certificate used in TLS."""
+
+        __slots__ = (
+            "_buffer",
+            "_path",
+            "_id",
+        )
+
+        def __init__(
+            self, buffer: bytes | None = None, path: os.PathLike[str] | None = None, id: bytes | None = None
+        ):
+            """
+            Creates a Certificate object from a path, buffer, or ID.
+
+            If none of these is given, an exception is raised.
+            """
+
+            if buffer is None and path is None and id is None:
+                raise ValueError("Certificate cannot be empty.")
+
+            self._buffer = buffer
+            self._path = path
+            self._id = id
+
+        @classmethod
+        def from_buffer(cls, buffer: bytes) -> Certificate:
+            """
+            Creates a Certificate object from a byte buffer. This byte buffer
+            may be either PEM-encoded or DER-encoded. If the buffer is PEM
+            encoded it *must* begin with the standard PEM preamble (a series of
+            dashes followed by the ASCII bytes "BEGIN CERTIFICATE" and another
+            series of dashes). In the absence of that preamble, the
+            implementation may assume that the certificate is DER-encoded
+            instead.
+            """
+            return cls(buffer=buffer)
+
+        @classmethod
+        def from_file(cls, path: os.PathLike[str]) -> Certificate:
+            """
+            Creates a Certificate object from a file on disk. The file on disk
+            should contain a series of bytes corresponding to a certificate that
+            may be either PEM-encoded or DER-encoded. If the bytes are PEM encoded
+            it *must* begin with the standard PEM preamble (a series of dashes
+            followed by the ASCII bytes "BEGIN CERTIFICATE" and another series of
+            dashes). In the absence of that preamble, the implementation may
+            assume that the certificate is DER-encoded instead.
+            """
+            return cls(path=path)
+
+        @classmethod
+        def from_id(cls, id: bytes) -> Certificate:
+            """
+            Creates a Certificate object from an arbitrary identifier. This may
+            be useful for implementations that rely on system certificate stores.
+            """
+            return cls(id=id)
+
+Private Keys
+~~~~~~~~~~~~
+
+This module would define a concrete private key class. Much like the
+``Certificate`` class, this class has three attributes to correspond to the
+three constructors, and further has all the caveats of the ``Certificate``
+class.
+
+.. code-block:: python
+
+    class PrivateKey:
+        """Object representing a private key corresponding to a public key
+        for a certificate used in TLS."""
+
+        __slots__ = (
+            "_buffer",
+            "_path",
+            "_id",
+        )
+
+        def __init__(
+            self, buffer: bytes | None = None, path: os.PathLike | None = None, id: bytes | None = None
+        ):
+            """
+            Creates a PrivateKey object from a path, buffer, or ID.
+
+            If none of these is given, an exception is raised.
+            """
+
+            if buffer is None and path is None and id is None:
+                raise ValueError("PrivateKey cannot be empty.")
+
+            self._buffer = buffer
+            self._path = path
+            self._id = id
+
+        @classmethod
+        def from_buffer(cls, buffer: bytes) -> PrivateKey:
+            """
+            Creates a PrivateKey object from a byte buffer. This byte buffer
+            may be either PEM-encoded or DER-encoded. If the buffer is PEM
+            encoded it *must* begin with the standard PEM preamble (a series of
+            dashes followed by the ASCII bytes "BEGIN", the key type, and
+            another series of dashes). In the absence of that preamble, the
+            implementation may assume that the private key is DER-encoded
+            instead.
+            """
+            return cls(buffer=buffer)
+
+        @classmethod
+        def from_file(cls, path: os.PathLike) -> PrivateKey:
+            """
+            Creates a PrivateKey object from a file on disk. The file on disk
+            should contain a series of bytes corresponding to a certificate that
+            may be either PEM-encoded or DER-encoded. If the bytes are PEM encoded
+            it *must* begin with the standard PEM preamble (a series of dashes
+            followed by the ASCII bytes "BEGIN", the key type, and another series
+            of dashes). In the absence of that preamble, the implementation may
+            assume that the certificate is DER-encoded instead.
+            """
+            return cls(path=path)
+
+        @classmethod
+        def from_id(cls, id: bytes) -> PrivateKey:
+            """
+            Creates a PrivateKey object from an arbitrary identifier. This may
+            be useful for implementations that rely on system private key stores.
+            """
+            return cls(id=id)
+
+Signing Chain
+~~~~~~~~~~~~~
+
+In order to authenticate themselves, TLS participants need to provide a leaf
+certificate with a chain leading up to some root certificate that is trusted by
+the other side. Servers always need to authenticate themselves to clients, but
+clients can also authenticate themselves to servers during client
+authentication. Additionally, the leaf certificate must be accompanied by a
+private key, which can either be stored in a separate object, or together with
+the leaf certificate itself. This module defines the collection of these objects
+as a ``SigningChain`` as detailed below:
+
+.. code-block:: python
+
+    class SigningChain:
+        """Object representing a certificate chain used in TLS."""
+
+        leaf: tuple[Certificate, PrivateKey | None]
+        chain: list[Certificate]
+
+        def __init__(
+            self,
+            leaf: tuple[Certificate, PrivateKey | None],
+            chain: Sequence[Certificate] | None = None,
+        ):
+            """Initializes a SigningChain object."""
+            self.leaf = leaf
+            if chain is None:
+                chain = []
+            self.chain = list(chain)
+
+As shown in the configuration classes above, a client can have one signing chain
+in the case of client authentication or none otherwise. A server can have a
+sequence of signing chains, which is useful when it is responsible for multiple
+domains.
+
+Trust Store
+~~~~~~~~~~~
+
+As discussed above, loading a trust store represents an issue because different
+TLS implementations vary wildly in how they allow users to select trust stores.
+For this reason, we need to provide a model that assumes very little about the
+form that trust stores take.
+
+This problem is the same as the one that the ``Certificate`` and ``PrivateKey``
+types need to solve. For this reason, we use the exact same model, by creating a
+concrete class that captures the various means of how users could define a trust
+store.
+
+A given TLS implementation is not required to handle all possible trust stores.
+However, it is strongly recommended that a given TLS implementation handles the
+``system`` constructor if at all possible, as this is the most common validation
+trust store that is used. TLS implementations can communicate unsupported
+options as described in the “Runtime” section below.
+
+.. code-block:: python
+
+    class TrustStore:
+        """
+        The trust store that is used to verify certificate validity.
+        """
+
+        __slots__ = (
+            "_buffer",
+            "_path",
+            "_id",
+        )
+
+        def __init__(
+            self, buffer: bytes | None = None, path: os.PathLike | None = None, id: bytes | None = None
+        ):
+            """
+            Creates a TrustStore object from a path, buffer, or ID.
+
+            If none of these is given, the default system trust store is used.
+            """
+
+            self._buffer = buffer
+            self._path = path
+            self._id = id
+
+        @classmethod
+        def system(cls) -> TrustStore:
+            """
+            Returns a TrustStore object that represents the system trust
+            database.
+            """
+            return cls()
+
+        @classmethod
+        def from_buffer(cls, buffer: bytes) -> TrustStore:
+            """
+            Initializes a trust store from a buffer of PEM-encoded certificates.
+            """
+            return cls(buffer=buffer)
+
+        @classmethod
+        def from_file(cls, path: os.PathLike) -> TrustStore:
+            """
+            Initializes a trust store from a single file containing PEMs.
+            """
+            return cls(path=path)
+
+        @classmethod
+        def from_id(cls, id: bytes) -> TrustStore:
+            """
+            Initializes a trust store from an arbitrary identifier.
+            """
+            return cls(id=id)
+
+Runtime Access
+~~~~~~~~~~~~~~
+
+A not-uncommon use case is for library users to want to specify the TLS
+implementation to use while allowing the library to configure the details of the
+actual TLS connection. For example, users of :pypi:`requests` may want to be
+able to select between OpenSSL or a platform-native solution on Windows and
+macOS, or between OpenSSL and NSS on some Linux platforms. These users, however,
+may not care about exactly how their TLS configuration is done.
+
+This poses two problems: given an arbitrary concrete implementation, how can a
+library:
+
+* Work out whether the implementation supports particular constructors for certificates
+  or trust stores (e.g. from arbitrary identifiers)?
+
+* Get the correct types for the two context classes?
+
+Constructing certificate and trust store objects should be possible outside of
+the implementation. Therefore, the implementations need to provide a way for
+users to verify whether the implementation is compatible with user-constructed
+certificates and trust stores. Therefore, each implementation should implement a
+``validate_config`` method that takes a ``TLSClientConfiguration`` or
+``TLSServerConfiguration`` object and raises an exception if unsupported
+constructors were used.
+
+For the types, there are two options: either all concrete implementations can be
+required to fit into a specific naming scheme, or we can provide an API that
+makes it possible to grab these objects.
+
+This PEP proposes that we use the second approach. This grants the greatest
+freedom to concrete implementations to structure their code as they see fit,
+requiring only that they provide a single object that has the appropriate
+properties in place. Users can then pass this implementation object to libraries
+that support it, and those libraries can take care of configuring and using the
+concrete implementation.
+
+All concrete implementations must provide a method of obtaining a
+``TLSImplementation`` object. The ``TLSImplementation`` object can be a global
+singleton or can be created by a callable if there is an advantage in doing
+that.
+
+The ``TLSImplementation`` object has the following definition:
+
+.. code-block:: python
+
+    class TLSImplementation(Generic[_ClientContext, _ServerContext]):
+        __slots__ = (
+            "_client_context",
+            "_server_context",
+            "_validate_config",
+        )
+
+        def __init__(
+            self,
+            client_context: type[_ClientContext],
+            server_context: type[_ServerContext],
+            validate_config: Callable[[TLSClientConfiguration | TLSServerConfiguration], None],
+        ) -> None:
+            self._client_context = client_context
+            self._server_context = server_context
+            self._validate_config = validate_config
+
+The first two properties must provide the concrete implementation of the
+relevant Protocol class. For example, for the client context:
+
+.. code-block:: python
+
+    @property
+    def client_context(self) -> type[_ClientContext]:
+        """The concrete implementation of the PEP 543 Client Context object,
+        if this TLS implementation supports being the client on a TLS connection.
+        """
+        return self._client_context
+
+This ensures that code like this will work for any implementation:
+
+.. code-block:: python
+
+    client_config = TLSClientConfiguration()
+    client_context = implementation.client_context(client_config)
+
+The third property must provide a function that verifies whether a given TLS
+configuration contains implementation-compatible certificates, private keys, and
+a trust store:
+
+.. code-block:: python
+
+    @property
+    def validate_config(self) -> Callable[[TLSClientConfiguration | TLSServerConfiguration], None]:
+        """A function that reveals whether this TLS implementation supports a
+        particular TLS configuration.
+        """
+        return self._validate_config
+
+Note that this function only needs to verify that supported constructors were
+used for the certificates, private keys, and trust store. It does not need to
+parse or retrieve the objects to validate them further.
+
+Insecure Usage
+--------------
+
+All of the above assumes that users want to use the module in a secure way.
+Sometimes, users want to do imprudent things like disable certificate validation
+for testing purposes. To this end, we propose a separate ``insecure`` module
+that allows users to do this. This module contains insecure variants of the
+configuration, context, and implementation objects, which allow to disable
+certificate validation as well as the server hostname check.
+
+This functionality is placed in a separate module to make it as hard as possible
+for legitimate users to accidentally use the insecure functionality.
+Additionally, it defines a new warning called ``SecurityWarning``, and loudly
+warns at every step of the way when trying to create an insecure connection.
+
+This module is only intended for testing purposes. In real-world situations
+where a user wants to connect to some IoT device which only has a self-signed
+certificate, it is strongly recommended to add this certificate into a custom
+trust store, rather than using the insecure module to disable certificate
+validation.
+
+Changes to the Standard Library
+===============================
+
+The portions of the standard library that interact with TLS should be revised to
+use these Protocol classes. This will allow them to function with other TLS
+implementations. This includes the following modules:
+
+* :mod:`asyncio`
+* :mod:`ftplib`
+* :mod:`http`
+* :mod:`imaplib`
+* :mod:`nntplib`
+* :mod:`poplib`
+* :mod:`smtplib`
+* :mod:`urllib`
+
+Migration of the ssl module
+---------------------------
+
+Naturally, we will need to extend the :mod:`ssl` module itself to conform to
+these Protocol classes. This extension will take the form of new classes,
+potentially in an entirely new module. This will allow applications that take
+advantage of the current :mod:`ssl` module to continue to do so, while enabling
+the new APIs for applications and libraries that want to use them.
+
+In general, migrating from the :mod:`ssl` module to the new Protocol classes is
+not expected to be one-to-one. This is normally acceptable: most tools that use
+the :mod:`ssl` module hide it from the user, and so refactoring to use the new
+module should be invisible.
+
+However, a specific problem comes from libraries or applications that leak
+exceptions from the :mod:`ssl` module, either as part of their defined API or by
+accident (which is easily done). Users of those tools may have written code that
+tolerates and handles exceptions from the :mod:`ssl` module being raised:
+migrating to the protocol classes presented here would potentially cause the
+exceptions defined above to be thrown instead, and existing ``except`` blocks
+will not catch them.
+
+For this reason, part of the migration of the :mod:`ssl` module would require
+that the exceptions in the :mod:`ssl` module alias those defined above. That is,
+they would require the following statements to all succeed:
+
+.. code-block:: python
+
+    assert ssl.SSLError is tls.TLSError
+    assert ssl.SSLWantReadError is tls.WantReadError
+    assert ssl.SSLWantWriteError is tls.WantWriteError
+
+
+The exact mechanics of how this will be done are beyond the scope of this PEP,
+as they are made more complex due to the fact that the current ssl exceptions
+are defined in C code, but more details can be found in `an email sent to the
+Security-SIG by Christian Heimes
+<https://mail.python.org/pipermail/security-sig/2017-January/000213.html>`_.
+
+Future
+======
+
+Major future TLS features may require revisions of these protocol classes. These
+revisions should be made cautiously: many implementations may not be able to
+move forward swiftly, and will be invalidated by changes in these protocol
+classes. This is acceptable, but wherever possible features that are specific to
+individual implementations should not be added to the protocol classes. The
+protocol classes should restrict themselves to high-level descriptions of
+IETF-specified features.
+
+However, well-justified extensions to this API absolutely should be made. The
+focus of this API is to provide a unifying lowest-common-denominator
+configuration option for the Python community. TLS is not a static target, and
+as TLS evolves so must this API.
+
+Credits
+=======
+
+This PEP is adapted substantially from :pep:`543`, which was withdrawn in 2020.
+:pep:`543` was authored by Cory Benfield and Christian Heimes, and received
+extensive review from a number of individuals in the community who have
+substantially helped shape it. Detailed review for both :pep:`543` and this
+PEP was provided by:
+
+* Alex Chan
+* Alex Gaynor
+* Antoine Pitrou
+* Ashwini Oruganti
+* Donald Stufft
+* Ethan Furman
+* Glyph
+* Hynek Schlawack
+* Jim J Jewett
+* Nathaniel J. Smith
+* Alyssa Coghlan
+* Paul Kehrer
+* Steve Dower
+* Steven Fackler
+* Wes Turner
+* Will Bond
+* Cory Benfield
+* Marc-André Lemburg
+* Seth M. Larson
+* Victor Stinner
+* Ronald Oussoren
+
+Further review of :pep:`543` was provided by the Security-SIG and python-ideas
+mailing lists.
+
+
+Copyright
+=========
+
+This document is placed in the public domain or under the CC0-1.0-Universal
+license, whichever is more permissive.

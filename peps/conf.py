@@ -19,6 +19,7 @@ master_doc = "contents"
 
 # Add any Sphinx extension module names here, as strings.
 extensions = [
+    "notfound.extension",
     "pep_sphinx_extensions",
     "sphinx.ext.extlinks",
     "sphinx.ext.intersphinx",
@@ -84,6 +85,10 @@ intersphinx_disabled_reftypes = []
 extlinks = {
     "pypi": ("https://pypi.org/project/%s/", "%s"),
 }
+
+# sphinx-notfound-page
+# https://sphinx-notfound-page.readthedocs.io/en/latest/faq.html#does-this-extension-work-with-github-pages
+notfound_urls_prefix = None
 
 # -- Options for HTML output -------------------------------------------------
 
