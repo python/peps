@@ -144,7 +144,7 @@ class PEP:
             "title": self.title,
             # a tooltip representing the type and status
             "shorthand": self.shorthand,
-            # the author list as a comma-separated with only last names
+            # the comma-separated list of authors
             "authors": ", ".join(self._author_names),
             # The targeted Python-Version (if present) or the empty string
             "python_version": self.python_version or "",
@@ -156,7 +156,7 @@ class PEP:
         return {
             "number": self.number,
             "title": self.title,
-            "authors": tuple(self._author_names),
+            "authors": ", ".join(self._author_names),
             "discussions_to": self.discussions_to,
             "status": self.status,
             "type": self.pep_type,
@@ -168,6 +168,8 @@ class PEP:
             "requires": self.requires,
             "replaces": self.replaces,
             "superseded_by": self.superseded_by,
+            # extra non-header keys for use in ``peps.json``
+            "author_names": tuple(self._author_names),
             "url": f"https://peps.python.org/pep-{self.number:0>4}/",
         }
 

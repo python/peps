@@ -42,11 +42,7 @@ illustrating some of the possible values for each field:
      "12": {
        "number": 12,
        "title": "Sample reStructuredText PEP Template",
-       "authors": [
-         "David Goodger",
-         "Barry Warsaw",
-         "Brett Cannon"
-       ],
+       "authors": "David Goodger, Barry Warsaw, Brett Cannon",
        "discussions_to": null,
        "status": "Active",
        "type": "Process",
@@ -58,14 +54,17 @@ illustrating some of the possible values for each field:
        "requires": null,
        "replaces": null,
        "superseded_by": null,
+       "author_names": [
+        "David Goodger",
+        "Barry Warsaw",
+        "Brett Cannon"
+       ],
        "url": "https://peps.python.org/pep-0012/"
      },
      "160": {
        "number": 160,
        "title": "Python 1.6 Release Schedule",
-       "authors": [
-         "Fred L. Drake, Jr."
-       ],
+       "authors": "Fred L. Drake, Jr.",
        "discussions_to": null,
        "status": "Final",
        "type": "Informational",
@@ -77,14 +76,15 @@ illustrating some of the possible values for each field:
        "requires": null,
        "replaces": null,
        "superseded_by": null,
+       "author_names": [
+        "Fred L. Drake, Jr."
+       ],
        "url": "https://peps.python.org/pep-0160/"
      },
      "3124": {
        "number": 3124,
        "title": "Overloading, Generic Functions, Interfaces, and Adaptation",
-       "authors": [
-         "Phillip J. Eby"
-       ],
+       "authors": "Phillip J. Eby",
        "discussions_to": "python-3000@python.org",
        "status": "Deferred",
        "type": "Standards Track",
@@ -96,6 +96,9 @@ illustrating some of the possible values for each field:
        "requires": "3107, 3115, 3119",
        "replaces": "245, 246",
        "superseded_by": null,
+       "author_names": [
+        "Phillip J. Eby"
+       ],
        "url": "https://peps.python.org/pep-3124/"
      }
    }
