@@ -14,7 +14,7 @@ The structure of each JSON object is as follows:
      "<PEP number>": {
        "number": integer,  // always identical to <PEP number>
        "title": string,
-       "authors": Array<string>,
+       "authors": string,
        "discussions_to": string | null,
        "status": "Accepted" | "Active" | "Deferred" | "Draft" | "Final" | "Provisional" | "Rejected" | "Superseded" | "Withdrawn",
        "type": "Informational" | "Process" | "Standards Track",
@@ -26,6 +26,7 @@ The structure of each JSON object is as follows:
        "requires": string | null,
        "replaces": string | null,
        "superseded_by": string | null,
+       "author_list": Array<string>,
        "url": string
      },
    }
