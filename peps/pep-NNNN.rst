@@ -157,7 +157,7 @@ subsequent CI run will pass.
 Reference Implementation
 ========================
 
-Key parts of the reference implementation include: 
+Key parts of the `reference implementation <https://github.com/python/cpython/pull/129331>`__ include: 
 
 - | CI |_: The CI workflow responsible for building, testing, and now generating
 stencil patches.
