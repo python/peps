@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Iterable, Sequence
 from email.parser import HeaderParser
 from pathlib import Path
 
@@ -122,6 +123,11 @@ class PEP:
         return self.number == other.number
 
     @property
+    def _author_names(self) -> Iterable[str]:
+        """An iterator of the authors' full names."""
+        return (author.full_name for author in self.authors)
+
+    @property
     def shorthand(self) -> str:
         """Return reStructuredText tooltip for the PEP type and status."""
         type_code = self.pep_type[0].upper()
@@ -138,19 +144,19 @@ class PEP:
             "title": self.title,
             # a tooltip representing the type and status
             "shorthand": self.shorthand,
-            # the author list as a comma-separated with only last names
-            "authors": ", ".join(author.full_name for author in self.authors),
+            # the comma-separated list of authors
+            "authors": ", ".join(self._author_names),
             # The targeted Python-Version (if present) or the empty string
             "python_version": self.python_version or "",
         }
 
     @property
-    def full_details(self) -> dict[str, str | int]:
+    def full_details(self) -> dict[str, str | int | Sequence[str]]:
         """Returns all headers of the PEP as a dict."""
         return {
             "number": self.number,
             "title": self.title,
-            "authors": ", ".join(author.full_name for author in self.authors),
+            "authors": ", ".join(self._author_names),
             "discussions_to": self.discussions_to,
             "status": self.status,
             "type": self.pep_type,
@@ -162,6 +168,8 @@ class PEP:
             "requires": self.requires,
             "replaces": self.replaces,
             "superseded_by": self.superseded_by,
+            # extra non-header keys for use in ``peps.json``
+            "author_names": tuple(self._author_names),
             "url": f"https://peps.python.org/pep-{self.number:0>4}/",
         }
 
