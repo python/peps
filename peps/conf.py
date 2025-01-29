@@ -66,16 +66,16 @@ del role, name
 
 # Intersphinx configuration (keep this in alphabetical order)
 intersphinx_mapping = {
-    "devguide": ("https://devguide.python.org/", None),
-    "mypy": ("https://mypy.readthedocs.io/en/latest/", None),
-    "packaging": ("https://packaging.python.org/en/latest/", None),
-    "py3.11": ("https://docs.python.org/3.11/", None),
-    "py3.12": ("https://docs.python.org/3.12/", None),
-    "py3.13": ("https://docs.python.org/3.13/", None),
-    "py3.14": ("https://docs.python.org/3.14/", None),
-    "python": ("https://docs.python.org/3/", None),
-    "trio": ("https://trio.readthedocs.io/en/latest/", None),
-    "typing": ("https://typing.readthedocs.io/en/latest/", None),
+    "devguide": ("https://devguide.python.org", None),
+    "mypy": ("https://mypy.readthedocs.io/en/latest", None),
+    "packaging": ("https://packaging.python.org/en/latest", None),
+    "py3.11": ("https://docs.python.org/3.11", None),
+    "py3.12": ("https://docs.python.org/3.12", None),
+    "py3.13": ("https://docs.python.org/3.13", None),
+    "py3.14": ("https://docs.python.org/3.14", None),
+    "python": ("https://docs.python.org/3", None),
+    "trio": ("https://trio.readthedocs.io/en/latest", None),
+    "typing": ("https://typing.readthedocs.io/en/latest", None),
 }
 intersphinx_disabled_reftypes = []
 
