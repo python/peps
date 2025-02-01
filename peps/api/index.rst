@@ -2,8 +2,7 @@ PEPs API
 ========
 
 There is a read-only JSON document of every published PEP available at
-https://peps.python.org/api/peps.json or https://peps.python.org/peps.json
-(both URLs point to the same document).
+https://peps.python.org/api/peps.json.
 
 Each PEP is represented as a JSON object, keyed by the PEP number.
 The structure of each JSON object is as follows:
