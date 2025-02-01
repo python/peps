@@ -39,8 +39,6 @@ PEP_ROOT = ROOT_DIR / "peps"
 ALL_HEADERS = (
     "PEP",
     "Title",
-    "Version",
-    "Last-Modified",
     "Author",
     "Sponsor",
     "BDFL-Delegate", "PEP-Delegate",
@@ -48,7 +46,6 @@ ALL_HEADERS = (
     "Status",
     "Type",
     "Topic",
-    "Content-Type",
     "Requires",
     "Created",
     "Python-Version",
@@ -132,6 +129,7 @@ def check_headers(lines: Sequence[str], /) -> MessageIterator:
     yield from _validate_pep_number(next(iter(lines), ""))
 
     found_headers = {}
+    found_header_lines: list[tuple[str, int]] = []
     line_num = 0
     for line_num, line in enumerate(lines, start=1):
         if line.strip() == "":
@@ -139,9 +137,10 @@ def check_headers(lines: Sequence[str], /) -> MessageIterator:
             break
         if match := HEADER_PATTERN.match(line):
             header = match[1]
+            found_header_lines.append((header, line_num))
             if header in ALL_HEADERS:
                 if header not in found_headers:
-                    found_headers[match[1]] = line_num
+                    found_headers[header] = None
                 else:
                     yield line_num, f"Must not have duplicate header: {header} "
             else:
@@ -151,11 +150,11 @@ def check_headers(lines: Sequence[str], /) -> MessageIterator:
 
     yield from _validate_required_headers(found_headers.keys())
 
-    shifted_line_nums = list(found_headers.values())[1:]
-    for i, (header, line_num) in enumerate(found_headers.items()):
+    shifted_line_nums = [line for _, line in found_header_lines[1:]]
+    for i, (header, line_num) in enumerate(found_header_lines):
         start = line_num - 1
         end = headers_end_line_num - 1
-        if i < len(found_headers) - 1:
+        if i < len(found_header_lines) - 1:
             end = shifted_line_nums[i] - 1
         remainder = "\n".join(lines[start:end]).removeprefix(f"{header}:")
         if remainder != "":
@@ -182,8 +181,6 @@ def _validate_header(header: str, line_num: int, content: str) -> MessageIterato
         yield from _validate_type(line_num, content)
     elif header == "Topic":
         yield from _validate_topic(line_num, content)
-    elif header == "Content-Type":
-        yield from _validate_content_type(line_num, content)
     elif header in {"Requires", "Replaces", "Superseded-By"}:
         yield from _validate_pep_references(line_num, content)
     elif header == "Created":
@@ -346,13 +343,6 @@ def _validate_topic(line_num: int, line: str) -> MessageIterator:
             yield line_num, "Topic must be for a valid sub-index"
     if sorted(topics) != topics:
         yield line_num, "Topic must be sorted lexicographically"
-
-
-def _validate_content_type(line_num: int, line: str) -> MessageIterator:
-    """'Content-Type' must be 'text/x-rst'"""
-
-    if line != "text/x-rst":
-        yield line_num, "Content-Type must be 'text/x-rst'"
 
 
 def _validate_pep_references(line_num: int, line: str) -> MessageIterator:
