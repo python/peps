@@ -1,5 +1,7 @@
 :orphan:
 
+.. canonical-pypa-spec:: :ref:`licensing-examples-and-user-scenarios`
+
 Appendix: User Scenarios
 ========================
 

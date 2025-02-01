@@ -17,18 +17,16 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function adjustBannerMargin() {
     const text = document.createTextNode(
-      ":target { scroll-margin-top: " + stickyBanner.offsetHeight + "px; }"
+      `:target { scroll-margin-top: ${stickyBanner.offsetHeight}px; }`,
     );
     node.replaceChildren(text);
   }
 
-  const closeButton = document.querySelector('.close-button');
-  if (closeButton) {
-    closeButton.addEventListener('click', () => {
-      const stickyBanner = document.querySelector('.sticky-banner');
-      if (stickyBanner) {
-        stickyBanner.style.display = 'none';
-      }
+  for (const closeButton of document.getElementsByClassName("close-button")) {
+    closeButton.addEventListener("click", () => {
+      // search the button's ancestors for a ``sticky-banner`` element.
+      const stickyBanner = closeButton.closest(".sticky-banner");
+      if (stickyBanner) stickyBanner.remove();
     });
   }
 
