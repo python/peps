@@ -25,7 +25,7 @@ The structure of each JSON object is as follows:
        "requires": string | null,
        "replaces": string | null,
        "superseded_by": string | null,
-       "author_list": Array<string>,
+       "author_names": Array<string>,
        "url": string
      },
    }
