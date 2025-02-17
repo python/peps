@@ -55,7 +55,6 @@ def create_pep_json(peps: list[parser.PEP]) -> str:
 def write_peps_json(peps: list[parser.PEP], path: Path) -> None:
     # Create peps.json
     json_peps = create_pep_json(peps)
-    Path(path, "peps.json").write_text(json_peps, encoding="utf-8")
     os.makedirs(os.path.join(path, "api"), exist_ok=True)
     Path(path, "api", "peps.json").write_text(json_peps, encoding="utf-8")
 
