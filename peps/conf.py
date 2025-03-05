@@ -75,7 +75,7 @@ intersphinx_mapping = {
     "py3.14": ("https://docs.python.org/3.14/", None),
     "python": ("https://docs.python.org/3/", None),
     "trio": ("https://trio.readthedocs.io/en/latest/", None),
-    "typing": ("https://typing.readthedocs.io/en/latest/", None),
+    "typing": ("https://typing.python.org/en/latest/", None),
 }
 intersphinx_disabled_reftypes = []
 
