@@ -6,7 +6,7 @@ Type: Standards Track
 Topic: Packaging
 Created:
 Python-Version: 3.14
-Post-History: 
+Post-History:
 
 Abstract
 ========
@@ -39,7 +39,7 @@ Emscripten platform.
 Emscripten and wasi are also the only supported platforms that offer any
 meaningful sandboxing.
 
-Goals 
+Goals
 =====
 
 It is our long term goal to upstream the entire Pyodide runtime into CPython,
@@ -50,7 +50,7 @@ Runtime Goals
 -------------
 
 1. To describe the current state of the CPython Emscripten runtime
-2. To describe the current state of the Pyodide runtime 
+2. To describe the current state of the Pyodide runtime
 3. To identify features to be upstreamed from the Pyodide runtime into the
    CPython Emscripten runtime
 
@@ -74,7 +74,7 @@ consists of a C and C++ compiler and linker based on LLVM, together with a
 runtime based on a mildly patched musl libc.
 
 Emscripten is a POSIX-based platform. It uses the WebAssembly binary format,
-specified here: 
+specified here:
 * https://webassembly.github.io/spec/core/binary/index.html
 * https://github.com/WebAssembly/tool-conventions/blob/main/DynamicLinking.md
 
@@ -92,11 +92,11 @@ POSIX compliance
 Emscripten is a POSIX platform. However, there are POSIX APIs that exist but
 always fail when called and POSIX APIs that don't exist at all. In particular,
 there are problems with networking APIs and blocking I/O, and there is no
-support for ``fork()``. See 
+support for ``fork()``. See
 `Emscripten Portability Guidelines <https://emscripten.org/docs/porting/guidelines/portability_guidelines.html>`__.
 
 Emscripten executables can be linked with threading support, however, it comes
-with several limitations: 
+with several limitations:
 
 Enabling threading requires websites to be served with special security headers
 that indicate acceptance of the possibility of spectre-style information
@@ -165,7 +165,7 @@ cibuildwheel supports building wheels to target Emscripten using ``pyodide build
 In the short term, Pyodide's packaging tooling will stay in the Pyodide
 repository. It is an open question where Pyodide's packaging tooling should live
 in the long term. Two sensible options would be for it to remain under the
-``pyodide`` organization or be moved into the ``pypa`` organization. 
+``pyodide`` organization or be moved into the ``pypa`` organization.
 
 
 Emscripten Application Lifecycle
@@ -183,7 +183,7 @@ The ``.mjs`` file exports a single ``bootstrapEmscriptenExecutable()``
 JavaScript function that bootstraps the runtime, calls the ``main()`` function,
 and returns an API object that can be used to call C functions. Each time it is
 called produces a complete and independent copy of the runtime with its own
-separate address space. 
+separate address space.
 
 The ``bootstrapEmscriptenExecutable()`` takes a large number of runtime settings.
 `The full list is described in the Emscripten documentation here.
@@ -219,7 +219,7 @@ Emscripten file system. There are several possible approaches to this:
   This is the simplest approach, but Pyodide has moved away from it because it
   embeds the files into a custom archive format that cannot be processed with
   standard tooling.
-  
+
 * For Node, use the NODEFS to mount a native directory with the files into the
   Emscripten file system. This is the most efficient option but is Node only. It
   is closely analogous to what wasi does.
@@ -276,7 +276,7 @@ custom ``stdout`` and ``stderr`` handlers, but they exhibit the undesirable line
 buffering behavior. We will upstream the standard streams behaviors from
 Pyodide.
 
-In the long term, we hope to implement stack switching `stdin` devices, but that
+In the long term, we hope to implement stack switching ``stdin`` devices, but that
 is out of scope for this PEP.
 
 Dynamic libraries
@@ -304,7 +304,7 @@ example runs in a web worker and the cli runner runs in Node so neither of these
 have the synchronous loading limit. We will continue with this approach in
 Emscripten Python.
 
-In the long run, we hope to implement a stack switching `dlopen`, but that is
+In the long run, we hope to implement a stack switching ``dlopen``, but that is
 out of scope for this PEP.
 
 Missing RPATH Support
@@ -326,7 +326,7 @@ the patch on the dynamic loader.
 Emscripten Python currently uses the unpatched dynamic loader and so cannot load
 extension modules that depend on vendored dynamic libraries via DT_NEEDED.
 Extension modules can load dynamic libraries via DT_NEEDED if they are in the
-system `lib` directory. We will wait to resolve this until we have fixed the
+system ``lib`` directory. We will wait to resolve this until we have fixed the
 Emscripten dynamic loader upstream. When Emscripten Python is built with a
 compatible version of Emscripten, it will automatically pick up support for
 wheels with vendored dynamic libraries.
@@ -353,27 +353,27 @@ exceptions. This ensures that any recoverable JavaScript error is caught before
 it unwinds through any WebAssembly frames. All entrypoints to WebAssembly are
 also wrapped with JavaScript try/catch blocks. Any exceptions caught there have
 unwound WebAssembly frames and are thus considered to be fatal errors (though
-there is a special case to handle `exit()`). This requires foundational
+there is a special case to handle ``exit()``). This requires foundational
 integration with the Python/JavaScript foreign function interface.
 
 When the Pyodide runtime catches a fatal exception, it introspects the error to
 determine whether it came from a trap, a logic error in a system call, a
-`setjmp()` without a `longjmp()`, or a libcxxabi call to `__cxa_throw()` (an uncaught
+``setjmp()`` without a ``longjmp()``, or a libcxxabi call to ``__cxa_throw()`` (an uncaught
 C++ exception or Rust panic). We render as informative an error message as we
-can. We also call `_Py_DumpTraceback()` so we can display a Python traceback in
+can. We also call ``_Py_DumpTraceback()`` so we can display a Python traceback in
 addition to the JS/WebAssembly traceback. It also disables the JavaScript API so
 that further attempts to call into Python result in an error saying that the
 runtime has fatally failed.
 
 Normally, WebAssembly symbols are stripped so the WebAssembly frames are not
-very useful. Compiling and linking with `-g2` (or a higher debug setting)
+very useful. Compiling and linking with ``-g2`` (or a higher debug setting)
 ensures that WebAssembly symbols are included and they will appear in the
 traceback.
 
 Because Emscripten Python currently has no JS API and no foreign function
 interface, the situation is much simpler. The Python node runner wraps the call
-to `bootstrapEmscriptenExecutable()` in a try/catch block. If an exception is
-caught, it displays the JavaScript exception and calls `_Py_DumpTraceback()`. It
+to ``bootstrapEmscriptenExecutable()`` in a try/catch block. If an exception is
+caught, it displays the JavaScript exception and calls ``_Py_DumpTraceback()``. It
 then exits with code 1. We will stick with this approach until we add either a
 JS API or foreign function interface, which is out of scope for this PEP.
 
@@ -489,7 +489,7 @@ this, there are two possible solutions:
 * Using stack switching, we can occasionally switch the stack and allow the
   JavaScript event loop to go around, then check the state of a signal buffer.
   This requires the experimental JavaScript Promise Integration API, and would
-  be best used with the techniques for optimizing long tasks described 
+  be best used with the techniques for optimizing long tasks described
   `in this article <https://web.dev/articles/optimize-long-tasks>`__
 
 Emscripten Python has already implemented the solution based on shared memory,
@@ -542,7 +542,7 @@ This works, but has the disadvantage of being slow and breaking stack switching
 Using the wasm-gc `ref.test
 <https://webassembly.github.io/gc/core/exec/instructions.html#xref-syntax-instructions-syntax-instr-ref-mathsf-ref-test-mathit-rt>`__
 instruction, we can query the type of the function pointer and manually fix up
-the argument list. 
+the argument list.
 
 wasm-gc is a relatively new feature for WebAssembly runtimes, so we attempt to
 use a wasm-gc based function pointer cast trampoline if possible and fall back
@@ -605,7 +605,7 @@ The specification of the ``pyodide_<abi>`` ABI includes:
 * What stack unwinding ABI is to be used
 * Which runtime platform features are required to be present
 
-and a handful of other similar details that affect the ABI. 
+and a handful of other similar details that affect the ABI.
 
 The ABI is selected by choosing the appropriate version of the Emscripten
 compiler and passing appropriate compiler and linker flags. It is possible for
@@ -613,7 +613,7 @@ other people to build their own Python interpreter that is compatible with the
 Pyodide ABI, it is not necessary to use the Pyodide distribution itself.
 
 The ``pyodide build`` tool knows how to create wheels that match our ABI. As an
-alternative, 
+alternative,
 `the auditwheel-emscripten tool <https://github.com/ryanking13/auditwheel-emscripten>`__
 
 is capable of performing basic compatibility checks, vendoring shared libraries,
@@ -684,7 +684,7 @@ Asyncio
 
 Most JavaScript primitives are asynchronous. The JavaScript thread that Python
 runs in already has an event loop. It it not too difficult to implement a Python
-event loop that defers all actual work to the JavaScript event loop, 
+event loop that defers all actual work to the JavaScript event loop,
 `implemented in Pyodide here <https://github.com/pyodide/pyodide/blob/b3721fd5e9c7981216c4604025e2617e53f9726a/src/py/pyodide/webloop.py>`__.
 
 This is logically dependent on having at least some limited JavaScript FFI
