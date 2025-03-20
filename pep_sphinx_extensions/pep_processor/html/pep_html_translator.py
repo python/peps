@@ -1,12 +1,30 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import datetime as dt
+import json
 
-from docutils import nodes
 import sphinx.writers.html5 as html5
+from docutils import nodes
 
+TYPE_CHECKING = False
 if TYPE_CHECKING:
     from sphinx.builders import html
+
+
+def create_release_list(release_dates: dict[str, str]) -> str:
+    releases = []
+    for version, date in release_dates.items():
+        if version.endswith("beta 1"):
+            beta = " (No new features beyond this point.)"
+        else:
+            beta = ""
+        date = dt.datetime.strptime(date, "%Y-%m-%d").date()
+        new = f"{version}: {date.strftime('%A, %Y-%m-%d')}{beta}"
+        releases.append(new)
+
+    release_list = "\n".join(f"<li>{release}" for release in releases)
+
+    return f'<ul class="simple">{release_list}</ul>'
 
 
 class PEPTranslator(html5.HTML5Translator):
@@ -46,12 +64,33 @@ class PEPTranslator(html5.HTML5Translator):
         return True
 
     def visit_paragraph(self, node: nodes.paragraph) -> None:
-        """Remove <p> tags if possible."""
+        """Remove <p> tags if possible and add dates to release PEPs."""
+
         if self.should_be_compact_paragraph(node):
             self.context.append("")
         else:
             self.body.append(self.starttag(node, "p", ""))
             self.context.append("</p>\n")
+
+        title = None
+        for title_node in self.document.findall(nodes.title):
+            title = title_node.astext()
+            break
+
+        if title.endswith("Release Schedule"):
+            version = title.split()[4]
+
+            for i, child in enumerate(node.children):
+                if isinstance(child, nodes.Text):
+                    text = child.astext()
+                    if text in ("[ACTUAL]", "[EXPECTED]"):
+                        with open("peps/release-dates.json", encoding="utf-8") as f:
+                            release_dates = json.load(f)
+
+                        category = text[1:-1].lower()
+                        text = create_release_list(release_dates[version][category])
+
+                    node.children[i] = nodes.raw("", text, format="html")
 
     def depart_paragraph(self, _: nodes.paragraph) -> None:
         """Add corresponding end tag from `visit_paragraph`."""
