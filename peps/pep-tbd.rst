@@ -7,7 +7,6 @@ Status: Draft
 Type: Standards Track
 Topic: Packaging
 Created: 28-Mar-2025
-Python-Version: 3.14
 Post-History: 
 
 Abstract
