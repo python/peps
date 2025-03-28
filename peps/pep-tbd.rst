@@ -2,17 +2,17 @@ PEP: tbd
 Title: Emscripten Packaging
 Author: Hood Chatham <roberthoodchatham at gmail.com>
 Sponsor: Łukasz Langa <lukasz at python.org>
-Discussions-To: 
+Discussions-To:
 Status: Draft
 Type: Standards Track
 Topic: Packaging
 Created: 28-Mar-2025
-Post-History: 
+Post-History:
 
 Abstract
 ========
 
-This PEP proposes a new platform tag series `pyodide` for binary Python package
+This PEP proposes a new platform tag series ``pyodide`` for binary Python package
 distributions for the Pyodide Python runtime.
 
 `Emscripten <https://emscripten.org/>`__ is a complete open source compiler
@@ -93,7 +93,7 @@ The platform tags will take the form::
     pyodide_${YEAR}_${PATCH}_wasm32
 
 Each one of these will be used with a specified Python version. For example, the
-platform tag `pyodide_2025_0` will be used with Python 3.13. 
+platform tag ``pyodide_2025_0`` will be used with Python 3.13.
 
 Emscripten Wheel ABI
 --------------------
@@ -124,7 +124,7 @@ sandboxing guarantees, doing this produces no security risks.
 Determining the ABI version
 ---------------------------
 
-The Pyodide ABI version is stored in the `PYODIDE_ABI_VERSION` config variable
+The Pyodide ABI version is stored in the ``PYODIDE_ABI_VERSION`` config variable
 and can be determined via::
 
     pyodide_abi_version = sysconfig.get_config_var("PYODIDE_ABI_VERSION")
