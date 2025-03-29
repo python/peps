@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -26,7 +27,11 @@ from pep_sphinx_extensions.pep_zero_generator import parser
 from pep_sphinx_extensions.pep_zero_generator import subindices
 from pep_sphinx_extensions.pep_zero_generator import writer
 from pep_sphinx_extensions.pep_zero_generator.constants import SUBINDICES_BY_TOPIC
-from release_engineering.generate_release_cycle import create_release_cycle
+if sys.version_info >= (3, 11):
+    from release_engineering.generate_release_cycle import create_release_cycle
+else:
+    def create_release_cycle():
+        return ''
 
 if TYPE_CHECKING:
     from sphinx.application import Sphinx
