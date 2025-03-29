@@ -107,6 +107,11 @@ test: venv
 spellcheck: _ensure-pre-commit
 	$(VENVDIR)/bin/python3 -m pre_commit run --all-files --hook-stage manual codespell
 
+## regen-all      to regenerate generated source files
+.PHONY: regen-all
+regen-all:
+	$(PYTHON) -m release_engineering update-peps
+
 .PHONY: help
 help : Makefile
 	@echo "Please use \`make <target>' where <target> is one of"

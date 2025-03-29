@@ -26,6 +26,7 @@ from pep_sphinx_extensions.pep_zero_generator import parser
 from pep_sphinx_extensions.pep_zero_generator import subindices
 from pep_sphinx_extensions.pep_zero_generator import writer
 from pep_sphinx_extensions.pep_zero_generator.constants import SUBINDICES_BY_TOPIC
+from release_engineering.generate_release_cycle import create_release_cycle
 
 if TYPE_CHECKING:
     from sphinx.application import Sphinx
@@ -73,3 +74,6 @@ def create_pep_zero(app: Sphinx, env: BuildEnvironment, docnames: list[str]) -> 
     subindices.generate_subindices(SUBINDICES_BY_TOPIC, peps, docnames, env)
 
     write_peps_json(peps, Path(app.outdir))
+
+    release_cycle = create_release_cycle()
+    app.outdir.joinpath('release-cycle.json').write_text(release_cycle, encoding="utf-8")
