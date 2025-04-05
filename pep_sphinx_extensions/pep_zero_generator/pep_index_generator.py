@@ -30,6 +30,7 @@ from pep_sphinx_extensions.pep_zero_generator.constants import SUBINDICES_BY_TOP
 if sys.version_info >= (3, 11):
     from release_engineering.generate_release_cycle import create_release_cycle
 else:
+    # this function uses tomllib, which requires Python 3.11+
     def create_release_cycle():
         return ''
 

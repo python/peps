@@ -42,21 +42,32 @@ if TYPE_CHECKING:
 
 TODAY = dt.date.today()
 
-VERSIONS_TO_REGENERATE = (
-    '3.8',
-    '3.9',
-    '3.10',
-    '3.11',
-    '3.12',
-    '3.13',
-    '3.14',
-)
+SKIPPED_VERSIONS = frozenset({
+    '1.6',
+    '2.0',
+    '2.1',
+    '2.2',
+    '2.3',
+    '2.4',
+    '2.5',
+    '2.6',
+    '2.7',
+    '3.0',
+    '3.1',
+    '3.2',
+    '3.3',
+    '3.4',
+    '3.5',
+    '3.6',
+    '3.7',
+})
 
 
 def update_peps() -> None:
     python_releases = load_python_releases()
-    for version in VERSIONS_TO_REGENERATE:
-        metadata = python_releases.metadata[version]
+    for version, metadata in python_releases.metadata.items():
+        if version in SKIPPED_VERSIONS:
+            continue
         schedules = create_schedules(
             version,
             python_releases.releases[version],
