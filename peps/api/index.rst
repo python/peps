@@ -20,7 +20,7 @@ The structure of each JSON object is as follows:
        "topic": "governance" | "packaging" | "release" | "typing" | "",
        "created": string,
        "python_version": string | null,
-       "post_history": string,
+       "post_history": string | null,
        "resolution": string | null,
        "requires": string | null,
        "replaces": string | null,
