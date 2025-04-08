@@ -59,10 +59,14 @@ def pep_abstract(document: nodes.document) -> str:
         if title_node is None:
             continue
 
+        para_node = None
         if title_node.astext() == "Abstract":
-            return node.next_node(nodes.paragraph).astext().strip().replace("\n", " ")
+            para_node = node.next_node(nodes.paragraph)
         elif title_node.astext() == "Introduction":
-            introduction = node.next_node(nodes.paragraph).astext().strip().replace("\n", " ")
+            para_node = node.next_node(nodes.paragraph)
+
+        if para_node:
+            introduction = para_node.astext().strip().replace("\n", " ")
 
     return introduction
 
