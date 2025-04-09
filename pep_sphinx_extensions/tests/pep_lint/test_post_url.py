@@ -5,6 +5,7 @@ import pytest
 @pytest.mark.parametrize(
     "line",
     [
+        "TBA",
         "list-name@python.org",
         "distutils-sig@python.org",
         "csv@python.org",
@@ -52,7 +53,7 @@ def test_validate_discussions_to_invalid_list_domain(line: str):
         warning for (_, warning) in check_peps._validate_discussions_to(1, line)
     ]
     assert warnings == [
-        "Discussions-To must be a valid thread URL or mailing list"
+        "Discussions-To must be 'TBA', a valid thread URL or mailing list"
     ], warnings
 
 
