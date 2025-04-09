@@ -1,0 +1,387 @@
+PEP: 785
+Title: New methods for easier handling of :class:`ExceptionGroup`\ s
+Author: Zac Hatfield-Dodds <zac@zhd.dev>
+Sponsor: Gregory P. Smith <greg@krypto.org>
+Status: Draft
+Type: Standards Track
+Created: 08-Apr-2025
+Python-Version: 3.14
+
+Abstract
+========
+
+As :pep:`654` :class:`ExceptionGroup` has come into widespread use across the
+Python community, some common but awkward patterns have emerged. We therefore
+propose adding two new methods to exception objects:
+
+- :meth:`!BaseExceptionGroup.flat_exceptions`, returning the 'leaf' exceptions as
+  a list, with each traceback composited from any intermediate groups.
+
+- :meth:`!BaseException.preserve_context`, a context manager which
+  saves and restores the :attr:`!self.__context__` attribute of ``self``,
+  so that raising the exception within an ``except:`` block.
+
+We expect this to enable more concise expression of error handling logic in
+many medium-complexity cases. Without them, exception-group handlers will
+continue to discard intermediate tracebacks and mis-handle ``__context__``
+exceptions, to the detriment of anyone debugging async code.
+
+
+Motivation
+==========
+
+As exception groups come into widespread use, library authors and end users
+often write code to process or respond to individual leaf exceptions, for
+example when implementing middleware, error logging, or response handlers in
+a web framework.
+
+`Searching GitHub`__ found four implementations of :meth:`!flat_exceptions` by
+various names in the first sixty hits, of which none handle
+tracebacks.\ [#numbers]_  The same search found thirteen cases where
+:meth:`!.flat_exceptions` could be used.  We therefore believe that providing
+a method on the :class:`BaseException` type with proper traceback preservation
+will improve error-handling and debugging experiences across the ecosystem.
+
+__ https://github.com/search?q=%2Ffor+%5Cw%2B+in+%5Beg%5D%5Cw*%5C.exceptions%3A%2F+language%3APython&type=code
+
+The rise of exception groups has also made re-raising exceptions caught by an
+earlier handler much more common: for example, web-server middleware might
+unwrap ``HTTPException`` if that is the sole leaf of a group:
+
+.. code-block:: python
+
+    except* HTTPException as group:
+        first, *rest = group.flat_exceptions()  # get the whole traceback :-)
+        if not rest:
+            raise first
+        raise
+
+However, this innocent-seeming code has a problem: ``raise first`` will do
+``first.__context__ = group`` as a side effect. This discards the original
+context of the error, which may contain crucial information to understand why
+the exception was raised. In many production apps it also causes tracebacks
+to balloon from hundreds of lines, to tens or even `hundreds of thousands of
+lines`__ - a volume which makes understanding errors far more difficult than
+it should be.
+
+__ https://github.com/python-trio/trio/issues/2001#issuecomment-931928509
+
+
+A new :meth:`!BaseException.preserve_context` method would be a discoverable,
+readable, and easy-to-use solution for these cases.
+
+
+Specification
+=============
+
+A new method ``flat_exceptions()`` will be added to ``BaseExceptionGroup``, with the
+following signature:
+
+.. code-block:: python
+
+    def flat_exceptions(self, *, fix_tracebacks=True) -> list[BaseException]:
+        """
+        Return a flat list of all 'leaf' exceptions in the group.
+
+        If fix_tracebacks is True, each leaf will have the traceback replaced
+        with a composite so that frames attached to intermediate groups are
+        still visible when debugging. Pass fix_tracebacks=False to disable
+        this modification, e.g. if you expect to raise the group unchanged.
+        """
+
+A new method ``preserve_context()`` will be added to ``BaseException``, with the
+following signature:
+
+.. code-block:: python
+
+    def preserve_context(self) -> contextlib.AbstractContextManager[Self]:
+        """
+        Context manager that preserves the exception's __context__ attribute.
+
+        When entering the context, the current values of __context__ is saved.
+        When exiting, the saved value is restored, which allows raising an
+        exception inside an except block without changing its context chain.
+        """
+
+Usage example:
+
+.. code-block:: python
+
+    # We're an async web framework, where user code can raise an HTTPException
+    # to return a particular HTTP error code to the client. However, it may
+    # (or may not) be raised inside a TaskGroup, so we need to use `except*`;
+    # and if there are *multiple* such exceptions we'll treat that as a bug.
+    try:
+        user_code_here()
+    except* HTTPException as group:
+        first, *rest = group.flat_exceptions()
+        if rest:
+            raise  # handled by internal-server-error middleware
+        ... # logging, cache updates, etc.
+        with first.preserve_context():
+            raise first
+
+Without ``.preserve_context()``, this could would have to either:
+
+* arrange for the exception to be raised *after* the ``except*`` block,
+  making code difficult to follow in nontrivial cases, or
+* discard the existing ``__context__`` of the ``first`` exception, replacing
+  it with an ``ExceptionGroup`` which is simply an implementation detail, or
+* use ``try/except`` instead of ``except*``, handling the possibility that
+  the group doesn't contain an ``HTTPException`` at all,[#catch-raw-group]_ or
+* implement the semantics of ``.preserve_context()`` inline::
+
+    prev_ctx = first.__context__
+    try:
+        raise first  # or `raise first from None`, etc.
+    finally:
+        first.__context__ = prev_ctx
+        del prev_ctx  # break gc cycle
+
+  which is not *literally unheard-of*, but remains very very rare.
+
+
+Backwards Compatibility
+=======================
+
+Adding new methods to built-in classes, especially those as widely used as
+``BaseException``, can have substantial impacts. However, GitHub search shows
+no collisions for these method names (`zero hits <flat-exceptions>`_ and
+`three unrelated hits <preserve-context>`_ respectively). If user-defined
+methods with these names exist in private code they will shadow those proposed
+in the PEP, without changing runtime behavior.
+
+.. _flat-exceptions: https://github.com/search?q=%2F%5C.flat_exceptions%5C%28%2F+language%3APython&type=code
+.. _preserve-context: https://github.com/search?q=%2F%5C.preserve_context%5C%28%2F+language%3APython&type=code
+
+
+How to Teach This
+=================
+
+Working with exception groups is an intermediate-to-advanced topic, unlikely
+to arise for beginning programmers. We therefore suggest teaching this topic
+via documentation, and via just-in-time feedback from static analysis tools.
+In intermediate classes, we recommend teaching ``.flat_exceptions()`` together
+with the ``.split()`` and ``.subgroup()`` methods, and mentioning
+``.preserve_context()`` as an advanced option to address specific pain points.
+
+Both the API reference and the existing `ExceptionGroup tutorial
+<https://docs.python.org/3/tutorial/errors.html#exception-groups>`_ should
+be updated to demonstrate and explain the new methods. The tutorial should
+include examples of common patterns where ``.flat_exceptions()`` and
+``.preserve_context()`` help simplify error handling logic. Downstream
+libraries which often use exception groups could include similar docs.
+
+We have also designed lint rules for inclusion in ``flake8-async`` which will
+suggest using ``.flat_exceptions()`` when iterating over ``group.exceptions``
+or re-raising a leaf exception, and suggest using ``.preserve_context()`` when
+re-raising a leaf exception inside an ``except*`` block would override any
+existing context.
+
+
+Reference Implementation
+========================
+
+While the methods on built-in exceptions will be implemented in C if this PEP
+is accepted, we hope that the following Python implementation will be useful
+on older versions of Python, and can demonstrate the intended semantics.
+
+We have found these helper functions quite useful when working with
+:class:`ExceptionGroup`\ s in a large production codebase.
+
+A ``flat_exceptions()`` helper function
+---------------------------------------
+
+.. code-block:: python
+
+    import copy
+    import types
+    from types import TracebackType
+
+
+    def flat_exceptions(
+        self: BaseExceptionGroup, *, fix_traceback: bool = True
+    ) -> list[BaseException]:
+        """
+        Return a flat list of all 'leaf' exceptions.
+
+        If fix_tracebacks is True, each leaf will have the traceback replaced
+        with a composite so that frames attached to intermediate groups are
+        still visible when debugging. Pass fix_tracebacks=False to disable
+        this modification, e.g. if you expect to raise the group unchanged.
+        """
+
+        def _flatten(group: BaseExceptionGroup, parent_tb: TracebackType | None = None):
+            group_tb = group.__traceback__
+            combined_tb = _combine_tracebacks(parent_tb, group_tb)
+            result = []
+            for exc in group.exceptions:
+                if isinstance(exc, BaseExceptionGroup):
+                    result.extend(_flatten(exc, combined_tb))
+                elif fix_tracebacks:
+                    tb = _combine_tracebacks(combined_tb, exc.__traceback__)
+                    result.append(exc.with_traceback(tb))
+                else:
+                    result.append(exc)
+            return result
+
+        return _flatten(self)
+
+
+    def _combine_tracebacks(
+        tb1: TracebackType | None,
+        tb2: TracebackType | None,
+    ) -> TracebackType | None:
+        """
+        Combine two tracebacks, putting tb1 frames before tb2 frames.
+
+        If either is None, return the other.
+        """
+        if tb1 is None:
+            return tb2
+        if tb2 is None:
+            return tb1
+
+        # Convert tb1 to a list of frames
+        frames = []
+        current = tb1
+        while current is not None:
+            frames.append((current.tb_frame, current.tb_lasti, current.tb_lineno))
+            current = current.tb_next
+
+        # Create a new traceback starting with tb2
+        new_tb = tb2
+
+        # Add frames from tb1 to the beginning (in reverse order)
+        for frame, lasti, lineno in reversed(frames):
+            new_tb = types.TracebackType(
+                tb_next=new_tb, tb_frame=frame, tb_lasti=lasti, tb_lineno=lineno
+            )
+
+        return new_tb
+
+
+A ``preserve_context()`` context manager
+----------------------------------------
+
+.. code-block:: python
+
+    class preserve_context:
+        def __init__(self, exc: BaseException):
+            self.__exc = exc
+            self.__context = exc.__context__
+
+        def __enter__(self):
+            return self.__exc
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            assert exc_value is self.__exc, f"did not raise the expected exception {self.__exc!r}"
+            exc_value.__context__ = self.__context
+            del self.__context  # break gc cycle
+
+
+Rejected Ideas
+==============
+
+Add utility functions instead of methods
+----------------------------------------
+
+Rather than adding methods to exceptions, we could provide utility functions
+like the reference implementations above.
+
+There are however several reasons to prefer methods: there's no obvious place
+where helper functions should live, they take exactly one argument which must
+be an instance of ``BaseException``, and methods are both more convenient and
+more discoverable.
+
+
+Add ``BaseException.as_group()`` (or group methods)
+---------------------------------------------------
+
+Our survey of ``ExceptionGroup``-related error handling code also observed
+many cases of duplicated logic to handle both a bare exception, and the same
+kind of exception inside a group (often incorrectly, motivating
+``.flat_exceptions()``).
+
+We briefly `proposed <https://github.com/python/cpython/issues/125825>`__
+adding ``.split(...)`` and ``.subgroup(...)`` methods too all exceptions,
+before considering ``.flat_exceptions()`` made us feel this was too clumsy.
+As a cleaner alternative, we sketched out an ``.as_group()`` method:
+
+.. code-block:: python
+
+    def as_group(self):
+        if not isinstance(self, BaseExceptionGroup):
+            return BaseExceptionGroup("", [self])
+        return self
+
+However, applying this method to refactor existing code was a negligible
+improvement over writing the trivial inline version. We also hope that many
+current uses for such a method will be addressed by ``except*`` as older
+Python versions reach end-of-life.
+
+We recommend documenting a "convert to group" recipe for de-duplicated error
+handling, instead of adding group-related methods to ``BaseException``.
+
+
+Add ``e.raise_with_preserved_context()`` instead of a context manager
+---------------------------------------------------------------------
+
+We prefer the context-manager form because it allows ``raise ... from ...``
+if the user wishes to (re)set the ``__cause__``, and is overall somewhat
+less magical and tempting to use in cases where it would not be appropriate.
+We could be argued around though, if others prefer this form.
+
+
+Footnotes
+=========
+
+.. [#numbers]
+    From the first sixty `GitHub search results
+    <https://github.com/search?q=%2Ffor+%5Cw%2B+in+%5Beg%5D%5Cw*%5C.exceptions%3A%2F+language%3APython&type=code>`__
+    for ``for \w+ in [eg]\w*\.exceptions:``, we find:
+
+    * Four functions implementing ``flat_exceptions()`` semantics, none of
+      which preserve tracebacks:
+      (`one <https://github.com/nonebot/nonebot2/blob/570bd9587af99dd01a7d5421d3105d8a8e2aba32/nonebot/utils.py#L259-L266>`__,
+      `two <https://github.com/HypothesisWorks/hypothesis/blob/7c49f2daf602bc4e51161b6c0bc21720d64de9eb/hypothesis-python/src/hypothesis/core.py#L763-L770>`__,
+      `three <https://github.com/BCG-X-Official/pytools/blob/9d6d37280b72724bd64f69fe7c98d687cbfa5317/src/pytools/asyncio/_asyncio.py#L269-L280>`__,
+      `four <https://github.com/M-o-a-T/moat/blob/ae174b0947288364f3ae580cb05522624f4f6f39/moat/util/exc.py#L10-L18>`__)
+
+    * Six handlers which raise the first exception in a group, discarding
+      any subsequent errors; these would benefit from both proposed methods.
+      (`one <https://github.com/Lancetnik/FastDepends/blob/239cd1a58028782a676934f7d420fbecf5cb6851/fast_depends/core/model.py#L488-L490>`__,
+      `two <https://github.com/estuary/connectors/blob/677824209290c0a107e63d5e2fccda7c8388101e/source-hubspot-native/source_hubspot_native/buffer_ordered.py#L108-L111>`__,
+      `three <https://github.com/MobileTeleSystems/data-rentgen/blob/7525f7ecafe5994a6eb712d9e66b8612f31436ef/data_rentgen/consumer/__init__.py#L65-L67>`__,
+      `four <https://github.com/ljmf00/simbabuild/blob/ac7e0999563b3a1b13f4e445a99285ea71d4c7ab/simbabuild/builder_async.py#L22-L24>`__,
+      `five <https://github.com/maxjo020418/BAScraper/blob/cd5c2ef24f45f66e7f0fb26570c2c1529706a93f/BAScraper/BAScraper_async.py#L170-L174>`__,
+      `six <https://github.com/sobolevn/faststream/blob/0d6c9ee6b7703efab04387c51c72876e25ad91a7/faststream/app.py#L54-L56>`__)
+
+    * Seven cases which mishandle nested exception groups, and would thus
+      benefit from ``flat_exceptions()``. We were surprised to note that only
+      one of these cases could straightforwardly be replaced by use of an
+      ``except*`` clause or ``.subgroup()`` method.
+      (`one <https://github.com/vertexproject/synapse/blob/ed8148abb857d4445d727768d4c57f4f11b0d20a/synapse/lib/stormlib/iters.py#L82-L88>`__,
+      `two <https://github.com/mhdzumair/MediaFusion/blob/ff906378f32fb8419ef06c6f1610c08946dfaeee/scrapers/base_scraper.py#L375-L386>`__,
+      `three <https://github.com/SonySemiconductorSolutions/local-console/blob/51f5af806336e169d3dd9b9f8094a29618189f5e/local-console/src/local_console/commands/server.py#L61-L67>`__,
+      `four <https://github.com/SonySemiconductorSolutions/local-console/blob/51f5af806336e169d3dd9b9f8094a29618189f5e/local-console/src/local_console/commands/broker.py#L66-L69>`__,
+      `five <https://github.com/HexHive/Tango/blob/5c8472d1679068daf0f041dbbda21e05281b10a3/tango/fuzzer.py#L143-L160>`__,
+      `six <https://github.com/PaLora16/ExceptionsGroupsValidators/blob/41152a86eec695168fdec74653694658ddc788fc/main.py#L39-L44>`__,
+      `seven <https://github.com/reactive-python/reactpy/blob/178fc05de7756f7402ed2ee1e990af0bdad42d9e/src/reactpy/backend/starlette.py#L164-L170>`__)
+
+    indicating that more than a quarter of _all_ hits for this fairly general
+    search would benefit from the methods proposed in this PEP.
+
+.. [#catch-raw-group]
+    This remains very rare, and most cases duplicate logic across
+    ``except FooError:`` and ``except ExceptionGroup:  # containing FooError``
+    clauses rather than using something like the as_group trick.
+    We expect that ``except*`` will be widely used in such cases, before
+    the methods proposed by this PEP are widely available.
+
+
+Copyright
+=========
+
+This document is placed in the public domain or under the CC0-1.0-Universal license,
+whichever is more permissive.
