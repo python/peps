@@ -37,7 +37,7 @@ def test_with_fake_pep():
         (14, "Topic must be for a valid sub-index"),
         (14, "Topic must be sorted lexicographically"),
         (16, "PEP references must be separated by comma-spaces (', ')"),
-        (17, "Discussions-To must be a valid thread URL or mailing list"),
+        (17, "Discussions-To must be a valid thread URL, mailing list, or 'Pending'"),
         (18, "Post-History must be a 'DD-mmm-YYYY' date: '2-Feb-2000'"),
         (18, "Post-History must be a valid thread URL"),
         (19, "Post-History must be a 'DD-mmm-YYYY' date: '3-Mar-2001'"),
