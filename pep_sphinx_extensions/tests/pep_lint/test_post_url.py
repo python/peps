@@ -5,7 +5,7 @@ import pytest
 @pytest.mark.parametrize(
     "line",
     [
-        "TBA",
+        "Pending",
         "list-name@python.org",
         "distutils-sig@python.org",
         "csv@python.org",
