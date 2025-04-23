@@ -13,14 +13,29 @@ Post-History: `10-Mar-2025 <https://discuss.python.org/t/a-new-api-for-ensuring-
 Abstract
 ========
 
-:c:func:`PyGILState_Ensure`, :c:func:`PyGILState_Ensure`, and other related functions in the ``PyGILState`` family, are the most common way to create native threads that interact with Python, and have been the standard for over twenty years (:pep:`311`). But, as Python has grown, these functions have become problematic:
+:c:func:`PyGILState_Ensure`, :c:func:`PyGILState_Ensure`, and other related
+functions in the ``PyGILState`` family, are the most common way to create
+native threads that interact with Python, and have been the standard for over
+twenty years (:pep:`311`). But, as Python has grown, these functions have
+become problematic:
 
-- They aren't safe for finalization, either hanging the calling thread or crashing it with a segmentation fault, preventing further execution.
-- When they're called before finalization, they force the thread to be "daemon," meaning that the interpreter won't wait for it to reach any point of execution. This is mostly frustrating for developers, but can lead to deadlocks!
-- Subinterpreters don't play nicely with them, because they all assume that the main interpreter is the only one that exists. A fresh thread (*i.e.*, has never had a thread state) that calls :c:func:`PyGILState_Ensure` will always be for the main interpreter.
-- The term "GIL" in the name is quite confusing for users of free-threaded Python. There isn't a GIL, why do they still have to call it?
+- They aren't safe for finalization, either hanging the calling thread or
+  crashing it with a segmentation fault, preventing further execution.
+- When they're called before finalization, they force the thread to be
+  "daemon," meaning that the interpreter won't wait for it to reach any point
+  of execution. This is mostly frustrating for developers, but can lead to
+  deadlocks!
+- Subinterpreters don't play nicely with them, because they all assume that
+  the main interpreter is the only one that exists. A fresh thread (*i.e.*,
+  has never had a thread state) that calls :c:func:`PyGILState_Ensure` will
+  always be for the main interpreter.
+- The term "GIL" in the name is quite confusing for users of free-threaded
+  Python. There isn't a GIL, why do they still have to call it?
 
-This PEP intends to fix all of these issues by providing :c:func:`PyThreadState_Ensure` and :c:func:`PyThreadState_Release` as a more correct and safer replacement for :c:func:`PyGILState_Ensure` and :c:func:`PyGILState_Release`. For example:
+This PEP intends to fix all of these issues by providing
+:c:func:`PyThreadState_Ensure` and :c:func:`PyThreadState_Release` as a more
+correct and safer replacement for :c:func:`PyGILState_Ensure` and
+:c:func:`PyGILState_Release`. For example:
 
 .. code-block:: C
 
@@ -33,37 +48,69 @@ This PEP intends to fix all of these issues by providing :c:func:`PyThreadState_
         // ...
         
         PyThreadState_Release();
+
 Motivation
 ==========
 
 Native threads will always hang during finalization
 ---------------------------------------------------
 
-Many codebases might need to call Python code in highly-asynchronous situations where the interpreter is already finalizing, or might finalize, and want to continue running code after the Python call. This desire has been `brought up by users <https://discuss.python.org/t/safely-using-the-c-api-when-python-might-shut-down/78850/>`_. For example, a callback that wants to call Python code might be invoked by:
+Many codebases might need to call Python code in highly-asynchronous
+situations where the interpreter is already finalizing, or might finalize, and want to continue
+running code after the Python call. This desire has been
+`brought up by users <https://discuss.python.org/t/safely-using-the-c-api-when-python-might-shut-down/78850/>`_.
+For example, a callback that wants to call Python code might be invoked by:
 
 - A kernel has finished running on the GPU
 - A network packet was received.
-- A thread has quit, and the C++ library is executing static finalizers of thread local storage.
+- A thread has quit, and the C++ library is executing static finalizers of
+  thread local storage.
 
-In the current C API, any non-Python thread (*i.e.*, not created by :mod:`threading`) is considered to be "daemon," meaning that the interpreter won't wait on that thread to finalize. Instead, the interpreter will hang the thread when it goes to `attach <attached thread state>`_ a `thread state`_, making it unusable past that point. Attaching a thread state can happen at any point when invoking Python, such as releasing the GIL in-between bytecode instructions, or when a C function exits a :c:macro:`Py_BEGIN_ALLOW_THREADS` block.
+In the current C API, any non-Python thread (*i.e.*, not created by
+:mod:`threading`) is considered to be "daemon," meaning that the interpreter
+won't wait on that thread to finalize. Instead, the interpreter will hang the
+thread when it goes to `attach <attached thread state>`_ a `thread state`_,
+making it unusable past that point. Attaching a thread state can happen at
+any point when invoking Python, such as releasing the GIL in-between bytecode
+instructions, or when a C function exits a :c:macro:`Py_BEGIN_ALLOW_THREADS`
+block.
 
-This means that any non-Python thread may be terminated at any point, which is severely limiting for users who want to do more than just execute Python code in their stream of calls (for example, C++ executing finalizers in *addition* to calling Python).
+This means that any non-Python thread may be terminated at any point, which
+is severely limiting for users who want to do more than just execute Python
+code in their stream of calls (for example, C++ executing finalizers in
+*addition* to calling Python).
 
 ``Py_IsFinalizing`` is insufficient
 ***********************************
 
-The `docs <https://docs.python.org/3/c-api/init.html#c.PyGILState_Ensure>`_ currently recommend :c:func:`Py_IsFinalizing` to guard against termination of the thread:
+The `docs <https://docs.python.org/3/c-api/init.html#c.PyGILState_Ensure>`_
+currently recommend :c:func:`Py_IsFinalizing` to guard against termination of
+the thread:
 
-    Calling this function from a thread when the runtime is finalizing will terminate the thread, even if the thread was not created by Python. You can use Py_IsFinalizing() or sys.is_finalizing() to check if the interpreter is in process of being finalized before calling this function to avoid unwanted termination.
+    Calling this function from a thread when the runtime is finalizing will
+    terminate the thread, even if the thread was not created by Python. You
+    can use Py_IsFinalizing() or sys.is_finalizing() to check if the
+    interpreter is in process of being finalized before calling this function
+    to avoid unwanted termination.
 
-Unfortunately, this isn't correct, because of time-of-call to time-of-use issues; the interpreter might not be finalizing during the call to :c:func:`Py_IsFinalizing`, but it might start finalizing right after, which would cause the attachment of a thread state (typically via :c:func:`PyGILState_Ensure`) to hang the thread.
+Unfortunately, this isn't correct, because of time-of-call to time-of-use
+issues; the interpreter might not be finalizing during the call to
+:c:func:`Py_IsFinalizing`, but it might start finalizing right after, which
+would cause the attachment of a thread state (typically via
+:c:func:`PyGILState_Ensure`) to hang the thread.
 
 Daemon threads can cause finalization deadlocks
 ***********************************************
 
-When acquiring locks, it's extremely important to detach the thread state to prevent deadlocks. This is true on both the GIL-ful and free-threaded builds. In a GIL-icious build, a deadlock can occur pretty easily when acquiring a lock if the GIL wasn't released, and lock-ordering deadlocks can still occur free-threaded builds if the thread state wasn't detached.
+When acquiring locks, it's extremely important to detach the thread state to
+prevent deadlocks. This is true on both the GIL-ful and free-threaded builds.
+In a GIL-icious build, a deadlock can occur pretty easily when acquiring a
+lock if the GIL wasn't released, and lock-ordering deadlocks can still occur
+free-threaded builds if the thread state wasn't detached.
 
-So, all code that needs to work with locks need to detach the thread state. In C, this is almost always done via :c:macro:`Py_BEGIN_ALLOW_THREADS` and :c:macro:`Py_END_ALLOW_THREADS`, in a code block that looks something like this:
+So, all code that needs to work with locks need to detach the thread state.
+In C, this is almost always done via :c:macro:`Py_BEGIN_ALLOW_THREADS` and
+:c:macro:`Py_END_ALLOW_THREADS`, in a code block that looks something like this:
 
 .. code-block:: C
 
@@ -71,66 +118,140 @@ So, all code that needs to work with locks need to detach the thread state. In C
     acquire_lock();
     Py_END_ALLOW_THREADS
 
-Again, in a daemon thread, :c:macro:`Py_END_ALLOW_THREADS` will hang the thread if the interpreter is finalizing. But, :c:macro:`Py_BEGIN_ALLOW_THREADS` will *not* hang the thread; the lock will be acquired, and *then* hung! Once that happens, nothing can try to acquire that lock without deadlocking. The main thread will continue to run finalizers past that point, though. If any of those finalizers try to acquire the lock, deadlock ensues.
+Again, in a daemon thread, :c:macro:`Py_END_ALLOW_THREADS` will hang the thread
+if the interpreter is finalizing. But, :c:macro:`Py_BEGIN_ALLOW_THREADS` will
+*not* hang the thread; the lock will be acquired, and *then* hung! Once that
+happens, nothing can try to acquire that lock without deadlocking. The main
+thread will continue to run finalizers past that point, though. If any of
+those finalizers try to acquire the lock, deadlock ensues.
 
-This affects the Python core itself, and there's not much that can be done to fix it. For example, `gh-129536 <https://github.com/python/cpython/issues/129536>`_ remarks that the :mod:`ssl` module can emit a fatal error when used at finalization, because a daemon thread got hung while holding the lock. There are workarounds for this for pure-Python code, but native threads don't have such an option.
+This affects the Python core itself, and there's not much that can be done
+to fix it. For example, `gh-129536 <https://github.com/python/cpython/issues/129536>`_
+remarks that the :mod:`ssl` module can emit a fatal error when used at
+finalization, because a daemon thread got hung while holding the lock. There
+are workarounds for this for pure-Python code, but native threads don't have
+such an option.
 
 We can't change finalization behavior for ``PyGILState_Ensure``
 ***************************************************************
 
-There will always have to be a point in a Python program where :c:func:`PyGILState_Ensure` can no longer acquire the GIL (or more correctly, attach a thread state). If the interpreter is long dead, then Python obviously can't give a thread a way to invoke it. :c:func:`PyGILState_Ensure` doesn't have any meaningful way to return a failure, so it has no choice but to terminate the thread or emit a fatal error, as noted in `gh-124622 <https://github.com/python/cpython/issues/124622>`_:
+There will always have to be a point in a Python program where
+:c:func:`PyGILState_Ensure` can no longer acquire the GIL (or more correctly,
+attach a thread state). If the interpreter is long dead, then Python
+obviously can't give a thread a way to invoke it.
+:c:func:`PyGILState_Ensure` doesn't have any meaningful way to return a
+failure, so it has no choice but to terminate the thread or emit a fatal
+error, as noted in `gh-124622 <https://github.com/python/cpython/issues/124622>`_:
 
-    I think a new GIL acquisition and release C API would be needed. The way the existing ones get used in existing C code is not amenible to suddenly bolting an error state onto; none of the existing C code is written that way. After the call they always just assume they have the GIL and can proceed. The API was designed as "it'll block and only return once it has the GIL" without any other option.
+    I think a new GIL acquisition and release C API would be needed. The way
+    the existing ones get used in existing C code is not amenible to suddenly
+    bolting an error state onto; none of the existing C code is written that
+    way. After the call they always just assume they have the GIL and can
+    proceed. The API was designed as "it'll block and only return once it has
+    the GIL" without any other option.
 
 ``PyGILState`` is broken and misleading
 ---------------------------------------
 
-There are currently two public ways for a user to create and attach their own `thread state`_; manual use of :c:func:`PyThreadState_New` / :c:func:`PyThreadState_Swap`, and :c:func:`PyGILState_Ensure`. The former, :c:func:`PyGILState_Ensure`, is `significantly more common <https://grep.app/search?q=pygilstate_ensure>`_.
+There are currently two public ways for a user to create and attach their own
+`thread state`_; manual use of :c:func:`PyThreadState_New` / :c:func:`PyThreadState_Swap`,
+and :c:func:`PyGILState_Ensure`. The former, :c:func:`PyGILState_Ensure`,
+is `significantly more common <https://grep.app/search?q=pygilstate_ensure>`_.
 
 ``PyGILState`` generally crashes during finalization
 ****************************************************
 
-As of this PEP, the current behavior of :c:func:`PyGILState_Ensure` does not match the documentation. Instead of hanging the thread during finalization as previously noted, it's extremely common for it to crash with a segmentation fault. This is a `known issue <https://github.com/python/cpython/issues/124619>`_ that could, in theory, be fixed in CPython, but it's definitely worth noting here. Incidentally, acceptance and implementation of this PEP will likely fix the existing crashes caused by :c:func:`PyGILState_Ensure`.
+As of this PEP, the current behavior of :c:func:`PyGILState_Ensure` does not
+match the documentation. Instead of hanging the thread during finalization
+as previously noted, it's extremely common for it to crash with a segmentation
+fault. This is a `known issue <https://github.com/python/cpython/issues/124619>`_
+that could, in theory, be fixed in CPython, but it's definitely worth noting
+here. Incidentally, acceptance and implementation of this PEP will likely fix
+the existing crashes caused by :c:func:`PyGILState_Ensure`.
 
 ``PyGILState`` is tricky for free-threading
 *******************************************
 
-A large issue with the term "GIL" in the C API is that it's semantically misleading, as noted in `gh-127989 <https://github.com/python/cpython/issues/127989>`_ (disclaimer: the author of this PEP also authored that issue):
+A large issue with the term "GIL" in the C API is that it's semantically
+misleading, as noted in `gh-127989 <https://github.com/python/cpython/issues/127989>`_
+(disclaimer: the author of this PEP also authored that issue):
 
-    The biggest issue is that for free-threading, there is no GIL, so users erroneously call the C API inside ``Py_BEGIN_ALLOW_THREADS`` blocks or omit ``PyGILState_Ensure`` in fresh threads.
+    The biggest issue is that for free-threading, there is no GIL, so users
+    erroneously call the C API inside ``Py_BEGIN_ALLOW_THREADS`` blocks or
+    omit ``PyGILState_Ensure`` in fresh threads.
 
-In reality, :c:func:`PyGILState_Ensure` doesn't just "acquire the GIL" in modern versions. It attaches a `thread state`_ for the current thread--*that's* what lets a thread invoke the C API. On GIL-ful builds, holding an `attached thread state`_ implies holding the GIL, so only one thread can have one at a time. Free-threaded builds achieve the effect of multi-core parallism while remaining backwards-compatible by simply removing that limitation: threads still need a thread state (and thus need to call :c:func:`PyGILState_Ensure`), but they don't need to wait on one another to do so.
+In reality, :c:func:`PyGILState_Ensure` doesn't just "acquire the GIL" in
+modern versions. It attaches a `thread state`_ for the current
+thread--*that's* what lets a thread invoke the C API. On GIL-ful builds,
+holding an `attached thread state`_ implies holding the GIL, so only one
+thread can have one at a time. Free-threaded builds achieve the effect of
+multi-core parallism while remaining backwards-compatible by simply removing
+that limitation: threads still need a thread state (and thus need to call
+:c:func:`PyGILState_Ensure`), but they don't need to wait on one another to
+do so.
 
 Subinterpreters don't work with ``PyGILState``
 ----------------------------------------------
 
-As noted in the `documentation <https://docs.python.org/3/c-api/init.html#non-python-created-threads>`_, ``PyGILState`` APIs aren't officially supported in subinterpreters:
+As noted in the
+`documentation <https://docs.python.org/3/c-api/init.html#non-python-created-threads>`_,
+``PyGILState`` APIs aren't officially supported in subinterpreters:
 
-    Note that the ``PyGILState_*`` functions assume there is only one global interpreter (created automatically by ``Py_Initialize()``). Python supports the creation of additional interpreters (using ``Py_NewInterpreter()``), but mixing multiple interpreters and the ``PyGILState_*`` API is unsupported.
+    Note that the ``PyGILState_*`` functions assume there is only one global
+    interpreter (created automatically by ``Py_Initialize()``). Python
+    supports the creation of additional interpreters (using
+    ``Py_NewInterpreter()``), but mixing multiple interpreters and the
+    ``PyGILState_*`` API is unsupported.
 
-More technically, this is because ``PyGILState_Ensure`` doesn't have any way to know which interpreter created the thread, and as such, it has to assume that it was the main interpreter. There isn't any way to detect this at runtime, so spurious races are bound to come up in threads created by subinterpreters, because synchronization for the wrong interpreter will be used on objects shared between the threads.
+More technically, this is because ``PyGILState_Ensure`` doesn't have any way
+to know which interpreter created the thread, and as such, it has to assume
+that it was the main interpreter. There isn't any way to detect this at
+runtime, so spurious races are bound to come up in threads created by
+subinterpreters, because synchronization for the wrong interpreter will be
+used on objects shared between the threads.
 
 Interpreters can concurrently shut down
 ***************************************
 
-The other way of creating a native thread that can invoke Python, :c:func:`PyThreadState_New` / :c:func:`PyThreadState_Swap`, is a lot better for supporting subinterpreters (because :c:func:`PyThreadState_New` takes an explicit interpreter, rather than assuming that the main interpreter was intended), but is still limited by the current API.
+The other way of creating a native thread that can invoke Python,
+:c:func:`PyThreadState_New` / :c:func:`PyThreadState_Swap`, is a lot better
+for supporting subinterpreters (because :c:func:`PyThreadState_New` takes an
+explicit interpreter, rather than assuming that the main interpreter was intended),
+but is still limited by the current API.
 
-In particular, subinterpreters typically have a much shorter lifetime than the main interpreter, and as such, there's not necessarily a guarantee that a :c:type:`PyInterpreterState` (acquired by :c:func:`PyInterpreterState_Get`) passed to a fresh thread will still be alive. Similarly, a :c:type:`PyInterpreterState` pointer could have been replaced with a *new* interpreter, causing all sorts of unknown issues. They are also subject to all the finalization related hanging mentioned previously.
+In particular, subinterpreters typically have a much shorter lifetime than the
+main interpreter, and as such, there's not necessarily a guarantee that a
+:c:type:`PyInterpreterState` (acquired by :c:func:`PyInterpreterState_Get`)
+passed to a fresh thread will still be alive. Similarly, a
+:c:type:`PyInterpreterState` pointer could have been replaced with a *new*
+interpreter, causing all sorts of unknown issues. They are also subject to
+all the finalization related hanging mentioned previously.
 
 Rationale
 =========
 
-This PEP includes several new APIs that intend to fix all of the issues stated above.
+This PEP includes several new APIs that intend to fix all of the issues stated
+above.
 
 Bikeshedding and the ``PyThreadState`` namespace
 ------------------------------------------------
 
-To solve the issue with "GIL" terminology, the new functions intended as replacements for ``PyGILState`` will go under the existing ``PyThreadState`` namespace. In Python 3.14, the documentation has been `updated <https://github.com/python/cpython/pull/127990>`_ to switch over to terms using "thread state" instead of "global interpreter lock" or "GIL," so this namespace seems to fit well for the functions in this PEP.
+To solve the issue with "GIL" terminology, the new functions intended as
+replacements for ``PyGILState`` will go under the existing ``PyThreadState``
+namespace. In Python 3.14, the documentation has been
+`updated <https://github.com/python/cpython/pull/127990>`_ to switch over to
+terms using "thread state" instead of "global interpreter lock" or "GIL," so
+this namespace seems to fit well for the functions in this PEP.
 
 Full deprecation of ``PyGILState``
 ----------------------------------
 
-As made clear in the motivation, ``PyGILState`` is already pretty buggy, and even if it was magically fixed, the current behavior of hanging the thread is beyond repair. As such, this PEP intends to completely deprecate the existing ``PyGILState`` APIs. However, even if this PEP is rejected, all of the APIs can be replaced with more correct ``PyThreadState`` functions in the current C API:
+As made clear in the motivation, ``PyGILState`` is already pretty buggy, and
+even if it was magically fixed, the current behavior of hanging the thread is
+beyond repair. As such, this PEP intends to completely deprecate the existing
+``PyGILState`` APIs. However, even if this PEP is rejected, all of the APIs
+can be replaced with more correct ``PyThreadState`` functions in the current
+C API:
 
 - :c:func:`PyGILState_Ensure`: :c:func:`PyThreadState_Swap` / :c:func:`PyThreadState_New`
 - :c:func:`PyGILState_Release`: :c:func:`PyThreadState_Clear` / :c:func:`PyThreadState_Delete`
@@ -140,7 +261,9 @@ As made clear in the motivation, ``PyGILState`` is already pretty buggy, and eve
 Hiding away thread state details
 --------------------------------
 
-This API intentionally has a layer of "magic" that is kept from the user, for simplicity's sake in the transition from ``PyGILState`` and for ease-of-use on those that wrap the C API, such as in Cython or PyO3.
+This API intentionally has a layer of "magic" that is kept from the user, for
+simplicity's sake in the transition from ``PyGILState`` and for ease-of-use on
+those that wrap the C API, such as in Cython or PyO3.
 
 See also :ref:`Activate Deactivate Instead`.
 
@@ -150,43 +273,76 @@ Specification
 Interpreter reference counting
 ------------------------------
 
-Internally, the interpreter will have to keep track of a reference count field, which will determine when the interpreter state is actually deallocated. This is done to prevent use-after-free crashes in :c:func:`PyThreadState_Ensure` for interpreters with short lifetimes.
+Internally, the interpreter will have to keep track of a reference count
+field, which will determine when the interpreter state is actually
+deallocated. This is done to prevent use-after-free crashes in
+:c:func:`PyThreadState_Ensure` for interpreters with short lifetimes.
 
-An interpreter state returned by :c:func:`Py_NewInterpreter` (or more technically, :c:func:`PyInterpreterState_New`) will start with a reference count of 1, and :c:func:`PyInterpreterState_Delete` will decrement the reference count. If the new reference count is zero, :c:func:`PyInterpreterState_Delete` will deallocate the interpreter state. However, the reference count will *not* prevent the interpreter from finalizing.
+An interpreter state returned by :c:func:`Py_NewInterpreter` (or really,
+:c:func:`PyInterpreterState_New`) will start with a reference count of 1, and
+:c:func:`PyInterpreterState_Delete` will decrement the reference count. If the
+new reference count is zero, :c:func:`PyInterpreterState_Delete` will
+deallocate the interpreter state. However, the reference count will *not*
+prevent the interpreter from finalizing.
 
 .. c:function:: PyInterpreterState *PyInterpreterState_Hold(void)
 
-    Similar to :c:func:`PyInterpreterState_Get`, but returns a strong reference to the interpreter (meaning, it has its reference count incremented by one, allowing the returned interpreter state to be safely accessed by another thread).
+    Similar to :c:func:`PyInterpreterState_Get`, but returns a strong
+    reference to the interpreter (meaning, it has its reference count
+    incremented by one, allowing the returned interpreter state to be safely
+    accessed by another thread).
 
-    This function is generally meant to be used in tandem with :c:func:`PyThreadState_Ensure`. 
+    This function is generally meant to be used in tandem with
+    :c:func:`PyThreadState_Ensure`. 
 
-    The caller must have an `attached thread state`_, and cannot return a failure.
+    The caller must have an `attached thread state`_, and cannot return a
+    failure.
 
 
 .. c:function:: void PyInterpreterState_Release(PyInterpreterState *interp)
 
-    Decrement the reference count of the interpreter. This function mainly exists for completeness, and should rarely be used; nearly all references returned by :c:func:`PyInterpreterState_Hold` should be released by :c:func:`PyThreadState_Ensure`.
+    Decrement the reference count of the interpreter. This function mainly
+    exists for completeness, and should rarely be used; nearly all references
+    returned by :c:func:`PyInterpreterState_Hold` should be released by
+    :c:func:`PyThreadState_Ensure`.
 
-    This function cannot fail, other than with a fatal error. The caller must have an `attached thread state`_ for *interp*.
+    This function cannot fail, other than with a fatal error. The caller must
+    have an `attached thread state`_ for *interp*.
 
 
 Daemon and non-daemon threads
 -----------------------------
 
-This PEP introduces the concept of non-daemon thread states. By default, all threads created without the :mod:`threading` module will hang when trying to attach a thread state for a finalizing interpreter (in fact, daemon threads that *are* created with the :mod:`threading` module will hang in the same way). This generally happens when a thread calls :c:func:`PyEval_RestoreThread` or in between bytecode instructions, based on :func:`sys.setswitchinterval`.
+This PEP introduces the concept of non-daemon thread states. By default, all
+threads created without the :mod:`threading` module will hang when trying to
+attach a thread state for a finalizing interpreter (in fact, daemon threads
+that *are* created with the :mod:`threading` module will hang in the same
+way). This generally happens when a thread calls :c:func:`PyEval_RestoreThread`
+or in between bytecode instructions, based on :func:`sys.setswitchinterval`.
 
-A new, internal field will be added to the ``PyThreadState`` structure that determines if the thread is daemon. If the thread is daemon, then it will hang during attachment as usual, but if it's not, then the interpreter will let the thread attach and continue execution. On GIL-ful builds, this again means handing off the GIL to the thread. During finalization, the interpreter will wait until all non-daemon threads call :c:func:`PyThreadState_Delete`.
+A new, internal field will be added to the ``PyThreadState`` structure that
+determines if the thread is daemon. If the thread is daemon, then it will
+hang during attachment as usual, but if it's not, then the interpreter will
+let the thread attach and continue execution. On GIL-ful builds, this again
+means handing off the GIL to the thread. During finalization, the interpreter
+will wait until all non-daemon threads call :c:func:`PyThreadState_Delete`.
 
-For backwards compatibility, all thread states created by existing APIs will remain daemon by default.
+For backwards compatibility, all thread states created by existing APIs will
+remain daemon by default.
 
 .. c:function:: int PyThreadState_SetDaemon(int is_daemon)
 
-    Set the `attached thread state`_ as non-daemon or daemon. The attached thread state must not be the main thread for the interpreter.
-    All thread states created without :c:func:`PyThreadState_Ensure` are daemon by default.
+    Set the `attached thread state`_ as non-daemon or daemon. The attached
+    thread state must not be the main thread for the interpreter. All thread
+    states created without :c:func:`PyThreadState_Ensure` are daemon by
+    default.
     
-    If the thread state is non-daemon, then the current interpreter will wait for this thread to finish before shutting down. See also :meth:`threading.Thread.setDaemon`.
+    If the thread state is non-daemon, then the current interpreter will wait
+    for this thread to finish before shutting down. See also :meth:`threading.Thread.setDaemon`.
 
-    Return zero on success, non-zero *without* an exception set on failure. Failure generally means that threads have already finalized for the current interpreter.
+    Return zero on success, non-zero *without* an exception set on failure.
+    Failure generally means that threads have already finalized for the
+    current interpreter.
 
 Ensuring and releasing thread states
 ------------------------------------
@@ -195,47 +351,73 @@ This proposal includes two new high-level threading APIs that intend to replace 
 
 .. c:function:: int PyThreadState_Ensure(PyInterpreterState *interp)
 
-    Ensure that the thread has an `attached thread state`_ for *interp*, and thus can safely invoke that interpreter.
-    It is OK to call this function if the thread already has an attached thread state, as long as there is a subsequent call to :c:func:`PyThreadState_Release` that matches this one.
+    Ensure that the thread has an `attached thread state`_ for *interp*, and
+    thus can safely invoke that interpreter. It is OK to call this function if
+    the thread already has an attached thread state, as long as there is a
+    subsequent call to :c:func:`PyThreadState_Release` that matches this one.
 
-    This function always steals a reference to *interp*; as in, the interpreter's reference count is decremented by one. As such, *interp* should have been acquired by :c:func:`PyInterpreterState_Hold`.
+    This function always steals a reference to *interp*; as in, the
+    interpreter's reference count is decremented by one. As such, *interp*
+    should have been acquired by :c:func:`PyInterpreterState_Hold`.
 
-    Thread states created by this function are non-daemon by default. See :c:func:`PyThreadState_SetDaemon`. If the calling thread already has an `attached thread state`_ that matches *interp*, then this function will simply mark the existing thread state as non-daemon and return. It will be restored to its prior daemon status upon the next :c:func:`PyThreadState_Release` call.
+    Thread states created by this function are non-daemon by default. See
+    :c:func:`PyThreadState_SetDaemon`. If the calling thread already has an
+    `attached thread state`_ that matches *interp*, then this function will
+    simply mark the existing thread state as non-daemon and return. It will
+    be restored to its prior daemon status upon the next
+    :c:func:`PyThreadState_Release` call.
 
-    Return zero on success, and non-zero with the old `attached thread state`_ restored (which may have been ``NULL``).
+    Return zero on success, and non-zero with the old `attached thread state`_
+    restored (which may have been ``NULL``).
 
 .. c:function:: void PyThreadState_Release()
 
-    Detach and destroy the `attached thread state`_ set by :c:func:`PyThreadState_Ensure`.
+    Detach and destroy the `attached thread state`_ set by
+    :c:func:`PyThreadState_Ensure`.
 
-    This function cannot fail, but may hang the thread if the `attached thread state`_ prior to the original :c:func:`PyThreadState_Ensure` was daemon.
+    This function cannot fail, but may hang the thread if the
+    `attached thread state`_ prior to the original :c:func:`PyThreadState_Ensure`
+    was daemon.
 
 Deprecation of ``PyGILState``
 -----------------------------
 
-This PEP deprecates all of the existing ``PyGILState`` APIs in favor of the new ``PyThreadState`` APIs for the reasons given in the motivation. Namely:
+This PEP deprecates all of the existing ``PyGILState`` APIs in favor of the
+new ``PyThreadState`` APIs for the reasons given in the motivation. Namely:
 
 - :c:func:`PyGILState_Ensure`: use :c:func:`PyThreadState_Ensure` instead.
 - :c:func:`PyGILState_Release`: use :c:func:`PyThreadState_Release` instead.
-- :c:func:`PyGILState_GetThisThreadState`: use :c:func:`PyThreadState_Get` or :c:func:`PyThreadState_GetUnchecked` instead.
-- :c:func:`PyGILState_Check`: use ``PyThreadState_GetUnchecked() != NULL`` instead.
+- :c:func:`PyGILState_GetThisThreadState`: use :c:func:`PyThreadState_Get` or
+  :c:func:`PyThreadState_GetUnchecked` instead.
+- :c:func:`PyGILState_Check`: use ``PyThreadState_GetUnchecked() != NULL``
+  instead.
 
-All of the ``PyGILState`` APIs are to be removed from the non-limited C API in Python 3.25. They will remain available in the stable API for compatibility.
+All of the ``PyGILState`` APIs are to be removed from the non-limited C API in
+Python 3.25. They will remain available in the stable API for compatibility.
 
 Backwards Compatibility
 =======================
 
-This PEP specifies a breaking change with the removal of all the ``PyGILState`` APIs from the public headers of the non-limited C API in 10 years (Python 3.25).
+This PEP specifies a breaking change with the removal of all the
+``PyGILState`` APIs from the public headers of the non-limited C API in 10
+years (Python 3.25).
 
 How to Teach This
 =================
 
-As with all C API functions, all the new APIs in this PEP will be documented in the C API documentation, ideally under the `Non-Python created threads <https://docs.python.org/3/c-api/init.html#non-python-created-threads>`_ section. The existing `High level API <https://docs.python.org/3/c-api/init.html#high-level-api>`_ section, containing most of the ``PyGILState`` documentation, should be updated accordingly to point to the new APIs.
+As with all C API functions, all the new APIs in this PEP will be documented
+in the C API documentation, ideally under the
+`Non-Python created threads <https://docs.python.org/3/c-api/init.html#non-python-created-threads>`_
+section. The existing
+`High level API <https://docs.python.org/3/c-api/init.html#high-level-api>`_
+section, containing most of the ``PyGILState`` documentation, should be
+updated accordingly to point to the new APIs.
 
 Examples
 --------
 
-These examples are here to help understand the APIs described in this PEP. Ideally, they could be reused in the documentation.
+These examples are here to help understand the APIs described in this PEP.
+Ideally, they could be reused in the documentation.
 
 Single-threaded example
 ***********************
@@ -349,21 +531,35 @@ Rejected Ideas
 Using an interpreter ID instead of a interpreter state
 ------------------------------------------------------
 
-Some iterations of this API took an ``int64_t interp_id`` parameter instead of ``PyInterpreterState *interp``, because interpreter IDs cannot be concurrently deleted and cause use-after-free violations. However, :c:type:`PyInterpreterState` pointers are a lot simpler to use, and :c:func:`PyInterpreterState_Hold` prevents the interpreter from finalizing until :c:func:`PyThreadState_Ensure` is called anyway.
+Some iterations of this API took an ``int64_t interp_id`` parameter instead of
+``PyInterpreterState *interp``, because interpreter IDs cannot be concurrently
+deleted and cause use-after-free violations. However,
+:c:type:`PyInterpreterState` pointers are a lot simpler to use, and
+:c:func:`PyInterpreterState_Hold` prevents the interpreter from finalizing
+until :c:func:`PyThreadState_Ensure` is called anyway.
 
 .. _Activate Deactivate Instead:
 
 Exposing an ``Activate``/``Deactivate`` API instead of ``Ensure``/``Clear``
 ---------------------------------------------------------------------------
 
-In prior discussions of this API, it was `suggested <https://discuss.python.org/t/a-new-api-for-ensuring-releasing-thread-states/83959/2>`_ to provide actual :c:type:`PyThreadState` pointers in the API in an attempt to make the ownership and lifetime of the thread state clearer:
+In prior discussions of this API, it was
+`suggested <https://discuss.python.org/t/a-new-api-for-ensuring-releasing-thread-states/83959/2>`_
+to provide actual :c:type:`PyThreadState` pointers in the API in an attempt to
+make the ownership and lifetime of the thread state clearer:
 
-    More importantly though, I think this makes it clearer who owns the thread state - a manually created one is controlled by the code that created it, and once it's deleted it can't be activated again.
+    More importantly though, I think this makes it clearer who owns the thread
+    state - a manually created one is controlled by the code that created it,
+    and once it's deleted it can't be activated again.
 
 This was ultimately rejected for two reasons:
 
-1. The proposed API has closer usage to :c:func:`PyGILState_Ensure` / :c:func:`PyGILState_Release`, which helps ease the transition for old codebases.
-2. It's `significantly easier <https://discuss.python.org/t/a-new-api-for-ensuring-releasing-thread-states/83959/15>`_ for code-generators like Cython to use, as there isn't any additional complexity with tracking :c:type:`PyThreadState` pointers around.
+1. The proposed API has closer usage to
+   :c:func:`PyGILState_Ensure` / :c:func:`PyGILState_Release`, which helps
+   ease the transition for old codebases.
+2. It's `significantly easier <https://discuss.python.org/t/a-new-api-for-ensuring-releasing-thread-states/83959/15>`_
+   for code-generators like Cython to use, as there isn't any additional
+   complexity with tracking :c:type:`PyThreadState` pointers around.
 
 Open Issues
 ===========
@@ -371,14 +567,27 @@ Open Issues
 Use ``PyStatus`` for the return value of ``PyThreadState_Ensure``?
 ------------------------------------------------------------------
 
-:c:func:`PyThreadState_Ensure` returns an integer to return failures, but some iterations have suggested the use of :c:type:`PyStatus` to denote failure, which has the benefit of providing an error message. The main hesitation for switching to ``PyStatus`` is that it's more difficult to use, as the ``PyStatus`` has to be stored and checked, whereas a simple integer can simply be used inline with an ``if`` clause.
+:c:func:`PyThreadState_Ensure` returns an integer to return failures, but some
+iterations have suggested the use of :c:type:`PyStatus` to denote failure,
+which has the benefit of providing an error message. The main hesitation for
+switching to ``PyStatus`` is that it's more difficult to use, as the
+``PyStatus`` has to be stored and checked, whereas a simple integer can simply
+be used inline with an ``if`` clause.
 
-Additionally, it's `not clear <https://discuss.python.org/t/a-new-api-for-ensuring-releasing-thread-states/83959/7>`_ that an error message would be all that useful; all the conceived use-cases for this API wouldn't really care about a message indicating why Python can't be invoked.
+Additionally, it's
+`not clear <https://discuss.python.org/t/a-new-api-for-ensuring-releasing-thread-states/83959/7>`_
+that an error message would be all that useful; all the conceived use-cases
+for this API wouldn't really care about a message indicating why Python can't
+be invoked.
 
 When should ``PyGILState`` be removed?
 --------------------------------------
 
-:c:func:`PyGILState_Ensure` and :c:func:`PyGILState_Release` have been around for over two decades, and it's expected that the migration will be difficult. Currently, the plan is to remove them in 10 years (opposed to the 5 years required by :pep:`387`), but this is subject to further discussion, as it's unclear if that's enough (or too much) time.
+:c:func:`PyGILState_Ensure` and :c:func:`PyGILState_Release` have been around
+for over two decades, and it's expected that the migration will be difficult.
+Currently, the plan is to remove them in 10 years (opposed to the 5 years
+required by :pep:`387`), but this is subject to further discussion, as it's
+unclear if that's enough (or too much) time.
 
 Footnotes
 =========
