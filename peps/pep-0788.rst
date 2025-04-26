@@ -328,6 +328,11 @@ keeps the interpreter from finalizing before the thread starts, ensuring
 that it always works. An approach that were to return a failure based on
 the start-time of the thread could cause spurious issues.
 
+In the case where it is useful to let the interpreter finalize, such as in
+a signal handler where there's no guarantee that the thread will start,
+strong references to an interpreter can be acquired through
+:c:func:`PyInterpreterState_Lookup`.
+
 Specification
 =============
 
@@ -393,14 +398,30 @@ A non-zero reference count prevents the interpreter from finalizing.
     The caller must have an :term:`attached thread state`, and cannot return
     ``NULL``. Failures are always a fatal error.
 
+.. c:function:: PyInterpreterState *PyInterpreterState_Lookup(int64_t interp_id)
+
+    Similar to :c:func:`PyInterpreterState_Hold`, but looks up an interpreter
+    based on an ID (see :c:func:`PyInterpreterState_GetID`). This has the
+    benefit of allowing the interpreter to finalize in cases where the thread
+    might not start, such as inside of a signal handler.
+
+    This function will return ``NULL`` without an exception set on failure.
+    If the return value is non-``NULL``, then the returned interpreter will be
+    prevented from finalizing until the reference is released by
+    :c:func:`PyThreadState_Release` or :c:func:`PyInterpreterState_Release`.
+
+    Returning ``NULL`` typically means that the interpreter is at a point
+    where threads cannot start, or no longer exists.
+
+    The caller does not need to have an :term:`attached thread state`.
 
 .. c:function:: void PyInterpreterState_Release(PyInterpreterState *interp)
 
     Decrement the reference count of the interpreter, as was incremented by
-    :c:func:`PyInterpreterState_Hold`.
+    :c:func:`PyInterpreterState_Hold` or :c:func:`PyInterpreterState_Lookup`.
 
-    This function cannot fail, other than with a fatal error. The caller must
-    have an :term:`attached thread state` for *interp*.
+    This function cannot fail, other than with a fatal error. The caller does
+    not need to have an :term:`attached thread state` for *interp*.
 
 Ensuring and releasing thread states
 ------------------------------------
@@ -443,7 +464,7 @@ Deprecation of ``PyGILState`` APIs
 ----------------------------------
 
 This PEP deprecates all of the existing ``PyGILState`` APIs in favor of the
-new ``PyThreadState`` APIs for the reasons given in the motivation. Namely:
+new ``PyThreadState`` APIs for the reasons given in the Motivation_. Namely:
 
 - :c:func:`PyGILState_Ensure`: use :c:func:`PyThreadState_Ensure` instead.
 - :c:func:`PyGILState_Release`: use :c:func:`PyThreadState_Release` instead.
@@ -629,6 +650,64 @@ they can still be used with this API:
         Py_RETURN_NONE;
     }
 
+Asynchronous callback example
+*****************************
+
+As started in the Motivation_, there are many cases where it's desirable
+to call Python in an asynchronous callback, such as a signal handler. In that
+case, it's not safe to call :c:func:`PyInterpreterState_Hold`, because it's
+not guaranteed that :c:func:`PyThreadState_Ensure` will ever be called, which
+would deadlock finalization.
+
+This scenario requires :c:func:`PyInterpreterState_Lookup`, which only prevents
+finalization when the lookup has been made.
+
+For example:
+
+.. code-block:: c
+
+    typedef struct {
+        int64_t interp_id;
+    } pyrun_t;
+
+    static int
+    async_callback(void *arg)
+    {
+        pyrun_t *data = (pyrun_t *)arg;
+        PyInterpreterState *interp = PyInterpreterState_Lookup(data->interp_id);
+        PyMem_RawFree(data);
+        if (interp == NULL) {
+            fputs("Python has shut down", stderr);
+            return -1;
+        }
+        if (PyThreadState_Ensure(interp) < 0) {
+            fputs("Cannot talk to Python", stderr);
+            return -1;
+        }
+        if (PyRun_SimpleString("print(42)") < 0) {
+            PyErr_Print();
+        }
+        PyThreadState_Release();
+        return 0;
+    }
+
+    static PyObject *
+    setup_callback(PyObject *self, PyObject *unused)
+    {
+        PyThread_handle_t handle;
+        PyThead_indent_t indent;
+
+        pyrun_t *data = PyMem_RawMalloc(sizeof(pyrun_t));
+        if (data == NULL) {
+            return PyErr_NoMemory();
+        }
+        // Weak reference to the interpreter. It won't wait on the callback
+        // to finalize.
+        data->interp_id = PyInterpreterState_GetID(PyInterpreterState_Get());
+        register_callback(async_callback, data);
+
+        Py_RETURN_NONE;
+    }
 
 Reference Implementation
 ========================
@@ -639,8 +718,8 @@ A reference implementation of this PEP can be found
 Rejected Ideas
 ==============
 
-Using an interpreter ID instead of a interpreter state
-------------------------------------------------------
+Using an interpreter ID instead of a interpreter state for :c:func:`PyThreadState_Ensure`
+-----------------------------------------------------------------------------------------
 
 Some iterations of this API took an ``int64_t interp_id`` parameter instead of
 ``PyInterpreterState *interp``, because interpreter IDs cannot be concurrently
@@ -667,7 +746,9 @@ requiring less magic in the implementation, but has several downsides:
    must be tracked elsewhere in the interpreter, likely being *more*
    complex than :c:func:`PyInterpreterState_Hold`. There's also a lack
    of intuition that a standalone integer could have such a thing as
-   a reference count.
+   a reference count. :c:func:`PyInterpreterState_Lookup` sidesteps this
+   problem because the reference count is always associated with the returned
+   interpreter state, not the integer ID.
 
 .. _pep-788-activate-deactivate-instead:
 
