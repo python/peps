@@ -35,6 +35,9 @@ specification:
   (which were added by :pep:`695` and :pep:`696`) using PEP 649-like semantics.
 * The ``SOURCE`` format is renamed to ``STRING`` to improve clarity and reduce the risk of
   user confusion.
+* Conditionally defined class and module annotations are handled correctly.
+* If annotations are accessed a partially executed module, the annotations executed so far
+  are returned, but not cached.
 
 Motivation
 ==========
@@ -195,10 +198,11 @@ The module will contain the following functionality:
   module, or class. This will replace :py:func:`inspect.get_annotations`. The latter
   will delegate to the new function. It may eventually be deprecated, but to
   minimize disruption, we do not propose an immediate deprecation.
-* ``get_annotate_function()``: A function that returns the ``__annotate__`` function
-  of an object, if it has one, or ``None`` if it does not. This is usually equivalent
-  to accessing the ``.__annotate__`` attribute, except in the presence of metaclasses
-  (see :ref:`below <pep749-metaclasses>`).
+* ``get_annotate_from_class_namespace(namespace: Mapping[str, Any])``: A function that
+  returns the ``__annotate__`` function from a class namespace dictionary, or ``None``
+  if there is none. This is useful in metaclasses during class construction. It is
+  a separate function to avoid exposing implementation details about the internal storage
+  for the ``__annotate__`` function (see :ref:`below <pep749-metaclasses>`).
 * ``Format``: an enum that contains the possible formats of annotations. This will
   replace the ``VALUE``, ``FORWARDREF``, and ``SOURCE`` formats in :pep:`649`.
   PEP 649 proposed to make these values global members of the :py:mod:`inspect`
@@ -235,7 +239,7 @@ The module will contain the following functionality:
   This is useful for
   implementing the ``SOURCE`` format in cases where the original source is not available,
   such as in the functional syntax for :py:class:`typing.TypedDict`.
-* ``value_to_string(value: object) -> str``: a function that converts a single value to a
+* ``type_repr(value: object) -> str``: a function that converts a single value to a
   string representation. This is used by ``annotations_to_string``.
   It uses ``repr()`` for most values, but for types it returns the fully qualified name.
   It is also useful as a helper for the ``repr()`` of a number of objects in the
@@ -498,34 +502,48 @@ attribute lookup is used, this approach breaks down in the presence of
 metaclasses, because entries in the metaclass's own class dictionary can render
 the descriptors invisible.
 
-While we considered several approaches that would allow ``cls.__annotations__``
-and ``cls.__annotate__`` to work reliably when ``cls`` is a type with a custom
-metaclass, any such approach would expose significant complexity to advanced users.
-Instead, we recommend a simpler approach that confines the complexity to the
-``annotationlib`` module: in ``annotationlib.get_annotations``, we bypass normal
-attribute lookup by using the ``type.__annotations__`` descriptor directly.
+We considered several solutions but landed on one where we store the ``__annotate__``
+and ``__annotations__`` objects in the class dictionary, but under a different,
+internal-only name. This means that the class dictionary entries will not interfere
+with the descriptors defined on :py:class:`type`.
+
+This approach means that the ``.__annotate__`` and ``.__annotations__`` objects in class
+objects will behave mostly intuitively, but there are a few downsides.
+
+One concerns the interaction with classes defined under ``from __future__ import annotations``.
+Those will continue to have the ``__annotations__`` entry in the class dictionary, meaning
+that they will continue to display some buggy behavior. For example, if a metaclass is defined
+with the ``__future__`` import enabled and has annotations, and a class using that metaclass is
+defined without the ``__future__`` import, accessing ``.__annotations__`` on that class will yield
+the wrong results. However, this bug already exists in previous versions of Python. It could be
+fixed by setting the annotations at a different key in the class dict in this case too, but that
+would break users who directly access the class dictionary (e.g., during class construction).
+We prefer to keep the behavior under the ``__future__`` import unchanged as much as possible.
+
+Second, in previous versions of Python it was possible to access the ``__annotations__`` attribute
+on instances of user-defined classes with annotations. However, this behavior was undocumented
+and not supported by :func:`inspect.get_annotations`, and it cannot be preserved under the
+:pep:`649` framework without bigger changes, such as a new ``object.__annotations__`` descriptor.
+This behavior change should be called out in porting guides.
 
 Specification
 -------------
 
-Users should always use ``annotationlib.get_annotations`` to access the
-annotations of a class object, and ``annotationlib.get_annotate_function``
-to access the ``__annotate__`` function. These functions will return only
-the class's own annotations, even when metaclasses are involved.
+The ``.__annotate__`` and ``.__annotations__`` attributes on class objects
+should reliably return the annotate function and the annotations dictionary,
+respectively, even in the presence of custom metaclasses.
 
-The behavior of accessing the ``__annotations__`` and ``__annotate__``
-attributes on classes with a metaclass other than ``builtins.type`` is
-unspecified. The documentation should warn against direct use of these
-attributes and recommend using the ``annotationlib`` module instead.
-
-Similarly, the presence of ``__annotations__`` and ``__annotate__`` keys
-in the class dictionary is an implementation detail and should not be relied
-upon.
+Users should not access the class dictionary directly for accessing annotations
+or the annotate function; the data stored in the class dictionary is an implementation
+detail and its format may change in the future. If only the class namespace
+dictionary is available (e.g., while the class is being constructed),
+``annotationlib.get_annotate_from_class_namespace`` may be used to retrieve the annotate function
+from the class dictionary.
 
 Rejected alternatives
 ---------------------
 
-We considered two broad approaches for dealing with the behavior
+We considered three broad approaches for dealing with the behavior
 of the ``__annotations__`` and ``__annotate__`` entries in classes:
 
 * Ensure that the entry is *always* present in the class dictionary, even if it
@@ -533,10 +551,15 @@ of the ``__annotations__`` and ``__annotate__`` entries in classes:
   the descriptors defined on :py:class:`type` to fill in the field, and
   therefore the metaclass's attributes will not interfere. (Prototype
   in `gh-120719 <https://github.com/python/cpython/pull/120719>`__.)
+* Warn users against using the ``__annotations__`` and ``__annotate__`` attributes
+  directly. Instead, users should call function in ``annotationlib`` that
+  invoke the :class:`type` descriptors directly. (Implemented in
+  `gh-122074 <https://github.com/python/cpython/pull/122074>`__.)
 * Ensure that the entry is *never* present in the class dictionary, or at least
   never added by logic in the language core. This means that the descriptors
   on :py:class:`type` will always be used, without interference from the metaclass.
-  (Prototype in `gh-120816 <https://github.com/python/cpython/pull/120816>`__.)
+  (Initial prototype in `gh-120816 <https://github.com/python/cpython/pull/120816>`__;
+  later implemented in `gh-132345 <https://github.com/python/cpython/pull/132345>`__.)
 
 Alex Waygood suggested an implementation using the first approach. When a
 heap type (such as a class created through the ``class`` statement) is created,
@@ -558,19 +581,8 @@ While this approach would fix the known edge cases with metaclasses, it
 introduces significant complexity to all classes, including a new built-in type
 (for the annotations descriptor) with unusual behavior.
 
-The alternative approach would be to never set ``__dict__["__annotations__"]``
-and use some other storage to store the cached annotations. This behavior
-change would have to apply even to classes defined under
-``from __future__ import annotations``, because otherwise there could be buggy
-behavior if a class is defined without ``from __future__ import annotations``
-but its metaclass does have the future enabled. As :pep:`649` previously noted,
-removing ``__annotations__`` from class dictionaries also has backwards compatibility
-implications: ``cls.__dict__.get("__annotations__")`` is a common idiom to
-retrieve annotations.
-
-This approach would also mean that accessing ``.__annotations__`` on an instance
-of an annotated class no longer works. While this behavior is not documented,
-it is a long-standing feature of Python and is relied upon by some users.
+The second approach is simple to implement, but has the downside that direct
+access to ``cls.__annotations__`` remains prone to erratic behavior.
 
 Adding the ``VALUE_WITH_FAKE_GLOBALS`` format
 =============================================
@@ -608,10 +620,17 @@ the ``VALUE_WITH_FAKE_GLOBALS`` format is requested, so the standard
 library will not call the manually written annotate function with
 "fake globals", which could have unpredictable results.
 
+The names of annotation formats indicate what kind of objects an
+``__annotate__`` function should return: with the ``STRING`` format, it
+should return strings; with the ``FORWARDREF`` format, it should return
+forward references; and with the ``VALUE`` format, it should return values.
+The name ``VALUE_WITH_FAKE_GLOBALS`` indicates that the function should
+still return values, but is being executed in an unusual "fake globals" environment.
+
 Specification
 -------------
 
-An additional format, ``FAKE_GLOBALS_VALUE``, is added to the ``Format`` enum in the
+An additional format, ``VALUE_WITH_FAKE_GLOBALS``, is added to the ``Format`` enum in the
 ``annotationlib`` module, with value equal to 2. (As a result, the values of the
 other formats will shift relative to PEP 649: ``FORWARDREF`` will be 3 and ``SOURCE``
 will be 4.)
@@ -622,10 +641,10 @@ they would return for the ``VALUE`` format. The standard library will pass
 this format to the ``__annotate__`` function when it is called in a "fake globals"
 environment, as used to implement the ``FORWARDREF`` and ``SOURCE`` formats.
 All public functions in the ``annotationlib`` module that accept a format
-argument will raise :py:exc:`NotImplementedError` if the format is ``FAKE_GLOBALS_VALUE``.
+argument will raise :py:exc:`NotImplementedError` if the format is ``VALUE_WITH_FAKE_GLOBALS``.
 
 Third-party code that implements ``__annotate__`` functions should raise
-:py:exc:`NotImplementedError` if the ``FAKE_GLOBALS_VALUE`` format is passed
+:py:exc:`NotImplementedError` if the ``VALUE_WITH_FAKE_GLOBALS`` format is passed
 and the function is not prepared to be run in a "fake globals" environment.
 This should be mentioned in the data model documentation for ``__annotate__``.
 
@@ -752,6 +771,126 @@ PEP, the four supported formats are now:
 - ``FORWARDREF``: replaces undefined names with ``ForwardRef`` objects.
 - ``STRING``: returns strings, attempts to recreate code close to the original source.
 
+Conditionally defined annotations
+=================================
+
+:pep:`649` does not support annotations that are conditionally defined
+in the body of a class or module:
+
+   It's currently possible to set module and class attributes with
+   annotations inside an ``if`` or ``try`` statement, and it works
+   as one would expect.  It's untenable to support this behavior
+   when this PEP is active.
+
+However, the maintainer of the widely used SQLAlchemy library
+`reported <https://github.com/python/cpython/issues/130881>`__
+that this pattern is actually common and important:
+
+.. code:: python
+
+   from typing import TYPE_CHECKING
+
+   if TYPE_CHECKING:
+       from some_module import SpecialType
+
+   class MyClass:
+       somevalue: str
+       if TYPE_CHECKING:
+           someothervalue: SpecialType
+
+Under the behavior envisioned in :pep:`649`, the ``__annotations__`` for
+``MyClass`` would contain keys for both ``somevalue`` and ``someothervalue``.
+
+Fortunately, there is a tractable implementation strategy for making
+this code behave as expected again. This strategy relies on a few fortuitous
+circumstances:
+
+* This behavior change is only relevant to module and class annotations,
+  because annotations in local scopes are ignored.
+* Module and class bodies are only executed once.
+* The annotations of a class are not externally visible until execution of the
+  class body is complete. For modules, this is not quite true, because a partially
+  executed module can be visible to other imported modules, but this case is
+  problematic for other reasons (see the next section).
+
+This allows the following implementation strategy:
+
+* Each annotated assignment is assigned a unique identifier (e.g., an integer).
+* During execution of a class or module body, a set, initially empty, is created
+  to hold the identifiers of the annotations that have been defined.
+* When an annotated assignment is executed, its identifier is added to the set.
+* The generated ``__annotate__`` function uses the set to determine
+  which annotations were defined in the class or module body, and return only those.
+
+This was implemented in `python/cpython#130935
+<https://github.com/python/cpython/pull/130935>`__.
+
+Specification
+-------------
+
+For classes and modules, the ``__annotate__`` function will return only
+annotations for those assignments that were executed when the class or module body
+was executed.
+
+Caching of annotations on partially executed modules
+====================================================
+
+:pep:`649` specifies that the value of the ``__annotations__`` attribute
+on classes and modules is determined on first access by calling the
+``__annotate__`` function, and then it is cached for later access.
+This is correct in most cases and preserves compatibility, but there is
+one edge case where it can lead to surprising behavior: partially executed
+modules.
+
+Consider this example:
+
+.. code:: python
+
+   # recmod/__main__.py
+   from . import a
+   print("in __main__:", a.__annotations__)
+
+   # recmod/a.py
+   v1: int
+   from . import b
+   v2: int
+
+   # recmod/b.py
+   from . import a
+   print("in b:", a.__annotations__)
+
+Note that while ``recmod/b.py`` executes, the ``recmod.a`` module is defined,
+but has not yet finished execution.
+
+On 3.13, this produces:
+
+.. code:: shell
+
+   $ python3.13 -m recmod
+   in b: {'v1': <class 'int'>}
+   in __main__: {'v1': <class 'int'>, 'v2': <class 'int'>}
+
+But with :pep:`649` implemented as originally proposed, this would
+print an empty dictionary twice, because the ``__annotate__`` function
+is set only when module execution is complete. This is obviously
+unintuitive.
+
+See `python/cpython#130907`__ for implementation.
+
+__ https://github.com/python/cpython/issue/130907
+
+Specification
+-------------
+
+Accessing ``__annotations__`` on a partially executed module will
+continue to return the annotations that have been executed so far,
+similar to the behavior in earlier versions in Python. However, in this
+case the ``__annotations__`` dictionary will not be cached, so later
+accesses to the ``__annotations__`` attribute will return a fresh dictionary.
+This is necessary because ``__annotate__`` must be called again in order to
+incorporate additional annotations.
+
+
 Miscellaneous implementation details
 ====================================
 
@@ -840,16 +979,28 @@ to be supported by third-party libraries. Nevertheless, it is a serious issue fo
 that perform introspection, and it is important that we make it as easy as possible for
 libraries to support the new semantics in a straightforward, user-friendly way.
 
-We will update those parts of the standard library that are affected by this problem,
-and we propose to add commonly useful functionality to the new ``annotationlib`` module,
-so third-party tools can use the same set of tools.
+Several pieces of functionality in the standard library are affected by this issue,
+including :mod:`dataclasses`, :class:`typing.TypedDict` and :class:`typing.NamedTuple`.
+These have been updated to support this pattern using the functionality in the new
+``annotationlib`` module.
 
 
 Security Implications
 =====================
 
-None.
+One consequence of :pep:`649` is that accessing annotations on an object, even if
+the object is a function or a module, may now execute arbitrary code. This is true
+even if the STRING format is used, because the stringifier mechanism only overrides
+the global namespace, and that is not enough to sandbox Python code completely.
 
+In previous Python versions, accessing the annotations of functions or modules
+could not execute arbitrary code, but classes and other objects could already
+execute arbitrary code on access of the ``__annotations__`` attribute.
+Similarly, almost any further introspection on the annotations (e.g.,
+using ``isinstance()``, calling functions like ``typing.get_origin``, or even
+displaying the annotations with ``repr()``) could already execute arbitrary code.
+And of course, accessing annotations from untrusted code implies that the untrusted
+code has already been imported.
 
 How to Teach This
 =================
