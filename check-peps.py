@@ -303,6 +303,8 @@ def _validate_discussions_to(line_num: int, line: str) -> MessageIterator:
     """'Discussions-To' must be a thread URL"""
 
     yield from _thread(line_num, line, "Discussions-To", discussions_to=True)
+    if line == "Pending":
+        return
     if line.startswith("https://"):
         return
     for suffix in "@python.org", "@googlegroups.com":
@@ -311,7 +313,7 @@ def _validate_discussions_to(line_num: int, line: str) -> MessageIterator:
             if re.fullmatch(r"[\w\-]+", remainder) is None:
                 yield line_num, "Discussions-To must be a valid mailing list"
             return
-    yield line_num, "Discussions-To must be a valid thread URL or mailing list"
+    yield line_num, "Discussions-To must be a valid thread URL, mailing list, or 'Pending'"
 
 
 def _validate_status(line_num: int, line: str) -> MessageIterator:
