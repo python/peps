@@ -67,7 +67,8 @@ Many codebases might need to call Python code in highly-asynchronous
 situations where the desired interpreter
 (:ref:`typically the main interpreter <pep-788-subinterpreters-gilstate>`)
 could be finalizing or deleted, but want to continue running code after the
-invoking the interpreter. This desire has been `brought up by users <https://discuss.python.org/t/78850/>`_.
+invoking the interpreter. This desire has been
+`brought up by users <https://discuss.python.org/t/78850/>`_.
 For example, a callback that wants to call Python code might be invoked when:
 
 - A kernel has finished running on a GPU.
@@ -75,15 +76,33 @@ For example, a callback that wants to call Python code might be invoked when:
 - A thread has quit, and a native library is executing static finalizers of
   thread local storage.
 
+Generally, this pattern would look something like this:
+
+.. code-block:: c
+
+    static void
+    some_callback(void *closure)
+    {
+        /* Do some work */
+        /* ... */
+
+        PyGILState_STATE gstate = PyGILState_Ensure();
+        /* Invoke the C API to do some computation */
+        PyGILState_Release(gstate);
+
+        /* ... */
+    }
+
 In the current C API, any "native" thread (one not created via the
 :mod:`threading` module) is considered to be "daemon", meaning that the interpreter
 won't wait on that thread to finalize. Instead, the interpreter will hang the
 thread when it goes to :term:`attach <attached thread state>` a :term:`thread state`,
 making it unusable past that point. Attaching a thread state can happen at
-any point when invoking Python, such as releasing the GIL in-between bytecode
-instructions, or when a C function exits a :c:macro:`Py_BEGIN_ALLOW_THREADS`
-block. (Note that hanging the thread is relatively new behavior; in prior
-versions, the thread would terminate, but the issue is the same.)
+any point when invoking Python, such as releasing it in-between bytecode
+instructions (to yield the GIL), or when a C function exits a
+:c:macro:`Py_BEGIN_ALLOW_THREADS` block. (Note that hanging the thread is
+relatively new behavior; in prior versions, the thread would terminate, but
+the issue is the same.)
 
 This means that any non-Python thread may be terminated at any point, which
 is severely limiting for users who want to do more than just execute Python
@@ -105,8 +124,8 @@ the thread:
 
 Unfortunately, this isn't correct, because of time-of-call to time-of-use
 issues; the interpreter might not be finalizing during the call to
-:c:func:`Py_IsFinalizing`, but it might start finalizing immediately afterwards, which
-would cause the attachment of a thread state (typically via
+:c:func:`Py_IsFinalizing`, but it might start finalizing immediately
+afterwards, which would cause the attachment of a thread state (typically via
 :c:func:`PyGILState_Ensure`) to hang the thread.
 
 Daemon threads can cause finalization deadlocks
@@ -114,9 +133,16 @@ Daemon threads can cause finalization deadlocks
 
 When acquiring locks, it's extremely important to detach the thread state to
 prevent deadlocks. This is true on both the with-GIL and free-threaded builds.
+
 When the GIL is enabled, a deadlock can occur pretty easily when acquiring a
-lock if the GIL wasn't released, and lock-ordering deadlocks can still occur
-free-threaded builds if the thread state wasn't detached.
+lock if the GIL wasn't released; thread A grabs a lock, and starts waiting on
+its thread state to attach, while thread B holds the GIL and is waiting on the
+lock.
+
+On free-threaded builds, lock-ordering deadlocks are still possible
+if thread A acquired the lock for object A and then object B, and then
+another thread tried to acquire those locks in a reverse order. Free-threading
+protects against this by releasing locks when the thread state is detached.
 
 So, all code that needs to work with locks need to detach the thread state.
 In C, this is almost always done via :c:macro:`Py_BEGIN_ALLOW_THREADS` and
@@ -138,9 +164,7 @@ though. If any of those finalizers try to acquire the lock, deadlock ensues.
 This affects CPython itself, and there's not much that can be done
 to fix it. For example, `python/cpython#129536 <https://github.com/python/cpython/issues/129536>`_
 remarks that the :mod:`ssl` module can emit a fatal error when used at
-finalization, because a daemon thread got hung while holding the lock. There
-are workarounds for this for pure-Python code, but native threads don't have
-such an option.
+finalization, because a daemon thread got hung while holding the lock.
 
 .. _pep-788-hanging-compat:
 
@@ -148,12 +172,12 @@ We can't change finalization behavior for ``PyGILState_Ensure``
 ***************************************************************
 
 There will always have to be a point in a Python program where
-:c:func:`PyGILState_Ensure` can no longer acquire the GIL (or more correctly,
-attach a thread state). If the interpreter is long dead, then Python
-obviously can't give a thread a way to invoke it.
-:c:func:`PyGILState_Ensure` doesn't have any meaningful way to return a
-failure, so it has no choice but to terminate the thread or emit a fatal
-error, as noted in `python/cpython#124622 <https://github.com/python/cpython/issues/124622>`_:
+:c:func:`PyGILState_Ensure` can no longer attach a thread state.
+If the interpreter is long dead, then Python obviously can't give a
+thread a way to invoke it. :c:func:`PyGILState_Ensure` doesn't have any
+meaningful way to return a failure, so it has no choice but to terminate
+the thread or emit a fatal error, as noted in
+`python/cpython#124622 <https://github.com/python/cpython/issues/124622>`_:
 
     I think a new GIL acquisition and release C API would be needed. The way
     the existing ones get used in existing C code is not amenible to suddenly
@@ -163,9 +187,7 @@ error, as noted in `python/cpython#124622 <https://github.com/python/cpython/iss
     the GIL" without any other option.
 
 For this reason, we can't make any real changes to how :c:func:`PyGILState_Ensure`
-works for finalization, because it would break existing code. Similarly, threads
-created with the existing C API will have to remain daemon, because extensions
-that implement native threads aren't guaranteed to work during finalization.
+works during finalization, because it would break existing code.
 
 The existing APIs are broken and misleading
 -------------------------------------------
@@ -182,7 +204,7 @@ At the time of writing, the current behavior of :c:func:`PyGILState_Ensure` does
 match the documentation. Instead of hanging the thread during finalization
 as previously noted, it's extremely common for it to crash with a segmentation
 fault. This is a `known issue <https://github.com/python/cpython/issues/124619>`_
-that could, in theory, be fixed in CPython, but it's definitely worth noting
+that could be fixed in CPython, but it's definitely worth noting
 here. Incidentally, acceptance and implementation of this PEP will likely fix
 the existing crashes caused by :c:func:`PyGILState_Ensure`.
 
@@ -198,13 +220,29 @@ created by the authors of this PEP:
     erroneously call the C API inside ``Py_BEGIN_ALLOW_THREADS`` blocks or
     omit ``PyGILState_Ensure`` in fresh threads.
 
-Since Python 3.12, it is an :term:`attached thread state` that lets a thread
-invoke the C API. On with-GIL builds, holding an attached thread state
-implies holding the GIL, so only one thread can have one at a time. Free-threaded
-builds achieve the effect of multi-core parallism while remaining
-ackwards-compatible by simply removing that limitation: threads still need a
-thread state (and thus need to call :c:func:`PyGILState_Ensure`), but they
-don't need to wait on one another to do so.
+Again, :c:func:`PyGILState_Ensure` gets an :term:`attached thread state`
+for the thread on both with-GIL and free-threaded builds. Acquisition of the
+GIL on with-GIL builds is incidental! :c:func:`PyGILState_Ensure` is very
+roughly equivalent to the following:
+
+.. code-block:: c
+
+    PyGILState_STATE
+    PyGILState_Ensure(void)
+    {
+        PyThreadState *existing = PyThreadState_GetUnchecked();
+        if (existing == NULL) {
+            // Chooses the interpreter of the last attached thread state
+            // for this thread. If Python has never ran in this thread, the
+            // main interpreter is used.
+            PyInterpreterState *interp = guess_interpreter();
+            PyThreadState *tstate = PyThreadState_New(interp);
+            PyThreadState_Swap(tstate);
+            return opaque_tstate_handle(tstate);
+        } else {
+            return opaque_tstate_handle(existing);
+        }
+    }
 
 .. _pep-788-subinterpreters-gilstate:
 
@@ -220,13 +258,20 @@ As noted in the :ref:`documentation <python:gilstate>`,
     ``Py_NewInterpreter()``), but mixing multiple interpreters and the
     ``PyGILState_*`` API is unsupported.
 
-More technically, this is because ``PyGILState_Ensure`` doesn't have any way
+This is because :c:func:`PyGILState_Ensure` doesn't have any way
 to know which interpreter created the thread, and as such, it has to assume
 that it was the main interpreter. There isn't any way to detect this at
 runtime, so spurious races are bound to come up in threads created by
 subinterpreters, because synchronization for the wrong interpreter will be
 used on objects shared between the threads.
 
+For example, if the thread had access to object A, which belongs to a
+subinterpreter, but then called :c:func:`PyGILState_Ensure` would have an
+attached thread state pointing to the main interpreter, not the subinterpreter.
+This means that any GIL assumptions about the object are wrong! There isn't
+any synchronization between the two GILs, so both the thread (who thinks it's
+in the subinterpreter) and the main thread could try to increment the
+reference count at the same time, causing a data race!
 
 Interpreters can concurrently shut down
 ***************************************
@@ -234,22 +279,61 @@ Interpreters can concurrently shut down
 The other way of creating a native thread that can invoke Python,
 :c:func:`PyThreadState_New` / :c:func:`PyThreadState_Swap`, is a lot better
 for supporting subinterpreters (because :c:func:`PyThreadState_New` takes an
-explicit interpreter, rather than assuming that the main interpreter was intended),
-but is still limited by the current API.
+explicit interpreter, rather than assuming that the main interpreter was
+requested), but is still limited by the current hanging problems in the C API.
 
-In particular, subinterpreters typically have a much shorter lifetime than the
-main interpreter, and as such, there's not necessarily a guarantee that a
-:c:type:`PyInterpreterState` (acquired by :c:func:`PyInterpreterState_Get`)
-passed to a fresh thread will still be alive. Similarly, a
-:c:type:`PyInterpreterState` pointer could have been replaced with a *new*
-interpreter, causing all sorts of unknown issues. They are also subject to
-all the finalization related hanging mentioned previously.
+In addition, subinterpreters typically have a much shorter lifetime than the
+main interpreter, so there's a much higher chance that an interpreter passed
+to a thread will have already finished and have been deallocated. Passing that
+interpreter to :c:func:`PyThreadState_New` will most likely crash the program.
 
 Rationale
 =========
 
-This PEP includes several new APIs that intend to fix all of the issues stated
-above.
+So, how do we address all of this? The best way seems to be starting from
+scratch and "reimagining" how to acquire and attach thread states in the C API.
+
+As a summary, there's a few bases we want to cover in a new API:
+
+- Require the caller to specify which interpreter they want to prevent those
+  pesky problems with interpreter guessing.
+- Prevent the thread from being arbitrarily bricked by calling into Python.
+- Protection against deallocation on interpreters with short lifetimes.
+- Backwards-compatibility with the old APIs and ideas, such as "daemonness"
+  (but as opt-in).
+
+Preventing interpreter finalization with references
+---------------------------------------------------
+
+This PEP takes an approach where interpreters are given a reference count by
+non-daemon threads that want to (or do) hold an attached thread state. When
+the interpreter starts finalizing, it will until its reference count
+reaches zero before proceeding to a point where threads will be hung.
+Note that this *is not* the same as joining the thread; the interpreter will
+only wait until the thread state has been released
+(via :c:func:`PyThreadState_Release`) for all non-daemon threads. This isn't
+the same as waiting for them to detach their thread state--it waits for them
+to *destroy* it. Otherwise, this API wouldn't have any finalization benefits
+over the existing ``PyThreadState`` functions.
+
+So, from a thread's perspective, holding a "strong reference" to the
+interpreter will effectively prevent it from finalizing, making it safe to
+invoke Python without worrying about the thread being hung. The strong
+reference will be held as long as thread state is "alive", even if it's
+detached.
+
+This proposal also comes with weak references to an interpreter that don't
+prevent it from finalizing, but can be promoted to a strong reference once
+decided that a thread state can attach. Promotion of a weak reference to a
+strong reference can fail if the interpreter has already finalized, or reached
+a point during finalization where it can't be guaranteed that the thread won't
+hang.
+
+If there's additional work after destroying the thread state, the thread
+can continue running as normal. If that work needs to finish before the
+program exits, it's still up to the user on how to join the thread, for
+example by using an :mod:`atexit` handler can be used to join the thread.
+Again, this PEP isn't trying to reinvent how to create or join threads!
 
 Replacing the old APIs
 ----------------------
@@ -271,51 +355,6 @@ in the stable ABI), primarily because it's expected that the migration won't be
 seamless, due to the new requirement of storing an interpreter state. The
 exact details of this deprecation are currently unclear, see
 :ref:`pep-788-deprecation`.
-
-A light layer of magic
-----------------------
-
-The APIs proposed by this PEP intentionally have a layer of abstraction that is
-hidden from the user and offloads complexity onto CPython. This is done
-primarily to help ease the transition from ``PyGILState`` for existing
-codebases, and for ease-of-use to those who provide wrappers the C API, such
-as Cython or PyO3.
-
-In particular, the API hides details about the lifetime of the thread state
-and most of the details with interpreter references.
-
-See also :ref:`pep-788-activate-deactivate-instead`.
-
-Bikeshedding and the ``PyThreadState`` namespace
-------------------------------------------------
-
-To solve the issue with "GIL" terminology, the new functions described by this
-PEP intended as replacements for ``PyGILState`` will go under the existing
-``PyThreadState`` namespace. In Python 3.14, the documentation has been
-updated to switch over to terms like
-:term:`"attached thread state" <attached thread state>` instead of
-:term:`"global interpreter lock" <global interpreter lock>`, so this namespace
-seems to fit well for this PEP.
-
-Preventing interpreter finalization with references
----------------------------------------------------
-
-Several iterations of this API have taken an approach where
-:c:func:`PyThreadState_Ensure` can return a failure based on the state of
-the interpreter. Instead, this PEP takes an approach where an interpreter
-keeps track of the number of non-daemon threads, which inherently prevents
-it from beginning finalization.
-
-The main upside with this approach is that there's more consistency with
-attaching threads. Using an interpreter reference from the calling thread
-keeps the interpreter from finalizing before the thread starts, ensuring
-that it always works. An approach that were to return a failure based on
-the start-time of the thread could cause spurious issues.
-
-In the case where it is useful to let the interpreter finalize, such as in
-an asynchronous callback where there's no guarantee that the thread will start,
-strong references to an interpreter can be acquired through
-:c:func:`PyInterpreterState_Lookup`.
 
 Specification
 =============
