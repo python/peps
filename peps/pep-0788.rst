@@ -14,95 +14,48 @@ Post-History: `10-Mar-2025 <https://discuss.python.org/t/83959>`__,
 Abstract
 ========
 
-:c:func:`PyGILState_Ensure`, :c:func:`PyGILState_Release`, and other related
-functions in the ``PyGILState`` family are the most common way to create
-native threads (as in, created using the C API instead of :mod:`threading`)
-that interact with Python. They have been the standard for over
-twenty years (:pep:`311`). But, over time, these functions have
-become problematic:
+In Python, threads are able to interact with an interpreter (e.g., invoke the
+bytecode loop) through an :term:`attached thread state`. On with-GIL builds,
+only one thread can hold an attached thread state at once, which means that
+the thread holds the :term:`GIL`. On free-threaded builds, there can be
+infinitely many thread states attached, allowing for parallelism (because
+multiple threads can invoke the interpreter at once).
 
-- They aren't safe for finalization, either causing the calling thread to hang or
-  crashing it with a segmentation fault, preventing further execution.
-- When they're called before finalization, they force the thread to be
-  "daemon", meaning that an interpreter won't wait for it to reach any point
-  of execution. This is mostly frustrating for developers, but can lead to
-  deadlocks!
-- Subinterpreters don't play nicely with them, because they all assume that
-  the main interpreter is the only one that exists. A fresh thread (that is,
-  has never had a thread state) that calls :c:func:`PyGILState_Ensure` will
-  always be for the main interpreter.
-- The term "GIL" in the name is quite confusing for users of free-threaded
-  Python. There isn't a GIL, why do they still have to call it?
+With that in mind, attachment of thread states is a bit problematic in the C API.
+The C API currently provides two ways to acquire and attach a thread state for
+an interpreter:
 
-This PEP intends to fix all of these issues by providing two new functions,
-:c:func:`PyThreadState_Ensure` and :c:func:`PyThreadState_Release`, as a more
-correct and safer replacement for :c:func:`PyGILState_Ensure` and
-:c:func:`PyGILState_Release`. For example:
+- :c:func:`PyGILState_Ensure` & :c:func:`PyGILState_Release`.
+- :c:func:`PyThreadState_New` & :c:func:`PyThreadState_Swap` (significantly
+  less common).
 
-.. code-block:: c
+The former, ``PyGILState``, are the most common way to do this and have been
+the standard for over twenty years (:pep:`311`), but have a number of issues
+that have arisen over time:
 
-    if (PyThreadState_Ensure(interp) < 0) {
-        fputs("Python is shutting down", stderr);
-        return;
-    }
+- Subinterpreters tend to have trouble with them, because in threads that
+  haven't ever had an attached thread state, :c:func:`PyGILState_Ensure`
+  will assume that the main interpreter was requested. This makes it
+  impossible for the thread to interact with the subinterpreter!
+- The phrase "GIL" is confusing for developers of free-threaded
+  extensions, because there's no GIL there, right? Even on free-threaded
+  builds, threads still needs a thread state to interact with the interpreter,
+  it's just that they don't have to wait on one-another to do so. These days,
+  the important thing that :c:func:`PyGILState_Ensure` does is get attach a
+  thread state, and acquiring the GIL is somewhat incidental.
 
-    /* Interact with Python, without worrying about finalization. */
-    // ...
+The other option, :c:func:`PyThreadState_New` and :c:func:`PyThreadState_Swap`,
+do solve those issues, but come with an additional problem with how thread state
+attachment works in the C API (that ``PyGILState`` also includes): if the
+thread is not the main thread, then the interpreter will randomly hang the
+thread during attachment if it starts finalizing. This can be frustrating,
+especially if there was some additional work to be done alongside invoking
+Python.
 
-    PyThreadState_Release();
-
-This is achieved by introducing two concepts into the C API:
-
--  "Daemon" and "non-daemon" threads, similar to how it works in the
-   :mod:`threading` module.
--  Interpreter reference counts which prevent an interpreter from finalizing.
-
-In :c:func:`PyThreadState_Ensure`, both of these ideas are applied. The
-calling thread is to store a reference to an interpreter via
-:c:func:`PyInterpreterState_Hold`. :c:func:`PyInterpreterState_Hold`
-increases the reference count of an interpreter, requiring the thread
-to finish (by eventually calling :c:func:`PyThreadState_Release`) before
-beginning finalization.
-
-For example, creating a native thread with this API would look something
-like this:
-
-.. code-block:: c
-
-    static PyObject *
-    my_method(PyObject *self, PyObject *unused)
-    {
-        PyThread_handle_t handle;
-        PyThead_indent_t indent;
-
-        PyInterpreterState *interp = PyInterpreterState_Hold();
-        if (PyThread_start_joinable_thread(thread_func, interp, &ident, &handle) < 0) {
-            PyInterpreterState_Release(interp);
-            return NULL;
-        }
-        /* The thread will always attach and finish, because we increased
-           the reference count of the interpreter. */
-        Py_RETURN_NONE;
-    }
-
-What does "finalization" really mean?
--------------------------------------
-
-Throughout this PEP, the phrase "finalization" is used in reference to the
-"finalizing" state of an interpreter. But, there's different stages of how
-Python shuts down, so there's some ambiguity in that term.
-
-There are two ways to "finalize" in the C API:
-
-1. :c:func:`Py_FinalizeEx`, which finalizes the main interpreter (and
-   subsequently the rest of the runtime).
-2. :c:func:`Py_EndInterpreter`, which finalizes a subinterpreter.
-   This does most of the same things that :c:func:`Py_FinalizeEx`
-   does to the main interpreter.
-
-So, "finalization" in this PEP refers to finalization of a specific
-interpreter, *not* the entire runtime. (But, keep in mind that finalization
-of the main interpreter and runtime are similiar states.)
+This PEP intends to solve these issues by providing :c:func:`PyThreadState_Ensure`
+and :c:func:`PyThreadState_Ensure` as replacements for the existing functions,
+accompanied by some interpreter reference counting APIs that let thread states
+be acquired and attached in a thread-safe and predictable manner.
 
 Motivation
 ==========
