@@ -108,4 +108,4 @@ html_baseurl = "https://peps.python.org"  # to create the CNAME file
 gettext_auto_build = False  # speed-ups
 
 # Theme template relative paths from `confdir`
-templates_path = [os.fspath(_PSE_PATH / "pep_theme" / "templates")]
+templates_path = []
