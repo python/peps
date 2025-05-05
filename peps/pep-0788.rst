@@ -48,14 +48,13 @@ The other option, :c:func:`PyThreadState_New` and :c:func:`PyThreadState_Swap`,
 do solve those issues, but come with an additional problem with how thread state
 attachment works in the C API (that ``PyGILState`` also includes): if the
 thread is not the main thread, then the interpreter will randomly hang the
-thread during attachment if it starts finalizing. This can be frustrating,
-especially if there was some additional work to be done alongside invoking
-Python.
+thread during attachment if it starts finalizing. This is a problem for large
+applications that want to use their thread in addition to calling Python.
 
 This PEP intends to solve these issues by providing :c:func:`PyThreadState_Ensure`
 and :c:func:`PyThreadState_Ensure` as replacements for the existing functions,
 accompanied by some interpreter reference counting APIs that let thread states
-be acquired and attached in a thread-safe, and predictable manner.
+be acquired and attached in a thread-safe and predictable manner.
 
 Terminology
 ===========
@@ -110,7 +109,7 @@ Motivation
 Native Threads Always Hang During Finalization
 ----------------------------------------------
 
-Many codebases might need to call Python code in highly-asynchronous
+Many large libraries might need to call Python code in highly-asynchronous
 situations where the desired interpreter
 (:ref:`typically the main interpreter <pep-788-subinterpreters-gilstate>`)
 could be finalizing or deleted, but want to continue running code after
@@ -147,14 +146,33 @@ thread when it goes to :term:`attach <attached thread state>` a :term:`thread st
 making the thread unusable past that point. Attaching a thread state can happen at
 any point when invoking Python, such as in-between bytecode instructions
 (to yield the :term:`GIL` to a different thread), or when a C function exits a
-:c:macro:`Py_BEGIN_ALLOW_THREADS` block. (Note that hanging the thread is
-relatively new behavior; in prior versions, the thread would terminate, but
-the issue is the same.)
+:c:macro:`Py_BEGIN_ALLOW_THREADS` block, so simply guarding against whether the
+interpreter is finalizing isn't enough to safely call Python code. (Note that hanging
+the thread is relatively new behavior; in prior versions, the thread would terminate,
+but the issue is the same.)
 
 This means that any non-Python/native thread may be terminated at any point, which
 is severely limiting for users who want to do more than just execute Python
-code in their stream of calls (for example, C++ might want to execute other
-finalizers in addition to calling Python).
+code in their stream of calls.
+
+Joining the Thread isn't Always Possible
+****************************************
+
+In general, it's possible to prevent hanging of threads created while Python
+is active through :mod:`atexit` functions. A thread could be started by some
+C function, and then as long as that thread is joined by :mod:`atexit`, then
+the thread won't hang. Reasonable enough, right?
+
+Unfortunately, :mod:`atexit` isn't always an option, because to call it, you
+need to already have an :term:`attached thread state` for the thread. If
+there's no guarantee of that, then :func:`atexit.register` cannot be safely
+called without the risk of hanging the thread.
+
+For example, large C++ applications might want to expose an interface that can
+call Python code. To do this, a function would take a Python object, and then
+call :c:func:`PyGILState_Ensure` to safely interact with it (e.g., by calling
+it). If the interpreter is finalizing or has shut down, then the thread is
+hung, disrupting the C++ caller.
 
 ``Py_IsFinalizing`` is Insufficient
 ***********************************
@@ -210,7 +228,8 @@ deadlocking. The main thread will continue to run finalizers past that point,
 though. If any of those finalizers try to acquire the lock, deadlock ensues.
 
 This affects CPython itself, and there's not much that can be done
-to fix it. For example, `python/cpython#129536 <https://github.com/python/cpython/issues/129536>`_
+to fix it with the current API. For example,
+`python/cpython#129536 <https://github.com/python/cpython/issues/129536>`_
 remarks that the :mod:`ssl` module can emit a fatal error when used at
 finalization, because a daemon thread got hung while holding the lock.
 
@@ -346,41 +365,37 @@ So, how do we address all of this? The best way seems to be starting from
 scratch and "reimagining" how to create, acquire and attach
 :term:`thread states <thread state>` in the C API.
 
-As a summary, there's a few bases we want to cover in a new API:
-
-- Require the caller to specify which interpreter they want to prevent those
-  pesky problems with interpreter guessing.
-- But, we also need to cover cases where a closure isn't available, so the thread
-  won't have access to an interpreter state (but also won't have access to
-  any objects).
-- Prevent the thread from being arbitrarily hung by calling into Python
-  during finalization.
-- Protection against deallocation on interpreters with short lifetimes.
-- Backwards-compatibility with the old APIs and ideas, such as daemonness.
-
 Preventing Interpreter Shutdown with Reference Counting
 -------------------------------------------------------
 
 This PEP takes an approach where interpreters are given a reference count by
-non-daemon threads that want to (or do) hold an attached thread state.
+non-daemon threads that want to (or do) hold an :term:`attached thread state`.
 
 So, from a thread's perspective, holding a "strong reference" to the
-interpreter will make it safe to invoke Python without worrying about
+interpreter will make it safe to call the C API without worrying about
 the thread being hung. A strong reference held by a thread state will
 be held as long as thread state is "alive", even if it's detached.
 
+This means that interfacing Python (for example, in a C++ library) will need
+a reference to the interpreter in order to safely call the object, which is
+definitely more inconvenient than assuming the main interpreter is the right
+choice, but there's not really another option.
+
+Weak References
+***************
+
 This proposal also comes with weak references to an interpreter that don't
 prevent it from shutting down, but can be promoted to a strong reference when
-the user decides that they want to call Python. Promotion of a weak reference to a
-strong reference can fail if the interpreter has already finalized, or reached
-a point during finalization where it can't be guaranteed that the thread won't
-hang.
+the user decides that they want to call the C API. Promotion of a weak reference
+to a strong reference can fail if the interpreter has already finalized, or
+reached a point during finalization where it can't be guaranteed that the
+thread won't hang.
 
 If there's additional work after destroying the thread state, the thread
 can continue running as normal. If that work needs to finish before the
 program exits, it's still up to the user on how to join the thread, for
-example by using an :mod:`atexit` handler can be used to join the thread.
-Again, this PEP isn't trying to reinvent how to create or join threads!
+example by using an :mod:`atexit` handler can be used to join it.
+This PEP isn't trying to reinvent how to create or join threads!
 
 Removing the GIL-state APIs
 ---------------------------
@@ -406,8 +421,8 @@ aren't too clear, see :ref:`pep-788-deprecation`.
 Specification
 =============
 
-Interpreter Reference Counting to Prevent Shutdown
---------------------------------------------------
+Interpreter References to Prevent Shutdown
+------------------------------------------
 
 An interpreter will keep a reference count that's managed by threads.
 When the interpreter starts finalizing, it will until its reference count
@@ -515,7 +530,7 @@ Weak Interpreter References
     Return a strong reference to an interpreter from a weak reference.
 
     If the interpreter no longer exists or has already finished waiting for
-    non-daemon threads, then this function returns ``NULL``.
+    non-daemon threads, then this function returns ``0``.
 
     The caller does not need to hold an :term:`attached thread state`, but is
     not safe to call in a re-entrant signal handler.
@@ -675,6 +690,48 @@ Examples
 
 These examples are here to help understand the APIs described in this PEP.
 Ideally, they could be reused in the documentation.
+
+Example: A Library Interface
+****************************
+
+Imagine that you're developing a C library for logging.
+You might want to provide an API that allows users to log to a Python file
+object.
+
+With this PEP, you'd implement it like this:
+
+.. code-block:: c
+
+    int
+    LogToPyFile(PyInterpreterWeakRef *wref,
+                PyObject *file,
+                const char *text)
+    {
+        PyInterpreterRef ref = PyInterpreterWeakRef_AsStrong(wref);
+        if (ref == 0) {
+            fputs("Python interpreter has shut down.", stderr);
+            return -1;
+        }
+
+        if (PyThreadState_Ensure(ref) < 0) {
+            puts("Out of memory.", stderr);
+            return -1;
+        }
+
+        char *to_write = do_some_text_mutation(text);
+        int res = PyFile_WriteString(to_write, file);
+        free(to_write);
+        PyErr_Print();
+        PyThreadState_Release();
+        return res < 0;
+    }
+
+If you were to use :c:func:`PyGILState_Ensure` for this case, then your
+thread would hang if the interpreter were to be finalizing at that time!
+
+Additionally, the API supports subinterpreters. If one were to assume that
+the main interpreter was active, then your library wouldn't be safe to use
+with file objects created by a subinterpreter.
 
 Example: A Single-threaded Ensure
 *********************************
@@ -837,7 +894,7 @@ deadlock the interpreter if it's not released.
         PyInterpreterWeakRef *wref = (PyInterpreterWeakRef *)arg;
         PyInterpreterRef *ref = PyInterpreterWeakRef_AsStrong(wref);
         if (ref == NULL) {
-            fputs(stderr, "Python has shut down!");
+            fputs("Python has shut down!", stderr);
             return -1;
         }
 
@@ -883,7 +940,7 @@ interpreter here.
     {
         PyInterpreterRef ref = PyInterpreterState_AsStrong(PyInterpreterState_Main());
         if (ref == 0) {
-            fputs(stderr, "Python has shut down!");
+            fputs("Python has shut down!", stderr);
             return;
         }
 
