@@ -6,6 +6,7 @@ from docutils import nodes
 from docutils.parsers import rst
 
 PYPA_SPEC_BASE_URL = "https://packaging.python.org/en/latest/specifications/"
+TYPING_SPEC_BASE_URL = "https://typing.python.org/en/latest/spec/"
 
 
 class PEPBanner(rst.Directive):
@@ -23,7 +24,6 @@ class PEPBanner(rst.Directive):
 
     admonition_class = nodes.important
     css_classes = []
-
 
     def run(self) -> list[nodes.admonition]:
 
@@ -77,9 +77,7 @@ class CanonicalDocBanner(PEPBanner):
     admonition_post_text = (
         "See :pep:`1` for how to propose changes."
     )
-
     css_classes = ["canonical-doc", "sticky-banner"]
-
 
 
 class CanonicalPyPASpecBanner(PEPBanner):
@@ -100,6 +98,53 @@ class CanonicalPyPASpecBanner(PEPBanner):
         "<https://www.pypa.io/en/latest/specifications/#handling-fixes-and-other-minor-updates>`__ "
         "for how to propose changes."
     )
-    admonition_class = nodes.attention
-
     css_classes = ["canonical-pypa-spec", "sticky-banner"]
+
+
+class CanonicalTypingSpecBanner(PEPBanner):
+    """Insert a specialized admonition for the typing specification."""
+
+    admonition_pre_template = (
+        "This PEP is a historical document: see {link_content} for up-to-date "
+        "specs and documentation. Canonical typing specs are maintained at "
+        f"the `typing specs site <{TYPING_SPEC_BASE_URL}>`__; "
+        "runtime typing behaviour is described in the CPython documentation."
+    )
+    admonition_pre_text = admonition_pre_template
+    admonition_post_text = (
+        "See the `typing specification update process "
+        "<https://typing.python.org/en/latest/spec/meta.html>`__ "
+        "for how to propose changes to the typing spec."
+    )
+    css_classes = ["canonical-typing-spec", "sticky-banner"]
+
+
+class DeprecatedBanner(PEPBanner):
+    """Generic admonition for deprecated PEPs."""
+
+    admonition_class = nodes.warning
+    admonition_pre_template = "{link_content}"
+    admonition_pre_text = "This PEP has been deprecated."
+    css_classes = ["sticky-banner", "deprecated"]
+
+
+class RejectedBanner(DeprecatedBanner):
+    """Insert an admonition for rejected PEPs."""
+
+    admonition_pre_text = "This PEP has been rejected."
+    css_classes = ["sticky-banner", "deprecated", "rejected"]
+
+
+class SupersededBanner(PEPBanner):
+    """Insert an admonition for superseded PEPs."""
+
+    admonition_pre_template = "This PEP has been superseded by :pep:`{link_content}`."
+    admonition_pre_text = "This PEP has been superseded."
+    css_classes = ["sticky-banner", "deprecated", "superseded"]
+
+
+class WithdrawnBanner(PEPBanner):
+    """Insert an admonition for withdrawn PEPs."""
+
+    admonition_pre_text = "This PEP has been withdrawn."
+    css_classes = ["sticky-banner", "deprecated", "withdrawn"]

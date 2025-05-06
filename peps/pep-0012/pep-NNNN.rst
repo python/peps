@@ -1,9 +1,9 @@
 PEP: <REQUIRED: pep number>
 Title: <REQUIRED: pep title>
-Author: <REQUIRED: list of authors' real names and optionally, email addrs>
-Sponsor: <real name of sponsor>
-PEP-Delegate: <PEP delegate's real name>
-Discussions-To: <REQUIRED: URL of current canonical discussion thread>
+Author: <REQUIRED: list of authors' names and optionally, email addrs>
+Sponsor: <name of sponsor>
+PEP-Delegate: <PEP delegate's name>
+Discussions-To: Pending
 Status: <REQUIRED: Draft | Active | Accepted | Provisional | Deferred | Rejected | Withdrawn | Final | Superseded>
 Type: <REQUIRED: Standards Track | Informational | Process>
 Topic: <Governance | Packaging | Release | Typing>

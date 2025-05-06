@@ -1,0 +1,1506 @@
+PEP: 751
+Title: A file format to record Python dependencies for installation reproducibility
+Author: Brett Cannon <brett@python.org>
+Status: Accepted
+Type: Standards Track
+Topic: Packaging
+Created: 24-Jul-2024
+Post-History:
+  `25-Jul-2024 <https://discuss.python.org/t/59173>`__
+  `30-Oct-2024 <https://discuss.python.org/t/69721>`__
+  `15-Jan-2025 <https://discuss.python.org/t/77293>`__
+Replaces: 665
+Resolution: `31-Mar-2025 <https://discuss.python.org/t/77293/150>`__
+
+========
+Abstract
+========
+
+This PEP proposes a new file format for specifying dependencies
+to enable reproducible installation in a Python environment. The format is
+designed to be human-readable and machine-generated. Installers consuming the
+file should be able to calculate what to install without the need for dependency
+resolution at install-time.
+
+
+==========
+Motivation
+==========
+
+Currently, no standard exists to create an immutable record, such as a lock
+file, which specifies what direct and indirect dependencies should be installed
+into a virtual environment.
+
+Considering there are at least five well-known solutions to this problem in the
+community (PDM_, ``pip freeze``, pip-tools_, Poetry_, and uv_), there seems to
+be an appetite for lock files in general.
+
+Those tools also vary in what locking scenarios they support. For instance,
+``pip freeze`` and pip-tools only generate single-use lock files for the current
+environment while PDM, Poetry, and uv can/try to lock for multiple environments
+and use-cases at once. There's also concerns around the lack of secure defaults
+in the face of supply chain attacks by some tools (e.g. including hashes for
+files).
+
+The lack of a standard also has some drawbacks. For instance, any tooling that
+wants to work with lock files must choose which format to support, potentially
+leaving users unsupported (e.g. Dependabot_ only supporting select tools,
+same for cloud providers who can do dependency installations on your behalf,
+etc.). It also impacts portability between tools, which causes vendor lock-in.
+By not having compatibility and interoperability it fractures tooling around
+lock files where both users and tools have to choose what lock file format to
+use upfront, making it costly to use/switch to other formats (e.g. tooling
+around auditing a lock file). Rallying around a single format removes this
+cost/barrier.
+
+The closest the community has to a standard are pip's `requirements files`_
+which all the aforementioned tools either use directly as their file format or
+export to (i.e. ``requirements.txt``). Unfortunately, the format is not a
+standard but is supported by convention. It's also designed very much for pip's
+needs, limiting its flexibility and ease of use (e.g. it's a bespoke file
+format). Lastly, it is not secure by default (e.g. file hash support is
+entirely an opt-in feature, you have to tell pip to not look for other
+dependencies outside of what's in the requirements file, etc.).
+
+.. note::
+
+   Much of the motivation from :pep:`665` also applies to this PEP.
+
+
+=========
+Rationale
+=========
+
+The file format proposed by this PEP is designed to be human-readable. This is
+so that the contents of the file can be audited by a human to make sure no
+undesired dependencies end up being included in the lock file.
+
+The file format is also designed to not require a resolver at install time. This
+greatly simplifies reasoning about what would be installed when consuming a lock
+file. It should also lead to faster installs which are much more frequent than
+creating a lock file.
+
+The data in the file should be consumable by tools not written in Python. This
+allows for e.g. cloud hosting providers to write their own tool to perform
+installations in their preferred programming language. This introduces the
+concept of *lockers* which write the lock file, and *installers* which install
+from a lock file (they can be the same tool).
+
+The file format should promote good security defaults. As the format is not
+meant to be human-writable, this means having tools provide security-related
+details is reasonable and not a costly burden.
+
+The contents of a lock file should be able to replace the vast majority of uses
+of `requirements files`_ when used as a lock file (e.g. what
+pip-tools_ and ``pip freeze`` emit). This means the file format specified by
+this PEP can, at minimum, act as an export target for tools which have their own
+internal lock file format.
+
+Lock files can be *single-use* and *multi-use*. Single-use lock files are things
+like ``requirements.txt`` files, which serve a single use-case/purpose (hence
+why it isn't uncommon for a project to have multiple requirements files, each
+for a different use-case). Multi-use lock files represent multiple use-cases
+within a single file, often expressed through
+:ref:`extras <packaging:core-metadata-provides-extra>` and
+:ref:`packaging:dependency-groups`. As such, this PEP supports additions to
+:ref:`packaging:dependency-specifiers-environment-markers` that allows for
+specifying extras and dependency groups as appropriate. This allows
+for a single lock file to support those cases. This not only cuts down on the
+number of potential lock files, but it also makes it easier when a single
+package is meant to be consistent across all use-cases (with multiple single-use
+lock files it requires coordinating across multiple lock files). This support
+also means that this PEP supports all package installation-related data that can
+be recorded in a ``pyproject.toml`` file. The hope is that this support will
+allow some tools to drop their internal lock file entirely and solely rely on
+what this PEP specifies.
+
+
+=============
+Specification
+=============
+
+---------
+File Name
+---------
+
+A lock file MUST be named :file:`pylock.toml` or match the regular expression
+``r"^pylock\.([^.]+)\.toml$"`` if a name for the lock file is desired or if multiple
+lock files exist. The use of the ``.toml`` file extension is to make syntax
+highlighting in editors easier and to reinforce the fact that the file format is
+meant to be human-readable. The prefix and suffix of a named file MUST be
+lowercase when possible, for easy detection and removal,
+e.g.:
+
+.. code-block:: Python
+
+  if len(filename) > 11 and filename.startswith("pylock.") and filename.endswith(".toml"):
+      name = filename.removeprefix("pylock.").removesuffix(".toml")
+
+The expectation is that services that automatically install from lock files will
+search for:
+
+1. The lock file with the service's name and doing the default install
+2. A multi-use ``pylock.toml`` with a dependency group with the name of the service
+3. The default install of ``pylock.toml``
+
+E.g. a cloud host service named "spam" would first look for
+``pylock.spam.toml`` to install from, and if that file didn't exist then install
+from ``pylock.toml`` and look for a dependency group named "spam" to use if
+present.
+
+The lock file(s) SHOULD be located in the directory as appropriate for the scope
+of the lock file. Locking against a single ``pyproject.toml``, for instance,
+would place the ``pylock.toml`` in the same directory. If the lock file covered
+multiple projects in a monorepo, then the expectation is the ``pylock.toml``
+file would be in the directory that held all the projects being locked.
+
+
+-----------
+File Format
+-----------
+
+The format of the file is TOML_.
+
+Tools SHOULD write their lock files in a consistent way to minimize noise in
+diff output. Keys in tables -- including the top-level table -- SHOULD be
+recorded in a consistent order (if inspiration is desired, this PEP has tried to
+write down keys in a logical order). As well, tools SHOULD sort arrays in
+consistent order. Usage of inline tables SHOULD also be kept consistent.
+
+.. File details
+
+``lock-version``
+================
+
+- **Type**: string; value of ``"1.0"``
+- **Required?**: yes
+- **Inspiration**: :ref:`packaging:core-metadata-metadata-version`
+- Record the file format version that the file adheres to.
+- This PEP specifies the initial version -- and only valid value until future
+  updates to the standard change it -- as ``"1.0"``.
+- If a tool supports the major version but not the minor version, a tool
+  SHOULD warn when an unknown key is seen.
+- If a tool doesn't support a major version, it MUST raise an error.
+
+
+``environments``
+================
+
+- **Type**: Array of strings
+- **Required?**: no
+- **Inspiration**: uv_
+- A list of :ref:`packaging:dependency-specifiers-environment-markers` for
+  which the lock file is considered compatible with.
+- Tools SHOULD write exclusive/non-overlapping environment markers to ease in
+  understanding.
+
+
+``requires-python``
+===================
+
+- **Type**: string
+- **Required?**: no
+- **Inspiration**: PDM_, Poetry_, uv_
+- Specifies the :ref:`packaging:core-metadata-requires-python` for the minimum
+  Python version compatible for any environment supported by the lock file
+  (i.e. the minimum viable Python version for the lock file).
+
+
+``extras``
+==========
+
+- **Type**: Array of strings
+- **Required?**: no; defaults to ``[]``
+- **Inspiration**: :ref:`packaging:core-metadata-provides-extra`
+- The list of :ref:`extras <packaging:core-metadata-provides-extra>` supported
+  by this lock file.
+- Lockers MAY choose to not support writing lock files that support extras and
+  dependency groups (i.e. tools may only support exporting a single-use lock
+  file).
+- Tools supporting extras MUST also support dependency groups.
+- Tools should explicitly set this key to an empty array to signal that the
+  inputs used to generate the lock file had no extras (e.g. a ``pyproject.toml``
+  file had no ``[project.optional-dependencies]`` table), signalling that the
+  lock file is, in effect, multi-use even if it only looks to be single-use.
+
+
+``dependency-groups``
+=====================
+
+- **Type**: Array of strings
+- **Required?**: no; defaults to ``[]``
+- **Inspiration**: :ref:`packaging:pyproject-tool-table`
+- The list of :ref:`packaging:dependency-groups` publicly supported by this lock
+  file (i.e. dependency groups users are expected to be able to specify via a
+  tool's UI).
+- Lockers MAY choose to not support writing lock files that support extras and
+  dependency groups (i.e. tools may only support exporting a single-use lock
+  file).
+- Tools supporting dependency groups MUST also support extras.
+- Tools SHOULD explicitly set this key to an empty array to signal that the
+  inputs used to generate the lock file had no dependency groups (e.g. a ``pyproject.toml``
+  file had no ``[dependency-groups]`` table), signalling that the lock file
+  is, in effect, multi-use even if it only looks to be single-use.
+
+
+``default-groups``
+==================
+
+- **Type**: Array of strings
+- **Required?**: no; defaults to ``[]``
+- **Inspiration**: Poetry_, PDM_
+- The name of synthetic dependency groups to represent what should be installed
+  by default (e.g. what ``project.dependencies`` implicitly represents).
+- Meant to be used in situations where ``packages.marker`` necessitates such a
+  group to exist.
+- The groups listed by this key SHOULD NOT be listed in ``dependency-groups`` as
+  the groups are not meant to be directly exposed to users by name but instead
+  via an installer's UI.
+
+
+``created-by``
+==============
+
+- **Type**: string
+- **Required?**: yes
+- **Inspiration**: Tools with their name in their lock file name
+- Records the name of the tool used to create the lock file.
+- Tools MAY use the ``[tool]`` table to record enough details that it can be
+  inferred what inputs were used to create the lock file.
+- Tools SHOULD record the normalized name of the tool if it is available as a
+  Python package to facilitate finding the tool.
+
+
+``[[packages]]``
+================
+
+- **Type**: array of tables
+- **Required?**: yes
+- **Inspiration**: PDM_, Poetry_, uv_
+- An array containing all packages that *may* be installed.
+- Packages MAY be listed multiple times with varying data, but all packages to
+  be installed MUST narrow down to a single entry at install time.
+
+
+.. Identification
+
+``packages.name``
+-----------------
+
+- **Type**: string
+- **Required?**: yes
+- **Inspiration**: :ref:`packaging:core-metadata-name`
+- The name of the package :ref:`normalized <packaging:name-normalization>`.
+
+
+``packages.version``
+--------------------
+
+- **Type**: string
+- **Required?**: no
+- **Inspiration**: :ref:`packaging:core-metadata-version`
+- The version of the package.
+- The version SHOULD be specified when the version is known to be stable
+  (i.e. when an :ref:`sdist <packaging:source-distribution-format>` or
+  :ref:`wheels <packaging:binary-distribution-format>` are specified).
+- The version MUST NOT be included when it cannot be guaranteed to be consistent
+  with the code used (i.e. when a
+  :ref:`source tree <packaging:source-distribution-format-source-tree>` is
+  used).
+
+
+.. Requirements
+
+``packages.marker``
+-------------------
+
+- **Type**: string
+- **Required?**: no
+- **Inspiration**: PDM_
+- The
+  :ref:`environment marker <packaging:dependency-specifiers-environment-markers>`
+  which specify when the package should be installed.
+
+
+``packages.requires-python``
+----------------------------
+
+- **Type**: string
+- **Required?**: no
+- **Inspiration**: :ref:`packaging:core-metadata-requires-python`
+- Holds the :ref:`packaging:version-specifiers` for Python version compatibility
+  for the package.
+
+
+``[[packages.dependencies]]``
+-----------------------------
+
+- **Type**: array of tables
+- **Required?**: no
+- **Inspiration**: PDM_, Poetry_, uv_
+- Records the other entries in ``[[packages]]`` which are direct dependencies of
+  this package.
+- Each entry is a table which contains the minimum information required to tell
+  which other package entry it corresponds to where doing a key-by-key
+  comparison would find the appropriate package with no ambiguity (e.g. if there
+  are two entries for the ``spam`` package, then you can include the version
+  number like ``{name = "spam", version = "1.0.0"}``, or by source like
+  ``{name = "spam", vcs = { url = "..."}``).
+- Tools MUST NOT use this information when doing installation; it is purely
+  informational for auditing purposes.
+
+
+.. Source
+
+``[packages.vcs]``
+-------------------
+
+- **Type**: table
+- **Required?**: no; mutually-exclusive with ``packages.directory``,
+  ``packages.archive``, ``packages.sdist``, and ``packages.wheels``
+- **Inspiration**: :ref:`packaging:direct-url-data-structure`
+- Record the version control system details for the
+  :ref:`source tree <packaging:source-distribution-format-source-tree>` it
+  contains.
+- Tools MAY choose to not support version control systems, both from a locking
+  and/or installation perspective.
+- Tools MAY choose to only support a subset of the available VCS types.
+- Tools SHOULD provide a way for users to opt in/out of using version control
+  systems.
+- Installation from a version control system is considered originating from a
+  :ref:`direct URL reference <packaging:direct-url>`.
+
+
+``packages.vcs.type``
+''''''''''''''''''''''
+
+- **Type**: string; supported values specified in
+  :ref:`packaging:direct-url-data-structure-registered-vcs`
+- **Required?**: yes
+- **Inspiration**: :ref:`packaging:direct-url-data-structure-vcs`
+- The type of version control system used.
+
+
+``packages.vcs.url``
+'''''''''''''''''''''
+
+- **Type**: string
+- **Required?**: if ``path`` is not specified
+- **Inspiration**: :ref:`packaging:direct-url-data-structure-vcs`
+- The URL to the source tree.
+
+
+``packages.vcs.path``
+''''''''''''''''''''''
+
+- **Type**: string
+- **Required?**: if ``url`` is not specified
+- **Inspiration**: :ref:`packaging:direct-url-data-structure-vcs`
+- The path to the local directory of the source tree.
+- If a relative path is used it MUST be relative to the location of this file.
+- If the path is relative it MAY use POSIX-style path separators explicitly
+  for portability.
+
+
+``packages.vcs.requested-revision``
+''''''''''''''''''''''''''''''''''''
+
+- **Type**: string
+- **Required?**: no
+- **Inspiration**: :ref:`packaging:direct-url-data-structure-vcs`
+- The branch/tag/ref/commit/revision/etc. that the user requested.
+- This is purely informational and to facilitate writing the
+  :ref:`packaging:direct-url-data-structure`; it MUST NOT be used to checkout
+  the repository.
+
+
+``packages.vcs.commit-id``
+'''''''''''''''''''''''''''
+
+- **Type**: string
+- **Required?**: yes
+- **Inspiration**: :ref:`packaging:direct-url-data-structure-vcs`
+- The exact commit/revision number that is to be installed.
+- If the VCS supports commit-hash based revision identifiers, such a commit-hash
+  MUST be used as the commit ID in order to reference an immutable version of
+  the source code.
+
+
+``packages.vcs.subdirectory``
+''''''''''''''''''''''''''''''
+
+- **Type**: string
+- **Required?**: no
+- **Inspiration**: :ref:`packaging:direct-url-data-structure-subdirectories`
+- The subdirectory within the
+  :ref:`source tree <packaging:source-distribution-format-source-tree>` where
+  the project root of the project is (e.g. the location of the
+  ``pyproject.toml`` file).
+- The path MUST be relative to the root of the source tree structure.
+
+
+``[packages.directory]``
+-------------------------
+
+- **Type**: table
+- **Required?**: no; mutually-exclusive with ``packages.vcs``,
+  ``packages.archive``, ``packages.sdist``, and ``packages.wheels``
+- **Inspiration**: :ref:`packaging:direct-url-data-structure-local-directory`
+- Record the local directory details for the
+  :ref:`source tree <packaging:source-distribution-format-source-tree>` it
+  contains.
+- Tools MAY choose to not support local directories, both from a locking
+  and/or installation perspective.
+- Tools SHOULD provide a way for users to opt in/out of using local directories.
+- Installation from a directory is considered originating from a
+  :ref:`direct URL reference <packaging:direct-url>`.
+
+
+``packages.directory.path``
+''''''''''''''''''''''''''''
+
+- **Type**: string
+- **Required?**: yes
+- **Inspiration**: :ref:`packaging:direct-url-data-structure-local-directory`
+- The local directory where the source tree is.
+- If the path is relative it MUST be relative to the location of the lock file.
+- If the path is relative it MAY use POSIX-style path separators for
+  portability.
+
+
+``packages.directory.editable``
+''''''''''''''''''''''''''''''''
+
+- **Type**: boolean
+- **Required?**: no; defaults to ``false``
+- **Inspiration**: :ref:`packaging:direct-url-data-structure-local-directory`
+- A flag representing whether the source tree was an editable install at lock
+  time.
+- Installer MAY choose to ignore this flag if user actions or context would make
+  an editable install unnecessary or undesirable (e.g. a container image that
+  will not be mounted for development purposes but instead deployed to
+  production where it would be treated at read-only).
+
+
+``packages.directory.subdirectory``
+''''''''''''''''''''''''''''''''''''
+
+See ``packages.vcs.subdirectory``.
+
+
+``[packages.archive]``
+-----------------------
+
+- **Type**: table
+- **Required?**: no
+- **Inspiration**: :ref:`packaging:direct-url-data-structure-archive`
+- A direct reference to an archive file to install from
+  (this can include wheels and sdists, as well as other archive formats
+  containing a source tree).
+- Tools MAY choose to not support archive files, both from a locking
+  and/or installation perspective.
+- Tools SHOULD provide a way for users to opt in/out of using archive files.
+- Installation from an archive file is considered originating from a
+  :ref:`direct URL reference <packaging:direct-url>`.
+
+
+``packages.archive.url``
+'''''''''''''''''''''''''
+
+See ``packages.vcs.url``.
+
+
+``packages.archive.path``
+''''''''''''''''''''''''''
+
+See ``packages.vcs.path``.
+
+
+``packages.archive.size``
+''''''''''''''''''''''''''
+
+- **Type**: integer
+- **Required?**: no
+- **Inspiration**: uv_, :ref:`packaging:simple-repository-api`
+- The size of the archive file.
+- Tools SHOULD provide the file size when reasonably possible (e.g. the file
+  size is available via the Content-Length_ header from a HEAD_ HTTP request).
+
+
+``packages.archive.upload-time``
+''''''''''''''''''''''''''''''''
+
+- **Type**: datetime
+- **Required?**: no
+- **Inspiration**: :ref:`packaging:simple-repository-api`
+- The time the file was uploaded.
+- The date and time MUST be recorded in UTC.
+
+
+``[packages.archive.hashes]``
+''''''''''''''''''''''''''''''
+
+- **Type**: Table of strings
+- **Required?**: yes
+- **Inspiration**: PDM_, Poetry_, uv_, :ref:`packaging:simple-repository-api`
+- A table listing known hash values of the file where the key is the hash
+  algorithm and the value is the hash value.
+- The table MUST contain at least one entry.
+- Hash algorithm keys SHOULD be lowercase.
+- At least one secure algorithm from :py:data:`hashlib.algorithms_guaranteed`
+  SHOULD always be included (at time of writing, sha256 specifically is
+  recommended.
+
+
+``packages.archive.subdirectory``
+''''''''''''''''''''''''''''''''''
+
+See ``packages.vcs.subdirectory``.
+
+
+``packages.index``
+------------------
+
+- **Type**: string
+- **Required?**: no
+- **Inspiration**: uv_
+- The base URL for the package index from :ref:`packaging:simple-repository-api`
+  where the sdist and/or wheels were found (e.g. ``https://pypi.org/simple/``).
+- When possible, this SHOULD be specified to assist with generating
+  `software bill of materials`_ -- aka SBOMs -- and to assist in finding a file
+  if a URL ceases to be valid.
+- Tools MAY support installing from an index if the URL recorded for a specific
+  file is no longer valid (e.g. returns a 404 HTTP error code).
+
+
+``[packages.sdist]``
+--------------------
+
+- **Type**: table
+- **Required?**: no; mutually-exclusive with ``packages.vcs``,
+  ``packages.directory``, and ``packages.archive``
+- **Inspiration**: uv_
+- Details of a :ref:`packaging:source-distribution-format-sdist` for the
+  package.
+- Tools MAY choose to not support sdist files, both from a locking
+  and/or installation perspective.
+- Tools SHOULD provide a way for users to opt in/out of using sdist files.
+
+
+``packages.sdist.name``
+'''''''''''''''''''''''
+
+- **Type**: string
+- **Required?**: no, not when the last component of ``path``/ ``url`` would be
+  the same value
+- **Inspiration**: PDM_, Poetry_, uv_
+- The file name of the :ref:`packaging:source-distribution-format-sdist` file.
+
+
+``packages.sdist.upload-time``
+''''''''''''''''''''''''''''''
+
+See ``packages.archive.upload-time``.
+
+
+``packages.sdist.url``
+''''''''''''''''''''''
+
+See ``packages.archive.url``.
+
+
+``packages.sdist.path``
+'''''''''''''''''''''''
+
+See ``packages.archive.path``.
+
+
+``packages.sdist.size``
+'''''''''''''''''''''''
+
+See ``packages.archive.size``.
+
+
+``packages.sdist.hashes``
+'''''''''''''''''''''''''
+
+See ``packages.archive.hashes``.
+
+
+
+``[[packages.wheels]]``
+-----------------------
+
+- **Type**: array of tables
+- **Required?**: no; mutually-exclusive with ``packages.vcs``,
+  ``packages.directory``, and ``packages.archive``
+- **Inspiration**: PDM_, Poetry_, uv_
+- For recording the wheel files as specified by
+  :ref:`packaging:binary-distribution-format` for the package.
+- Tools MUST support wheel files, both from a locking and installation
+  perspective.
+
+
+``packages.wheels.name``
+''''''''''''''''''''''''
+
+- **Type**: string
+- **Required?**: no, not when the last component of ``path``/ ``url`` would be
+  the same value
+- **Inspiration**: PDM_, Poetry_, uv_
+- The file name of the :ref:`packaging:binary-distribution-format` file.
+
+
+``packages.wheels.upload-time``
+'''''''''''''''''''''''''''''''
+
+See ``packages.archive.upload-time``.
+
+
+``packages.wheels.url``
+'''''''''''''''''''''''
+
+See ``packages.archive.url``.
+
+
+``packages.wheels.path``
+''''''''''''''''''''''''
+
+See ``packages.archive.path``.
+
+
+``packages.wheels.size``
+''''''''''''''''''''''''
+
+See ``packages.archive.size``.
+
+
+``packages.wheels.hashes``
+''''''''''''''''''''''''''
+
+See ``packages.archive.hashes``.
+
+
+``[[packages.attestation-identities]]``
+---------------------------------------
+
+- **Type**: array of tables
+- **Required?**: no
+- **Inspiration**: :ref:`packaging:provenance-object`
+- A recording of the attestations for **any** file recorded for this package.
+- If available, tools SHOULD include the attestation identities found.
+- Publisher-specific keys are to be included in the table as-is
+  (i.e. top-level), following the spec at
+  :ref:`packaging:index-hosted-attestations`.
+
+
+``packages.attestation-identities.kind``
+''''''''''''''''''''''''''''''''''''''''
+
+- **Type**: string
+- **Required?**: yes
+- **Inspiration**: :ref:`packaging:provenance-object`
+- The unique identity of the Trusted Publisher.
+
+
+
+
+
+``[packages.tool]``
+-------------------
+
+- **Type**: table
+- **Required?**: no
+- **Inspiration**: :ref:`packaging:pyproject-tool-table`
+- Similar usage as that of the ``[tool]`` table from the
+  :ref:`packaging:pyproject-toml-spec`, but at the package version level instead
+  of at the lock file level (which is also available via ``[tool]``).
+- Data recorded in the table MUST be disposable (i.e. it MUST NOT affect
+  installation).
+
+
+``[tool]``
+==========
+
+- **Type**: table
+- **Required?**: no
+- **Inspiration**: :ref:`packaging:pyproject-tool-table`
+- See ``packages.tool``.
+
+
+-------------------------------------
+Additions to marker expression syntax
+-------------------------------------
+
+This PEP proposes adding to the
+:ref:`packaging:dependency-specifiers-environment-markers` specification such
+that extras and dependency group relationships for an entry in ``[[packages]]``
+can be expressed in ``packages.marker``. The additions outlined in this PEP
+ONLY apply in the context of lock files as defined by this PEP and not in other
+contexts where marker syntax is used (e.g. ``METADATA``, ``pyproject.toml``).
+
+First, two new markers will be introduced: ``extras`` and
+``dependency_groups``. They represent the extras and dependency groups that have
+been requested to be installed, respectively:
+
+.. code-block:: diff
+
+  diff --git a/source/specifications/dependency-specifiers.rst b/source/specifications/dependency-specifiers.rst
+  index 06897da2..c9ab247f 100644
+  --- a/source/specifications/dependency-specifiers.rst
+  +++ b/source/specifications/dependency-specifiers.rst
+  @@ -87,7 +87,7 @@ environments::
+                        'platform_system' | 'platform_version' |
+                        'platform_machine' | 'platform_python_implementation' |
+                        'implementation_name' | 'implementation_version' |
+  -                     'extra' # ONLY when defined by a containing layer
+  +                     'extra' | 'extras' | 'dependency_groups' # ONLY when defined by a containing layer
+                        )
+      marker_var    = wsp* (env_var | python_str)
+      marker_expr   = marker_var marker_op marker_var
+
+This does NOT preclude using the same syntax parser in other contexts, only
+where the new markers happen to be considered valid based on context.
+
+Second, the marker specification will be changed to allow sets for values (on
+top of the current support for strings and versions). ONLY the new markers
+introduced in this PEP will allow for a set for their value (which defaults to
+an empty set). This specifically does NOT update the spec to allow for set
+literals.
+
+Third, the marker expression syntax specification will be updated to allow for
+operations involving sets:
+
+.. code-block:: diff
+
+  diff --git a/source/specifications/dependency-specifiers.rst b/source/specifications/dependency-specifiers.rst
+  index 06897da2..ac29d796 100644
+  --- a/source/specifications/dependency-specifiers.rst
+  +++ b/source/specifications/dependency-specifiers.rst
+  @@ -196,15 +196,16 @@ safely evaluate it without running arbitrary code that could become a security
+  vulnerability. Markers were first standardised in :pep:`345`. This document
+  fixes some issues that were observed in the design described in :pep:`426`.
+
+  -Comparisons in marker expressions are typed by the comparison operator.  The
+  -<marker_op> operators that are not in <version_cmp> perform the same as they
+  -do for strings in Python. The <version_cmp> operators use the version comparison
+  -rules of the :ref:`Version specifier specification <version-specifiers>`
+  -when those are defined (that is when both sides have a valid
+  -version specifier). If there is no defined behaviour of this specification
+  -and the operator exists in Python, then the operator falls back to
+  -the Python behaviour. Otherwise an error should be raised. e.g. the following
+  -will result in  errors::
+  +Comparisons in marker expressions are typed by the comparison operator and the
+  +type of the marker value. The <marker_op> operators that are not in
+  +<version_cmp> perform the same as they do for strings or sets in Python based on
+  +whether the marker value is a string or set itself. The <version_cmp> operators
+  +use the version comparison rules of the
+  +:ref:`Version specifier specification <version-specifiers>` when those are
+  +defined (that is when both sides have a valid version specifier). If there is no
+  +defined behaviour of this specification and the operator exists in Python, then
+  +the operator falls back to the Python behaviour for the types involved.
+  +Otherwise an error should be raised. e.g. the following will result in errors::
+
+      "dog" ~= "fred"
+      python_version ~= "surprise"
+
+
+Fourth, use of ``extras`` and ``dependency_groups`` will be considered an
+error outside of lock file (much like ``extra`` outside of
+:ref:`packaging:core-metadata`).
+
+.. code-block:: diff
+
+  diff --git a/source/specifications/dependency-specifiers.rst b/source/specifications/dependency-specifiers.rst
+  index 06897da2..2914ef66 100644
+  --- a/source/specifications/dependency-specifiers.rst
+  +++ b/source/specifications/dependency-specifiers.rst
+  @@ -235,6 +235,11 @@ no current specification for this. Regardless, outside of a context where this
+  special handling is taking place, the "extra" variable should result in an
+  error like all other unknown variables.
+
+  +The "extras" and "dependency_groups" variables are also special. They are used
+  +to specify any requested extras or dependency groups when installing from a lock
+  +file. Outside of the context of lock files, these two variables should result in
+  +an error like all other unknown variables.
+  +
+  .. list-table::
+      :header-rows: 1
+
+
+These changes, along with ``packages.extras``/ ``packages.dependency-groups``
+and marker expressions' Boolean logic support, allow for expressing arbitrary,
+exhaustive requirements for when a package should be installed based on the
+extras and dependency groups (not) requested. For example, if a lock file has
+``extras = ["extra-1", "extra-2"]``, you can specify if a package should be
+installed when:
+
+- Any of the extras are specified
+  (``'extra-1' in extras or 'extra-2' in extras``)
+- Only "extra-1" is specified
+  (``'extra-1' in extras and 'extra-2' not in extras``)
+- None of the extras are specified
+  (``'extra-1' not in extras and 'extra-2' not in extras``)
+
+(This list is not exhaustive of all possible Boolean logic expressions.)
+
+The same flexibility applies to dependency groups.
+
+How users tell a tool what extras and/or dependency groups they want installed
+is up to the tool. Installers MUST support the marker expression syntax
+additions as proposed by this PEP. Lockers MAY support writing lock files that
+utilize the proposed marker expression syntax additions (i.e. lockers can choose
+to only support writing single-use lock files).
+
+
+-------
+Example
+-------
+
+.. code-block:: TOML
+
+  lock-version = '1.0'
+  environments = ["sys_platform == 'win32'", "sys_platform == 'linux'"]
+  requires-python = '==3.12'
+  created-by = 'mousebender'
+
+  [[packages]]
+  name = 'attrs'
+  version = '25.1.0'
+  requires-python = '>=3.8'
+  wheels = [
+    {name = 'attrs-25.1.0-py3-none-any.whl', upload-time = 2025-01-25T11:30:10.164985+00:00, url = 'https://files.pythonhosted.org/packages/fc/30/d4986a882011f9df997a55e6becd864812ccfcd821d64aac8570ee39f719/attrs-25.1.0-py3-none-any.whl', size = 63152, hashes = {sha256 = 'c75a69e28a550a7e93789579c22aa26b0f5b83b75dc4e08fe092980051e1090a'}},
+  ]
+  [[packages.attestation-identities]]
+  environment = 'release-pypi'
+  kind = 'GitHub'
+  repository = 'python-attrs/attrs'
+  workflow = 'pypi-package.yml'
+
+  [[packages]]
+  name = 'cattrs'
+  version = '24.1.2'
+  requires-python = '>=3.8'
+  dependencies = [
+      {name = 'attrs'},
+  ]
+  wheels = [
+    {name = 'cattrs-24.1.2-py3-none-any.whl', upload-time = 2024-09-22T14:58:34.812643+00:00, url = 'https://files.pythonhosted.org/packages/c8/d5/867e75361fc45f6de75fe277dd085627a9db5ebb511a87f27dc1396b5351/cattrs-24.1.2-py3-none-any.whl', size = 66446, hashes = {sha256 = '67c7495b760168d931a10233f979b28dc04daf853b30752246f4f8471c6d68d0'}},
+  ]
+
+  [[packages]]
+  name = 'numpy'
+  version = '2.2.3'
+  requires-python = '>=3.10'
+  wheels = [
+    {name = 'numpy-2.2.3-cp312-cp312-win_amd64.whl', upload-time = 2025-02-13T16:51:21.821880+00:00, url = 'https://files.pythonhosted.org/packages/42/6e/55580a538116d16ae7c9aa17d4edd56e83f42126cb1dfe7a684da7925d2c/numpy-2.2.3-cp312-cp312-win_amd64.whl', size = 12626357, hashes = {sha256 = '83807d445817326b4bcdaaaf8e8e9f1753da04341eceec705c001ff342002e5d'}},
+    {name = 'numpy-2.2.3-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl', upload-time = 2025-02-13T16:50:00.079662+00:00, url = 'https://files.pythonhosted.org/packages/39/04/78d2e7402fb479d893953fb78fa7045f7deb635ec095b6b4f0260223091a/numpy-2.2.3-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl', size = 16116679, hashes = {sha256 = '3b787adbf04b0db1967798dba8da1af07e387908ed1553a0d6e74c084d1ceafe'}},
+  ]
+
+  [tool.mousebender]
+  command = ['.', 'lock', '--platform', 'cpython3.12-windows-x64', '--platform', 'cpython3.12-manylinux2014-x64', 'cattrs', 'numpy']
+  run-on = 2025-03-06T12:28:57.760769
+
+
+------------
+Installation
+------------
+
+The following outlines the steps to be taken to install from a lock file
+(while the requirements are prescriptive, the general steps and order are
+a suggestion):
+
+#. Gather the extras and dependency groups to install and set ``extras`` and
+   ``dependency_groups`` for marker evaluation, respectively.
+
+   #. ``extras`` SHOULD be set to the empty set by default.
+   #. ``dependency_groups`` SHOULD be the set created from ``default-groups`` by
+      default.
+
+#. Check if the metadata version specified by ``lock-version`` is supported;
+   an error or warning MUST be raised as appropriate.
+#. If ``requires-python`` is specified, check that the environment being
+   installed for meets the requirement; an error MUST be raised if it is not
+   met.
+#. If ``environments`` is specified, check that at least one of the environment
+   marker expressions is satisfied; an error MUST be raised if no expression is
+   satisfied.
+#. For each package listed in ``[[packages]]``:
+
+   #. If ``marker`` is specified, check if it is satisfied; if it isn't,
+      skip to the next package.
+   #. If ``requires-python`` is specified, check if it is satisfied; an error
+      MUST be raised if it isn't.
+   #. Check that no other conflicting instance of the package has been slated to
+      be installed; an error about the ambiguity MUST be raised otherwise.
+   #. Check that the source of the package is specified appropriately (i.e.
+      there are no conflicting sources in the package entry);
+      an error MUST be raised if any issues are found.
+   #. Add the package to the set of packages to install.
+
+#. For each package to be installed:
+
+   - If ``vcs`` is set:
+
+     #. Clone the repository to the commit ID specified in ``commit-id``.
+     #. Build the package, respecting ``subdirectory``.
+     #. Install.
+
+   - Else if ``directory`` is set:
+
+     #. Build the package, respecting ``subdirectory``.
+     #. Install.
+
+   - Else if ``archive`` is set:
+
+     #. Get the file.
+     #. Validate the file size and hash.
+     #. Build the package, respecting ``subdirectory``.
+     #. Install.
+
+   - Else if there are entries for ``wheels``:
+
+     #. Look for the appropriate wheel file based on ``name``; if one is not
+        found then move on to ``sdist`` or an error MUST be raised about a
+        lack of source for the project.
+     #. Get the file:
+
+        - If ``path`` is set, use it.
+        - If ``url`` is set, try to use it; optionally tools MAY use
+          ``packages.index`` or some tool-specific mechanism to download the
+          selected wheel file (tools MUST NOT try to change what wheel file to
+          download based on what's available; what file to install should be
+          determined in an offline fashion for reproducibility).
+
+     #. Validate the file size and hash.
+     #. Install.
+
+   - Else if no ``wheel`` file is found or ``sdist`` is solely set:
+
+     #. Get the file.
+
+        - If ``path`` is set, use it.
+        - If ``url`` is set, try to use it; tools MAY use
+          ``packages.index`` or some tool-specific mechanism to download the
+          file.
+
+     #. Validate the file size and hash.
+     #. Build the package.
+     #. Install.
+
+
+----------------------------------------------------
+Semantic differences with ``requirements.txt`` files
+----------------------------------------------------
+
+Ignoring formatting, there are a few differences between lock files as proposed
+by this PEP and those that are possible via a `requirements file`_.
+
+Some of the differences are in regards to security. Requiring hashes, recording
+file sizes, and where a file was found -- both the index and the location of the
+file itself -- help with auditing and validating the files that were locked
+against. Compare that with requirements files which can optionally include
+hashes, but it is an opt-in feature and can be bypassed. The optional inclusion
+of a file's upload time and where the files can be found is also different.
+
+Being explicit about the supported Python versions and environments for the file
+overall is also unique to this PEP. This is to alleviate the issue of not
+knowing when a requirements file targets a specific platform.
+
+The ``[tool]`` tables don't have a direct correlation in requirements files.
+They do support comments, but they are not inherently structured like the
+``[tool]`` table is thanks to being in TOML.
+
+While comments in a requirements file could record details that are helpful for
+auditing and understanding what the lock file contains, providing the structured
+support to record such things makes auditing easier. Recording the required
+Python version for a package upfront helps with this as well as erroring out
+sooner if an install is going to fail. Recording the wheel file name separate
+from the URL or path is also to help make reading the list of wheel files easier
+as it encodes information that can be useful when understanding and auditing a
+file. Recording the sdist file name is for the same reason.
+
+This PEP supports multi-use lock files while requirements files are single-use.
+
+This PEP does NOT fully replace requirements files because:
+
+- They support specifying installation
+  `options <https://pip.pypa.io/en/stable/reference/requirements-file-format/#supported-options>`__
+  at install-time (e.g. ``--index-url``, ``--constraint``).
+- They can
+  `reference other requirements files <https://pip.pypa.io/en/stable/reference/requirements-file-format/#referring-to-other-requirements-files>`__
+  via ``-r``.
+- They can
+  `use environment variables <https://pip.pypa.io/en/stable/reference/requirements-file-format/#using-environment-variables>`__ .
+
+
+=======================
+Backwards Compatibility
+=======================
+
+Because there is no preexisting lock file format, there are no explicit
+backwards-compatibility concerns in terms of Python packaging standards.
+
+As for packaging tools themselves, that will be a per-tool decision as to
+whether they choose to support this PEP and in what way (i.e. as an export
+target or as the primary way they record their lock file).
+
+
+=====================
+Security Implications
+=====================
+
+The hope is that by standardizing on a lock file format which starts from a
+security-first posture it will help make overall packaging installation safer.
+However, this PEP does not solve all potential security concerns.
+
+One potential concern is tampering with a lock file. If a lock file is not kept
+in source control and properly audited, a bad actor could change the file in
+nefarious ways (e.g., point to a malware version of a package). Tampering could
+also occur in transit to e.g. a cloud provider who will perform an installation
+on the user's behalf. Both could be mitigated by signing the lock file either
+within the file in a ``[tool]`` entry or via a side channel external to the lock
+file itself.
+
+This PEP does not do anything to prevent a user from installing incorrect
+packages. While including many details to help in auditing a package's inclusion,
+there isn't any mechanism to stop e.g. name confusion attacks via
+typosquatting. Tools may be able to provide some UX to help with this (e.g. by
+providing download counts for a package).
+
+
+=================
+How to Teach This
+=================
+
+Users should be informed that when they ask to install some package, the
+package may have its own dependencies, those dependencies may have dependencies,
+and so on. Without writing down what gets installed as part of installing the
+package they requested, things could change from underneath them (e.g. package
+versions). Changes to the underlying dependencies can lead to accidental
+breakage of their code. Lock files help deal with that by providing a way to
+write down what was installed so you can install the exact same thing in the
+future.
+
+Having what to install written down also helps in collaborating with others. By
+agreeing to a lock file's contents, everyone ends up with the same packages
+installed. This helps make sure no one relies on e.g. an API that's only
+available in a certain version that not everyone working on the project has
+installed.
+
+Lock files also help with security by making sure you always get the same files
+installed and not a malicious one that someone may have slipped in. It also
+lets one be more deliberate in upgrading their dependencies and thus making sure
+the change is on purpose and not one slipped in by a bad actor.
+
+Lock files can support only certain *environments*. What must be installed for
+the environment they are installing for may be different compared to another,
+different environment. Some lock files do try to be *universal*, though, and
+work for any possible environment (sdist and source tree installation success
+permitting).
+
+Lock files can be *single-use* or *multi-use*. Single-use lock files are for
+single use-cases. Multi-use lock files can be used for multiple
+use-cases based on extras and dependency groups. It is up to the tool(s) you use
+that decide whether multi-use lock files are possible. All tools dealing with
+lock files at least support single-use lock files. Neither type of lock file
+is better or worse than the other, it just changes how much can be written down
+in a single file.
+
+Lock files that follow this PEP can be installed by any installer that
+implements the specification. This allows users of a lock file to perform an
+installation to not be tied to the locker used by the person who produced the
+lock file. But it is not the case that using a different locker will lead to the
+same result. This could be for various reasons, including using different
+algorithms to determine what to lock.
+
+
+========================
+Reference Implementation
+========================
+
+A proof-of-concept implementing single-use lock files can be found at
+https://github.com/brettcannon/mousebender/tree/pep . Other tools such as
+PDM_ and Poetry_ implement semantically similar approaches of various parts of
+this PEP.
+
+
+==============
+Rejected Ideas
+==============
+
+--------------------------------------------------------
+Recording the dependency graph for installation purposes
+--------------------------------------------------------
+
+A previous version of this PEP recorded the dependency graph of packages instead
+of a set of packages to install. The idea was that by recording the dependency
+graph you not only got more information, but it provided more flexibility by
+supporting more features innately (e.g. platform-specific dependencies without
+explicitly propagating markers).
+
+In the end, though, it was deemed to add complexity that wasn't worth the cost
+(e.g. it impacted the ease of auditing for details which were not necessary
+for this PEP to reach its goals).
+
+
+-------------------------------------------------------------------------------------
+Specifying a new core metadata version that requires consistent metadata across files
+-------------------------------------------------------------------------------------
+
+At one point, to handle the issue of metadata varying between files and thus
+require examining every released file for a package and version for accurate
+locking results, the idea was floated to introduce a new core metadata version
+which would require all metadata for all wheel files be the same for a single
+version of a package. Ultimately, though, it was deemed unnecessary as this PEP
+will put pressure on people to make files consistent for performance reasons or
+to make indexes provide all the metadata separate from the wheel files
+themselves. As well, there's no easy enforcement mechanism, and so community
+expectation would work as well as a new metadata version.
+
+
+-------------------------------------------
+Have the installer do dependency resolution
+-------------------------------------------
+
+In order to support a format more akin to how Poetry worked when this PEP was
+drafted, it was suggested that lockers effectively record the packages and their
+versions which may be necessary to make an install work in any possible
+scenario, and then the installer resolves what to install. But that complicates
+auditing a lock file by requiring much more mental effort to know what packages
+may be installed in any given scenario. Also, one of the Poetry developers
+`suggested <https://discuss.python.org/t/lock-files-again-but-this-time-w-sdists/46593/83>`__
+that markers as represented in the package locking approach of this PEP may be
+sufficient to cover the needs of Poetry. Not having the installer do a
+resolution also simplifies their implementation, centralizing complexity in
+lockers.
+
+
+-----------------------------------------
+Requiring minimum hash algorithm support
+-----------------------------------------
+
+It was proposed to require a baseline hash algorithm for the files. This was
+rejected as no other Python packaging specification requires specific hash
+algorithm support. As well, the minimum hash algorithm suggested may eventually
+become an outdated/unsafe suggestion, requiring further updates. In order to
+promote using the best algorithm at all times, no baseline is provided to avoid
+simply defaulting to the baseline in tools without considering the security
+ramifications of that hash algorithm.
+
+
+-----------
+File naming
+-----------
+
+Using ``*.pylock.toml`` as the file name
+========================================
+
+It was proposed to put the ``pylock`` constant part of the file name after the
+identifier for the purpose of the lock file. It was decided not to do this so
+that lock files would sort together when looking at directory contents instead
+of purely based on their purpose which could spread them out in a directory.
+
+
+Using ``*.pylock`` as the file name
+===================================
+
+Not using ``.toml`` as the file extension and instead making it ``.pylock``
+itself was proposed. This was decided against so that code editors would know
+how to provide syntax highlighting to a lock file without having special
+knowledge about the file extension.
+
+
+Not having a naming convention for the file
+===========================================
+
+Having no requirements or guidance for a lock file's name was considered, but
+ultimately rejected. By having a standardized naming convention it makes it easy
+to identify a lock file for both a human and a code editor. This helps
+facilitate discovery when e.g. a tool wants to know all of the lock files that
+are available.
+
+
+-----------
+File format
+-----------
+
+Use JSON over TOML
+==================
+
+Since having a format that is machine-writable was a goal of this PEP, it was
+suggested to use JSON. But it was deemed less human-readable than TOML while
+not improving on the machine-writable aspect enough to warrant the change.
+
+
+Use YAML over TOML
+==================
+
+Some argued that YAML met the machine-writable/human-readable requirement in a
+better way than TOML. But as that's subjective and ``pyproject.toml`` already
+existed as the human-writable file used by Python packaging standards it was
+deemed more important to keep using TOML.
+
+
+----------
+Other keys
+----------
+
+A single hash algorithm for the whole file
+==========================================
+
+Earlier versions of this PEP proposed having a single hash algorithm be
+specified per file instead of any number of algorithms per file. The thinking
+was that by specifying a single algorithm it would help with auditing the file
+when a specific hash algorithm was mandated for use.
+
+In the end there was some objection to this idea. Typically, it centered around
+the cost of rehashing large wheel files (e.g. PyTorch). There was also concern
+about making hashing decisions upfront on the installer's behalf which they may
+disagree with. In the end it was deemed better to have flexibility and let
+people audit the lock file as they see fit.
+
+
+Hashing the contents of the lock file itself
+============================================
+
+Hashing the contents of the bytes of the file and storing hash value within the
+file itself was proposed at some point. This was removed to make it easier
+when merging changes to the lock file as each merge would have to recalculate
+the hash value to avoid a merge conflict.
+
+Hashing the semantic contents of the file was also proposed, but it would lead
+to the same merge conflict issue.
+
+Regardless of which contents were hashed, either approach could have the hash
+value stored outside of the file if such a hash was desired.
+
+
+Recording the creation date of the lock file
+============================================
+
+To know how potentially stale the lock file was, an earlier proposal suggested
+recording the creation date of the lock file. But for the same merge conflict
+reasons as storing the hash of the file contents, this idea was dropped.
+
+
+Recording the package indexes used in searching
+===============================================
+
+Recording what package indexes were used to create the lock file was considered.
+In the end, though, it was rejected as it was deemed unnecessary bookkeeping.
+
+
+Locking build requirements for sdists
+=====================================
+
+An earlier version of this PEP tried to lock the build requirements for sdists
+under a ``packages.build-requires`` key. Unfortunately, it confused enough people
+about how it was expected to operate and there were enough edge case issues to
+decide it wasn't worth trying to do in this PEP upfront. Instead, a future PEP
+could propose a solution.
+
+
+A dedicated ``direct`` key
+==========================
+
+Earlier versions had a dedicated ``packages.direct`` key to flag when something
+should be considered as originating from a
+:ref:`direct URL reference <packaging:direct-url>`. But there are explicitly
+only three cases where a direct URL reference can occur (VCS, directory, and
+archive). Since all three cases are explicit in ``[[packages]]``, the setting of
+the key was technically superfluous.
+
+The single drawback of not having this key is for wheels and sdists that now
+fall under ``packages.archive``. With the separate key (or having it specified
+as a part of ``packages.sdist`` or ``packages.wheels``), it would allow for
+identifying in the lock file itself that an archive file is an sdist or wheel.
+As it currently stands, an installer must infer that detail itself.
+
+
+--------------
+Simplification
+--------------
+
+Drop recording the package version
+==================================
+
+The package version is optional since it can only be reliably recorded when an
+sdist or wheel file is used. And since both sources record the version in file
+names it is technically redundant.
+
+But in discussions it was decided the version number is useful for auditing
+enough to still state it separately.
+
+
+Drop the requirement to specify the location of an sdist and/or wheels
+======================================================================
+
+At least one person has commented how their work has unstable URLs for all
+sdists and wheels. As such, they have to search for all files at install
+regardless of where the file was found previously. Dropping the requirement to
+provide the URL or path to a file would have helped solve the issue of recording
+known-bad information.
+
+The decision to allow tools to look for a file in other ways beyond the URL
+provided alleviated the need to make the URL optional.
+
+
+Drop requiring file size and hashes
+===================================
+
+At least one person has said that their work modifies all wheels and sdists with
+internal files. That means any recorded hashes and file sizes will be wrong. By
+making the file size and hashes optional -- very likely through some opt-out
+mechanism -- then they could continue to produce lock files that meet this PEP's
+requirements.
+
+The decision was made that this weakens security too much. It also prevents
+installing files from alternative locations.
+
+
+Drop recording the sdist file name
+==================================
+
+While incompatible with dropping the URL/path requirement, the package
+version, and hashes, recording the sdist file name is technically not necessary
+at all (right now recording the file name is optional). The file name only
+encodes the project name and version, so no new info is conveyed about the file
+(when the package version is provided). And if the location is recorded then
+getting the file is handled regardless of the file name.
+
+But recording the file name can be helpful when looking for an appropriate file
+when the recorded file location is no longer available (while sdist file names
+are now standardized thanks to :pep:`625`, that has only been true since 2020
+and thus there are many older sdists with names that may not be guessable).
+
+The decision was made to require the sdist file name out of simplicity.
+
+
+Make ``packages.wheels`` a table
+=================================
+
+One could see writing out wheel file details as a table keyed on the file name.
+For example:
+
+.. code-block:: TOML
+
+  [[packages]]
+  name = "attrs"
+  version = "23.2.0"
+  requires-python = ">=3.7"
+  index = "https://pypi.org/simple/"
+
+  [packages.wheels]
+  "attrs-23.2.0-py3-none-any.whl" = {upload-time = 2023-12-31T06:30:30.772444Z, url = "https://files.pythonhosted.org/packages/e0/44/827b2a91a5816512fcaf3cc4ebc465ccd5d598c45cefa6703fcf4a79018f/attrs-23.2.0-py3-none-any.whl", size = 60752, hashes = {sha256 = "99b87a485a5820b23b879f04c2305b44b951b502fd64be915879d77a7e8fc6f1"}
+
+  [[packages]]
+  name = "numpy"
+  version = "2.0.1"
+  requires-python = ">=3.9"
+  index = "https://pypi.org/simple/"
+
+  [packages.wheels]
+  "numpy-2.0.1-cp312-cp312-macosx_10_9_x86_64.whl" = {upload-time = 2024-07-21T13:37:15.810939Z, url = "https://files.pythonhosted.org/packages/64/1c/401489a7e92c30db413362756c313b9353fb47565015986c55582593e2ae/numpy-2.0.1-cp312-cp312-macosx_10_9_x86_64.whl", size = 20965374, hashes = {sha256 = "6bf4e6f4a2a2e26655717a1983ef6324f2664d7011f6ef7482e8c0b3d51e82ac"}
+  "numpy-2.0.1-cp312-cp312-macosx_11_0_arm64.whl" = {upload-time = 2024-07-21T13:37:36.460324Z, url = "https://files.pythonhosted.org/packages/08/61/460fb524bb2d1a8bd4bbcb33d9b0971f9837fdedcfda8478d4c8f5cfd7ee/numpy-2.0.1-cp312-cp312-macosx_11_0_arm64.whl", size = 13102536, hashes = {sha256 = "7d6fddc5fe258d3328cd8e3d7d3e02234c5d70e01ebe377a6ab92adb14039cb4"}
+  "numpy-2.0.1-cp312-cp312-macosx_14_0_arm64.whl" = {upload-time = 2024-07-21T13:37:46.601144Z, url = "https://files.pythonhosted.org/packages/c2/da/3d8debb409bc97045b559f408d2b8cefa6a077a73df14dbf4d8780d976b1/numpy-2.0.1-cp312-cp312-macosx_14_0_arm64.whl", size = 5037809, hashes = {sha256 = "5daab361be6ddeb299a918a7c0864fa8618af66019138263247af405018b04e1"}
+  "numpy-2.0.1-cp312-cp312-macosx_14_0_x86_64.whl" = {upload-time = 2024-07-21T13:37:58.784393Z, url = "https://files.pythonhosted.org/packages/6d/59/85160bf5f4af6264a7c5149ab07be9c8db2b0eb064794f8a7bf6d/numpy-2.0.1-cp312-cp312-macosx_14_0_x86_64.whl", size = 6631813, hashes = {sha256 = "ea2326a4dca88e4a274ba3a4405eb6c6467d3ffbd8c7d38632502eaae3820587"}
+  "numpy-2.0.1-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl" = {upload-time = 2024-07-21T13:38:19.714559Z, url = "https://files.pythonhosted.org/packages/5e/e3/944b77e2742fece7da8dfba6f7ef7dccdd163d1a613f7027f4d5b/numpy-2.0.1-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", size = 13623742, hashes = {sha256 = "529af13c5f4b7a932fb0e1911d3a75da204eff023ee5e0e79c1751564221a5c8"}
+  "numpy-2.0.1-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" = {upload-time = 2024-07-21T13:38:48.972569Z, url = "https://files.pythonhosted.org/packages/2c/f3/61eee37decb58e7cb29940f19a1464b8608f2cab8a8616aba75fd/numpy-2.0.1-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", size = 19242336, hashes = {sha256 = "6790654cb13eab303d8402354fabd47472b24635700f631f041bd0b65e37298a"}
+  "numpy-2.0.1-cp312-cp312-musllinux_1_1_x86_64.whl" = {upload-time = 2024-07-21T13:39:19.213811Z, url = "https://files.pythonhosted.org/packages/77/b5/c74cc436114c1de5912cdb475145245f6e645a6a1a29b5d08c774/numpy-2.0.1-cp312-cp312-musllinux_1_1_x86_64.whl", size = 19637264, hashes = {sha256 = "cbab9fc9c391700e3e1287666dfd82d8666d10e69a6c4a09ab97574c0b7ee0a7"}
+  "numpy-2.0.1-cp312-cp312-musllinux_1_2_aarch64.whl" = {upload-time = 2024-07-21T13:39:41.812321Z, url = "https://files.pythonhosted.org/packages/da/89/c8856e12e0b3f6af371ccb90d604600923b08050c58f0cd26eac9/numpy-2.0.1-cp312-cp312-musllinux_1_2_aarch64.whl", size = 14108911, hashes = {sha256 = "99d0d92a5e3613c33a5f01db206a33f8fdf3d71f2912b0de1739894668b7a93b"}
+  "numpy-2.0.1-cp312-cp312-win32.whl" = {upload-time = 2024-07-21T13:39:52.932102Z, url = "https://files.pythonhosted.org/packages/15/96/310c6f6d146518479b0a6ee6eb92a537954ec3b1acfa2894d1347/numpy-2.0.1-cp312-cp312-win32.whl", size = 6171379, hashes = {sha256 = "173a00b9995f73b79eb0191129f2455f1e34c203f559dd118636858cc452a1bf"}
+  "numpy-2.0.1-cp312-cp312-win_amd64.whl" = {upload-time = 2024-07-21T13:40:17.532627Z, url = "https://files.pythonhosted.org/packages/b5/59/f6ad378ad85ed9c2785f271b39c3e5b6412c66e810d2c60934c9f/numpy-2.0.1-cp312-cp312-win_amd64.whl", size = 16255757, hashes = {sha256 = "bb2124fdc6e62baae159ebcfa368708867eb56806804d005860b6007388df171"}
+
+
+In general, though, people did not prefer this over the approach this PEP has
+taken.
+
+
+----------------
+Self-Referential
+----------------
+
+Drop the ``[tool]`` table
+=========================
+
+The ``[tool]`` table is included as it has been found to be very useful for
+``pyproject.toml`` files. Providing similar flexibility to this PEP is done in
+hopes that similar benefits will materialize.
+
+But some people have been concerned that such a table will be too enticing to
+tools and will lead to files that are tool-specific and unusable by other
+tools. This could cause issues for tools trying to do installation, auditing,
+etc. as they would not know what details in the ``[tool]`` table are somehow
+critical.
+
+As a compromise, this PEP specifies that the details recorded in ``[tool]`` must
+be disposable and not affect installation of packages.
+
+
+List the requirement inputs for the file
+========================================
+
+Right now the file does not record the requirements that acted as inputs to the
+file. This is for simplicity reasons and to not explicitly constrain the file
+in some unforeseen way (e.g., updating the file after initial creation for a
+new platform that has different requirements, all without having to resolve
+how to write a comprehensive set of requirements).
+
+But it may help in auditing and any recreation of the file if the original
+requirements were somehow recorded. This could be a single string or an array
+of strings if multiple requirements were used with the file.
+
+In the end it was deemed too complicated to try and capture the inputs
+that a tool used to construct the lock file in a generic fashion.
+
+
+--------
+Auditing
+--------
+
+Recording dependents
+====================
+
+Recording the dependents of a package is not necessary to install it. As such,
+it has been left out of the PEP as it can be included via ``[tool]``.
+
+But knowing how critical a package is to other packages may be beneficial. This
+information is included by `pip-tools`_ , so there's prior art in including it.
+A flexible approach could be used to record the dependents, e.g. as much
+detail as to differentiate from any other entry for the same package in the file
+(inspired by uv_).
+
+In the end, though, it was decided that recording the dependencies is a better
+thing to record.
+
+
+================
+Acknowledgements
+================
+
+Thanks to everyone who participated in the discussions on discuss.python.org.
+Also thanks to Randy Döring, Seth Michael Larson, Paul Moore, and Ofek Lev for
+providing feedback on a draft version of this PEP before going public. Thanks to
+Randy Döring of Poetry, Charlie Marsh of uv, and Frost Ming of PDM for providing
+feedback on behalf of their respective projects.
+
+
+=========
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
+
+.. _Content-Length: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Content-Length
+.. _Dependabot: https://docs.github.com/en/code-security/dependabot
+.. _HEAD: https://developer.mozilla.org/en-US/docs/Web/HTTP/Methods/HEAD
+.. _PDM: https://pypi.org/project/pdm/
+.. _pip-tools: https://pypi.org/project/pip-tools/
+.. _Poetry: https://python-poetry.org/
+.. _requirements file:
+.. _requirements files: https://pip.pypa.io/en/stable/reference/requirements-file-format/
+.. _software bill of materials: https://www.cisa.gov/sbom
+.. _TOML: https://toml.io/
+.. _uv: https://github.com/astral-sh/uv
