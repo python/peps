@@ -343,8 +343,8 @@ object are wrong! There isn't any synchronization between the two GILs, so both
 the thread (who thinks it's in the subinterpreter) and the main thread could try
 to increment the reference count at the same time, causing a data race!
 
-Concurrent Interpreter Deallocation Issues
-------------------------------------------
+Concurrent Interpreter Deallocation is Frustrating
+--------------------------------------------------
 
 The other way of creating a native thread that can invoke Python,
 :c:func:`PyThreadState_New` and :c:func:`PyThreadState_Swap`, is a lot better
@@ -368,13 +368,11 @@ scratch and "reimagining" how to create, acquire and attach
 Preventing Interpreter Shutdown with Reference Counting
 -------------------------------------------------------
 
-This PEP takes an approach where interpreters are given a reference count by
-non-daemon threads that want to (or do) hold an :term:`attached thread state`.
+This PEP takes an approach where an interpreter is given a reference count
+that prevents it from shutting down.
 
-So, from a thread's perspective, holding a "strong reference" to the
-interpreter will make it safe to call the C API without worrying about
-the thread being hung. A strong reference held by a thread state will
-be held as long as thread state is "alive", even if it's detached.
+So, holding a "strong reference" to the interpreter will make it safe to
+call the C API without worrying about the thread being hung.
 
 This means that interfacing Python (for example, in a C++ library) will need
 a reference to the interpreter in order to safely call the object, which is
@@ -390,12 +388,6 @@ the user decides that they want to call the C API. Promotion of a weak reference
 to a strong reference can fail if the interpreter has already finalized, or
 reached a point during finalization where it can't be guaranteed that the
 thread won't hang.
-
-If there's additional work after destroying the thread state, the thread
-can continue running as normal. If that work needs to finish before the
-program exits, it's still up to the user on how to join the thread, for
-example by using an :mod:`atexit` handler can be used to join it.
-This PEP isn't trying to reinvent how to create or join threads!
 
 Removing the GIL-state APIs
 ---------------------------
@@ -424,21 +416,14 @@ Specification
 Interpreter References to Prevent Shutdown
 ------------------------------------------
 
-An interpreter will keep a reference count that's managed by threads.
-When the interpreter starts finalizing, it will until its reference count
+An interpreter will keep a reference count that's managed by users of the
+C API. When the interpreter starts finalizing, it will until its reference count
 reaches zero before proceeding to a point where threads will be hung.
 Note that this *is not* the same as joining the thread; the interpreter will
-only wait until the reference count is zero, typically via releasing non-daemon
-thread states with :c:func:`PyThreadState_Release`.  The interpreter must not hang
-threads until this reference count has reached zero. Threads can hold as many
-references as they want, but in most cases, a thread will have one reference
-at a time, typically through the :term:`attached thread state`. After the reference count
-has reached zero, threads can no longer prevent the interpreter from shutting
-down.
-
-An attached thread state is made non-daemon by holding a strong reference
-to the interpreter. When a non-daemon thread state is destroyed, it releases
-the reference.
+only wait until the reference count is zero, and then proceed. The interpreter
+must not hang threads until this reference count has reached zero. 
+After the reference count has reached zero, threads can no longer prevent the
+interpreter from shutting down.
 
 A weak reference to the interpreter won't prevent it from finalizing, but can
 be safely accessed after the interpreter no longer supports strong references,
@@ -474,7 +459,7 @@ Strong Interpreter References
     On success, this function will return ``0`` and set *ref_ptr* to a strong
     reference, and on failure, this function will return ``-1``.
     (Failure typically indicates that *interp* has already finished
-    waiting on non-daemon threads).
+    waiting on its reference count.)
 
     The caller does not need to hold an :term:`attached thread state`.
 
@@ -530,8 +515,8 @@ Weak Interpreter References
     On success, this function returns ``0`` and sets *ref_ptr* to a strong
     reference to the interpreter denoted by *wref*.
 
-    If the interpreter no longer exists or has already finished waiting for
-    non-daemon threads, then this function returns ``-1``.
+    If the interpreter no longer exists or has already finished waiting
+    for its reference count to reach zero, then this function returns ``-1``.
 
     This function is not safe to call in a re-entrant signal handler.
 
@@ -543,43 +528,6 @@ Weak Interpreter References
 
     This function cannot fail, and the caller doesn't need to hold an
     :term:`attached thread state`.
-
-Daemon and Non-daemon Thread States
------------------------------------
-
-A non-daemon thread state is a thread state that holds a strong reference to an
-interpreter. The reference is released when the thread state is deleted, either
-by :c:func:`PyThreadState_Release` or a different thread state deletion
-function (such as :c:func:`PyThreadState_Delete`).
-
-For backwards compatibility, all thread states created by existing APIs,
-including :c:func:`PyGILState_Ensure`, will remain daemon by default.
-See :ref:`pep-788-hanging-compat`.
-
-.. c:function:: int PyThreadState_SetDaemon(int is_daemon)
-
-    Set the :term:`attached thread state` as non-daemon or daemon.
-
-    The attached thread state must not be the main thread for the
-    interpreter. All thread states created without
-    :c:func:`PyThreadState_Ensure` are daemon by default.
-
-    If the thread state is non-daemon, then the current interpreter will wait
-    for this thread to finish before shutting down by holding a strong
-    reference to the interpreter (see :c:func:`PyInterpreterRef_Get`). See also
-    :attr:`threading.Thread.daemon`.
-
-    Return zero on success, non-zero *without* an exception set on failure.
-    This function can only fail when setting the thread state to non-daemon.
-
-.. c:function:: int PyThreadState_GetDaemon(int is_daemon)
-
-    Returns non-zero if the :term:`attached thread state` is daemon,
-    and zero otherwise. See also and :c:func:`PyThreadState_SetDaemon`
-    and :attr:`threading.Thread.daemon`.
-
-    This function cannot fail, other than with a fatal error if the caller
-    has no :term:`attached thread state`.
 
 Ensuring and Releasing Thread States
 ------------------------------------
@@ -604,10 +552,6 @@ replace :c:func:`PyGILState_Ensure` and :c:func:`PyGILState_Release`.
     if the interpreter matches *ref*, it is attached, and otherwise a new
     thread state is created.
 
-    The thread state attached by this function will be reused by
-    subsequent calls to :c:func:`PyGILState_Ensure` in this thread, but
-    :c:func:`PyGILState_Ensure` will *not* make the thread daemon again.
-
     Return zero on success, and non-zero with the old attached thread state
     restored (which may have been ``NULL``).
 
@@ -620,26 +564,7 @@ replace :c:func:`PyGILState_Ensure` and :c:func:`PyGILState_Release`.
     returning. The cached thread state as used by :c:func:`PyThreadState_Ensure`
     and :c:func:`PyGILState_Ensure` will also be restored.
 
-    This function cannot fail, but may hang the thread if the
-    restored :term:`attached thread state` was daemon and the interpreter
-    was finalized.
-
-``threading`` Shutdown and Behavior
------------------------------------
-
-An interpreter currently special-cases non-daemon threads created by
-:mod:`threading` and joins them before the interpreter does any other
-finalization.
-
-:mod:`threading` will be changed to use :c:func:`PyThreadState_Ensure`, and
-will rely on the interpreter's strong reference to run until completion.
-:mod:`threading`-created threads will still be joined to release resources after
-this has happened.
-
-Additionally, setting :attr:`threading.Thread.daemon` should
-correspond to calling :c:func:`PyThreadState_SetDaemon` in C. Otherwise,
-:c:func:`PyThreadState_GetDaemon` will have incorrect results in Python
-threads.
+    This function cannot fail.
 
 Deprecation of GIL-state APIs
 -----------------------------
@@ -744,7 +669,7 @@ held. Any future finalizer that wanted to acquire the lock would be deadlocked!
     {
         assert(PyThreadState_GetUnchecked() != NULL);
         PyInterpreterRef ref = PyInterpreterRef_Get();
-        /* Temporarily make this thread non-daemon to ensure that the
+        /* Temporarily hold a strong reference to ensure that the
            lock is released. */
         if (PyThreadState_Ensure(ref) < 0) {
             PyErr_NoMemory();
@@ -857,12 +782,11 @@ they can still be used with this API:
             PyInterpreterRef_Close(ref);
             return -1;
         }
-        (void)PyThreadState_SetDaemon(1);
+        PyInterpreterRef_Close(ref);
         if (PyRun_SimpleString("print(42)") < 0) {
             PyErr_Print();
         }
         PyThreadState_Release();
-        PyInterpreterRef_Close(ref);
         return 0;
     }
 
