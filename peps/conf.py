@@ -85,8 +85,8 @@ intersphinx_disabled_reftypes = []
 # https://www.sphinx-doc.org/en/master/usage/extensions/extlinks.html
 _repo = "python/cpython"
 extlinks = {
-    "issue": (f"https://github.com/{_repo}/issues/%s", f"{_repo}#%s"),
-    "pr": (f"https://github.com/{_repo}/pull/%s", f"{_repo}#%s"),
+    "cpython-issue": (f"https://github.com/{_repo}/issues/%s", f"{_repo}#%s"),
+    "cpython-pr": (f"https://github.com/{_repo}/pull/%s", f"{_repo}#%s"),
     "pypi": ("https://pypi.org/project/%s/", "%s"),
 }
 
