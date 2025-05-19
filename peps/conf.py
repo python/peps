@@ -83,7 +83,10 @@ intersphinx_disabled_reftypes = []
 # This config is a dictionary of external sites,
 # mapping unique short aliases to a base URL and a prefix.
 # https://www.sphinx-doc.org/en/master/usage/extensions/extlinks.html
+_repo = "python/cpython"
 extlinks = {
+    "cpython-issue": (f"https://github.com/{_repo}/issues/%s", f"{_repo}#%s"),
+    "cpython-pr": (f"https://github.com/{_repo}/pull/%s", f"{_repo}#%s"),
     "pypi": ("https://pypi.org/project/%s/", "%s"),
 }
 
