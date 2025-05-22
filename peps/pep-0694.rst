@@ -152,7 +152,8 @@ these steps:
 
 #. Initiate an upload session, creating a release stage.
 #. Initiate file-upload session(s) to that stage as part of the upload session.
-#. Complete the file-upload session(s).
+#. Execute file upload mechanism for the file-upload session(s).
+#. Complete the file-upload session(s), marking them as executed or canceled.
 #. Complete the upload session, publishing or discarding the stage.
 #. Optionally check the status of an upload session.
 
@@ -177,8 +178,6 @@ the url structure of a domain. For example, the root endpoint could be
 Specifically for PyPI, this PEP proposes to implement the root endpoint at
 ``https://upload.pypi.org/2.0``.  This root URL will be considered provisional while the feature is
 being tested, and will be blessed as permanent after sufficient testing with live projects.
-
-
 
 
 .. _session-create:
@@ -251,6 +250,7 @@ The successful response includes the following JSON content:
         "upload": "...",
         "session": "...",
       },
+      "mechanisms": ["http-post-application-octet-stream"],
       "session-token": "<token-string>",
       "valid-for": 604800,
       "status": "pending",
@@ -267,6 +267,9 @@ the following keys:
 ``links``
     A dictionary mapping :ref:`keys to URLs <session-links>` related to this session, the details of
     which are provided below.
+
+``mechanisms``
+    A list of file-upload mechanisms supported by the server.
 
 ``session-token``
     If the index supports :ref:`previewing staged releases <staged-preview>`, this key will contain
@@ -330,13 +333,9 @@ The ``files`` key contains a mapping from the names of the files uploaded in thi
 sub-mapping with the following keys:
 
 ``status``
-    A string with valid values ``partial``, ``pending``, ``complete``, and ``error``.  If a file
-    upload has not seen an ``Upload-Complete: ?1`` header, then ``partial`` will be returned.  If
-    ``Upload-Complete: ?1`` resulted in a ``202 Accepted``, then ``pending`` will be returned until
-    asynchronous processing of the last chunk and the full file has been completed.  If a ``201
-    Created`` was returned, or the last chunk processing is finished, ``complete`` will be returned.
+    A string with valid values ``pending``, ``processing``, ``complete``, ``error``, and ``canceled``.
     If there was an error during upload, then clients should not assume the file is in any usable
-    state, ``error`` will be returned and it's best to :ref:`cancel or delete <cancel-an-upload>`
+    state, ``error`` will be returned and it's best to :ref:`cancel or delete <file-upload-session-cancelation>`
     the file and start over.  This action would remove the file name from the ``files`` key of the
     :ref:`session status response body <session-response>`.
 
@@ -378,7 +377,7 @@ request body has the following JSON format:
       "size": 1000,
       "hashes": {"sha256": "...", "blake2b": "..."},
       "metadata": "...",
-      "mechanisms": ["http-post-application-octet-stream"]
+      "mechanism": "http-post-application-octet-stream"
     }
 
 
@@ -401,13 +400,16 @@ Besides the standard ``meta`` key, the request JSON has the following additional
 
     Multiple hashes may be passed at a time, but all hashes provided **MUST** be valid for the file.
 
+``mechanism`` (**required**)
+    The file-upload mechanisms the client intends to use for this file.
+    This mechanism **SHOULD** be chosen from the list of mechanisms advertised in the `session response body
+    <session-response>`_.
+    A client **MAY** send a mechanism that is not advertised in cases where server operators have
+    documented a new or up-coming mechanism that is available for use on a "pre-release" basis.
+
 ``metadata`` (**optional**)
     If given, this is a string value containing the file's `core metadata
     <https://packaging.python.org/en/latest/specifications/core-metadata/>`_.
-
-``mechanisms`` (**optional**)
-    If given this string value contains the file-upload mechanisms supported by the client.
-    The server **MAY** use this list to inform the contents of ``mechanisms`` in its response.
 
 Servers **MAY** use the data provided in this request to do some sanity checking prior to allowing
 the file to be uploaded.  These checks may include, but are not limited to:
@@ -421,11 +423,13 @@ the file to be uploaded.  These checks may include, but are not limited to:
 If the server determines that upload should proceed, it will return a ``202 Accepted`` response, with
 the response body below. The :ref:`status <session-status>` of the session will also include the filename in the ``files`` mapping. If the server determines the upload cannot proceed, it **MUST** return
 a ``409 Conflict``.  The server **MAY** allow parallel uploads of files, but is not required to.
+If the server cannot proceed with an upload because the ``mechanism`` supplied by the client is not supported
+it **MUST** return a ``422 Unprocessable Entity``.
 
-.. _upload-session-response:
+.. _file-upload-session-response:
 
-Response Body
-+++++++++++++
+File Upload Session Response Body
++++++++++++++++++++++++++++++++++
 
 The successful response includes the following JSON content:
 
@@ -436,10 +440,12 @@ The successful response includes the following JSON content:
         "api-version": "2.0"
       },
       "links": {
+        "session": "...",
         "file-upload-session": "..."
       },
-      "upload-session-id": "<a string identifying the upload session>",
-      "mechanisms": {
+      "status": "pending",
+      "valid-for": 3600,
+      "mechanism": {
         "http-post-application-octet-stream": {
           "url": "..."
         }
@@ -450,13 +456,32 @@ The successful response includes the following JSON content:
 Besides the ``meta`` key, which has the same format as the request JSON, the success response has
 the following keys:
 
-``upload-session-id``
-    The unique file-upload session identifier.
+``links``
+    A dictionary mapping :ref:`keys to URLs <file-upload-session-links>` related to this session,
+    the details of which are provided below.
 
-``mechanisms``
-    A mapping containing the mechanism identifier that the server supports, to a mapping
-    containing details necessary to execute each mechanism.
+``mechanism``
+    A mapping containing the supported mechanism identifier negotiated by the client and server,
+    to a mapping containing details necessary to execute the mechanism.
 
+.. _file-upload-session-links:
+
+Session Links
++++++++++++++
+
+For the ``links`` key in the success JSON, the following sub-keys are valid:
+
+``session``
+    The endpoint where actions for the parent session can be performed.
+
+``file-upload-session``
+    The endpoint where actions for this file-upload-session can be performed.
+    including :ref:`canceling and discarding the file upload session <file-upload-session-cancelation>`,
+    :ref:`querying the current file upload session status <session-status>`,
+    and :ref:`requesting an extension of the file upload session lifetime <session-extension>`
+    (*if* the server supports it).
+
+.. _file-upload-session-completion:
 
 File Upload Session Completion
 ++++++++++++++++++++++++++++++
@@ -477,7 +502,14 @@ The JSON body of this requests looks like:
     }
 
 
-.. _cancel-an-upload:
+After receiving this requests the server **MAY** perform additional asynchronous processing on the file,
+for instance to verify its hashes or contents.
+If the processing is required to complete before an upload session can be published,
+the status of the file upload session can be set to ``processing`` until such processing is complete,
+reaches an error state, or the file upload session is canceled.
+
+
+.. _file-upload-session-cancelation:
 
 Canceling and Deleting File Uploads
 +++++++++++++++++++++++++++++++++++
@@ -499,7 +531,7 @@ To replace a session file, the file upload **MUST** have been previously complet
 deleted.  It is not possible to replace a file if the upload for that file is in-progress.
 
 To replace a session file, clients should :ref:`cancel and delete the in-progress upload
-<cancel-an-upload>` by issuing a ``DELETE`` to the upload resource URL for the file they want to
+<file-upload-session-cancelation>` by issuing a ``DELETE`` to the upload resource URL for the file they want to
 replace.  After this, the new file upload can be initiated by beginning the entire :ref:`file upload
 <file-uploads>` sequence over again.  This means providing the metadata request again to retrieve a
 new upload resource URL.  Client **MUST NOT** assume that the previous upload resource URL can be
@@ -511,13 +543,16 @@ reused after deletion.
 Session Status
 ~~~~~~~~~~~~~~
 
-At any time, a client can query the status of the session by issuing a ``GET`` request to the
-``session`` :ref:`link <session-links>` given in the :ref:`session creation response body
-<session-response>`.
+At any time, a client can query the status of a session by issuing a ``GET`` request to the
+``session`` :ref:`link <session-links>` or ``file-upload-session`` :ref:`link <file-upload-session-links>`
+given in the :ref:`session creation response body <session-response>`
+or :ref:`file upload session creation response body <file-upload-session-response>`,
+respectively.
 
-The server will respond to this ``GET`` request with the same :ref:`response <session-response>`
-that they got when they initially created the upload session, except with any changes to ``status``,
-``valid-for``, or ``files`` reflected.
+The server will respond to this ``GET`` request with the same :ref:`session response <session-response>`
+or :ref:`file upload session creation response body <file-upload-session-response>`,
+that they got when they initially created the upload session or file upload session,
+except with any changes to ``status``, ``valid-for``, or ``files`` reflected.
 
 
 .. _session-extension:
@@ -527,8 +562,9 @@ Session Extension
 
 Servers **MAY** allow clients to extend sessions, but the overall lifetime and number of extensions
 allowed is left to the server.  To extend a session, a client issues a ``POST`` request to the
-``session`` :ref:`link <session-links>` given in the :ref:`session creation response body
-<session-response>`.
+``session`` :ref:`link <session-links>` or ``file-upload-session`` :ref:`link <file-upload-session-links>`
+given in the :ref:`session creation response body <session-response>`
+or :ref:`file upload session creation response body <file-upload-session-response>`, respectively.
 
 The JSON body of this request looks like:
 
