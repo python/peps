@@ -1,0 +1,578 @@
+PEP: 08XX
+Title: Safe Parallel Python
+Author: Mark Shannon <mark@hotpy.org>
+Discussions-To: discuss.python.org
+Status: Draft
+Type: Standards Track
+Created: 15-Aug-2025
+Post-History: ??? <REQUIRED: dates, in dd-mmm-yyyy format, and corresponding links to PEP discussion threads>
+
+Abstract
+========
+
+This PEP proposes internal changes to CPython and a new API to support safe, parallel execution of Python.
+With this PEP, parallel execution of code is race free: objects must be explicitly made safe if they are to be shared between threads,
+or such sharing is prohibited.
+
+This PEP adds some additional state to each object, so that it is possible to check, at runtime and at low cost,
+whether any operation is thread safe and raise an exception when it is not.
+
+Motivation
+==========
+
+Traditionally, CPython has executed in only a single thread of execution at once.
+This has always been seen as a limitation of Python and there has been a desire for
+Python to support parallel execution for many years.
+
+PEP 703, Making the Global Interpreter Lock Optional in CPython, and PEP 554, Multiple Interpreters in the Stdlib, offer ways to support parallelism.
+Multiple interpreters are both safe and support parallelism, but they are difficult to use and sharing objects
+between multiple interpreters without copying is impossible.
+PEP 703 supports parallel execution and sharing, but is unsafe as it allows race conditions.
+Race conditions allow dangerous and hard to find bugs. In the most extreme example, Therac-25 [1]_, a race condtion bug resulted in several fatalities. The trouble with race conditions is not that the bugs they introduce are necessarily worse than other bugs,
+but that they can be very hard to detect and may easily slip through testing.
+
+Parallelism, without strong support from the language and runtime, is extremely difficult to get right:
+
+   A large fraction of the flaws in software development are due to programmers not fully understanding all the possible states their code may execute in.
+   In a multithreaded environment, the lack of understanding and the resulting problems are greatly amplified,
+   almost to the point of panic if you are paying attention -- John Carmack (Functional Programming in C++)
+
+Python is used by many technologists and widely in education, not just by professional software engineers.
+We cannot expect those users to handle the subtleties of parallel programming using a race-prone model like that of Java or PEP 703.
+
+Rationale
+=========
+
+We want to allow a familiar model of parallel execution while retaining safety.
+Threads, locks, queues and immutability are familiar concepts and provide the building blocks for a safe model of execution.
+Objects should either be safe for sharing between trhreads, or the VM should prevent them from being shared.
+
+The synchronization quadrant diagram
+------------------------------------
+
++-------------------+------------+------------+
+|                   |  Unshared  |   Shared   |
++===================+============+============+
+|  Mutable objects  |     😊     |   🔥😡🔥   |
++-------------------+------------+------------+
+| Immutable objects |     😊     |    😊      |
++-------------------+------------+------------+
+
+The table above shows the four synchronization quadrants. It is only when objects can be mutated *and* accessed from parallel threads, that race conditions can occur.
+This PEP has three main goals:
+
+* to provide mechanisms to move execution from the dangerous quadrant into either of the adjacent quadrants,
+* to guarantee that execution in the dangerous quadrant is properly synchronized, and
+* to provide means to move gradually from a single thread to parallel threads, retaining safety.
+
+Immutability allows safe execution without synchronization, so this PEP provides mechanisms for making objects immutable.
+Where immutability is not possible, this PEP offers mechanisms for safe execution by ensuring that the object is visible only
+to one thread (the top-left quadrant), or that it is protected by a mutual exclusion lock (mutex).
+The PEP also proposes changes to CPython to prevent unsafe execution when mutable objects are shared.
+Finally, the PEP provides a generalization of the GIL to allow incrementally moving away from the GIL.
+
+This PEP is inspired by ideas from Ocaml, specifically Data Freedom à la Mode [2]_, and the Pyrona project [3]_.
+Many of the necessary technologies, such as biased and deferred reference counting, have been developed for PEP 703.
+
+Specification
+=============
+
+Object states
+-------------
+
+All objects will gain a ``__shared__`` state, which will be used the Python VM to ensure that objects are used safely.
+The state can be queried by looking at the ``__shared__`` attribute of an object.
+
+An object's ``__shared__`` state can be one of the following:
+
+* Immutable: Cannot be modified, and can be safely shared between threads.
+* Local: Only visible to a single thread<sup>*</sup>, and can be freely mutated by that thread.
+* Stop-the-world mutable. Mostly immutable, but can be mutated by acquiring the stop-the-world lock.
+* Protected: Object is mutable, and is protected by a mutex.
+* Synchronized: A special state for some builtin objects.
+  All operations on the object are protected by an internal mutex, so no external synchronization is needed.
+
+\* Strictly, a single "super thread". See :ref:`super-thread` below.
+
+The ``__shared__`` attribute is read-only.
+
+All classes, modules and functions will be *stop-the-world mutable* initially, but can be made *immutable*.
+Views, iterators and other objects that depend on the internal state of other mutable objects will inherit the state of
+those objects. For example, a ``listiterator`` of a *local* ``list`` will be *local*, but a ``listiterator`` of a *protected*
+``list`` will be *protected*. Views and iterators of *immutable* (including STW mutable) objects will be *local* when created.
+
+All objects that not inherently immutable (like tuples or strings) will be created as *local*.
+These *local* objects can later be made *immutable* or *protected*.
+
+Dictionaries and lists will support the ability to be made stop-the-world mutable on a per-object basis.
+This is to maintain the necessary immutability for performance and mutability for
+backwards campatibility for objects like ``sys.modules`` and ``sys.path``.
+
+The stop-the-world lock
+-----------------------
+
+A new, internal lock is added to CPython, the "stop the world" lock. When this lock is acquired, all other threads are
+stopped until the lock is released. If two threads attempt to acquire the stop-the-world lock at the same time,
+in such a way that deadlock would occur, then an exception is raised.
+
+
+.. _super-threads
+
+SuperThread objects
+-------------------
+
+A new class ``SuperThread`` will be added to help port applications using the GIL
+and sub-interpreters. All threads sharing a ``SuperThread`` will be serialized,
+in the same way as all threads are currently serialized by the GIL.
+``SuperThread``\ s offer much the same capabilites as sub-interpreters,
+but more efficiently and with the ability to share more objects.
+
+There is a many-to-one relationship between threads and ``SuperThread``\ s.
+If no super thread is explictly specified when creating a thread,
+a new super thread will be created specifically for that thread.
+The super thread of a thread cannot be changed.
+
+All threads that share a ``SuperThread`` are treated as the same thread for *local* objects.
+They are still treated as distinct for all locks, and thus for *protected* objects.
+
+New API
+-------
+
+This PEP proposes adding the following:
+
+* A ``__freeze__()`` method, added to most classes, which freezes the object making it immutable.
+* The ``__protect__(self: Self, obj: T) -> T`` method to mark the ``self`` object as protecting ``obj``.
+* The ``__mutex__`` context manager property, added to all objects, for critical sections.
+* The ``Channel`` class for passing mutable objects from one thread to another.
+
+Freezing
+''''''''
+
+The ``__freeze__()`` method will have the signature ``__freeze__(self: Self) -> Frozen[Self]`` where
+``Frozen[T]`` is the frozen class for ``T``. The value returned by ``__freeze__`` is the original object:
+``obj.__freeze__() is obj``. Having a return value of a different type can assist type checkers in
+tracking which variables refer to frozen objects.
+
+The ``__freeze__()`` will be added to all pure Python class as well as most standard library builtin collections.
+``list``, ``set`` and ``dict`` classes will gain a ``__freeze__()`` method.
+For immutable objects like ``tuple``, ``__freeze__()`` will be supported, but will have no effect.
+
+Note that freezing an object is a shallow operation; ``x.__freeze__()` only freezes ``x`` and not any of the objects
+that ``x`` refers to.
+
+The ``__freeze__`` method can be used to create classes of immutable objects, by calling ``__freeze__`` at the
+end of the ``__init__`` method::
+
+   class ImmutablePoint:
+
+       def __init__(self, x, y):
+           self.x = x
+           self.y = y
+           self.__freeze__()
+
+
+... note::
+
+   The various ``freeze`` methods have full VM support. Immutability is not merely a convention, it will
+   be enforced by the VM.
+
+A ``__deep_freeze__`` method may be added as a :ref:`future enhancement<future-enhancements>`.
+
+Mutexes and locking
+'''''''''''''''''''
+
+All objects will gain a ``__mutex__`` context manager for protecting sections of code with a mutual exclusion lock.
+These mutual exclusion locks also support the ``+`` operator for locking multiple objects without deadlock.
+
+``locka + lockb`` creates a new mutex that locks both ``locka`` and ``lockb`` in a globally consistent order.
+Addition is commutative, such that::
+
+    def func1(a, b):
+        with a.__mutex__ + b.__mutex__:
+            ...
+
+    def func2(a, b):
+        with b.__mutex__ + a.__mutex__:
+            ...
+
+will not deadlock should ``func1`` and ``func2`` be called concurrently.
+
+Synchronization
+'''''''''''''''
+
+In order to safely share mutable state between threads, synchronization is needed.
+
+The ``protected`` state is a way to protect groups of mutable objects when sharing them.
+
+A ``protected`` object is a mutable object which can be accessed when the
+protecting mutex is held by the accessing thread.
+
+An object ``y`` can be protected by object ``x`` by calling ``x.__protect__(y)`` which prevents ``y`` from
+being accessed, unless the accessing thread holds ``x``\ 's mutex, ``x.__mutex__``.
+The reference passed to ``__protect__`` must be the sole reference to a *local* object,
+or a ``ValueError`` is raised.
+
+Passing mutable values between threads
+''''''''''''''''''''''''''''''''''''''
+
+The ``Channel`` class is provided for passing objects from one thread to another.
+The ``Channel`` class acts like a ``deque`` but handles tranferring of ownership local objects.
+When passing a *local* object, ``channel.put(obj)`` detaches the object ``obj`` from the current thread.
+When passing a *local* object, ``Channel.put()`` will fail, raising a ``ValueError``, if there are any other references to the argument.
+``Channel.get()`` returns the object passed but to ``Channel.put()``, making the calling
+thread the owner of the *local* object, if the object was *local*.
+
+Non-*local* objects are passed through ``Channel``\ s unchanged.
+
+Adding a "deep" put mechanism is a possible :ref:`future enhancement<future-enhancements>`.
+
+The GIL
+'''''''
+
+On interpreter startup a ``SuperThread`` named "GIL" will be created and stored in ``sys.gil``.
+``sys.gil`` is read-only and the GIL ``SuperThread`` will outlive all mortal objects even if
+the ``sys`` module is deleted. The main thread's ``SuperThread`` will be the GIL.
+
+If the environment variable ``PYTHONGIL=1`` is set, then all new threads will default to
+``super_thread = sys.gil``. Otherwise all new threads will default to ``super_thread = None``.
+Explictly setting the ``super_thread`` argument when creating a thread will override these defaults.
+
+Deadlock detection
+------------------
+
+The addition of the stop-the-world lock, and the requirements for locking on all synchronized objects,
+may lead to more deadlocks.
+Since it is the goal of this PEP to avoid confusing behavior, a deadlock detector will be added to CPython.
+There are well known techniques for detecting deadlocks and they can implemented without undue overhead.
+
+Semantics
+---------
+
+Although it is performing operations on an object that leads to race conditions, checking every operation
+on every object would be prohibitively expensive. Instead, the cost can be reduced hugely by preventing
+threads having any access to objects which could cause race conditions. This means that it is only when
+a thread reference is created from a heap reference, does that operation need to be checked.
+If we do that, then all other operations become safe.
+
++------------------------+-----------+-----------------+-----------------+---------------+----------------+
+|    Object state        | Immutable |  Local = thread | Local ≠ thread  |  Protected    |  Synchronized  |
++========================+===========+=================+=================+===============+================+
+|   Acquire reference    |    Yes    |      Yes        |        No       | Yes\ :sup:`1` |       Yes      |
++------------------------+-----------+-----------------+-----------------+---------------+----------------+
+|     ``freeze()``       | No effect |  Yes\ :sup:`2`  |       N/A       | Yes\ :sup:`2` |  Yes\ :sup:`2` |
++------------------------+-----------+-----------------+-----------------+---------------+----------------+
+|   ``__protect__()``    |    No     | Yes\ :sup:`2,3` |       N/A       |     No        |       No       |
++------------------------+-----------+-----------------+-----------------+---------------+----------------+
+| All other operations   |    Yes    |      Yes        |       N/A       |     Yes       |       Yes      |
++------------------------+-----------+-----------------+-----------------+---------------+----------------+
+
+1. If the mutex held by the thread matches the mutex that protects the object
+2. If supported for that class.
+3. The argument to ``__protect__`` must the sole reference to the object.
+
+ABI breakage
+------------
+
+This PEP will require a one time ABI breakage, much like PEP 703, as the ``PyObject`` struct will need to be changed.
+
+Deferred reclamation
+--------------------
+
+Immutable (including stop-the-world mutable) objects may have their reclamation deferred.
+In other words, they may not be reclaimed immediately that their are no more references to them.
+
+This is because these objects may be referred to from several threads simultaneously, and the overhead
+of serializing the reference count operations would be too high.
+PEP 703 also does this.
+
+Local objects, visible to only one thread, will still be reclaimed immediately that they are no longer referenced.
+
+New Exceptions
+--------------
+
+Two new exception classes will be added:
+
+* ``IllegalThreadAccessException`` for when a thread attempts to acquire a reference to a *local* object belonging to another thread.
+* ``UnprotectedAccessException`` for when a thread attempts to acquire a reference to a *protected* object without holding the necessary mutex.
+
+Backwards Compatibility
+=======================
+
+It is expected that this PEP is mostly backwards compatible, with the exception of mutexes.
+Code using mutexes will now need to be more explicit about which objects are protected by which mutexes.
+
+They may be some cases where mutation of modules causes poor performance or even deadlocks,
+but these should be rare.
+
+Setting ``PYTHONGIL=1`` ensures that all threads are serialized by the GIL, providing backwards compatibility,
+and allowing a gradual path to parallelism by setting ``super_thread = None`` for new threads.
+
+Performance
+===========
+
+The key to getting good performance out of any dynamic language, including Python, is to specialize code
+according to the most likely types or values. Rather than perform an expensive, general operation, a cheap
+guard is performed to see that the expectations are met, then an efficient tailored operation is performed.
+
+Take the example of indexing into a list: ``l[x]``
+With the GIL, this can be done by first checking that ``l`` is a list, ``x`` is an int, and that ``x`` is in-bounds.
+Then the the value can be read out of the list's array directly.
+However, in the free-threading this approach doesn't work as another thread may have mutated the list at the same
+time as it was being indexed.
+This PEP restores good performance by adding an additional check to the guard: that the list is *local*.
+Since the ``l`` is likely stored in a local variable, it must already be *local* and no additional check is needed.
+
+However, additional checks will still be needed. Whenever a reference owned by a thread is created, then a check will
+be needed that it is legal. Since it is necessary to check that an object is *local* to the thread,
+or that it is *immutable*, or that it is *protected* and the correct mutex is held, these checks could be relatively expensive.
+However, the specializing adaptive interpreter and JIT can specialize, or sometimes eliminate, these operations.
+
+The general check::
+
+    if obj.__state__ == LOCAL and obj.__owner__ == current_tid:
+        pass # Good
+    elif obj.__state__ == IMMUTABLE or obj.__state__ == STW_MUTABLE:
+        pass # Good
+    elif obj.__state__ == PROTECTED and obj.__owner__ in currently_held_mutexes():
+        pass # Good
+    else:
+        raise ... # Bad
+
+is expensive, but by specializing for the expected case, the check can be made cheap.
+For example, if we expect a *local* object, we can do a much cheaper check::
+
+    if obj.__owner__ == current_tid:
+        pass # Good
+    else:
+        do_general_check(obj)
+
+Provided we make sure that thread ids and mutex ids are distinct.
+
+
+With the GIL enabled
+--------------------
+
+If all threads belong to the GIL ``SerializedThreadGroup`` then the JIT can completely eliminate checks
+for *local* objects (as these checks will always pass), resulting in performance very close to the current with-gil build.
+
+With threads
+------------
+
+Single threaded performance should exceed that of free-threading.
+Expected performance is within two or three percent of the with-gil build.
+
+Security Implications
+=====================
+
+The purpose of this PEP is provide stronger security by eliminating most race conditions.
+
+
+How to Teach This
+=================
+
+In order to run code in parallel, some understanding of the model of execution will
+be needed. Writing unsafe code is much harder than under PEP 703, but the
+new exceptions may surprise users. Extensive documentation will be needed.
+
+Examples
+--------
+
+Example 1: Thread safe tuple iterator
+'''''''''''''''''''''''''''''''''''''
+
+::
+
+   class ThreadSafeIter:
+       "For thread-safe iterables, only"
+
+       __slots__ = "_iterator",
+
+       def __init__(self, iterable):
+           self._iterator = self.__protect__(iter(iterable))
+           self.__freeze__()
+
+       def __iter__(self):
+           return self
+
+       def __next__(self):
+           with self.__mutex__:
+               return self._iterator.__next__()
+
+
+Example 2: Thread safe list
+'''''''''''''''''''''''''''
+::
+
+   class ThreadSafeList:
+
+       __slots__ = "_list",
+
+       def __init__(self):
+           self._list = self.__protect__([])
+           self.__freeze__()
+
+       def append(self, val):
+           with self.__mutex__:
+               self._list.append(val)
+
+       def __getitem__(self, index):
+           with self.__mutex__:
+               self._list[index]
+
+       def __iter__(self):
+           with self.__mutex__:
+               return ThreadSafeListIterator(self)
+
+       ...
+
+   class ThreadSafeListIterator:
+
+       __slots__ = "_list", "_iter"
+
+       def __init__(the_list):
+           self._list = the_list
+           with the_list.__mutex__:
+               self._iter = the_list._list.__iter__()
+
+       def __next__(self):
+           with self._list:
+               return self._iter.__next__()
+
+
+Note how the iterator uses the mutex of the ``ThreadSafeList``, ``self._list``, as the ``listiterator``
+inherits the protection from the ``list`` object.
+
+Comparison to PEP 703 (Making the Global Interpreter Lock Optional in CPython)
+==============================================================================
+
+This PEP should be thought of as building on PEP 703, rather than competing with or replacing it.
+Many of the mechanisms needed to implement this PEP have been developed for PEP 703.
+
+What PEP 703 lacks is well defined semantics for what happens when race conditions are present,
+or the means to avoid race conditions other than unverified locking.
+
+PEP 703 attempts to provide single-threaded performance for lists, dictionaries,
+and other mutable objects while providing "reasonable" thread safety. Unfortunately,
+no formal definition of expected behavior is provided, which leads to issues like these:
+
+* <https://github.com/python/cpython/issues/129619>
+* <https://github.com/python/cpython/issues/129139>
+* <https://github.com/python/cpython/issues/126559>
+* <https://github.com/python/cpython/issues/130744>
+
+It is the author's opinion that attempting to preserve single-threaded performance
+for mutable objects *and* any sort of thread safe parallel execution for the same object is wishful thinking.
+
+This PEP provides well defined semantics, single-threaded performance, *and* thread safety for lists and dicts.
+It does this by partitioning objects into local objects and shared objects, and enforcing the necessary synchronization.
+
+Implementation
+==============
+
+There is no actual implementation as yet, so this section outlines how this PEP could be implemented.
+
+Object state
+------------
+
+Recording object state requires space in the object header, at least 3 bits but no more than a byte.
+Each object also needs additional space to refer to its thread, or protecting mutex.
+With these fields, the ``PyObject`` header should be the smaller than is currently implemented for PEP 703,
+although larger than for the default (with GIL) build.
+
+A possible object header:
+.. code-block:: C
+    uint32_t ref_count_local;
+    uint32_t ref_count_shared; // For biased reference counting
+    uint32_t owner_id;
+    uint8_t  shared_state;
+    uint8_t  other_flags;
+    uint8_t  mutex;
+    uint8_t  gc_bits;
+    PyTypeObject *ob_type;
+
+or if we use atomic reference counting for non-local objects, we can use pointers for owners:
+.. code-block:: C
+    uintptr_t owner;
+    uint32_t ref_count;
+    uint8_t  shared_state;
+    uint8_t  other_flags;
+    uint8_t  mutex;
+    uint8_t  gc_bits;
+    PyTypeObject *ob_type;
+
+Reference counting
+------------------
+
+Local objects (including immutable objects that are known to be only locally referenced)
+can use non-atomic reference counting for speed.
+Any object shared between threads would use either biased or atomic reference counting.
+
+Shared objects will use deferred reference counting where possible.
+
+Checking object states
+----------------------
+
+CPython is a stack machine. That means that for a thread to acquire a reference to an object,
+that object must come from the heap or an API call and be pushed to the stack.
+In order to prevent C extensions seeing objects they should not, all C API calls will need to
+check their return value. In addition, the interpreter will need to check any values it gets
+direct from the heap before pushing them to the stack.
+
+This is potentially a lot of new checks so, to avoid a large performance impact,
+we need to keep the cost of these checks down. We can do that by:
+
+* Making the checks cheap. Checks should consist of only one or two simple comparisons with minimal memory accesses.
+* Removing as many checks as possible in both the specializing interpreter and the JIT compiler.
+
+Specialization means that we can perform only one check for the most likely state, rather than checking all legal states.
+If we expect a local object, we just check the object's thread ID against the current thread ID.
+If, instead, we expect an immutable object, we can just check that the object is immutable.
+
+The JIT compiler can remove redundant checks on the same object.
+
+.. _future-enhancements
+
+Possible future enhancements
+============================
+
+Deep freezing and deep transfers
+--------------------------------
+
+Freezing a single object could leave a frozen object with references to mutable objects, and transfering of single objects could leave an object local to one thread, while other objects that it refers to are local to a different thread.
+Either of these scanarios are likely to lead to runtime errors. To avoid that problem we need "deep" freezing.
+
+Deep freezing an object would freeze that object and the transitive closure of other mutable objects referred to by that object.
+Deep transfering an object would transfer that object and the transitive closure of other local objects referred to by that object,
+but would raise an exception if one of the those objects belonged to a different thread.
+
+Similar to freezing, a "deep" put mechanism could be added to ``Channel``\ s to move a whole graph of objects from one thread
+to another.
+
+Rejected Ideas
+==============
+
+[Why certain ideas that were brought while discussing this PEP were not ultimately pursued.]
+
+
+Open Issues
+===========
+
+[Any points that are still being decided/discussed.]
+
+
+Footnotes
+=========
+
+.. [1] https://en.wikipedia.org/wiki/Therac-25
+
+.. [2] https://dl.acm.org/doi/10.1145/3704859
+
+.. [3] https://wrigstad.com/pldi2025.pdf
+
+
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
