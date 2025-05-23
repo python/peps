@@ -16,13 +16,13 @@ Abstract
 
 In the C API, threads are able to interact with an interpreter by holding an
 :term:`attached thread state` for the current thread. This works well, but
-can get complicated when it comes to creating and Attaching
+can get complicated when it comes to creating and attaching
 :term:`thread states <thread state>` in a thread-safe manner.
 
 Specifically, the C API doesn't have any way to ensure that an interpreter
 is in a state where it can be called when creating and/or attaching a thread
-state. As such, attachment might hang the thread, or in subinterpreters, it
-might flat-out crash due to the interpreter's structure being deallocated.
+state. As such, attachment might hang the thread, or it might flat-out crash
+due to the interpreter's structure being deallocated in subinterpreters.
 This can be a frustrating issue to deal with in large applications that
 want to execute Python code alongside some other native code.
 
@@ -33,14 +33,20 @@ Python hasn't ever run.
 
 This PEP intends to solve these kinds issues by *reimagining* how we approach
 thread states in the C API. This is done through the introduction of interpreter
-references that prevent an interpreter from entering a stage where threads will
-hang, as well as :c:func:`PyThreadState_Ensure` and :c:func:`PyThreadState_Release`
-for replacing :c:func:`PyGILState_Ensure` and :c:func:`PyGILState_Release`.
+references that prevent an interpreter from finalizing (or more technically,
+entering a stage in which attachment of a thread state hangs).
+This allows for more structure and reliability when it comes to thread state
+management, because it forces a layer of synchronization between the
+interpreter and the caller.
 
-For example, in APIs that don't require the caller to hold an attached thread
-state, a strong interpreter reference should be passed to the API to ensure
-that it targets the correct interpreter, and that the interpreter doesn't
-concurrently deallocate itself.
+With this new system, there are a lot of changes needed in CPython and
+third-party libraries to adopt it. For example, in APIs that don't require
+the caller to hold an attached thread state, a strong interpreter reference
+should be passed to ensure that it targets the correct interpreter, and that
+the interpreter doesn't concurrently deallocate itself. The best example of
+this in CPython is :c:func:`PyGILState_Ensure`. As part of this proposal,
+:c:func:`PyThreadState_Ensure` is provided as a modern replacement that
+takes a strong interpreter reference.
 
 Terminology
 ===========
@@ -120,25 +126,6 @@ This means that any non-Python/native thread may be terminated at any point, whi
 is severely limiting for users who want to do more than just execute Python
 code in their stream of calls.
 
-Joining the Thread isn't Always Possible
-****************************************
-
-In general, it's possible to prevent hanging of threads created while Python
-is active through :mod:`atexit` functions. A thread could be started by some
-C function, and then as long as that thread is joined by :mod:`atexit`, then
-the thread won't hang. Reasonable enough, right?
-
-Unfortunately, :mod:`atexit` isn't always an option, because to call it, you
-need to already have an :term:`attached thread state` for the thread. If
-there's no guarantee of that, then :func:`atexit.register` cannot be safely
-called without the risk of hanging the thread.
-
-For example, large C++ applications might want to expose an interface that can
-call Python code. To do this, a function would take a Python object, and then
-call :c:func:`PyGILState_Ensure` to safely interact with it (e.g., by calling
-it). If the interpreter is finalizing or has shut down, then the thread is
-hung, disrupting the C++ caller.
-
 ``Py_IsFinalizing`` is Insufficient
 ***********************************
 
@@ -175,6 +162,66 @@ to fix it with the current API. For example,
 `python/cpython#129536 <https://github.com/python/cpython/issues/129536>`_
 remarks that the :mod:`ssl` module can emit a fatal error when used at
 finalization, because a daemon thread got hung while holding the lock.
+
+
+Daemon Threads are not the Problem
+**********************************
+
+Prior to this PEP, deprecating daemon threads was discussed
+`extensively <https://discuss.python.org/t/68836>`_. Daemon threads technically
+cause many of the issues outlined in this proposal, so removing daemon threads
+could be seen as a potential solution. The main argument for removing daemon
+threads is that they're a large cause of problems in the interpreter:
+
+    Except that daemon threads don’t actually work reliably. They’re attempting 
+    to run and use Python interpreter resources after the runtime has been shut
+    down upon runtime finalization. As in they have pointers to global state for
+    the interpreter.
+
+In practice, daemon threads are useful for simplifying many threading applications
+in Python, and since the program is about to close in most cases, it's not worth
+the added complexity to try and gracefully shut down a thread. 
+
+    When I’ve needed daemon threads, it’s usually been the case of “Long-running,
+    uninterruptible, third-party task” in terms of the examples in the linked issue.
+    Basically I’ve had something that I need running in the background, but I have
+    no easy way to terminate it short of process termination. Unfortunately, I’m on
+    Windows, so ``signal.pthread_kill`` isn’t an option. I guess I could use the
+    Windows Terminate Thread API, but it’s a lot of work to wrap it myself compared
+    to just letting process termination handle things.
+
+Finally, removing Python-level daemon threads does not fix the whole problem.
+As noted by this PEP, extension modules are free to create their own threads
+and attach thread states for them. Similar to daemon threads, Python doesn't
+try and join them during finalization, so trying to remove daemon threads
+as a whole would involve trying to remove them from the C API, which would
+require a massive API change.
+
+    Realize however that even if we get rid of daemon threads, extension
+    module code can and does spawn its own threads that are not tracked by
+    Python. ... Those are realistically an alternate form of daemon thread
+    ... and those are never going to be forbidden.
+
+Joining the Thread isn't Always a Good Idea
+*******************************************
+
+Even in daemon threads, it's generally *possible* to prevent hanging of
+native threads through :mod:`atexit` functions. 
+A thread could be started by some C function, and then as long as
+that thread is joined by :mod:`atexit`, then the thread won't hang.
+
+:mod:`atexit` isn't always an option for a function, because to call it, it
+needs to already have an :term:`attached thread state` for the thread. If
+there's no guarantee of that, then :func:`atexit.register` cannot be safely
+called without the risk of hanging the thread. This shifts the contract
+of joining the thread to the caller rather than the callee, which again, 
+isn't done in practice.
+
+For example, large C++ applications might want to expose an interface that can
+call Python code. To do this, a C++ API would take a Python object, and then
+call :c:func:`PyGILState_Ensure` to safely interact with it (for example, by
+calling it). If the interpreter is finalizing or has shut down, then the thread
+is hung, disrupting the C++ stream of calls.
 
 .. _pep-788-hanging-compat:
 
@@ -312,10 +359,9 @@ Preventing Interpreter Shutdown with Reference Counting
 -------------------------------------------------------
 
 This PEP takes an approach where an interpreter is given a reference count
-that prevents it from shutting down.
-
-So, holding a "strong reference" to the interpreter will make it safe to
-call the C API without worrying about the thread being hung.
+that prevents it from shutting down. So, holding a "strong reference" to the 
+interpreter will make it safe to call the C API without worrying about the
+thread being hung.
 
 This means that interfacing Python (for example, in a C++ library) will need
 a reference to the interpreter in order to safely call the object, which is
@@ -361,8 +407,9 @@ Interpreter References to Prevent Shutdown
 
 An interpreter will keep a reference count that's managed by users of the
 C API. When the interpreter starts finalizing, it will until its reference count
-reaches zero before proceeding to a point where threads will be hung.
-Note that this *is not* the same as joining the thread; the interpreter will
+reaches zero before proceeding to a point where threads will be hung. This will
+happen around the same time when :class:`threading.Thread` objects are joined,
+but ote that this *is not* the same as joining the thread; the interpreter will
 only wait until the reference count is zero, and then proceed. The interpreter
 must not hang threads until this reference count has reached zero.
 After the reference count has reached zero, threads can no longer prevent the
