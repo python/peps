@@ -24,7 +24,7 @@ typedef struct {
     int value;
 } examplemodule_state;
 
-PyObject *
+static PyObject *
 increment_value(PyObject *module, PyObject *_ignored)
 {
     examplemodule_state *state = PyModule_GetState(module);
@@ -32,12 +32,13 @@ increment_value(PyObject *module, PyObject *_ignored)
     return PyLong_FromLong(result);
 }
 
-PyMethodDef examplemodule_methods[] = {
+static PyMethodDef examplemodule_methods[] = {
     {"increment_value", increment_value, METH_NOARGS},
     {NULL}
 };
 
-int examplemodule_exec(PyObject *module) {
+static int
+examplemodule_exec(PyObject *module) {
     examplemodule_state *state = PyModule_GetState(module);
     state->value = -1;
     return 0;
