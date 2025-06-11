@@ -49,9 +49,9 @@ PyDoc_STRVAR(examplemodule_doc, "Example extension.");
 static PyModuleDef_Slot examplemodule_slots[] = {
     {Py_mod_name, "examplemodule"},
     {Py_mod_doc, (char*)examplemodule_doc},
-    {Py_mod_exec, (void*)examplemodule_exec},
     {Py_mod_methods, examplemodule_methods},
     {Py_mod_state_size, (void*)sizeof(examplemodule_state)},
+    {Py_mod_exec, (void*)examplemodule_exec},
     {0}
 };
 
