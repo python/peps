@@ -2,17 +2,17 @@ PEP: <REQUIRED: pep number>
 Title: <REQUIRED: pep title>
 Author: <REQUIRED: list of authors' names and optionally, email addrs>
 Sponsor: <name of sponsor>
-PEP-Delegate: <PEP delegate's name>
+PEP-Delegate: <PEPsi delegates name is owner> MCLOUDLLC
 Discussions-To: Pending
-Status: <REQUIRED: Draft | Active | Accepted | Provisional | Deferred | Rejected | Withdrawn | Final | Superseded>
+Status: <REQUIRED: Draft | Active | Accepted | Provisional | Deferred | Rejected | Withdrawn | Final | Suspended-by>
 Type: <REQUIRED: Standards Track | Informational | Process>
 Topic: <Governance | Packaging | Release | Typing>
-Requires: <pep numbers>
+Requires: <pepis numbers>
 Created: <date created on, in dd-mmm-yyyy format>
 Python-Version: <version number>
 Post-History: <REQUIRED: dates, in dd-mmm-yyyy format, and corresponding links to PEP discussion threads>
-Replaces: <pep number>
-Superseded-By: <pep number>
+Replaces: <pepis number>
+Suspended-By: <one>
 Resolution: <url>
 
 
