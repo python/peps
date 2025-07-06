@@ -132,6 +132,18 @@ class PEPZeroWriter:
             self.emit_text("     -")
         self.emit_newline()
 
+    def write_numerical_index(self, peps: list[PEP]) -> str:
+        """Write PEPs by number."""
+        self.emit_text(".. _numerical-index:")
+        self.emit_newline()
+
+        self.emit_title("Numerical Index")
+        self.emit_table(peps)
+        self.emit_newline()
+
+        numerical_index_string = "\n".join(self.output)
+        return numerical_index_string
+
     def write_pep0(
         self,
         peps: list[PEP],
@@ -139,7 +151,7 @@ class PEPZeroWriter:
         intro: str = INTRO,
         is_pep0: bool = True,
         builder: str = None,
-    ):
+    ) -> str:
         if len(peps) == 0:
             return ""
 
@@ -169,11 +181,27 @@ class PEPZeroWriter:
                 self.emit_newline()
             self.emit_newline()
 
+            self.emit_title("API")
+            self.emit_text(
+                "The `PEPS API </api/peps.json>`__ is a JSON file of metadata about "
+                "all the published PEPs. :doc:`Read more here <api/index>`."
+            )
+            self.emit_newline()
+
+        # PEPs by number
+        if is_pep0:
+            self.emit_title("Numerical Index")
+            self.emit_text(
+                "The :doc:`numerical index </numerical>` contains "
+                "a table of all PEPs, ordered by number."
+            )
+            self.emit_newline()
+
         # PEPs by category
         self.emit_title("Index by Category")
         meta, info, provisional, accepted, open_, finished, historical, deferred, dead = _classify_peps(peps)
         pep_categories = [
-            ("Meta-PEPs (PEPs about PEPs or Processes)", meta),
+            ("Process and Meta-PEPs", meta),
             ("Other Informational PEPs", info),
             ("Provisional PEPs (provisionally accepted; interface may still change)", provisional),
             ("Accepted PEPs (accepted; may not be implemented yet)", accepted),
@@ -181,7 +209,7 @@ class PEPZeroWriter:
             ("Finished PEPs (done, with a stable interface)", finished),
             ("Historical Meta-PEPs and Informational PEPs", historical),
             ("Deferred PEPs (postponed pending further research or updates)", deferred),
-            ("Abandoned, Withdrawn, and Rejected PEPs", dead),
+            ("Rejected, Superseded, and Withdrawn PEPs", dead),
         ]
         for (category, peps_in_category) in pep_categories:
             # For sub-indices, only emit categories with entries.
@@ -193,12 +221,6 @@ class PEPZeroWriter:
                 self.emit_subtitle(category)
                 self.emit_text("None.")
                 self.emit_newline()
-
-        self.emit_newline()
-
-        # PEPs by number
-        self.emit_title("Numerical Index")
-        self.emit_table(peps)
 
         self.emit_newline()
 
@@ -257,7 +279,7 @@ class PEPZeroWriter:
             self.emit_newline()
             self.emit_newline()
 
-        pep0_string = "\n".join(map(str, self.output))
+        pep0_string = "\n".join(self.output)
         return pep0_string
 
 

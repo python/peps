@@ -3,40 +3,41 @@ Title: Defined semantics for locals()
 Author: Alyssa Coghlan <ncoghlan@gmail.com>
 BDFL-Delegate: Nathaniel J. Smith
 Discussions-To: python-dev@python.org
-Status: Deferred
+Status: Withdrawn
 Type: Standards Track
-Content-Type: text/x-rst
 Created: 08-Sep-2017
 Python-Version: 3.13
 Post-History: 08-Sep-2017, 22-May-2019, 30-May-2019, 30-Dec-2019, 18-Jul-2021,
               26-Aug-2021
 
-PEP Deferral
-============
+PEP Withdrawal
+==============
 
-While the original reference implementation for this PEP served a useful purpose
-in determining that it *is* feasible to solve the known problems with the
-semantics of the ``locals()`` namespace, that implementation itself is no longer
-viable as an implementation of the PEP as written.
+In December 2021, this PEP and :pep:`667` converged on a common definition of the
+proposed changes to the Python level semantics of the ``locals()`` builtin (as
+documented in the PEP text below), with the only remaining differences being
+in the proposed C API changes and various internal implementation details.
 
-This situation came about for two main reasons:
+Of those remaining differences, the most significant one was that :pep:`667`
+at the time still proposed an immediate backwards compatibility break for the
+``PyEval_GetLocals()`` API as soon as the PEP was accepted and implemented.
 
-* first, several key parts of the original implementation were invalidated when
-  the semantic improvements arising from the development of :pep:`667` resulted in
-  the proposal in the PEP diverging from what had previously been implemented
-* second, several remaining practical aspects of the original implementation were
-  invalidated by the frame management changes that formed part of the significant
-  performance improvements published in the CPython 3.11 release, so the development
-  branch doesn't even offer a useful starting point for an updated implementation
+:pep:`667` has since been changed to propose a generous deprecation period for
+the ``PyEval_GetLocals()`` API, continuing to support it in parallel with the
+improved semantics offered by the new ``PyEval_GetFrameLocals()`` API.
 
-As a result, further progress on this PEP requires the development of a new reference
-implementation, either for this PEP or for :pep:`667` (the semantics of the two PEPs
-are so close together now that an implementation for either would require only a few
-relatively small changes to instead implement the other).
+Any remaining C API design concerns relate to new informational APIs that can be
+added at a later date if they are deemed necessary, and any potential concerns
+about the exact performance characteristics of the frame locals view implementation
+are outweighed by the availability of a viable reference implementation.
 
-Since the PEP author has no current plans to produce that new reference implementation
-themselves, but the semantics proposed by the PEPs seem generally acceptable to the
-Python core development team, the most appropriate state for the PEP is "Deferred".
+Accordingly, this PEP has been withdrawn in favour of proceeding with :pep:`667`.
+
+Note: while implementing :pep:`667` it became apparent that the rationale for and impact
+of ``locals()`` being updated to return independent snapshots in
+:term:`optimized scopes <py3.13:optimized scope>` was not entirely clear in either PEP.
+The Motivation and Rationale sections in this PEP have been updated accordingly (since those
+aspects are equally applicable to the accepted :pep:`667`).
 
 Abstract
 ========
@@ -68,6 +69,7 @@ Python C API/ABI:
 It also proposes the addition of several supporting functions and type
 definitions to the CPython C API.
 
+.. _pep-558-motivation:
 
 Motivation
 ==========
@@ -93,6 +95,32 @@ independent snapshot of the function locals and closure variables on each
 call, rather than continuing to return the semi-dynamic intermittently updated
 shared copy that it has historically returned in CPython.
 
+Specifically, the proposal in this PEP eliminates the historical behaviour where
+adding a new local variable can change the behaviour of code executed with
+``exec()`` in function scopes, even if that code runs *before* the local variable
+is defined.
+
+For example::
+
+    def f():
+        exec("x = 1")
+        print(locals().get("x"))
+    f()
+
+prints ``1``, but::
+
+    def f():
+        exec("x = 1")
+        print(locals().get("x"))
+        x = 0
+    f()
+
+prints ``None`` (the default value from the ``.get()`` call).
+
+With this PEP both examples would print ``None``, as the call to
+``exec()`` and the subsequent call to ``locals()`` would use
+independent dictionary snapshots of the local variables rather
+than using the same shared dictionary cached on the frame object.
 
 Proposal
 ========
@@ -801,25 +829,6 @@ frame machinery will allow rebinding of local and nonlocal variable
 references in a way that is hidden from static analysis.
 
 
-Retaining the internal frame value cache
-----------------------------------------
-
-Retaining the internal frame value cache results in some visible quirks when
-frame proxy instances are kept around and re-used after name binding and
-unbinding operations have been executed on the frame.
-
-The primary reason for retaining the frame value cache is to maintain backwards
-compatibility with the ``PyEval_GetLocals()`` API. That API returns a borrowed
-reference, so it must refer to persistent state stored on the frame object.
-Storing a fast locals proxy object on the frame creates a problematic reference
-cycle, so the cleanest option is to instead continue to return a frame value
-cache, just as this function has done since optimised frames were first
-introduced.
-
-With the frame value cache being kept around anyway, it then further made sense
-to rely on it to simplify the fast locals proxy mapping implementation.
-
-
 What happens with the default args for ``eval()`` and ``exec()``?
 -----------------------------------------------------------------
 
@@ -844,8 +853,240 @@ namespace on each iteration).
 to make a list from the keys).
 
 
+.. _pep-558-exec-eval-impact:
+
+Additional considerations for ``eval()`` and ``exec()`` in optimized scopes
+---------------------------------------------------------------------------
+
+Note: while implementing :pep:`667`, it was noted that neither that PEP nor this one
+clearly explained the impact the ``locals()`` changes would have on code execution APIs
+like ``exec()`` and ``eval()``. This section was added to this PEP's rationale to better
+describe the impact and explain the intended benefits of the change.
+
+When ``exec()`` was converted from a statement to a builtin function
+in Python 3.0 (part of the core language changes in :pep:`3100`), the
+associated implicit call to ``PyFrame_LocalsToFast()`` was removed, so
+it typically appears as if attempts to write to local variables with
+``exec()`` in optimized frames are ignored::
+
+    >>> def f():
+    ...     x = 0
+    ...     exec("x = 1")
+    ...     print(x)
+    ...     print(locals()["x"])
+    ...
+    >>> f()
+    0
+    0
+
+In truth, the writes aren't being ignored, they just aren't
+being copied from the dictionary cache back to the optimized local
+variable array. The changes to the dictionary are then overwritten
+the next time the dictionary cache is refreshed from the array::
+
+    >>> def f():
+    ...     x = 0
+    ...     locals_cache = locals()
+    ...     exec("x = 1")
+    ...     print(x)
+    ...     print(locals_cache["x"])
+    ...     print(locals()["x"])
+    ...
+    >>> f()
+    0
+    1
+    0
+
+.. _pep-558-ctypes-example:
+
+The behaviour becomes even stranger if a tracing function
+or another piece of code invokes ``PyFrame_LocalsToFast()`` before
+the cache is next refreshed. In those cases the change *is*
+written back to the optimized local variable array::
+
+    >>> from sys import _getframe
+    >>> from ctypes import pythonapi, py_object, c_int
+    >>> _locals_to_fast = pythonapi.PyFrame_LocalsToFast
+    >>> _locals_to_fast.argtypes = [py_object, c_int]
+    >>> def f():
+    ...     _frame = _getframe()
+    ...     _f_locals = _frame.f_locals
+    ...     x = 0
+    ...     exec("x = 1")
+    ...     _locals_to_fast(_frame, 0)
+    ...     print(x)
+    ...     print(locals()["x"])
+    ...     print(_f_locals["x"])
+    ...
+    >>> f()
+    1
+    1
+    1
+
+This situation was more common in Python 3.10 and earlier
+versions, as merely installing a tracing function was enough
+to trigger implicit calls to ``PyFrame_LocalsToFast()`` after
+every line of Python code. However, it can still happen in Python
+3.11+ depending on exactly which tracing functions are active
+(e.g. interactive debuggers intentionally do this so that changes
+made at the debugging prompt are visible when code execution
+resumes).
+
+All of the above comments in relation to ``exec()`` apply to
+*any* attempt to mutate the result of ``locals()`` in optimized
+scopes, and are the main reason that the ``locals()`` builtin
+docs contain this caveat:
+
+    Note: The contents of this dictionary should not be modified;
+    changes may not affect the values of local and free variables
+    used by the interpreter.
+
+While the exact wording in the library reference is not entirely explicit,
+both ``exec()`` and ``eval()`` have long used the results of calling
+``globals()`` and ``locals()`` in the calling Python frame as their default
+execution namespace.
+
+This was historically also equivalent to using the calling frame's
+``frame.f_globals`` and ``frame.f_locals`` attributes, but this PEP maps
+the default namespace arguments for ``exec()`` and ``eval()`` to
+``globals()`` and ``locals()`` in the calling frame in order to preserve
+the property of defaulting to ignoring attempted writes to the local
+namespace in optimized scopes.
+
+This poses a potential compatibility issue for some code, as with the
+previous implementation that returns the same dict when ``locals()`` is called
+multiple times in function scope, the following code usually worked due to
+the implicitly shared local variable namespace::
+
+    def f():
+        exec('a = 0')  # equivalent to exec('a = 0', globals(), locals())
+        exec('print(a)')  # equivalent to exec('print(a)', globals(), locals())
+        print(locals())  # {'a': 0}
+        # However, print(a) will not work here
+    f()
+
+With ``locals()`` in an optimised scope returning the same shared dict for each call,
+it was possible to store extra "fake locals" in that dict. While these aren't real
+locals known by the compiler (so they can't be printed with code like ``print(a)``),
+they can still be accessed via ``locals()`` and shared between multiple ``exec()``
+calls in the same function scope. Furthermore, because they're *not* real locals,
+they don't get implicitly updated or removed when the shared cache is refreshed
+from the local variable storage array.
+
+When the code in ``exec()`` tries to write to an existing local variable, the
+runtime behaviour gets harder to predict::
+
+    def f():
+        a = None
+        exec('a = 0')  # equivalent to exec('a = 0', globals(), locals())
+        exec('print(a)')  # equivalent to exec('print(a)', globals(), locals())
+        print(locals())  # {'a': None}
+    f()
+
+``print(a)`` will print ``None`` because the implicit ``locals()`` call in
+``exec()`` refreshes the cached dict with the actual values on the frame.
+This means that, unlike the "fake" locals created by writing back to ``locals()``
+(including via previous calls to ``exec()``), the real locals known by the
+compiler can't easily be modified by ``exec()`` (it can be done, but it requires
+both retrieving the ``frame.f_locals`` attribute to enable writes back to the frame,
+and then invoking ``PyFrame_LocalsToFast()``, as :ref:`shown <pep-558-ctypes-example>`
+using ``ctypes`` above).
+
+As noted in the :ref:`pep-558-motivation` section, this confusing side effect
+happens even if the local variable is only defined *after* the ``exec()`` calls::
+
+    >>> def f():
+    ...     exec("a = 0")
+    ...     exec("print('a' in locals())") # Printing 'a' directly won't work
+    ...     print(locals())
+    ...     a = None
+    ...     print(locals())
+    ...
+    >>> f()
+    False
+    {}
+    {'a': None}
+
+Because ``a`` is a real local variable that is not currently bound to a value, it
+gets explicitly removed from the dictionary returned by ``locals()`` whenever
+``locals()`` is called prior to the ``a = None`` line. This removal is intentional,
+as it allows the contents of ``locals()`` to be updated correctly in optimized
+scopes when ``del`` statements are used to delete previously bound local variables.
+
+As noted in the ``ctypes`` :ref:`example <pep-558-ctypes-example>`, the above behavioural
+description may be invalidated if the CPython ``PyFrame_LocalsToFast()`` API gets invoked
+while the frame is still running. In that case, the changes to ``a`` *might* become visible
+to the running code, depending on exactly when that API is called (and whether the frame
+has been primed for locals modification by accessing the ``frame.f_locals`` attribute).
+
+As described above, two options were considered to replace this confusing behaviour:
+
+* make ``locals()`` return write-through proxy instances (similar
+  to ``frame.f_locals``)
+* make ``locals()`` return genuinely independent snapshots so that
+  attempts to change the values of local variables via ``exec()``
+  would be *consistently* ignored without any of the caveats
+  noted above.
+
+The PEP chooses the second option for the following reasons:
+
+* returning independent snapshots in optimized scopes preserves
+  the Python 3.0 change to ``exec()`` that resulted in attempts
+  to mutate local variables via ``exec()`` being ignored in most
+  cases
+* the distinction between "``locals()`` gives an instantaneous
+  snapshot of the local variables in optimized scopes, and
+  read/write access in other scopes" and "``frame.f_locals``
+  gives read/write access to the local variables in all scopes,
+  including optimized scopes" allows the intent of a piece of
+  code to be clearer than it would be if both APIs granted
+  full read/write access in optimized scopes, even when write
+  access wasn't needed or desired
+* in addition to improving clarity for human readers, ensuring
+  that name rebinding in optimized scopes remains lexically
+  visible in the code (as long as the frame introspection APIs
+  are not accessed) allows compilers and interpreters to apply
+  related performance optimizations more consistently
+* only Python implementations that support the optional frame
+  introspection APIs will need to provide the new write-through
+  proxy support for optimized frames
+
+With the semantic changes to ``locals()`` in this PEP, it becomes much easier to explain
+the behavior of ``exec()`` and ``eval()``: in optimized scopes, they will *never* implicitly
+affect local variables; in other scopes, they will *always* implicitly affect local
+variables. In optimized scopes, any implicit assignment to the local variables will be
+discarded when the code execution API returns, since a fresh copy of the local variables
+is used on each invocation.
+
+
+Retaining the internal frame value cache
+----------------------------------------
+
+Retaining the internal frame value cache results in some visible quirks when
+frame proxy instances are kept around and re-used after name binding and
+unbinding operations have been executed on the frame.
+
+The primary reason for retaining the frame value cache is to maintain backwards
+compatibility with the ``PyEval_GetLocals()`` API. That API returns a borrowed
+reference, so it must refer to persistent state stored on the frame object.
+Storing a fast locals proxy object on the frame creates a problematic reference
+cycle, so the cleanest option is to instead continue to return a frame value
+cache, just as this function has done since optimised frames were first
+introduced.
+
+With the frame value cache being kept around anyway, it then further made sense
+to rely on it to simplify the fast locals proxy mapping implementation.
+
+Note: the fact :pep:`667` *doesn't* use the internal frame value cache as part of the
+write-through proxy implementation is the key Python level difference between the two PEPs.
+
+
 Changing the frame API semantics in regular operation
 -----------------------------------------------------
+
+Note: when this PEP was first written, it predated the Python 3.11 change to drop the
+implicit writeback of the frame local variables whenever a tracing function was installed,
+so making that change was included as part of the proposal.
 
 Earlier versions of this PEP proposed having the semantics of the frame
 ``f_locals`` attribute depend on whether or not a tracing hook was currently
@@ -983,6 +1224,10 @@ flexibility in how they provide those capabilities.
 
 Comparison with PEP 667
 -----------------------
+
+NOTE: the comparison below is against PEP 667 as it was in December 2021.
+It does not reflect the state of PEP 667 as of April 2024 (when this PEP was
+withdrawn in favour of proceeding with PEP 667).
 
 :pep:`667` offers a partially competing proposal for this PEP that suggests it
 would be reasonable to eliminate the internal frame value cache on optimised

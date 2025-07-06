@@ -39,8 +39,6 @@ PEP_ROOT = ROOT_DIR / "peps"
 ALL_HEADERS = (
     "PEP",
     "Title",
-    "Version",
-    "Last-Modified",
     "Author",
     "Sponsor",
     "BDFL-Delegate", "PEP-Delegate",
@@ -48,7 +46,6 @@ ALL_HEADERS = (
     "Status",
     "Type",
     "Topic",
-    "Content-Type",
     "Requires",
     "Created",
     "Python-Version",
@@ -132,6 +129,7 @@ def check_headers(lines: Sequence[str], /) -> MessageIterator:
     yield from _validate_pep_number(next(iter(lines), ""))
 
     found_headers = {}
+    found_header_lines: list[tuple[str, int]] = []
     line_num = 0
     for line_num, line in enumerate(lines, start=1):
         if line.strip() == "":
@@ -139,9 +137,10 @@ def check_headers(lines: Sequence[str], /) -> MessageIterator:
             break
         if match := HEADER_PATTERN.match(line):
             header = match[1]
+            found_header_lines.append((header, line_num))
             if header in ALL_HEADERS:
                 if header not in found_headers:
-                    found_headers[match[1]] = line_num
+                    found_headers[header] = None
                 else:
                     yield line_num, f"Must not have duplicate header: {header} "
             else:
@@ -151,11 +150,11 @@ def check_headers(lines: Sequence[str], /) -> MessageIterator:
 
     yield from _validate_required_headers(found_headers.keys())
 
-    shifted_line_nums = list(found_headers.values())[1:]
-    for i, (header, line_num) in enumerate(found_headers.items()):
+    shifted_line_nums = [line for _, line in found_header_lines[1:]]
+    for i, (header, line_num) in enumerate(found_header_lines):
         start = line_num - 1
         end = headers_end_line_num - 1
-        if i < len(found_headers) - 1:
+        if i < len(found_header_lines) - 1:
             end = shifted_line_nums[i] - 1
         remainder = "\n".join(lines[start:end]).removeprefix(f"{header}:")
         if remainder != "":
@@ -182,8 +181,6 @@ def _validate_header(header: str, line_num: int, content: str) -> MessageIterato
         yield from _validate_type(line_num, content)
     elif header == "Topic":
         yield from _validate_topic(line_num, content)
-    elif header == "Content-Type":
-        yield from _validate_content_type(line_num, content)
     elif header in {"Requires", "Replaces", "Superseded-By"}:
         yield from _validate_pep_references(line_num, content)
     elif header == "Created":
@@ -306,6 +303,8 @@ def _validate_discussions_to(line_num: int, line: str) -> MessageIterator:
     """'Discussions-To' must be a thread URL"""
 
     yield from _thread(line_num, line, "Discussions-To", discussions_to=True)
+    if line == "Pending":
+        return
     if line.startswith("https://"):
         return
     for suffix in "@python.org", "@googlegroups.com":
@@ -314,7 +313,7 @@ def _validate_discussions_to(line_num: int, line: str) -> MessageIterator:
             if re.fullmatch(r"[\w\-]+", remainder) is None:
                 yield line_num, "Discussions-To must be a valid mailing list"
             return
-    yield line_num, "Discussions-To must be a valid thread URL or mailing list"
+    yield line_num, "Discussions-To must be a valid thread URL, mailing list, or 'Pending'"
 
 
 def _validate_status(line_num: int, line: str) -> MessageIterator:
@@ -346,13 +345,6 @@ def _validate_topic(line_num: int, line: str) -> MessageIterator:
             yield line_num, "Topic must be for a valid sub-index"
     if sorted(topics) != topics:
         yield line_num, "Topic must be sorted lexicographically"
-
-
-def _validate_content_type(line_num: int, line: str) -> MessageIterator:
-    """'Content-Type' must be 'text/x-rst'"""
-
-    if line != "text/x-rst":
-        yield line_num, "Content-Type must be 'text/x-rst'"
 
 
 def _validate_pep_references(line_num: int, line: str) -> MessageIterator:
@@ -407,30 +399,42 @@ def _validate_python_version(line_num: int, line: str) -> MessageIterator:
 
 
 def _validate_post_history(line_num: int, body: str) -> MessageIterator:
-    """'Post-History' must be '`DD-mmm-YYYY <Thread URL>`__, …'"""
+    """'Post-History' must be '`DD-mmm-YYYY <Thread URL>`__, …' or `DD-mmm-YYYY`"""
 
     if body == "":
         return
 
     for offset, line in enumerate(body.removesuffix(",").split("\n"), start=line_num):
         for post in line.removesuffix(",").strip().split(", "):
-            if not post.startswith("`") and not post.endswith(">`__"):
+            prefix, postfix = (post.startswith("`"), post.endswith(">`__"))
+            if not prefix and not postfix:
                 yield from _date(offset, post, "Post-History")
-            else:
+            elif prefix and postfix:
                 post_date, post_url = post[1:-4].split(" <")
                 yield from _date(offset, post_date, "Post-History")
                 yield from _thread(offset, post_url, "Post-History")
+            else:
+                yield offset, "post line must be a date or both start with “`” and end with “>`__”"
 
 
 def _validate_resolution(line_num: int, line: str) -> MessageIterator:
-    """'Resolution' must be a direct thread/message URL"""
+    """'Resolution' must be a direct thread/message URL or a link with a date."""
 
-    yield from _thread(line_num, line, "Resolution", allow_message=True)
+    prefix, postfix = (line.startswith("`"), line.endswith(">`__"))
+    if not prefix and not postfix:
+        yield from _thread(line_num, line, "Resolution", allow_message=True)
+    elif prefix and postfix:
+        post_date, post_url = line[1:-4].split(" <")
+        yield from _date(line_num, post_date, "Resolution")
+        yield from _thread(line_num, post_url, "Resolution", allow_message=True)
+    else:
+        yield line_num, "Resolution line must be a link or both start with “`” and end with “>`__”"
 
 
 ########################
 #  Validation Helpers  #
 ########################
+
 
 def _pep_num(line_num: int, pep_number: str, prefix: str) -> MessageIterator:
     if pep_number == "":
