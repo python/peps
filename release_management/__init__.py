@@ -24,16 +24,16 @@ RELEASE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = RELEASE_DIR.parent
 PEP_ROOT = ROOT_DIR / 'peps'
 
-kw_only = {'kw_only': True} if sys.version_info[:2] >= (3, 10) else {}
+dc_kw = {'kw_only': True, 'slots': True} if sys.version_info[:2] >= (3, 10) else {}
 
 
-@dataclass(frozen=True, **kw_only, slots=True)
+@dataclass(frozen=True, **dc_kw)
 class PythonReleases:
     metadata: dict[str, VersionMetadata]
     releases: dict[str, list[ReleaseInfo]]
 
 
-@dataclass(frozen=True,  **kw_only, slots=True)
+@dataclass(frozen=True,  **dc_kw)
 class VersionMetadata:
     """Metadata for a given interpreter version (MAJOR.MINOR)."""
 
@@ -52,7 +52,7 @@ class VersionMetadata:
         return cls(**{k.replace('-', '_'): v for k, v in data.items()})
 
 
-@dataclass(frozen=True,  **kw_only, slots=True)
+@dataclass(frozen=True,  **dc_kw)
 class ReleaseInfo:
     """Information about a release."""
 
