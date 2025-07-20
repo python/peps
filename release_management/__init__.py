@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import sys
 import datetime as dt
+from dataclasses import dataclass
 from pathlib import Path
 
 try:
@@ -23,14 +24,16 @@ RELEASE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = RELEASE_DIR.parent
 PEP_ROOT = ROOT_DIR / 'peps'
 
+kw_only = {'kw_only': True} if sys.version_info[:2] >= (3, 10) else {}
 
-@dataclass(frozen=True, kw_only=True, slots=True)
+
+@dataclass(frozen=True, **kw_only, slots=True)
 class PythonReleases:
     metadata: dict[str, VersionMetadata]
     releases: dict[str, list[ReleaseInfo]]
 
 
-@dataclass(frozen=True, kw_only=True, slots=True)
+@dataclass(frozen=True,  **kw_only, slots=True)
 class VersionMetadata:
     """Metadata for a given interpreter version (MAJOR.MINOR)."""
 
@@ -49,7 +52,7 @@ class VersionMetadata:
         return cls(**{k.replace('-', '_'): v for k, v in data.items()})
 
 
-@dataclass(frozen=True, kw_only=True, slots=True)
+@dataclass(frozen=True,  **kw_only, slots=True)
 class ReleaseInfo:
     """Information about a release."""
 
