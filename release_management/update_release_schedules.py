@@ -5,10 +5,10 @@ versions in ``VERSIONS_TO_REGENERATE``. Each PEP must contain markers for the
 start and end of each release schedule (feature, bugfix, and security, as
 appropriate). These are:
 
-    .. feature release schedule
-    .. bugfix release schedule
-    .. security release schedule
-    .. end of schedule
+    .. release schedule: feature
+    .. release schedule: bugfix
+    .. release schedule: security
+    .. release schedule: ends
 
 This script will use the dates in the [[release."{version}"]] tables to create
 and update the release schedule lists in each PEP.
@@ -18,7 +18,7 @@ field, which will append the given text in brackets to the relevant line.
 
 Usage:
 
-    $ python -m release_engineering update-peps
+    $ python -m release_management update-peps
     $ # or
     $ make regen-all
 """
@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from release_engineering import (
+from release_management import (
     PEP_ROOT,
     ReleaseInfo,
     VersionMetadata,
@@ -38,7 +38,7 @@ TYPE_CHECKING = False
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from release_engineering import ReleaseSchedules, ReleaseState, VersionMetadata
+    from release_management import ReleaseSchedules, ReleaseState, VersionMetadata
 
 TODAY = dt.date.today()
 
@@ -121,7 +121,8 @@ def update_pep(metadata: VersionMetadata, schedules: ReleaseSchedules) -> None:
     for line in pep_lines:
         output_lines.append(line)
         if line.startswith('.. ') and 'schedule' in line:
-            schedule_name = line.split()[1]
+            assert line.startswith('.. release schedule: ')
+            schedule_name = line.removeprefix('.. release schedule: ')
             assert schedule_name in {'feature', 'bugfix', 'security'}
             output_lines += generate_schedule_lists(
                 schedules,
@@ -132,7 +133,7 @@ def update_pep(metadata: VersionMetadata, schedules: ReleaseSchedules) -> None:
             # skip source lines until the end of schedule marker
             while True:
                 line = next(pep_lines, None)
-                if line == '.. end of schedule':
+                if line == '.. release schedule: ends':
                     output_lines.append(line)
                     break
                 if line is None:
@@ -141,9 +142,9 @@ def update_pep(metadata: VersionMetadata, schedules: ReleaseSchedules) -> None:
     if not schedule_name:
         raise ValueError('No schedule markers found!')
 
-    with open(pep_path, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(output_lines))
-        f.write('\n')  # trailing newline
+    output_lines.append('')  # trailing newline
+    with open(pep_path, 'wb') as f:
+        f.write(b'\n'.join(line.encode('utf-8') for line in output_lines))
 
 
 def generate_schedule_lists(
@@ -169,7 +170,7 @@ def generate_schedule_lists(
                 yield '  (No new features beyond this point.)'
 
     if schedule_name == 'bugfix':
-        yield '  (final regular bugfix release with binary installers)'
+        yield '  (Final regular bugfix release with binary installers)'
 
     yield ''
 

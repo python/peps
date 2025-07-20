@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -27,12 +26,7 @@ from pep_sphinx_extensions.pep_zero_generator import parser
 from pep_sphinx_extensions.pep_zero_generator import subindices
 from pep_sphinx_extensions.pep_zero_generator import writer
 from pep_sphinx_extensions.pep_zero_generator.constants import SUBINDICES_BY_TOPIC
-if sys.version_info >= (3, 11):
-    from release_engineering.generate_release_cycle import create_release_cycle
-else:
-    # this function uses tomllib, which requires Python 3.11+
-    def create_release_cycle():
-        return ''
+from release_management.serialise import create_release_cycle, create_release_json
 
 if TYPE_CHECKING:
     from sphinx.application import Sphinx
@@ -83,3 +77,6 @@ def create_pep_zero(app: Sphinx, env: BuildEnvironment, docnames: list[str]) -> 
 
     release_cycle = create_release_cycle()
     app.outdir.joinpath('release-cycle.json').write_text(release_cycle, encoding="utf-8")
+
+    release_json = create_release_json()
+    app.outdir.joinpath('python-releases.json').write_text(release_json, encoding="utf-8")

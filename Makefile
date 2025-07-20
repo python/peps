@@ -110,7 +110,7 @@ spellcheck: _ensure-pre-commit
 ## regen-all      to regenerate generated source files
 .PHONY: regen-all
 regen-all:
-	$(PYTHON) -m release_engineering update-peps
+	$(PYTHON) -m release_management update-peps
 
 .PHONY: help
 help : Makefile

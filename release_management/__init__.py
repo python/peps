@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-import dataclasses
+from dataclasses import dataclass
 import datetime as dt
-import tomllib
 from pathlib import Path
+
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
 
 TYPE_CHECKING = False
 if TYPE_CHECKING:
@@ -11,24 +15,27 @@ if TYPE_CHECKING:
 
     ReleaseState: TypeAlias = Literal['actual', 'expected']
     ReleaseSchedules: TypeAlias = dict[tuple[str, ReleaseState], list['ReleaseInfo']]
+    VersionStatus: TypeAlias = Literal[
+        'feature', 'prerelease', 'bugfix', 'security', 'end-of-life',
+    ]
 
 RELEASE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = RELEASE_DIR.parent
 PEP_ROOT = ROOT_DIR / 'peps'
 
 
-@dataclasses.dataclass(frozen=True, kw_only=True, slots=True)
+@dataclass(frozen=True, kw_only=True, slots=True)
 class PythonReleases:
-    metadata: dict[str, 'VersionMetadata']
-    releases: dict[str, list['ReleaseInfo']]
+    metadata: dict[str, VersionMetadata]
+    releases: dict[str, list[ReleaseInfo]]
 
 
-@dataclasses.dataclass(frozen=True, kw_only=True, slots=True)
+@dataclass(frozen=True, kw_only=True, slots=True)
 class VersionMetadata:
     """Metadata for a given interpreter version (MAJOR.MINOR)."""
 
     pep: int
-    status: str
+    status: VersionStatus
     branch: str
     release_manager: str
     start_of_development: dt.date
@@ -42,7 +49,7 @@ class VersionMetadata:
         return cls(**{k.replace('-', '_'): v for k, v in data.items()})
 
 
-@dataclasses.dataclass(frozen=True, kw_only=True, slots=True)
+@dataclass(frozen=True, kw_only=True, slots=True)
 class ReleaseInfo:
     """Information about a release."""
 
