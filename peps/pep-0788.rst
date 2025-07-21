@@ -1,5 +1,5 @@
 PEP: 788
-Title: Reimagining Native Threads
+Title: PyInterpreterRef: Interpreter References in the C API
 Author: Peter Bierma <zintensitydev@gmail.com>
 Sponsor: Victor Stinner <vstinner@python.org>
 Discussions-To: https://discuss.python.org/t/93653
@@ -32,10 +32,9 @@ inside of subinterpreters, primarily because :c:func:`PyGILState_Ensure`
 always creates a thread state for the main interpreter in threads where
 Python hasn't ever run.
 
-This PEP intends to solve these kinds issues by *reimagining* how we approach
-thread states in the C API. This is done through the introduction of interpreter
-references that prevent an interpreter from finalizing (or more technically,
-entering a stage in which attachment of a thread state hangs).
+This PEP intends to solve these kinds issues through the introduction of
+interpreter references that prevent an interpreter from finalizing (or more
+technically, entering a stage in which attachment of a thread state hangs).
 This allows for more structure and reliability when it comes to thread state
 management, because it forces a layer of synchronization between the
 interpreter and the caller.
@@ -49,37 +48,11 @@ this in CPython is :c:func:`PyGILState_Ensure`. As part of this proposal,
 :c:func:`PyThreadState_Ensure` is provided as a modern replacement that
 takes a strong interpreter reference.
 
-Terminology
-===========
-
-Interpreters
-------------
-
-In this proposal, "interpreter" refers to a singular, isolated interpreter
-(see :pep:`684`), with its own :c:type:`PyInterpreterState` pointer (referred
-to as an "interpreter-state"). "Interpreter" *does not* refer to the entirety
-of a Python process.
-
-The "current interpreter" refers to the interpreter-state
-pointer on an :term:`attached thread state`, as returned by
-:c:func:`PyThreadState_GetInterpreter` or :c:func:`PyInterpreterState_Get`.
-
-Native and Python Threads
--------------------------
-
-This PEP refers to a thread created using the C API as a "native thread",
-also sometimes referred to as a "non-Python created thread", where a "Python
-created" is a thread created by the :mod:`threading` module.
-
-A native thread is typically registered with the interpreter by
-:c:func:`PyGILState_Ensure`, but any thread with an :term:`attached thread state`
-qualifies as a native thread.
-
 Motivation
 ==========
 
-Native Threads Always Hang During Finalization
-----------------------------------------------
+Non-Python Threads Always Hang During Finalization
+--------------------------------------------------
 
 Many large libraries might need to call Python code in highly-asynchronous
 situations where the desired interpreter
@@ -111,7 +84,7 @@ Generally, this pattern would look something like this:
         /* ... */
     }
 
-In the current C API, any "native" thread (one not created via the
+In the current C API, any non-Python thread (one not created via the
 :mod:`threading` module) is considered to be "daemon", meaning that the interpreter
 won't wait on that thread before shutting down. Instead, the interpreter will hang the
 thread when it goes to :term:`attach <attached thread state>` a :term:`thread state`,
@@ -123,7 +96,7 @@ interpreter is finalizing isn't enough to safely call Python code. (Note that ha
 the thread is relatively new behavior; in prior versions, the thread would exit,
 but the issue is the same.)
 
-This means that any non-Python/native thread may be terminated at any point, which
+This means that any non-Python thread may be terminated at any point, which
 is severely limiting for users who want to do more than just execute Python
 code in their stream of calls.
 
@@ -181,7 +154,8 @@ Prior to this PEP, deprecating daemon threads was discussed
 `extensively <https://discuss.python.org/t/68836>`_. Daemon threads technically
 cause many of the issues outlined in this proposal, so removing daemon threads
 could be seen as a potential solution. The main argument for removing daemon
-threads is that they're a large cause of problems in the interpreter:
+threads is that they're a large cause of problems in the interpreter
+`[1] <https://discuss.python.org/t/68836/6>`_.
 
     Except that daemon threads don’t actually work reliably. They’re attempting
     to run and use Python interpreter resources after the runtime has been shut
@@ -190,7 +164,8 @@ threads is that they're a large cause of problems in the interpreter:
 
 However, in practice, daemon threads are useful for simplifying many threading
 applications in Python, and since the program is about to close in most cases,
-it's not worth the added complexity to try and gracefully shut down a thread.
+it's not worth the added complexity to try and gracefully shut down a thread
+`[2] <https://discuss.python.org/t/68836/3>`_.
 
     When I’ve needed daemon threads, it’s usually been the case of “Long-running,
     uninterruptible, third-party task” in terms of the examples in the linked issue.
@@ -205,7 +180,8 @@ As noted by this PEP, extension modules are free to create their own threads
 and attach thread states for them. Similar to daemon threads, Python doesn't
 try and join them during finalization, so trying to remove daemon threads
 as a whole would involve trying to remove them from the C API, which would
-require a much more massive API change.
+require a much more massive API change than what is currently being proposed
+`[3] <https://discuss.python.org/t/68836/7>`_.
 
     Realize however that even if we get rid of daemon threads, extension
     module code can and does spawn its own threads that are not tracked by
@@ -216,7 +192,7 @@ Joining the Thread isn't Always a Good Idea
 *******************************************
 
 Even in daemon threads, it's generally *possible* to prevent hanging of
-native threads through :mod:`atexit` functions.
+non-Python threads through :mod:`atexit` functions.
 A thread could be started by some C function, and then as long as
 that thread is joined by :mod:`atexit`, then the thread won't hang.
 
@@ -329,13 +305,13 @@ at the same time, causing a data race.
 An Interpreter Can Concurrently Deallocate
 ------------------------------------------
 
-The other way of creating a native thread that can invoke Python,
-:c:func:`PyThreadState_New` and :c:func:`PyThreadState_Swap`, is a lot better
-for supporting subinterpreters (because :c:func:`PyThreadState_New` takes an
-explicit interpreter, rather than assuming that the main interpreter was
-requested), but is still limited by the current hanging problems in the C API.
-Manual creation of thread states ("manual" in contrast to the implicit creation
-of one in :c:func:`PyGILState_Ensure`) does not solve any of the aforementioned
+The other way of creating a non-Python thread, :c:func:`PyThreadState_New` and
+:c:func:`PyThreadState_Swap`, is a lot better for supporting subinterpreters
+(because :c:func:`PyThreadState_New` takes an explicit interpreter, rather than
+assuming that the main interpreter was requested), but is still limited by the
+current hanging problems in the C API. Manual creation of thread states
+("manual" in contrast to the implicit creation of one in
+:c:func:`PyGILState_Ensure`) does not solve any of the aforementioned
 thread-safety issues with thread states.
 
 In addition, subinterpreters typically have a much shorter lifetime than the
@@ -379,20 +355,23 @@ Weak References
 
 This proposal also comes with weak references to an interpreter that don't
 prevent it from shutting down, but can be promoted to a strong reference when
-the user decides that they want to call the C API.  A weak reference will
-typically live much longer than a strong reference. This is useful for many of
-the asynchronous situations stated previously, where the thread itself
-shouldn't prevent the desired interpreter from shutting down, but also allow
-the thread to execute Python when needed.
+the user decides that they want to call the C API.  If an interpreter is
+destroyed or past the point where it can create strong references, promotion
+of a weak reference will fail.
+
+A weak reference will typically live much longer than a strong reference.
+This is useful for many of the asynchronous situations stated previously,
+where the thread itself shouldn't prevent the desired interpreter from shutting
+down, but also allow the thread to execute Python when needed.
 
 For example, a (non-reentrant) event handler may store a weak interpreter
 reference in its ``void *arg`` parameter, and then that weak reference will
 be promoted to a strong reference when it's time to call Python code.
 
-Deprecation of the GIL-state APIs
----------------------------------
+Removing the outdated GIL-state APIs
+------------------------------------
 
-Due to the plethora of issues with ``PyGILState``, this PEP intends to do away
+Due to the unfixable issues with ``PyGILState``, this PEP intends to do away
 with them entirely. In today's C API, all ``PyGILState`` functions are
 replaceable with ``PyThreadState`` counterparts that are compatibile with
 subinterpreters:
@@ -507,6 +486,8 @@ Weak Interpreter References
     The interpreter will *not* wait for the reference to be
     released before shutting down.
 
+    This type is guaranteed to be pointer-sized.
+
 .. c:function:: int PyInterpreterWeakRef_Get(PyInterpreterWeakRef *wref)
 
     Acquire a weak reference to the current interpreter.
@@ -535,7 +516,8 @@ Weak Interpreter References
     reference to the interpreter denoted by *wref*.
 
     If the interpreter no longer exists or has already finished waiting
-    for its reference count to reach zero, then this function returns ``-1``.
+    for its reference count to reach zero, then this function returns ``-1``
+    without an exception set.
 
     This function is not safe to call in a re-entrant signal handler.
 
@@ -554,7 +536,17 @@ Ensuring and Releasing Thread States
 This proposal includes two new high-level threading APIs that intend to
 replace :c:func:`PyGILState_Ensure` and :c:func:`PyGILState_Release`.
 
-.. c:function:: int PyThreadState_Ensure(PyInterpreterRef ref)
+.. c:type:: PyThreadRef
+
+    An opaque reference to a :term:`thread state`.
+
+    In the initial implementation, holding a thread reference will
+    not block finalization of threads or interpreters.
+    This may change in the future.
+
+    This type is guaranteed to be pointer-sized.
+
+.. c:function:: int PyThreadState_Ensure(PyInterpreterRef ref, PyThreadRef *thread)
 
     Ensure that the thread has an :term:`attached thread state` for the
     interpreter denoted by *ref*, and thus can safely invoke that
@@ -571,9 +563,12 @@ replace :c:func:`PyGILState_Ensure` and :c:func:`PyGILState_Release`.
     if the interpreter matches *ref*, it is attached, and otherwise a new
     thread state is created.
 
-    Return ``0`` on success, and ``-1`` on failure.
+    The old thread state is stored as a thread reference in *\*thread*, and is
+    to be restored by :c:func:`PyThreadState_Release`.
 
-.. c:function:: void PyThreadState_Release()
+    Return ``0`` on success, and ``-1`` without an exception set on failure.
+
+.. c:function:: void PyThreadState_Release(PyThreadRef ref)
 
     Release a :c:func:`PyThreadState_Ensure` call.
 
@@ -659,7 +654,8 @@ With this PEP, you'd implement it like this:
             return -1;
         }
 
-        if (PyThreadState_Ensure(ref) < 0) {
+        PyThreadRef thread_ref;
+        if (PyThreadState_Ensure(ref, &thread_ref) < 0) {
             PyInterpreterRef_Close(ref);
             puts("Out of memory.\n", stderr);
             return -1;
@@ -670,7 +666,7 @@ With this PEP, you'd implement it like this:
         free(to_write);
         PyErr_Print();
 
-        PyThreadState_Release();
+        PyThreadState_Release(thread_ref);
         PyInterpreterRef_Close(ref);
         return res < 0;
     }
@@ -679,8 +675,8 @@ If you were to use :c:func:`PyGILState_Ensure` for this case, then your
 thread would hang if the interpreter were to be finalizing at that time!
 
 Additionally, the API supports subinterpreters. If you were to assume that
-the main interpreter created the file object, then your library wouldn't be safe to use
-with file objects created by a subinterpreter.
+the main interpreter created the file object (via :c:func:`PyGILState_Ensure`),
+then using file objects owned by a subinterpreter could possibly crash.
 
 Example: A Single-threaded Ensure
 *********************************
@@ -761,14 +757,15 @@ This is the same code, rewritten to use the new functions:
     thread_func(void *arg)
     {
         PyInterpreterRef interp = (PyInterpreterRef)arg;
-        if (PyThreadState_Ensure(interp) < 0) {
+        PyThreadRef thread_ref;
+        if (PyThreadState_Ensure(interp, &thread_ref) < 0) {
             PyInterpreterRef_Close(interp);
             return -1;
         }
         if (PyRun_SimpleString("print(42)") < 0) {
             PyErr_Print();
         }
-        PyThreadState_Release();
+        PyThreadState_Release(thread_ref);
         PyInterpreterRef_Close(interp);
         return 0;
     }
@@ -798,7 +795,7 @@ This is the same code, rewritten to use the new functions:
 Example: A Daemon Thread
 ************************
 
-With this PEP, daemon threads are very similar to how native threads are used
+With this PEP, daemon threads are very similar to how non-Python threads work
 in the C API today. After calling :c:func:`PyThreadState_Ensure`, simply
 release the interpreter reference, allowing the interpreter to shut down.
 
@@ -808,7 +805,8 @@ release the interpreter reference, allowing the interpreter to shut down.
     thread_func(void *arg)
     {
         PyInterpreterRef ref = (PyInterpreterRef)arg;
-        if (PyThreadState_Ensure(ref) < 0) {
+        PyThreadRef thread_ref;
+        if (PyThreadState_Ensure(ref, &thread_ref) < 0) {
             PyInterpreterRef_Close(ref);
             return -1;
         }
@@ -818,7 +816,7 @@ release the interpreter reference, allowing the interpreter to shut down.
         if (PyRun_SimpleString("print(42)") < 0) {
             PyErr_Print();
         }
-        PyThreadState_Release();
+        PyThreadState_Release(thread_ref);
         return 0;
     }
 
@@ -864,14 +862,15 @@ deadlock the interpreter if it's not released.
             return -1;
         }
 
-        if (PyThreadState_Ensure(ref) < 0) {
+        PyThreadRef thread_ref;
+        if (PyThreadState_Ensure(ref, &thread_ref) < 0) {
             PyInterpreterRef_Close(ref);
             return -1;
         }
         if (PyRun_SimpleString("print(42)") < 0) {
             PyErr_Print();
         }
-        PyThreadState_Release();
+        PyThreadState_Release(thread_ref);
         PyInterpreterRef_Close(ref);
         return 0;
     }
@@ -922,14 +921,15 @@ interpreter here.
             return;
         }
 
-        if (PyThreadState_Ensure(ref) < 0) {
+        PyThreadRef thread_ref;
+        if (PyThreadState_Ensure(ref, &thread_ref) < 0) {
             PyInterpreterRef_Close(ref);
             return -1;
         }
         if (PyRun_SimpleString("print(42)") < 0) {
             PyErr_Print();
         }
-        PyThreadState_Release();
+        PyThreadState_Release(thread_ref);
         PyInterpreterRef_Close(ref);
         return 0;
     }
@@ -1006,7 +1006,7 @@ of requiring less magic:
    on 32-bit systems, where ``void *`` is too small for an ``int64_t``.
 -  To retain usability, interpreter ID APIs would still need to keep a
    reference count, otherwise the interpreter could be finalizing before
-   the native thread gets a chance to attach. The problem with using an
+   the non-Python thread gets a chance to attach. The problem with using an
    interpreter ID is that the reference count has to be "invisible"; it
    must be tracked elsewhere in the interpreter, likely being *more*
    complex than :c:func:`PyInterpreterRef_Get`. There's also a lack
