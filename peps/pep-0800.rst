@@ -57,9 +57,9 @@ here: CPython does not allow a class to inherit from both ``int`` and ``str``, s
 However, the information necessary to determine that these base classes are incompatible is not currently available in
 the type system. Mypy, in fact, uses a heuristic based on the presence of incompatible methods; this heuristic works
 reasonably well in practice, especially for built-in types, but it is
-`incorrect in general <https://github.com/python/mypy/issues/19377>`__.
+incorrect in general, as discussed in more detail :ref:`below <pep-800-mypy-incompatibility-check>`.
 
-The experimental ``ty`` type checker uses a third approach that aligns more closely with the runtime behavior of Python:
+The experimental ``ty`` type checker uses a third approach that aligns more closely with the :ref:`runtime behavior of Python <pep-800-solid-bases-cpython>`:
 it recognizes certain classes as "solid bases" that restrict multiple inheritance. Broadly speaking, every class must
 inherit from at most one unique solid base, and if there is no unique solid base, the class cannot exist; we'll provide a more
 precise definition below. However, ty's approach relies on hardcoded knowledge of particular built-in types.
@@ -302,7 +302,8 @@ then return its argument::
         cls.__solid_base__ = True
         return cls
 
-The ``__solid_base__`` attribute may be used for runtime introspection.
+The ``__solid_base__`` attribute may be used for runtime introspection. However, there is no runtime
+enforcement of this decorator on user-defined classes.
 
 It will be useful to validate whether the ``@solid_base`` decorator should be applied in a stub. While
 CPython does not document precisely which classes are solid bases, it is possible to replicate the behavior
@@ -347,6 +348,158 @@ Reference Implementation
 
 None yet.
 
+
+Appendix
+========
+
+This appendix discusses the existing situation around multiple inheritance in the type system and
+in the CPython runtime in more detail.
+
+.. _pep-800-solid-bases-cpython:
+
+Solid bases in CPython
+----------------------
+
+The concept of "solid bases" has been part of the CPython implementation for a long time;
+the concept dates back to `a 2001 commit <https://github.com/python/cpython/commit/6d6c1a35e08b95a83dbe47dbd9e6474daff00354>`__.
+Nevertheless, the concept has received little attention in the documentation.
+Although details of the mechanism are closely tied to CPython's internal object representation,
+it is useful to explain at a high level how and why CPython works this way.
+
+Every object in CPython is essentially a pointer to a C struct, a contiguous piece of memory that
+contains information about the object. Some information is managed by the interpreter and shared
+by many or all objects, such as a reference to the type of the object, and the attribute ``__dict__``
+for user-defined objects. Some classes contain additional information that is specific to that class.
+For example, user-defined classes with ``__slots__`` contain a place in memory for each slot,
+and the built-in ``float`` class contains a C ``double`` value that stores the value of the float.
+Code that interacts with these classes usually assumes a certain memory layout: C code that
+interacts with a ``float`` expects to find the value at a particular offset in the object's memory.
+
+When a child class is created, CPython must create a memory layout for the new class that
+is compatible with all of its parent classes. For example, when a child class of ``float``
+is created, it must be possible to pass instances of the child class to C code that interacts
+directly with the underlying struct for the ``float`` class. Therefore, such a subclass must store
+the ``double`` value at the same offset as the parent ``float`` class does. It may, however, add
+additional fields at the end of the struct. CPython knows how to do this with the ``__dict__``
+attribute, which is why it is possible to create a child class of ``float`` that adds a ``__dict__``.
+
+However, there is no way to combine a ``float``, which must have a ``double`` in its struct,
+with another C type like ``int``, which stores different data at the same spot. Therefore,
+a common subclass of ``float`` and ``int`` cannot exist. We say that ``float`` and ``int``
+are solid bases.
+
+Classes implemented in C are solid bases if if they have an underlying struct that stores
+data at a fixed offset, and that struct is different from the struct of its parent class.
+C classes may also store a variable-size array of data (such as the contents of a string);
+if this differs from the parent class, the class also becomes a solid base.
+CPython's implementation deduces this from the :c:member:`~PyTypeObject.tp_itemsize`
+and :c:member:`~PyTypeObject.tp_basicsize` fields of the type object, which are also
+accessible from Python code as the undocumented attributes ``__itemsize__`` and ``__basicsize__``
+on type objects.
+
+Similarly, classes implemented in Python are solid bases if they have ``__slots__``, because
+slots force a particular memory layout.
+
+.. _pep-800-mypy-incompatibility-check:
+
+Mypy's incompatibility check
+----------------------------
+
+The mypy type checker considers two classes to be incompatible if they have
+incompatible methods. For example, mypy considers the ``int`` and ``str`` classes to be incompatible
+because they have incompatible definitions of various methods. Given a class definition like::
+
+    class C(int, str):
+        pass
+
+Mypy will output ``Definition of "__add__" in base class "int" is incompatible with definition in base class "str"``,
+and similar errors for a number of other methods. These errors are correct, because the definitions of
+``__add__`` in the two classes are indeed incompatible: ``int.__add__`` expects an ``int`` argument, while
+``str.__add__`` expects a ``str``. If this class were to exist, at runtime ``__add__`` would resolve to
+``int.__add__``. Instances of ``C`` would also be members of the ``str`` type, but they would not support
+some of the operations that ``str`` supports, such as concatenation with another ``str``.
+
+So far, so good. But mypy also uses very similar logic to conclude that no class
+can inherit from both ``int`` and ``str``.
+Nevertheless, it accepts the following class definition without error::
+
+    from typing import Never
+
+    class C(int, str):
+        def __add__(self, other: object) -> Never:
+            raise TypeError
+        def __mod__(self, other: object) -> Never:
+            raise TypeError
+        def __mul__(self, other: object) -> Never:
+            raise TypeError
+        def __rmul__(self, other: object) -> Never:
+            raise TypeError
+        def __ge__(self, other: int | str) -> bool:
+            return int(self) > other if isinstance(other, int) else str(self) > other
+        def __gt__(self, other: int | str) -> bool:
+            return int(self) >= other if isinstance(other, int) else str(self) >= other
+        def __lt__(self, other: int | str) -> bool:
+            return int(self) < other if isinstance(other, int) else str(self) < other
+        def __le__(self, other: int | str) -> bool:
+            return int(self) <= other if isinstance(other, int) else str(self) <= other
+        def __getnewargs__(self) -> Never:
+            raise TypeError
+
+There is a similar situation with attributes. Given two classes with incompatible
+attributes, mypy claims that a common subclass cannot exist, yet it accepts
+a subclass that overrides these attributes to make them compatible::
+
+    from typing import Never
+
+    class X:
+        a: int
+
+    class Y:
+        a: str
+
+    class Z(X, Y):
+        @property
+        def a(self) -> Never:
+            raise RuntimeError("no luck")
+        @a.setter
+        def a(self, value: int | str) -> None:
+            pass
+
+While the examples given so far rely on overrides that return ``Never``, mypy's rule
+can also reject classes that have more practically useful implementations::
+
+    from typing import Literal
+
+    class Carnivore:
+        def eat(self, food: Literal["meat"]) -> None:
+            print("devouring meat")
+
+    class Herbivore:
+        def eat(self, food: Literal["plants"]) -> None:
+            print("nibbling on plants")
+
+    class Omnivore(Carnivore, Herbivore):
+        def eat(self, food: str) -> None:
+            print(f"eating {food}")
+
+    def is_it_both(obj: Carnivore):
+        # mypy --warn-unreachable:
+        # Subclass of "Carnivore" and "Herbivore" cannot exist: would have incompatible method signatures
+        if isinstance(obj, Herbivore):
+            pass
+
+Mypy's rule works reasonably well in practice for deducing whether an intersection of two
+classes is inhabited. Most builtin classes that are solid bases happen to implement common dunder
+methods such as ``__add__`` and ``__iter__`` in incompatible ways, so mypy will consider them
+incompatible. There are some exceptions: mypy allows ``class C(BaseException, int): ...``,
+though both of these classes are solid bases and the class definition is rejected at runtime.
+Conversely, when multiple inheritance is used in practice, usually the parent classes will not
+have incompatible methods.
+
+Thus, mypy's approach to deciding that two classes cannot intersect is both too broad
+(it incorrectly considers some intersections to be uninhabited) and too narrow (it misses
+some intersections that are uninhabited because of solid bases). This is discussed in
+`an issue on the mypy tracker <https://github.com/python/mypy/issues/19377>`__.
 
 Copyright
 =========
