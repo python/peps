@@ -33,7 +33,7 @@ class PythonReleases:
     releases: dict[str, list[ReleaseInfo]]
 
 
-@dataclass(frozen=True,  **dc_kw)
+@dataclass(frozen=True, **dc_kw)
 class VersionMetadata:
     """Metadata for a given interpreter version (MAJOR.MINOR)."""
 
@@ -52,7 +52,7 @@ class VersionMetadata:
         return cls(**{k.replace('-', '_'): v for k, v in data.items()})
 
 
-@dataclass(frozen=True,  **dc_kw)
+@dataclass(frozen=True, **dc_kw)
 class ReleaseInfo:
     """Information about a release."""
 

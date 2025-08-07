@@ -9,7 +9,7 @@ CMD_RELEASE_CYCLE = 'release-cycle'
 commands = (
     CMD_FULL_JSON,
     CMD_UPDATE_PEPS,
-    CMD_RELEASE_CYCLE
+    CMD_RELEASE_CYCLE,
 )
 parser = argparse.ArgumentParser(allow_abbrev=False)
 parser.add_argument('COMMAND', choices=commands)
