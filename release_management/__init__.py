@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sys
-import datetime as dt
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,6 +11,7 @@ except ImportError:
 
 TYPE_CHECKING = False
 if TYPE_CHECKING:
+    import datetime as dt
     from typing import Literal, TypeAlias
 
     ReleaseState: TypeAlias = Literal['actual', 'expected']
