@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     ReleaseState: TypeAlias = Literal['actual', 'expected']
     ReleaseSchedules: TypeAlias = dict[tuple[str, ReleaseState], list['ReleaseInfo']]
     VersionStatus: TypeAlias = Literal[
-        'feature', 'prerelease', 'bugfix', 'security', 'end-of-life',
+        'feature', 'prerelease', 'bugfix', 'security', 'end-of-life'
     ]
 
 RELEASE_DIR = Path(__file__).resolve().parent

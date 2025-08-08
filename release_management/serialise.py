@@ -12,7 +12,13 @@ if TYPE_CHECKING:
 
 def create_release_json() -> str:
     python_releases = dataclasses.asdict(load_python_releases())
-    return json.dumps(python_releases, indent=2, sort_keys=False, ensure_ascii=False, default=str)
+    return json.dumps(
+        python_releases,
+        indent=2,
+        sort_keys=False,
+        ensure_ascii=False,
+        default=str,
+    )
 
 
 def create_release_cycle() -> str:
@@ -22,9 +28,8 @@ def create_release_cycle() -> str:
     )
     versions = [v for _date, v in all_versions if version_to_tuple(v) >= (2, 6)]
     release_cycle = {version: version_info(metadata[version]) for version in versions}
-    return (
-        json.dumps(release_cycle, indent=2, sort_keys=False, ensure_ascii=False) + '\n'
-    )
+    rc_json = json.dumps(release_cycle, indent=2, sort_keys=False, ensure_ascii=False)
+    return f'{rc_json}\n'
 
 
 def version_to_tuple(version: str, /) -> tuple[int, ...]:
