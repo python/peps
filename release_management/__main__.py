@@ -2,14 +2,10 @@ from __future__ import annotations
 
 import argparse
 
-CMD_FULL_JSON = 'full-json'
-CMD_UPDATE_PEPS = 'update-peps'
-CMD_RELEASE_CYCLE = 'release-cycle'
-
 commands = (
-    CMD_FULL_JSON,
-    CMD_UPDATE_PEPS,
-    CMD_RELEASE_CYCLE,
+    CMD_FULL_JSON := 'full-json',
+    CMD_UPDATE_PEPS := 'update-peps',
+    CMD_RELEASE_CYCLE := 'release-cycle',
 )
 parser = argparse.ArgumentParser(allow_abbrev=False)
 parser.add_argument('COMMAND', choices=commands)
