@@ -42,8 +42,8 @@ class VersionMetadata:
     branch: str
     release_manager: str
     start_of_development: dt.date
-    first_release: dt.date
     feature_freeze: dt.date
+    first_release: dt.date
     end_of_bugfix: dt.date  # a.k.a. security mode or source-only releases
     end_of_life: dt.date
 
