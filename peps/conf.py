@@ -73,6 +73,7 @@ intersphinx_mapping = {
     "py3.12": ("https://docs.python.org/3.12/", None),
     "py3.13": ("https://docs.python.org/3.13/", None),
     "py3.14": ("https://docs.python.org/3.14/", None),
+    "py3.15": ("https://docs.python.org/3.15/", None),
     "python": ("https://docs.python.org/3/", None),
     "trio": ("https://trio.readthedocs.io/en/latest/", None),
     "typing": ("https://typing.python.org/en/latest/", None),
