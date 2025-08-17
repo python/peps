@@ -76,6 +76,12 @@ Open Issues
 [Any points that are still being decided/discussed.]
 
 
+Acknowledgements
+================
+
+[Thank anyone who has helped with the PEP.]
+
+
 Footnotes
 =========
 

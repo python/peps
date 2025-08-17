@@ -1,0 +1,521 @@
+PEP: 800
+Title: Disjoint bases in the type system
+Author: Jelle Zijlstra <jelle.zijlstra@gmail.com>
+Discussions-To: https://discuss.python.org/t/99910/
+Status: Draft
+Type: Standards Track
+Topic: Typing
+Created: 21-Jul-2025
+Python-Version: 3.15
+Post-History: `18-Jul-2025 <https://discuss.python.org/t/solid-bases-for-detecting-incompatible-base-classes/99280>`__
+
+
+Abstract
+========
+
+To analyze Python programs precisely, type checkers need to know when two classes can and cannot have a common child class.
+However, the information necessary to determine this is not currently part of the type system. This PEP adds a new
+decorator, ``@typing.disjoint_base``, that indicates that a class is a "disjoint base". Two classes that have distinct, unrelated
+disjoint bases cannot have a common child class.
+
+Motivation
+==========
+
+In type checking Python, an important concept is that of reachability. Python type checkers generally
+detect when a branch of code can never be reached, and they warn users about such code. This is useful
+because unreachable code unnecessarily complicates the program, and its presence can be an indication of a bug.
+
+For example, in this program::
+
+    def f(x: bool) -> None:
+        if isinstance(x, str):
+            print("It's both!")
+
+both pyright and mypy (with ``--warn-unreachable``), two popular type checkers, will warn that the body of the
+``if`` block is unreachable, because if ``x`` is a ``bool``, it cannot also be a ``str``.
+
+Reachability is complicated in Python by the presence of multiple inheritance. If instead of ``bool`` and ``str``,
+we use two user-defined classes, mypy and pyright do not show any warnings::
+
+    class A: pass
+    class B: pass
+
+    def f(x: A):
+        if isinstance(x, B):
+            print("It's both!")
+
+This is correct, because a class that inherits from both ``A`` and ``B`` could exist.
+
+We see a divergence between type checkers in another case, where we use ``int`` and ``str``::
+
+    def f(x: int):
+        if isinstance(x, str):
+            print("It's both!")
+
+For this code, pyright shows no errors but mypy will claim that the branch is unreachable. Mypy is technically correct
+here: CPython does not allow a class to inherit from both ``int`` and ``str``, so the branch is unreachable.
+However, the information necessary to determine that these base classes are incompatible is not currently available in
+the type system. Mypy, in fact, uses a heuristic based on the presence of incompatible methods; this heuristic works
+reasonably well in practice, especially for built-in types, but it is
+incorrect in general, as discussed in more detail :ref:`below <pep-800-mypy-incompatibility-check>`.
+
+The experimental ``ty`` type checker uses a third approach that aligns more closely with the :ref:`runtime behavior of Python <pep-800-solid-bases-cpython>`:
+it recognizes certain classes as "solid bases" that restrict multiple inheritance. Broadly speaking, every class must
+inherit from at most one unique solid base, and if there is no unique solid base, the class cannot exist; we'll provide a more
+precise definition below. However, ty's approach relies on hardcoded knowledge of particular built-in types. The term "solid base" derives from the
+CPython implementation; this PEP uses the newly proposed term "disjoint base" instead.
+
+This PEP proposes an extension to the type system that makes it possible to express when multiple inheritance is not
+allowed at runtime: an ``@disjoint_base`` decorator that marks a classes as a *disjoint base*.
+This gives type checkers a more precise understanding of reachability, and helps in several concrete areas.
+
+Invalid class definitions
+-------------------------
+
+The following class definition raises an error at runtime, because ``int`` and ``str`` are distinct disjoint bases::
+
+    class C(int, str): pass
+
+Without knowledge of disjoint bases, type checkers are not currently able to detect the reason why this class
+definition is invalid, though they may detect that if this class were to exist, some of its methods would be incompatible.
+(When it sees this class definition, mypy will point at incompatible definitions of ``__add__`` and several other
+methods.)
+
+This is not a particularly compelling problem by itself, as the error would usually be caught the first time the code
+is imported, but it is mentioned here for completeness.
+
+Reachability
+------------
+
+We already mentioned the reachability of code using ``isinstance()``. Similar issues arise with other type
+narrowing constructs such as ``match`` statements: correct inference of reachability requires an understanding of
+disjoint bases.
+
+::
+
+    class A: pass
+    class B: pass
+
+    def f(x: A):
+        match x:
+            case B():  # reachable
+                print("It's both!")
+
+    def g(x: int):
+        match x:
+            case str():  # unreachable
+                print("It's both!")
+
+Overloads
+---------
+
+Functions decorated with ``@overload`` may be unsafe if the parameter types of some overloads overlap, but the return types
+do not. For example, the following set of overloads could be exploited to
+`achieve unsound behavior <https://github.com/JelleZijlstra/unsoundness/blob/04d16e5ea1a6492d82e8131f72894c9dcad1a55c/examples/overload/undetected_overlap.py>`__::
+
+    from typing import overload
+
+    class A: pass
+    class B: pass
+
+    @overload
+    def f(x: A) -> str: ...
+    @overload
+    def f(x: B) -> int: ...
+
+If a class exists that inherits from both ``A`` and ``B``, then type checkers could pick the wrong overload on a
+call to ``f()``.
+
+Type checkers could detect this source of unsafety and warn about it, but a correct implementation requires an understanding of disjoint bases,
+because it relies on knowing whether values that are instances of both ``A`` and ``B`` can exist.
+Although many type checkers already perform a version of this check for overlapping overloads, the typing specification does not
+currently prescribe how this check should work. This PEP does not propose to change that, but it helps provide a building block for
+a sound check for overlapping overloads.
+
+Intersection types
+------------------
+
+Explicit intersection types, denoting a type that contains values that are instances of all of the
+given types, are not currently part of the type system. They do, however, arise naturally in a set-theoretic type system
+like Python's as a result of type narrowing, and future extensions to the type system may add support for explicit intersection types.
+
+With intersection types, it is often important to know whether a particular intersection is inhabited, that is, whether
+there are values that can be members of that intersection. This allows type checkers to understand reachability and
+provide more precise type information to users.
+
+As a concrete example, a possible implementation of assignability with intersection types could be that
+given an intersection type ``A & B``, a type ``C`` is assignable to it if ``C`` is assignable to at least one of
+``A`` and ``B``, and overlaps with all of ``A`` and ``B``. ("Overlaps" here means that at least one runtime value could exist
+that would be a member of both types. That is, ``A`` and ``B`` overlap if ``A & B`` is inhabited.) The second part of the rule ensures that ``str`` is not assignable to a type like ``int & Any``: while ``str`` is assignable to ``Any``,
+it does not overlap with ``int``. But of course, we can only know that ``str`` and ``int`` do not overlap if we know
+that both classes are disjoint bases.
+
+Overview
+--------
+
+Disjoint bases can be helpful in many corners of the type system. Though some of these corners are underspecified,
+speculative, or of marginal importance, in each case the concept of disjoint bases enables type checkers to gain a more
+precise understanding than the current type system allows. Thus, disjoint bases provide a firm foundation
+(a solid base, if you will) for improving the Python type system.
+
+Rationale
+=========
+
+The concept of "disjoint bases" enables type checkers to understand when a common child class of two classes can and cannot
+exist. To communicate this concept to type checkers, we add an ``@disjoint_base`` decorator to the type system that marks
+a class as a disjoint base. The semantics are roughly that a class cannot have two unrelated disjoint bases.
+
+Naming
+------
+
+The initial version of this PEP used the name "solid base", following the terminology used in CPython's implementation.
+However, this term is somewhat vague. The alternative term "disjoint base" suggests that a class with this decorator
+is disjoint from other bases, which is a good first-order description of the concept. (The exact semantics are more subtle
+and are described below.)
+
+Runtime restrictions on multiple inheritance
+--------------------------------------------
+
+While Python generally allows multiple inheritance, the runtime imposes various restrictions, as
+:external+py3.15:ref:`documented in CPython <multiple-inheritance>`.
+Two sets of restrictions, around a consistent MRO and a consistent metaclass, can already be implemented by
+type checkers using information available in the type system. The third restriction, around instance layout,
+is the one that requires knowledge of disjoint bases. Classes that contain a non-empty ``__slots__`` definition
+are automatically disjoint bases, as are many built-in classes implemented in C.
+
+Alternative implementations of Python, such as PyPy, tend to behave similarly to CPython but may differ in details,
+such as exactly which standard library classes are disjoint bases. As the type system does not currently contain any
+explicit support for alternative Python implementations, this PEP recommends that stub libraries such as typeshed
+use CPython's behavior to determine when to use the ``@disjoint_base`` decorator. If future extensions to the type system
+add support for alternative implementations (for example, branching on the value of :py:data:`sys.implementation.name <sys.implementation>`),
+stubs could condition the presence of the ``@disjoint_base`` decorator on the implementation where necessary.
+
+Similarly, the exact set of classes that are disjoint bases at runtime may change in future versions of Python.
+If this were to happen, the type stubs used by type checkers could be updated to reflect this new reality.
+In other words, this PEP adds the concept of disjoint bases to the type system, but it does not prescribe exactly
+which classes are disjoint bases.
+
+``@disjoint_base`` in implementation files
+------------------------------------------
+
+The most obvious use case for the ``@disjoint_base`` decorator will be in stub files for C libraries, such as the standard library,
+for marking disjoint bases implemented in C.
+
+However, there are also use cases for marking disjoint bases in implementation files, where the effect would be to disallow
+the existence of child classes that inherit from the decorated class and another disjoint base, such as a standard library class
+or another user class decorated with ``@disjoint_base``. For example, this could allow type checkers to flag code that can only
+be reachable if a class exists that inherits from both a user class and a standard library class such as ``int`` or ``str``,
+which may be technically possible but not practically plausible.
+
+::
+
+    @disjoint_base
+    class BaseModel:
+        # ... General logic for model classes
+        pass
+
+    class Species(BaseModel):
+        name: str
+        # ... more fields
+
+    def process_species(species: Species):
+        if isinstance(species, str):  # oops, forgot `.name`
+            pass  # type checker should warn about this branch being unreachable
+            # BaseModel and str are disjoint bases, so a class that inherits from both cannot exist
+
+This is similar in principle to the existing ``@final`` decorator, which also acts to restrict subclassing: in stubs, it
+is used to mark classes that programmatically disallow subclassing, but in implementation files, it is often used to
+indicate that a class is not intended to be subclassed, without runtime enforcement.
+
+``@disjoint_base`` on special classes
+-------------------------------------
+
+The ``@disjoint_base`` decorator is primarily intended for nominal classes, but the type system contains some other constructs that
+syntactically use class definitions, so we have to consider whether the decorator should be allowed on them as well, and if so,
+what it would mean.
+
+For ``Protocol`` definitions, the most consistent interpretation would be that the only classes that can implement the
+protocol would be classes that use nominal inheritance from the protocol, or ``@final`` classes that implement the protocol.
+Other classes either have or could potentially have a disjoint base that is not the protocol. This is convoluted and not useful,
+so we disallow ``@disjoint_base`` on ``Protocol`` definitions.
+
+Similarly, the concept of a "disjoint base" is not meaningful on ``TypedDict`` definitions, as TypedDicts are purely structural types.
+
+Although they receive some special treatment in the type system, ``NamedTuple`` definitions create real nominal classes that can
+have child classes, so it makes sense to allow ``@disjoint_base`` on them and treat them like regular classes for the purposes
+of the disjoint base mechanism. All ``NamedTuple`` classes have ``tuple``, a disjoint base, in their MRO, so they
+cannot multiple inherit from other disjoint bases.
+
+Specification
+=============
+
+A decorator ``@typing.disjoint_base`` is added to the type system. It may only be used on nominal classes, including ``NamedTuple``
+definitions; it is a type checker error to use the decorator on a function, ``TypedDict`` definition, or ``Protocol`` definition.
+
+We define two properties on (nominal) classes: a class may or may not *be* a disjoint base, and every class must *have* a valid disjoint base.
+
+A class is a disjoint base if it is decorated with ``@typing.disjoint_base``, or if it contains a non-empty ``__slots__`` definition.
+This includes classes that have ``__slots__`` because of the ``@dataclass(slots=True)`` decorator or
+because of the use of the ``dataclass_transform`` mechanism to add slots.
+The universal base class, ``object``, is also a disjoint base.
+
+To determine a class's disjoint base, we look at all of its base classes to determine a set of candidate disjoint bases. For each base
+that is itself a disjoint base, the candidate is the base itself; otherwise, it is the base's disjoint base. If the candidate set contains
+a single disjoint base, that is the class's disjoint base. If there are multiple candidates, but one of them is a subclass of all other candidates,
+that class is the disjoint base. If no such candidate exists, the class does not have a valid disjoint base, and therefore cannot exist.
+
+Type checkers must check for a valid disjoint base when checking class definitions, and emit a diagnostic if they encounter a class
+definition that lacks a valid disjoint base. Type checkers may also use the disjoint base mechanism to determine whether types are disjoint,
+for example when checking whether a type narrowing construct like ``isinstance()`` results in an unreachable branch.
+
+Example::
+
+    from typing import disjoint_base, assert_never
+
+    @disjoint_base
+    class Disjoint1:
+        pass
+
+    @disjoint_base
+    class Disjoint2:
+        pass
+
+    @disjoint_base
+    class DisjointChild(Disjoint1):
+        pass
+
+    class C1:  # disjoint base is `object`
+        pass
+
+    # OK: candidate disjoint bases are `Disjoint1` and `object`, and `Disjoint1` is a subclass of `object`.
+    class C2(Disjoint1, C1):  # disjoint base is `Disjoint1`
+        pass
+
+    # OK: candidate disjoint bases are `DisjointChild` and `Disjoint1`, and `DisjointChild` is a subclass of `Disjoint1`.
+    class C3(DisjointChild, Disjoint1):  # disjoint base is `DisjointChild`
+        pass
+
+    # error: candidate disjoint bases are `Disjoint1` and `Disjoint2`, but neither is a subclass of the other
+    class C4(Disjoint1, Disjoint2):
+        pass
+
+    def narrower(obj: Disjoint1) -> None:
+        if isinstance(obj, Disjoint2):
+            assert_never(obj)  # OK: child class of `Disjoint1` and `Disjoint2` cannot exist
+        if isinstance(obj, C1):
+            reveal_type(obj)  # Shows a non-empty type, e.g. `Disjoint1 & C1`
+
+Runtime implementation
+======================
+
+A new decorator, ``@disjoint_base``, will be added to the ``typing`` module. Its runtime behavior (consistent with
+similar decorators like ``@final``) is to set an attribute ``.__disjoint_base__ = True`` on the decorated object,
+then return its argument::
+
+    def disjoint_base(cls):
+        cls.__disjoint_base__ = True
+        return cls
+
+The ``__disjoint_base__`` attribute may be used for runtime introspection. However, there is no runtime
+enforcement of this decorator on user-defined classes.
+
+It will be useful to validate whether the ``@disjoint_base`` decorator should be applied in a stub. While
+CPython does not document precisely which classes are disjoint bases, it is possible to replicate the behavior
+of the interpreter using runtime introspection
+(`example implementation <https://github.com/JelleZijlstra/pycroscope/blob/0d19236e4eda771175170a6b165b0e9f6a211d19/pycroscope/relations.py#L1469>`__).
+Stub validation tools, such as mypy's ``stubtest``, could use this logic to check whether the
+``@disjoint_base`` decorator is applied to the correct classes in stubs.
+
+Backward compatibility
+======================
+
+For compatibility with earlier versions of Python, the ``@disjoint_base`` decorator will be added to the
+``typing_extensions`` backport package.
+
+At runtime, the new decorator poses no compatibility issues.
+
+In stubs, the decorator may be added to disjoint base classes even if not all type checkers understand the decorator yet;
+such type checkers should simply treat the decorator as a no-op.
+
+When type checkers add support for this PEP, users may see some changes in type checking behavior around reachability
+and intersections. These changes should be positive, as they will better reflect the runtime behavior, and the scale of
+user-visible changes is likely limited, similar to the normal amount of change between type checker versions. Type checkers
+that are concerned about the impact of this change could use transition mechanisms such as opt-in flags.
+
+Security Implications
+=====================
+
+None known.
+
+
+How to Teach This
+=================
+
+Most users will not have to directly use or understand the ``@disjoint_base`` decorator, as the expectation is that will be
+primarily used in library stubs for low-level libraries. Teachers of Python can introduce
+the concept of "disjoint bases" to explain why multiple inheritance is not allowed in certain cases. Teachers of
+Python typing can introduce the decorator when teaching type narrowing constructs like ``isinstance()`` to
+explain to users why type checkers treat certain branches as unreachable.
+
+Reference Implementation
+========================
+
+None yet.
+
+Appendix
+========
+
+This appendix discusses the existing situation around multiple inheritance in the type system and
+in the CPython runtime in more detail.
+
+.. _pep-800-solid-bases-cpython:
+
+Solid bases in CPython
+----------------------
+
+The concept of "solid bases" has been part of the CPython implementation for a long time;
+the concept dates back to `a 2001 commit <https://github.com/python/cpython/commit/6d6c1a35e08b95a83dbe47dbd9e6474daff00354>`__.
+Nevertheless, the concept has received little attention in the documentation.
+Although details of the mechanism are closely tied to CPython's internal object representation,
+it is useful to explain at a high level how and why CPython works this way.
+
+Every object in CPython is essentially a pointer to a C struct, a contiguous piece of memory that
+contains information about the object. Some information is managed by the interpreter and shared
+by many or all objects, such as a reference to the type of the object, and the attribute ``__dict__``
+for user-defined objects. Some classes contain additional information that is specific to that class.
+For example, user-defined classes with ``__slots__`` contain a place in memory for each slot,
+and the built-in ``float`` class contains a C ``double`` value that stores the value of the float.
+This memory layout must be preserved for all instances of the class: C code that
+interacts with a ``float`` expects to find the value at a particular offset in the object's memory.
+
+When a child class is created, CPython must create a memory layout for the new class that
+is compatible with all of its parent classes. For example, when a child class of ``float``
+is created, it must be possible to pass instances of the child class to C code that interacts
+directly with the underlying struct for the ``float`` class. Therefore, such a subclass must store
+the ``double`` value at the same offset as the parent ``float`` class does. It may, however, add
+additional fields at the end of the struct. CPython knows how to do this with the ``__dict__``
+attribute, which is why it is possible to create a child class of ``float`` that adds a ``__dict__``.
+
+However, there is no way to combine a ``float``, which must have a ``double`` in its struct,
+with another C type like ``int``, which stores different data at the same spot. Therefore,
+a common subclass of ``float`` and ``int`` cannot exist. We say that ``float`` and ``int``
+are solid bases.
+
+A class implemented in C is a solid base if it has an underlying struct that stores
+data at a fixed offset, and that struct is different from the struct of its parent class.
+A C class may also store a variable-size array of data (such as the contents of a string);
+if this differs from the parent class, the class also becomes a solid base.
+CPython's implementation deduces this from the :c:member:`~PyTypeObject.tp_itemsize`
+and :c:member:`~PyTypeObject.tp_basicsize` fields of the type object, which are also
+accessible from Python code as the undocumented attributes ``__itemsize__`` and ``__basicsize__``
+on type objects.
+
+Similarly, classes implemented in Python are solid bases if they have ``__slots__``, because
+slots force a particular memory layout.
+
+.. _pep-800-mypy-incompatibility-check:
+
+Mypy's incompatibility check
+----------------------------
+
+The mypy type checker considers two classes to be incompatible if they have
+incompatible methods. For example, mypy considers the ``int`` and ``str`` classes to be incompatible
+because they have incompatible definitions of various methods. Given a class definition like::
+
+    class C(int, str):
+        pass
+
+Mypy will output ``Definition of "__add__" in base class "int" is incompatible with definition in base class "str"``,
+and similar errors for a number of other methods. These errors are correct, because the definitions of
+``__add__`` in the two classes are indeed incompatible: ``int.__add__`` expects an ``int`` argument, while
+``str.__add__`` expects a ``str``. If this class were to exist, at runtime ``__add__`` would resolve to
+``int.__add__``. Instances of ``C`` would also be members of the ``str`` type, but they would not support
+some of the operations that ``str`` supports, such as concatenation with another ``str``.
+
+So far, so good. But mypy also uses very similar logic to conclude that no class
+can inherit from both ``int`` and ``str``.
+Nevertheless, it accepts the following class definition without error::
+
+    from typing import Never
+
+    class C(int, str):
+        def __add__(self, other: object) -> Never:
+            raise TypeError
+        def __mod__(self, other: object) -> Never:
+            raise TypeError
+        def __mul__(self, other: object) -> Never:
+            raise TypeError
+        def __rmul__(self, other: object) -> Never:
+            raise TypeError
+        def __ge__(self, other: int | str) -> bool:
+            return int(self) > other if isinstance(other, int) else str(self) > other
+        def __gt__(self, other: int | str) -> bool:
+            return int(self) >= other if isinstance(other, int) else str(self) >= other
+        def __lt__(self, other: int | str) -> bool:
+            return int(self) < other if isinstance(other, int) else str(self) < other
+        def __le__(self, other: int | str) -> bool:
+            return int(self) <= other if isinstance(other, int) else str(self) <= other
+        def __getnewargs__(self) -> Never:
+            raise TypeError
+
+There is a similar situation with attributes. Given two classes with incompatible
+attributes, mypy claims that a common subclass cannot exist, yet it accepts
+a subclass that overrides these attributes to make them compatible::
+
+    from typing import Never
+
+    class X:
+        a: int
+
+    class Y:
+        a: str
+
+    class Z(X, Y):
+        @property
+        def a(self) -> Never:
+            raise RuntimeError("no luck")
+        @a.setter
+        def a(self, value: int | str) -> None:
+            pass
+
+While the examples given so far rely on overrides that return ``Never``, mypy's rule
+can also reject classes that have more practically useful implementations::
+
+    from typing import Literal
+
+    class Carnivore:
+        def eat(self, food: Literal["meat"]) -> None:
+            print("devouring meat")
+
+    class Herbivore:
+        def eat(self, food: Literal["plants"]) -> None:
+            print("nibbling on plants")
+
+    class Omnivore(Carnivore, Herbivore):
+        def eat(self, food: str) -> None:
+            print(f"eating {food}")
+
+    def is_it_both(obj: Carnivore):
+        # mypy --warn-unreachable:
+        # Subclass of "Carnivore" and "Herbivore" cannot exist: would have incompatible method signatures
+        if isinstance(obj, Herbivore):
+            pass
+
+Mypy's rule works reasonably well in practice for deducing whether an intersection of two
+classes is inhabited. Most builtin classes that are disjoint bases happen to implement common dunder
+methods such as ``__add__`` and ``__iter__`` in incompatible ways, so mypy will consider them
+incompatible. There are some exceptions: mypy allows ``class C(BaseException, int): ...``,
+though both of these classes are disjoint bases and the class definition is rejected at runtime.
+Conversely, when multiple inheritance is used in practice, usually the parent classes will not
+have incompatible methods.
+
+Thus, mypy's approach to deciding that two classes cannot intersect is both too broad
+(it incorrectly considers some intersections to be uninhabited) and too narrow (it misses
+some intersections that are uninhabited because of disjoint bases). This is discussed in
+`an issue on the mypy tracker <https://github.com/python/mypy/issues/19377>`__.
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
