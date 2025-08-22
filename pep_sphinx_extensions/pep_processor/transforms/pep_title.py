@@ -44,11 +44,7 @@ class PEPTitle(transforms.Transform):
 
         # Generate the title section node and its properties
         title_nodes = _line_to_nodes(pep_title_string)
-        # TODO: Why doesn't the new attribute show up in the HTML output?
-        # This is needed to change the way the index entry titles are generated,
-        # but is currently getting ignored/removed somewhere in the stack.
-        pep_title_attributes = {"classes": ["page-title"], "data-pagefind-meta": "title"}
-        pep_title_node = nodes.section("", nodes.title("", "", *title_nodes, **pep_title_attributes), names=["pep-content"])
+        pep_title_node = nodes.section("", nodes.title("", "", *title_nodes, classes=["page-title"]), names=["pep-content"])
 
         # Insert the title node as the root element, move children down
         document_children = self.document.children
