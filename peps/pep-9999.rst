@@ -1,0 +1,277 @@
+PEP: 9999
+Title: Mixed sync/async context managers with precise async marking
+Author: Zac Hatfield-Dodds <zac@zhd.dev>
+Sponsor: Jelle Zijlstra <jelle.zijlstra@gmail.com>
+Status: Draft
+Type: Standards Track
+Created: 05-Sep-2025
+Python-Version: 3.15
+
+Abstract
+========
+
+Python allows the ``with`` and ``async with`` statements to handle multiple
+context managers in a single statement - so long as they are all respectively
+synchronous or asynchronous.  When mixing synchronous and asynchronous context
+managers, developers must nest statements deeply, and modern applications resort
+to risky workarounds such as overuse of :class:`~contextlib.AsyncExitStack`.
+
+We therefore propose to allow ``with`` statements to accept both synchronous
+and asynchronous context managers in a single statement by prefixing individual
+async context managers with the ``async`` keyword.
+
+This change eliminates unnecessary nesting, improves code readability, and
+improves ergonomics without making async code any less explicit.
+
+
+Motivation
+==========
+
+Modern Python applications frequently need to acquire multiple resources, via
+a mixture of synchronous and asynchronous context managers.  While the all-sync
+or all-async cases permit a single statement with multiple context managers,
+mixing the two results in the "staircase of doom":
+
+.. code-block:: python
+
+    async def process_data():
+        async with acquire_lock() as lock:
+            with temp_directory() as tmpdir:
+                async with connect_to_db(cache=tmpdir) as db:
+                    with open('config.json') as f:
+                        # We're now 16 spaces deep before any actual logic
+                        config = json.load(f)
+                        await db.execute(config['query'])
+                        # ... more processing
+
+This excessive indentation discourages use of context managers, despite their
+desirable semantics.  See the 'Rejected Ideas' section for current workarounds
+and commentary on their downsides.
+
+With this PEP, the function could instead be written:
+
+.. code-block:: python
+
+    async def process_data():
+        with (
+            async acquire_lock() as lock,
+            temp_directory() as tmpdir,
+            async connect_to_db(cache=tmpdir) as db,
+            open('config.json') as f,
+        ):
+            config = json.load(f)
+            await db.execute(config['query'])
+            # ... more processing
+
+This compact alternative avoids forcing a new level of indentation on every
+switch between sync and async context managers.  At the same time, it uses
+only existing keywords, distinguishing async code with the ``async`` keyword
+more precisely even than our current syntax.
+
+We do not propose that the ``async with`` statement should ever be deprecated,
+and indeed advocate its continued use for single-line statements so that
+"async" is the first non-whitespace token of each line opening an async
+context manager.
+
+
+Real-World Impact
+-----------------
+
+These enhancements address pain points that Python developers encounter daily.
+We surveyed an industry codebase, finding more than ten thousand functions
+containing at least one async context manager.  19% of these also contained a
+sync context manager.  For reference, async functions contain sync context
+managers about two-thirds as often as they contain async context managers.
+
+39% of functions with both ``with`` and ``async with`` statements could switch
+immediately to the proposed syntax, but this is a loose lower
+bound due to avoidance of sync context managers and use of workarounds listed
+under Rejected Ideas.  Based on inspecting a random sample of functions, we
+estimate that between 20% and 50% of async functions containing any context
+manager would use ``with async`` if this PEP is accepted.
+
+Across the ecosystem more broadly, we expect lower rates, perhaps in the
+5% to 20% range: the surveyed codebase uses structured concurrency with Trio,
+and also makes extensive use of context managers to mitigate the issues
+discussed in :pep:`533` and :pep:`789`.
+
+
+Rationale
+=========
+
+Mixed sync/async context managers are common in modern Python applications,
+such as async database connections or API clients and synchronous file
+operations.  The current syntax forces developers to choose between deeply
+nested code or error-prone workarounds like :class:`~contextlib.AsyncExitStack`.
+
+This PEP addresses the problem with a minimal syntax change that builds on
+existing patterns. By allowing individual context managers to be marked with
+``async``, we maintain Python's explicit approach to asynchronous code while
+eliminating unnecessary nesting.
+
+The implementation as syntactic sugar ensures zero runtime overhead - the new
+syntax desugars to the same nested ``with`` and ``async with`` statements
+developers write today. This approach requires no new protocols, no changes
+to existing context managers, and no new runtime behaviors to understand.
+
+
+Specification
+=============
+
+The ``with ..., async ...:`` syntax desugars into a sequence of context
+managers in the same way as current multi-context ``with`` statements,
+except that those prefixed by the ``async`` keyword use the ``__aenter__`` /
+``__aexit__`` protocol.
+
+Only the ``with`` statement is modified; ``async with async cm():`` is a 
+syntax error.
+
+
+Backwards Compatibility
+=======================
+
+This change is fully backwards compatible: the only observable difference is
+that certain syntax that previously raised :exc:`SyntaxError` now executes
+successfully.
+
+Libraries that implement context managers (standard library and third-party)
+work with the new syntax without modifications.  Libraries and tools which
+work directly with source code will need minor updates, as for any new syntax.
+
+
+How to Teach This
+=================
+
+We recommend introducing "mixed context managers" together with or immediately
+after ``async with``.  For example, a tutorial might cover:
+
+1. **Basic context managers**: Start with single ``with`` statements
+2. **Multiple context managers**: Show the current comma syntax
+3. **Async context managers**: Introduce ``async with``
+4. **Mixed contexts**: "Mark each async context manager with ``async``"
+
+
+Rejected Ideas
+==============
+
+Workaround: an ``as_acm()`` wrapper
+-----------------------------------
+
+It is easy to implement a helper function which wraps a synchronous context
+manager in an async cm.  For example:
+
+.. code-block:: python
+
+    @contextmanager
+    async def as_acm(sync_cm):
+        with sync_cm as result:
+            await sleep(0)  # make async for structured-concurrency
+            yield result
+
+    async with (
+        acquire_lock(),
+        as_acm(open('file')) as f,
+    ):
+        ...
+
+This is our recommended workaround for most code.
+
+However, there are some cases where allowing the scheduler to cancel the task
+(with ``sleep(0)``) is undesirable; conversely breaking the correspondence
+between a syntactic ``await`` / ``async for`` / ``async with`` risks deadlocks
+that cannot be detected by static-analysis tools such as ``flake8-async``.
+
+
+Workaround: using ``AsyncExitStack``
+------------------------------------
+
+:class:`~contextlib.AsyncExitStack` offers a powerful, low-level interface
+which allows for explicit entry of sync and/or async context managers.
+
+.. code-block:: python
+
+    async with contextlib.AsyncExitStack() as stack:
+        await stack.enter_async_context(acquire_lock())
+        f = stack.enter_context(open('file'))
+        ...
+
+However, :class:`~contextlib.AsyncExitStack` introduces significant complexity 
+and potential for errors - it's easy to violate properties that syntactic use 
+of context managers would guarantee, such as 'last-in, first-out' order.
+
+
+Workaround: ``AsyncExitStack``-based helper
+-------------------------------------------
+
+We could also implement a ``multicontext()`` wrapper, which avoids some of the
+downsides of direct use of :class:`~contextlib.AsyncExitStack`:
+
+.. code-block:: python
+
+    async with multicontext(
+        acquire_lock(),
+        open('file'),
+    ) as (f, _):
+        ...
+
+However, this helper breaks the locality of ``as`` clauses, which makes it
+easy to accidentally mis-assign the yielded variables (as in the code sample).
+It also requires either distinguishing sync from async context managers using
+something like a tagged union - perhaps overload an operator so that, e.g.,
+``async_ @ acquire_lock()`` works - or else guessing what to do with objects
+that implement both sync and async context-manager protocols.
+
+
+Syntax: allow ``async with sync_cm, async_cm:``
+-----------------------------------------------
+
+An early draft of this proposal used ``async with`` for the entire statement
+when mixing context managers, *if* there is at least one async cm:
+
+.. code-block:: python
+
+    # Rejected approach
+    async with (
+        acquire_lock(),
+        open('config.json') as f,  # actually a sync cm, surprise!
+    ):
+        ...
+
+Requiring an async cm maintains the syntax/scheduler link, but at the cost
+of setting invisible constraints on future code changes.  Removing one of
+several context managers could cause runtime errors, if that happened to be
+the last async cm!
+
+Explicit is better than implicit.
+
+
+Syntax: ban single-line ``with async ...``
+------------------------------------------
+
+Our proposed syntax could be restricted, e.g. to place ``async`` only as the
+first token of lines in a parenthesised multi-context ``with`` statement.
+This is indeed how we recommend it should be used, and we expect that most
+uses will indeed follow this pattern.
+
+While an option to write either ``async with ctx():`` or ``with async ctx():``
+may cause some small confusion due to ambiguity, we think that enforcing a
+preferred style via the syntax would make Python more confusing to learn,
+and thus prefer simple syntactic rules plus community conventions on how to
+use them.
+
+
+Acknowledgements
+================
+
+Thanks to Rob Rolls for `proposing`__ ``with async``.  Thanks also to the many
+other people with whom we discussed this problem and possible solutions at the
+PyCon 2025 sprints, on Discuss, and at work.
+
+__: https://discuss.python.org/t/allow-mixed-sync-async-context-managers-in-async-with-statements/92939/10
+
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
