@@ -60,8 +60,10 @@ def pep_abstract(document: nodes.document) -> str:
             continue
 
         if title_node.astext() == "Abstract":
-            return node.next_node(nodes.paragraph).astext().strip().replace("\n", " ")
-        elif title_node.astext() == "Introduction":
+            if (para_node := node.next_node(nodes.paragraph)) is not None:
+                return para_node.astext().strip().replace("\n", " ")
+            return ""
+        if title_node.astext() == "Introduction":
             introduction = node.next_node(nodes.paragraph).astext().strip().replace("\n", " ")
 
     return introduction
@@ -109,7 +111,7 @@ def create_rss_feed(doctree_dir: Path, output_dir: Path):
 <rss xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/" version="2.0">
   <channel>
     <title>Newest Python PEPs</title>
-    <link>https://peps.python.org/peps.rss</link>
+    <link>https://peps.python.org/</link>
     <description>{RSS_DESCRIPTION}</description>
     <atom:link href="https://peps.python.org/peps.rss" rel="self"/>
     <docs>https://cyber.harvard.edu/rss/rss.html</docs>

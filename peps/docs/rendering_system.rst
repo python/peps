@@ -35,7 +35,7 @@ The configuration:
 ----------------
 
 ``build.py`` manages the rendering process.
-Usage is covered in `Building PEPs Locally <./build.rst>`_.
+Usage is covered in :doc:`Building PEPs Locally <./build>`.
 
 
 3. Extension

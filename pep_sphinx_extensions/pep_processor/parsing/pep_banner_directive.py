@@ -6,7 +6,7 @@ from docutils import nodes
 from docutils.parsers import rst
 
 PYPA_SPEC_BASE_URL = "https://packaging.python.org/en/latest/specifications/"
-TYPING_SPEC_BASE_URL = "https://typing.readthedocs.io/en/latest/spec/"
+TYPING_SPEC_BASE_URL = "https://typing.python.org/en/latest/spec/"
 
 
 class PEPBanner(rst.Directive):
@@ -77,7 +77,6 @@ class CanonicalDocBanner(PEPBanner):
     admonition_post_text = (
         "See :pep:`1` for how to propose changes."
     )
-
     css_classes = ["canonical-doc", "sticky-banner"]
 
 
@@ -99,8 +98,6 @@ class CanonicalPyPASpecBanner(PEPBanner):
         "<https://www.pypa.io/en/latest/specifications/#handling-fixes-and-other-minor-updates>`__ "
         "for how to propose changes."
     )
-    admonition_class = nodes.attention
-
     css_classes = ["canonical-pypa-spec", "sticky-banner"]
 
 
@@ -116,11 +113,9 @@ class CanonicalTypingSpecBanner(PEPBanner):
     admonition_pre_text = admonition_pre_template
     admonition_post_text = (
         "See the `typing specification update process "
-        "<https://typing.readthedocs.io/en/latest/spec/meta.html>`__ "
+        "<https://typing.python.org/en/latest/spec/meta.html>`__ "
         "for how to propose changes to the typing spec."
     )
-    admonition_class = nodes.attention
-
     css_classes = ["canonical-typing-spec", "sticky-banner"]
 
 
