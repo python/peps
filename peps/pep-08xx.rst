@@ -171,7 +171,7 @@ end of the ``__init__`` method::
            self.__freeze__()
 
 
-... note::
+.. note::
 
    The various ``freeze`` methods have full VM support. Immutability is not merely a convention, it will
    be enforced by the VM.
