@@ -356,6 +356,31 @@ Open Issues
 
 3. Should the timestamp format be customizable beyond the predefined options?
 
+4. **Always collecting timestamps vs. conditional collection**: Performance testing
+   shows that collecting timestamps at exception instantiation time is cheap enough
+   to do unconditionally. If we always collect them:
+
+   - The ``__timestamp_ns__`` attribute would always exist, simplifying the
+     implementation and making the pickle code cleaner (though pickled exceptions
+     would be slightly larger)
+   - Exceptions will unpickle cleanly on older Python versions (they'll just have
+     an extra attribute that older versions ignore)
+   - However, we don't currently have extensive testing for cross-version pickle
+     compatibility of exceptions with new attributes. Should we add such tests?
+     Is this level of compatibility testing necessary?
+
+5. **Control flow exception handling**: The current implementation does not collect
+   timestamps for ``StopIteration`` and ``AsyncStopIteration`` to avoid performance
+   impact on normal control flow. Several questions arise:
+
+   - Should this exclusion be configurable at runtime?
+   - Should it apply to subclasses of these exceptions?
+   - The check for these specific exceptions is in the hot path of exception
+     creation and must be extremely fast. The current implementation uses a simple
+     type check for performance. Adding complexity like subclass checks or a
+     configurable tuple of excluded exceptions would impact performance. Is the
+     current simple approach acceptable?
+
 
 Acknowledgements
 ================
