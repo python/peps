@@ -1,0 +1,400 @@
+PEP: 9999
+Title: Index support for Trusted Publishing
+Author: William Woodruff <william@yossarian.net>
+Sponsor: Donald Stufft <donald@stufft.io>
+PEP-Delegate: Donald Stufft <donald@stufft.io>
+Status: Draft
+Type: Standards Track
+Topic: Packaging
+Created: 2025-09-15
+Post-History: `08-Aug-2025 <https://discuss.python.org/t/pre-pep-trusted-publishing-token-exchange/103067>`__
+Resolution: TODO
+
+Abstract
+========
+
+This PEP proposes a standard mechanism through which arbitrary
+Python package indices can support "Trusted Publishing," a misuse-resistant
+credential exchange scheme already implemented by the Python Package Index
+(PyPI).
+
+The mechanism proposed in this PEP is designed to encapsulate PyPI's
+`existing implementation <https://docs.pypi.org/trusted-publishers/>`_
+of Trusted Publishing, while allowing other indices to implement the same
+scheme in a manner that is discoverable by and interoperable with existing
+Python package uploading clients.
+
+Rationale and Motivation
+========================
+
+"Trusted Publishing" is PyPI's term of art for using the
+`OpenID Connect (OIDC) standard <https://openid.net/connect/>`_
+to exchange a short-lived *identity credential* from a trusted
+third-party service (like a CI/CD or cloud provider) for a short-lived,
+minimally-scoped *upload credential* that can be used to publish
+to the index.
+
+Trusted Publishing was originally designed and enabled on PyPI in 2023 as
+a non-standard (PyPI-specific) feature, much like the existing
+`upload API <https://docs.pypi.org/trusted-publishers/>`_. It has seen
+widespread adoption in that capacity: over 640,000 files have been published
+to PyPI using a Trusted Publisher (as of September 2025), and PyPI's
+design has inspired similar designs in the
+`Rust (crates.io) <https://crates.io/docs/trusted-publishing>`_,
+`Ruby (RubyGems) <https://guides.rubygems.org/trusted-publishing/>`_, and
+`JavaScript (npm) <https://docs.npmjs.com/trusted-publishers>`_ ecosystems.
+
+The absence of a standard for Trusted Publishing presents a long-term
+impediment for adoption: third-party indices (i.e. those other than
+PyPI and TestPyPI) cannot easily implement Trusted Publishing without
+referencing PyPI's unstandardized design. This in turn poses a long-term
+maturity risk similar to that of the unstandardized upload API: package upload
+clients (like `twine <https://twine.readthedocs.io/en/stable/>`_ and
+`uv <https://docs.astral.sh/uv/>`_) must either accept behavioral differences
+between indices (leading to an accretion of hacks) or continue to reject
+non-PyPI implementations of Trusted Publishing.
+
+Specification
+=============
+
+This PEP's specification contains two parts:
+
+* A *discovery* mechanism that package upload clients can use to determine
+  whether an arbitrary Python package index host supports Trusted Publishing.
+* A *token exchange* mechanism that package upload clients can use to
+  exchange an identity credential for an upload credential.
+
+.. _constraints:
+
+Constraints
+-----------
+
+Unless explicitly stated otherwise, the following constraints
+apply to all parts of this PEP's specification:
+
+* All URLs **MUST** have
+  `potentially trustworthy origins <https://www.w3.org/TR/secure-contexts/#potentially-trustworthy-origins>`_.
+  In practice, this means that all URLs **MUST** either use the ``https``
+  scheme, be some variant of a local loopback (``localhost``,
+  ``127.0.0.1``, etc.), or otherwise be considered *a priori* trustworthy
+  in the context of the interaction (e.g. an internal network).
+
+  Uploading clients **MUST** reject any URLs that do not meet this constraint.
+
+* All server-supplied URLs (i.e. those in discovery responses) **MUST**
+  have the same host subcomponent as the user-provided upload URL. Uploading
+  clients **MUST** reject any URLs that do not meet this constraint.
+
+  In practice, this means that a discovery request to
+  ``https://upload.example.com/.well-known/pytp/{key}`` can only
+  return URLs with the ``upload.example.com`` host.
+
+* All client-made HTTP requests **SHOULD** have an
+  ``Accept: application/vnd.pypi.pytp.v1+json`` header. In the absence of
+  an ``Accept`` header, the receiving server **MUST** behave as if this header
+  were present.
+
+  Receiving servers **SHOULD** respond with a ``406 Not Acceptable``
+  status code if any other ``Accept`` header is present.
+
+.. _discovery:
+
+Trusted Publishing Discovery
+----------------------------
+
+All Python package uploading is currently "endpoint driven," in the sense
+uploading clients (like twine and uv) are given an upload URL (and
+**not** merely a domain name).
+
+For example, to upload to PyPI, uploading clients are expected to connect
+to ``https://upload.pypi.org/legacy/``.
+
+The discovery mechanism proposed below takes advantage of this fact to
+allow single domains to advertise support for multiple indices
+(and their corresponding upload endpoints).
+
+The discovery mechanism is as follows:
+
+1. The uploading client is given an upload URL, e.g.
+   ``https://upload.example.com/legacy/``.
+
+2. The uploading client extracts the *path component* of the URL,
+   as defined in :rfc:`3986`. If the path component is empty,
+   the empty string should be used.
+
+   For the above example, the path component is
+   ``/legacy/``.
+
+3. The uploading client takes the SHA2-256 hash of the path component,
+   producing the *discovery key*.
+
+   For the above example, the discovery key is
+   ``af030c06750716b1b35852298fe852b90def13dcbd012a5fe5148470f1206bfc``. [#fn-hash]_
+
+4. The uploading client constructs a *discovery URL* by taking the
+   scheme and authority components (as defined in :rfc:`3986`)
+   of the upload URL and appending ``/.well-known/pytp/``
+   and the discovery key.
+
+   For the above example, the discovery URL is
+   ``https://upload.example.com/.well-known/pytp/af030c06750716b1b35852298fe852b90def13dcbd012a5fe5148470f1206bfc``.
+
+5. The uploading client performs an HTTP GET request to the discovery URL.
+
+6. The server responds with a ``200 OK`` status code and a body
+   containing a JSON object if the index supports Trusted Publishing
+   for the given upload URL. The JSON object **MUST** contain the following
+   fields:
+
+   - ``audience-endpoint``: a string containing the URL of the OIDC
+     audience endpoint to be used during token exchange.
+   - ``mint-token-endpoint``: a string containing the URL of the
+     token minting endpoint to be used during token exchange.
+
+   For the above example, a valid response body would be:
+
+    .. code-block:: json
+
+        {
+             "audience-endpoint": "https://upload.example.com/_/oidc/audience",
+             "mint-token-endpoint": "https://upload.example.com/_/oidc/mint-token"
+        }
+
+If the server does not support Trusted Publishing for the given
+upload URL, it **MUST** respond with a ``404 Not Found`` status code.
+When responding with a ``404 Not Found``, the server **SHOULD NOT**
+include a response body. If a response body is included, it **MUST**
+be ignored by the client.
+
+Servers **MAY** additionally respond with any other standard HTTP
+error code in the 400 or 500 range to indicate an error condition.
+
+Non-``200 OK``, non-``404 Not Found`` responses **MAY** include a body which,
+if present, **MUST** be a JSON object containing an
+:ref:`Error Response <error-responses>`.
+
+.. _token-exchange:
+
+Trusted Publishing Token Exchange
+---------------------------------
+
+Once an uploading client has performed a successful :ref:`discovery <discovery>`
+flow, it can proceed to perform the actual Trusted Publishing token exchange.
+
+Token exchange occurs in three steps:
+
+1. The uploading client uses the *audience endpoint* obtained
+   during discovery to ask the index for its expected OIDC audience.
+2. The uploading client uses the expected audience to obtain an
+   appropriately bound *identity credential* from the Trusted Publishing
+   provider being used (i.e. the CI/CD or cloud provider that the upload
+   is being performed from). The details of this step are provider-specific,
+   and are out of scope for this PEP. [#fn-oidc]_
+3. The uploading client uses the *mint token endpoint* obtained
+   during discovery to exchange the obtained identity credential
+   for a short-lived *upload credential* that can be used to upload
+   to the index.
+
+.. _audience-retrieval:
+
+Audience Retrieval
+~~~~~~~~~~~~~~~~~~
+
+To retrieve the expected OIDC audience, the uploading client performs
+an HTTP GET request to the *audience endpoint* obtained during
+:ref:`discovery <discovery>`.
+
+On success, the server responds with a ``200 OK`` status code and a body
+containing a JSON object with the following field:
+
+- ``audience``: a string containing the expected OIDC audience.
+
+On failure, the server **MUST** respond with any standard HTTP
+error code in the 400 or 500 range to indicate an error condition.
+Failure responses **MAY** include a body which, if present,
+**MUST** be a JSON object containing an
+:ref:`Error Response <error-responses>`.
+
+.. _token-minting:
+
+Token Minting
+~~~~~~~~~~~~~
+
+After the uploading client has performed
+:ref:`audience retrieval <audience-retrieval>` and obtained an
+identity credential from the Trusted Publishing provider, it can
+proceed to mint an upload credential.
+
+To mint an upload credential, the uploading client performs
+an HTTP POST request to the *mint token endpoint* obtained during
+:ref:`discovery <discovery>`.
+
+On success, the server responds with a ``200 OK`` status code and a body
+containing a JSON object with the following field:
+
+- ``token``: a string containing the upload credential. The format
+  of the upload credential is implementation-defined and index-specific.
+- ``expires``: an **optional** integer containing a Unix timestamp
+  indicating when the upload credential expires. If this field is not
+  present, the uploading client **MAY** assume an expiration point
+  of not more than 15 minutes (900 seconds) after the time of
+  their request.
+
+  The server **MUST NOT** issue temporary upload credentials
+  that expire in less than 15 minutes (900 seconds) or more than
+  6 hours (21,600 seconds) from the time of the request. [#fn-expires]_
+
+  The uploading client **MAY** use this time (or the minimum specified
+  above) to determine when to refresh the upload credential, if needed.
+
+On failure, the server **MUST** respond with any standard HTTP
+error code in the 400 or 500 range to indicate an error condition.
+Failure responses **MUST** include a body which, if present,
+**MUST** be a JSON object containing an :ref:`Error Response <error-responses>`.
+
+.. _error-responses:
+
+Error Responses
+---------------
+
+When an error response body is included, it **MUST** be a JSON object
+containing the following fields:
+
+- ``message``: a string containing a short, high-level
+    human-readable summary of the error.
+
+- ``errors``: an array of one or more objects, each containing
+    the following fields:
+
+    - ``code``: a string containing a machine-readable error code.
+    - ``description``: a string containing a human-readable
+      description of the error.
+
+This PEP does not specify any particular error codes. Clients **SHOULD NOT**
+assume that error codes are consistent across different indices, and instead
+**MUST** treat error codes as opaque strings.
+
+Security Implications
+=====================
+
+This PEP does not identify any positive or negative security implications
+associated with the Trusted Publishing discovery or exchange flows themselves.
+
+Separately from the flows, Trusted Publishing *itself* has a
+`security model on PyPI <https://docs.pypi.org/trusted-publishers/security-model/>`_
+and is considered to be a more secure alternative to long-lived
+API tokens or passwords. The primary positive security implications of
+Trusted Publishing are:
+
+- All issued upload credentials are short-lived and can be minimally scoped,
+  limiting the "blast radius" of a compromised credential. In particular,
+  automatic expiry means that attackers cannot mount "harvest now, use later"
+  campaigns against packages that use Trusted Publishing.
+- Trusted Publishing conceptually links an uploaded package to the identity
+  of the CI/CD or cloud provider that's authorized to upload it. This linkage
+  is implicit from the perspective of downstream consumers, but can be made
+  explicit through :pep:`740` attestations or (less formally)
+  `URL verification <https://docs.pypi.org/project_metadata/#via-trusted-publishing>`_.
+
+Backwards Compatibility
+=======================
+
+This PEP does not change any existing behavior and is fully backwards compatible
+with existing upload clients and indices.
+
+Existing clients that perform PyPI's non-standard Trusted Publishing
+upload flow will continue to work as before, as will existing uploads
+to all indices that do not implement Trusted Publishing.
+
+How To Teach This
+=================
+
+This PEP is a *formalization* of Trusted Publishing, which has already
+seen widespread adoption in the Python packaging ecosystem. That adoption
+has been accompanied by a variety of educational resources on
+adopting Trusted Publishing as an end user, including:
+
+* Python Packaging User Guide: :ref:`packaging:trusted-publishing`
+* PyPI: `Publishing to PyPI with a Trusted Publisher <https://docs.pypi.org/trusted-publishers/>`_
+* pyOpenSci: `Setup Trusted Publishing for secure and automated publishing via GitHub Actions <https://www.pyopensci.org/python-package-guide/tutorials/trusted-publishing.html>`_
+
+Rejected Ideas
+==============
+
+"Lateral" Discovery
+-------------------
+
+This PEP's discovery mechanism uses the `.well-known` location scheme
+defined in :rfc:`8615`. This scheme is widely adopted by machine-to-machine
+protocols, including OpenID Connect itself
+(for `OpenID Connect Discovery <https://openid.net/specs/openid-connect-discovery-1_0.html>`_).
+
+An alternative idea considered was to use a "lateral" discovery mechanism,
+in which the uploading client would attempt discovery by constructing a
+adjacent path relative to the upload URL. For example, for
+``https://upload.example.com/legacy/``, the uploading client would
+attempt to discover Trusted Publishing support at
+``https://upload.example.com/legacy/pytp`` (or some equivalent).
+
+The advantage of this approach is that it doesn't require index operators
+to have control over their (sub-)domain, which the ``.well-known`` scheme
+expects (as well-known URIs can only be served from the root of a domain).
+
+However, this approach also has downsides:
+
+* It assumes that arbitrary indices can provide an adjacent path without
+  interfering with existing functionality, which isn't necessarily true.
+  For example, a given third-party implementation may already use
+  all routes under `/legacy/{*}` for other purposes.
+* It's less consistent with existing machine-to-machine protocol
+  conventions, which overwhelmingly use the `.well-known` scheme. Developing
+  a custom location scheme here would require additional informational
+  materials for server administrators and operators who are accustomed
+  to the `.well-known` scheme.
+
+"Implicit" Discovery
+--------------------
+
+Another alternative idea considered was the perform "implicit" discovery,
+similar to what PyPI currently does for Trusted Publishing: instead of an
+explicit :ref:`discovery <discovery>` step, the uploading client could jump
+straight to attempting the audience and token minting steps, and
+handle any errors that arise.
+
+The advantage of this approach is simplicity: it eliminates the network
+round-trip needed for the discovery step, and eliminates the indirection
+of obtaining the audience and mint token endpoints from the discovery
+response.
+
+This approach too has downsides:
+
+* It implicitly limits a given domain to a single index/upload implementation,
+  since the implicit "discovery" step on PyPI is to construct the audience
+  and mint token endpoints against the base domain of the upload URL.
+  This limitation is acceptable in the context of a single index host
+  like PyPI, but does not generalize to other index topologies (like
+  index hosts that provide isolated private indices).
+* It relies on entirely static endpoint construction rules for
+  the audience and mint token endpoints, which means significant disruption
+  to existing clients if those endpoints ever need to change.
+
+.. rubric:: Footnotes
+
+.. [#fn-hash] ``shasum -a 256 <<< '/legacy/'``
+
+.. [#fn-oidc] Widely used CI/CD and cloud providers various implement "ambient"
+              OIDC token retrieval mechanisms that aren't standardized.
+              These various mechanisms are currently abstracted over by
+              existing components of the Python packaging ecosystem,
+              such as the `id package <https://pypi.org/p/id>`_.
+
+.. [#fn-expires] The maximum expiry time of 6 hours is chosen to match
+                 common runtime limits on popular CI/CD providers like
+                 GitHub Actions.
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
+
