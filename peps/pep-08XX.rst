@@ -138,6 +138,71 @@ Without timestamps, we would only know that four services failed, but not
 their temporal relationship, making root cause analysis significantly harder.
 
 
+Why Exception Groups Need Timestamps
+-------------------------------------
+
+While exception groups are conceptually "unrelated" exceptions that happen to be
+raised together, in practice they often have important temporal relationships:
+
+1. **Causality isn't always explicit**: When multiple services fail in sequence,
+   one failure might trigger cascading failures in seemingly unrelated services.
+   Without timestamps, these cascade patterns are invisible. For example, a
+   database connection pool exhaustion might cause multiple "unrelated" query
+   failures across different services.
+
+2. **Concurrent doesn't mean simultaneous**: Tasks in an exception group may
+   start concurrently but fail at very different times. A service that fails
+   after 100ms versus one that fails after 5 seconds tells a different story
+   about what went wrong - the first might be a validation error, the second
+   a timeout.
+
+3. **Debugging distributed systems**: In microservice architectures, exception
+   groups often collect failures from multiple remote services. Timestamps allow
+   correlation with external observability tools (logs, metrics, traces) that
+   are essential for understanding the full picture.
+
+4. **Performance analysis**: Even for "unrelated" exceptions, knowing their
+   temporal distribution helps identify performance bottlenecks and timeout
+   configurations that need adjustment.
+
+
+Why Not Use ``.add_note()`` When Catching?
+--------------------------------------------
+
+A common question is why we don't simply use :pep:`678`'s ``.add_note()`` to add
+timestamps when exceptions are caught and grouped. This approach has several
+significant drawbacks:
+
+1. **Not all exceptions are caught**: Exceptions that propagate to the top level
+   or are logged directly never get the opportunity to have notes added. The
+   timestamp of when an error occurred is lost forever.
+
+2. **Timing accuracy**: Adding a note when catching introduces variable delay.
+   The timestamp would reflect when the exception was caught and processed, not
+   when it actually occurred. In async code with complex exception handling,
+   this delay can be significant and misleading.
+
+3. **Inconsistent application**: Relying on exception handlers to add timestamps
+   means some exceptions get timestamps and others don't, depending on code
+   paths. This inconsistency makes debugging harder, not easier.
+
+4. **Performance overhead**: Creating note strings for every caught exception
+   adds overhead even when timestamps aren't being displayed. With the proposed
+   approach, formatting only happens when tracebacks are rendered.
+
+5. **Complexity burden**: Every exception handler that wants timing information
+   would need to remember to add notes. This is error-prone and adds boilerplate
+   to exception handling code.
+
+6. **Lost original timing**: By the time an exception is caught, the original
+   failure moment is lost. In retry loops or complex error handling, the catch
+   point might be seconds or minutes after the actual error.
+
+The key insight is that **when** an exception is created is intrinsic, immutable
+information about that exception - just like its type and message. This information
+should be captured at the source, not added later by consumers.
+
+
 Rationale
 =========
 
