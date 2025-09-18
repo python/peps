@@ -241,17 +241,21 @@ class. This attribute will store the time in nanoseconds since the Unix epoch
 - The timestamp represents when the exception object was created, which is
   typically when it was raised
 
-Special Cases
--------------
+Control Flow Exceptions
+------------------------
 
 To avoid performance impacts on normal control flow, timestamps will **not** be
-collected for the following exception types even when the feature is enabled:
+collected for certain exception types even when the feature is enabled. By default:
 
 - ``StopIteration``
 - ``AsyncStopIteration``
 
 These exceptions are frequently used for control flow in iterators and async
-iterators, and adding timestamps would introduce unnecessary overhead.
+iterators. However, other projects also use custom exceptions for control flow
+(e.g., Sphinx's ``Skip`` exception), making the need for configurability clear.
+
+The current implementation hard-codes these two exceptions for performance
+reasons. See Open Issues for discussion about making this configurable.
 
 Configuration
 -------------
@@ -436,15 +440,23 @@ Open Issues
 
 5. **Control flow exception handling**: The current implementation does not collect
    timestamps for ``StopIteration`` and ``AsyncStopIteration`` to avoid performance
-   impact on normal control flow. Several questions arise:
+   impact on normal control flow. However, other projects use custom exceptions for
+   control flow (e.g., Sphinx's ``Skip`` exception), requiring configurability.
 
-   - Should this exclusion be configurable at runtime?
-   - Should it apply to subclasses of these exceptions?
-   - The check for these specific exceptions is in the hot path of exception
-     creation and must be extremely fast. The current implementation uses a simple
-     type check for performance. Adding complexity like subclass checks or a
-     configurable tuple of excluded exceptions would impact performance. Is the
-     current simple approach acceptable?
+   Key challenges:
+
+   - **API Design**: What's the best way to allow projects to register their
+     control-flow exceptions? Environment variable? Python API? Both?
+   - **Performance**: The check is in the hot path of exception creation and must
+     be extremely fast. How can we make this configurable without impacting
+     performance for the common case?
+   - **Subclass handling**: Should exclusions apply to subclasses? This adds
+     complexity and performance overhead.
+   - **Default set**: Should we expand the default exclusion list beyond
+     ``StopIteration`` and ``AsyncStopIteration``?
+
+   This needs careful API design and performance testing before committing to
+   a specific approach.
 
 
 Acknowledgements
