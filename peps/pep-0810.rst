@@ -284,10 +284,12 @@ Example:
 
   print('json' in sys.modules)  # True - now loaded
 
-A module may contain a ``__lazy_modules__`` attribute, which is a list of
-module names (strings) to make *potentially lazy* (as if the ``lazy`` keyword was
-used). This attribute is checked on each ``import`` statement to determine whether
-the import should be made *potentially lazy*.
+A module may contain a ``__lazy_modules__`` attribute, which is a sequence of
+fully qualified module names (strings) to make *potentially lazy* (as if the
+``lazy`` keyword was used). This attribute is checked on each ``import``
+statement to determine whether the import should be made *potentially lazy*.
+When a module is made lazy this way, from-imports using that module are also
+lazy, but not necessarily imports of sub-modules.
 
 The normal (non-lazy) import statement will check the global lazy imports
 flag. If it is "enabled", all imports are *potentially lazy* (except for
@@ -338,8 +340,9 @@ as it would have been if it had been imported eagerly, barring intervening
 changes to the import system (e.g. to ``sys.path``, ``sys.meta_path``,
 ``sys.path_hooks`` or ``__import__``).
 
-Reification still calls ``__import__`` to resolve the import. Once the
-module is reified, it's removed from ``sys.lazy_modules``. When a package is
+Reification still calls ``__import__`` to resolve the import. When the
+module is first reified, it's removed from ``sys.lazy_modules`` (even if
+there are still other unreified lazy references to it). When a package is
 reified and submodules in the package were also previously lazily imported,
 those submodules are *not* automatically reified but they *are* added to the
 reified package's globals (unless the package already assigned something
@@ -440,6 +443,10 @@ Example using ``globals()``:
   print(type(resolved))  # <class 'module'>
   print('json' in sys.modules)  # True - now loaded
 
+
+Implementation
+==============
+
 Bytecode and adaptive specialization
 -------------------------------------
 
@@ -520,6 +527,96 @@ After several calls, ``LOAD_GLOBAL`` specializes to ``LOAD_GLOBAL_MODULE``:
   LOAD_ATTR_MODULE         2 (dumps)
 
 
+Lazy imports filter
+-------------------
+
+This PEP adds two new functions to the ``sys`` module to manage the lazy imports filter:
+
+* ``sys.set_lazy_imports_filter(func)`` - Sets the filter function. The ``func``
+  parameter must have the signature: ``func(importer: str, name: str, fromlist: tuple[str, ...] | None) -> bool``
+* ``sys.get_lazy_imports_filter()`` - Returns the currently installed filter function,
+  or ``None`` if no filter is set.
+
+The filter function is called for every potentially lazy import, and must
+return ``True`` if the import should be lazy. This allows for fine-grained
+control over which imports should be lazy, useful for excluding modules with
+known side-effect dependencies or registration patterns.
+
+The filter mechanism serves as a foundation that tools, debuggers, linters, and
+other ecosystem utilities can leverage to provide better lazy import experiences.
+For example, static analysis tools could detect modules with side effects and
+automatically configure appropriate filters. **In the future** (out of scope for
+this PEP), this foundation may enable better ways to declaratively specify which
+modules are safe for lazy importing, such as package metadata, type stubs with
+lazy-safety annotations, or configuration files. The current filter API is designed
+to be flexible enough to accommodate such future enhancements without requiring
+changes to the core language specification.
+
+Example:
+
+.. code-block:: python
+
+  import sys
+
+  def exclude_side_effect_modules(importer, name, fromlist):
+      """
+      Filter function to exclude modules with import-time side effects.
+
+      Args:
+          importer: Name of the module doing the import
+          name: Name of the module being imported
+          fromlist: Tuple of names being imported (for 'from' imports), or None
+
+      Returns:
+          True to allow lazy import, False to force eager import
+      """
+      # Modules known to have important import-time side effects
+      side_effect_modules = {'legacy_plugin_system', 'metrics_collector'}
+
+      if name in side_effect_modules:
+          return False  # Force eager import
+
+      return True  # Allow lazy import
+
+  # Install the filter
+  sys.set_lazy_imports_filter(exclude_side_effect_modules)
+
+  # These imports are checked by the filter
+  lazy import data_processor        # Filter returns True -> stays lazy
+  lazy import legacy_plugin_system  # Filter returns False -> imported eagerly
+
+  print('data_processor' in sys.modules)       # False - still lazy
+  print('legacy_plugin_system' in sys.modules) # True - loaded eagerly
+
+  # First use of data_processor triggers loading
+  result = data_processor.transform(data)
+  print('data_processor' in sys.modules)       # True - now loaded
+
+Global lazy imports control
+----------------------------
+
+The global lazy imports flag can be controlled through:
+
+* The ``-X lazy_imports=<mode>`` command-line option
+* The ``PYTHON_LAZY_IMPORTS=<mode>`` environment variable
+* The ``sys.set_lazy_imports(mode)`` function (primarily for testing)
+
+Where ``<mode>`` can be:
+
+* ``"default"`` (or unset): Only explicitly marked lazy imports are lazy
+* ``"enabled"``: All module-level imports (except in ``try``  or ``with`` blocks and ``import *``) become *potentially lazy*
+* ``"disabled"``: No imports are lazy, even those explicitly marked with ``lazy`` keyword
+
+When the global flag is set to ``"enabled"``, all imports at the global level of
+all modules are *potentially lazy* **except** for those inside a ``try`` or
+``with`` block or any wild card (``from ... import *``) import.
+
+If the global lazy imports flag is set to ``"disabled"``, no *potentially lazy*
+import is ever imported lazily, the import filter is never called, and the
+behavior is equivalent to a regular ``import`` statement:
+the import is *eager* (as if the lazy keyword was not used).
+
+
 Backwards Compatibility
 =======================
 
@@ -595,93 +692,6 @@ Type checkers and static analyzers may treat ``lazy`` imports as ordinary
 imports for name resolution. At runtime, annotation-only imports can be marked
 ``lazy`` to avoid startup overhead. IDEs and debuggers should be prepared to
 display lazy proxies before first use and the real objects thereafter.
-
-Lazy imports filter
--------------------
-
-This PEP adds two new functions to the ``sys`` module to manage the lazy imports filter:
-
-* ``sys.set_lazy_imports_filter(func)`` - Sets the filter function. The ``func``
-  parameter must have the signature: ``func(importer: str, name: str, fromlist: tuple[str, ...] | None) -> bool``
-* ``sys.get_lazy_imports_filter()`` - Returns the currently installed filter function,
-  or ``None`` if no filter is set.
-
-This allows for fine-grained control over which imports should be lazy, useful
-for excluding modules with known side-effect dependencies or registration patterns.
-
-The filter mechanism serves as a foundation that tools, debuggers, linters, and
-other ecosystem utilities can leverage to provide better lazy import experiences.
-For example, static analysis tools could detect modules with side effects and
-automatically configure appropriate filters. **In the future** (out of scope for
-this PEP), this foundation may enable better ways to declaratively specify which
-modules are safe for lazy importing, such as package metadata, type stubs with
-lazy-safety annotations, or configuration files. The current filter API is designed
-to be flexible enough to accommodate such future enhancements without requiring
-changes to the core language specification.
-
-Example:
-
-.. code-block:: python
-
-  import sys
-
-  def exclude_side_effect_modules(importer, name, fromlist):
-      """
-      Filter function to exclude modules with import-time side effects.
-
-      Args:
-          importer: Name of the module doing the import
-          name: Name of the module being imported
-          fromlist: Tuple of names being imported (for 'from' imports), or None
-
-      Returns:
-          True to allow lazy import, False to force eager import
-      """
-      # Modules known to have important import-time side effects
-      side_effect_modules = {'legacy_plugin_system', 'metrics_collector'}
-
-      if name in side_effect_modules:
-          return False  # Force eager import
-
-      return True  # Allow lazy import
-
-  # Install the filter
-  sys.set_lazy_imports_filter(exclude_side_effect_modules)
-
-  # These imports are checked by the filter
-  lazy import data_processor        # Filter returns True -> stays lazy
-  lazy import legacy_plugin_system  # Filter returns False -> imported eagerly
-
-  print('data_processor' in sys.modules)       # False - still lazy
-  print('legacy_plugin_system' in sys.modules) # True - loaded eagerly
-
-  # First use of data_processor triggers loading
-  result = data_processor.transform(data)
-  print('data_processor' in sys.modules)       # True - now loaded
-
-Global lazy imports control
-----------------------------
-
-The global lazy imports flag can be controlled through:
-
-* The ``-X lazy_imports=<mode>`` command-line option
-* The ``PYTHON_LAZY_IMPORTS=<mode>`` environment variable
-* The ``sys.set_lazy_imports(mode)`` function (primarily for testing)
-
-Where ``<mode>`` can be:
-
-* ``"default"`` (or unset): Only explicitly marked lazy imports are lazy
-* ``"enabled"``: All module-level imports (except in ``try``  or ``with`` blocks and ``import *``) become *potentially lazy*
-* ``"disabled"``: No imports are lazy, even those explicitly marked with ``lazy`` keyword
-
-When the global flag is set to ``"enabled"``, all imports at the global level of
-all modules are *potentially lazy* **except** for those inside a ``try`` or
-``with`` block or any wild card (``from ... import *``) import.
-
-If the global lazy imports flag is set to ``"disabled"``, no *potentially lazy*
-import is ever imported lazily, the import filter is never called, and the
-behavior is equivalent to a regular ``import`` statement:
-the import is *eager* (as if the lazy keyword was not used).
 
 
 Security Implications
@@ -767,7 +777,7 @@ incompatibilities:
 FAQ
 ===
 
-**Q: How does this differ from the rejected PEP 690?**
+**Q: How does this differ from the rejected :pep:`690`?**
 
 A: PEP 810 takes an explicit, opt-in approach instead of PEP 690's implicit global approach. The key differences are:
 
@@ -856,7 +866,7 @@ support partial module execution.
 
 **Q: What about type annotations and** ``TYPE_CHECKING`` **imports?**
 
-A: Lazy imports eliminate the need for ``TYPE_CHECKING`` guards. You can write:
+A: Lazy imports eliminate the common need for ``TYPE_CHECKING`` guards. You can write:
 
 .. code-block:: python
 
@@ -979,6 +989,29 @@ A: Most libraries should work fine with lazy imports. Libraries that might have 
 
 When in doubt, test lazy imports with your specific use cases.
 
+**Q: What happens if I globally enable lazy imports mode and a library doesn't work correctly?**
+
+A: *Note: This is an advanced feature.* You can use the lazy imports filter to exclude
+specific modules that are known to have problematic side effects:
+
+.. code-block:: python
+
+  import sys
+
+  def my_filter(importer, name, fromlist):
+      # Don't lazily import modules known to have side effects
+      if name in ('problematic_module', 'another_module'):
+          return False  # Import eagerly
+      return True  # Allow lazy import
+
+  sys.set_lazy_imports_filter(my_filter)
+
+The filter function receives the importer module name, the module being imported, and
+the fromlist (if using ``from ... import``). Returning ``False`` forces an eager import.
+
+Alternatively, set the global mode to ``"disabled"`` via ``-X lazy_imports=disabled``
+to turn off all lazy imports for debugging.
+
 **Q: Can I use lazy imports inside functions?**
 
 A: No, the ``lazy`` keyword is only allowed at module level. For function-level
@@ -1010,11 +1043,12 @@ before any imports. But as it is checked on each import, it can be modified betw
 
 **Q: How do explicit lazy imports interact with PEP-649/PEP-749**
 
-A: If an annotation is not stringified, then it is a reference to the type, but it
-will only be resolved if the annotation is accessed. In the example below, the ``fake_typing`` module
-is only loaded when the user inspects the ``__annotations__`` dictionary. The ``fake_typing``
-module would also be loaded if the user had leveraged ``inspect.get_annotations()`` or ``getattr`` to access
-the annotations.
+A: If an annotation is not stringified, it is an expression that is
+evaluated at a later time. It will only be resolved if the annotation is
+accessed. In the example below, the ``fake_typing`` module is only loaded
+when the user inspects the ``__annotations__`` dictionary. The
+``fake_typing`` module would also be loaded if the user uses
+``annotationlib.get_annotations()`` or ``getattr`` to access the annotations.
 
 .. code-block:: python
 
@@ -1036,32 +1070,11 @@ to ensure the directory listing is complete. This is similar to accessing ``mod.
   # Before any access
   # json not in sys.modules
 
-  # This triggers reification:
+  # Any of these trigger reification:
+  dumps_func = json.dumps
   dumps_func = getattr(json, 'dumps')
+  dir(json)
   # Now json is in sys.modules
-
-**Q: What happens if I globally enable lazy imports mode and a library doesn't work correctly?**
-
-A: *Note: This is an advanced feature.* You can use the lazy imports filter to exclude
-specific modules that are known to have problematic side effects:
-
-.. code-block:: python
-
-  import sys
-
-  def my_filter(importer, name, fromlist):
-      # Don't lazily import modules known to have side effects
-      if name in ('problematic_module', 'another_module'):
-          return False  # Import eagerly
-      return True  # Allow lazy import
-
-  sys.set_lazy_imports_filter(my_filter)
-
-The filter function receives the importer module name, the module being imported, and
-the fromlist (if using ``from ... import``). Returning ``False`` forces an eager import.
-
-Alternatively, set the global mode to ``"disabled"`` via ``-X lazy_imports=disabled``
-to turn off all lazy imports for debugging.
 
 **Q: Do lazy imports work with circular imports?**
 
@@ -1176,8 +1189,8 @@ Reference Implementation
 A reference implementation is available at:
 https://github.com/LazyImportsCabal/cpython/tree/lazy
 
-Alternate Implementation
-========================
+Alternate Implementation Ideas
+==============================
 
 Here are some alternative design decisions that were considered during the development
 of this PEP. While the current proposal represents what we believe to be the best balance
@@ -1225,23 +1238,13 @@ Past decisions that violated this principle of keeping core abstractions clean h
 significant pain in the CPython ecosystem, making optimization difficult and introducing
 subtle bugs.
 
-Support of Import Cycles
-------------------------
-
-The initial PEP for lazy imports (PEP 690) contained support for eliminating most import cycles,
-but this meant that in some cases a codebase would no longer run successfully after disabling
-lazy imports. For the explicit lazy imports PEP we’ve decided not to add support for this use case.
-While codebases with heavily nested dependencies may benefit from this feature, supporting import
-cycles runs the risk of creating a dependency on lazy imports. As the intention of this PEP is to
-give users the power to opt in or opt out of lazy imports based on the specific needs within their
-codebases, we’ve decided not to implement this feature and instead prioritize backwards compatibility.
-
 Placing the ``lazy`` Keyword in the Middle of From Imports
 ----------------------------------------------------------
 
 While we found ``from foo lazy import bar`` to be a really intuitive placement for the new explicit syntax,
 we quickly learned that placing the ``lazy`` keyword here is already syntactically allowed in Python. This
-is because ``from foo. lazy import bar`` is legal syntax.
+is because ``from . lazy import bar`` is legal syntax (because whitespace
+does not matter.)
 
 Placing the ``lazy`` Keyword at the End of Import Statements
 ------------------------------------------------------------
