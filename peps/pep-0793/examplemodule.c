@@ -2,7 +2,7 @@
 Example module with C-level module-global state, and
 
 - a simple function that updates and queries the state
-- a class wihose repr() queries the same module state (for an example of
+- a class wihose repr() queries the same module state (as an example of
   PyType_GetModuleByToken)
 
 Once compiled and renamed to not include a version tag (for example
@@ -67,6 +67,7 @@ exampletype_repr(PyObject *self)
         return NULL;
     }
     examplemodule_state *state = PyModule_GetState(module);
+    Py_DECREF(module);
     if (!state) {
         return NULL;
     }
@@ -95,8 +96,10 @@ examplemodule_exec(PyObject *module) {
         return -1;
     }
     if (PyModule_AddType(module, type) < 0) {
+        Py_DECREF(type);
         return -1;
     }
+    Py_DECREF(type);
     return 0;
 }
 
