@@ -59,7 +59,7 @@ static PyModuleDef_Slot examplemodule_slots[] = {
 PyMODEXPORT_FUNC PyModExport_examplemodule(PyObject *);
 
 PyMODEXPORT_FUNC
-PyModExport_examplemodule(PyObject *spec)
+PyModExport_examplemodule(void)
 {
     return examplemodule_slots;
 }
