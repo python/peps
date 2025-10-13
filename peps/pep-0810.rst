@@ -155,12 +155,15 @@ the brainstorming we have already completed in preparation for this proposal
 as reference.
 
 The choice to introduce a new ``lazy`` keyword reflects the need for explicit
-syntax. Import behavior is too fundamental to be left implicit or hidden
-behind global flags or environment variables. By marking laziness directly at
-the import site, the intent is immediately visible to both readers and tools.
-This avoids surprises, reduces the cognitive burden of reasoning about
-imports, and keeps lazy import semantics in line with Python's tradition of
-explicitness.
+syntax. Lazy imports have different semantics from normal imports: errors and
+side effects occur at first use rather than at the import statement. This
+semantic difference makes it critical that laziness is visible at the import
+site itself, not hidden in global configuration or distant module-level
+declarations. The ``lazy`` keyword provides local reasoning about import
+behavior, avoiding the need to search elsewhere in the code to understand
+whether an import is deferred. The rest of the import semantics remain
+unchanged: the same import machinery, module finding, and loading mechanisms
+are used.
 
 Another important decision is to represent lazy imports with proxy objects in
 the module's namespace, rather than by modifying dictionary lookup. Earlier
@@ -246,7 +249,8 @@ The soft keyword is only allowed at the global (module) level, **not** inside
 functions, class bodies, with ``try``/``with`` blocks, or ``import *``. Import
 statements that use the soft keyword are *potentially lazy*. Imports that
 can't be lazy are unaffected by the global lazy imports flag, and instead are
-always eager.
+always eager. Additionally, ``from __future__ import`` statements cannot be
+lazy.
 
 Examples of syntax errors:
 
@@ -273,16 +277,25 @@ Examples of syntax errors:
   # SyntaxError: lazy from ... import * is not allowed
   lazy from json import *
 
+  # SyntaxError: lazy from __future__ import is not allowed
+  lazy from __future__ import annotations
+
 Semantics
 ---------
 
-When the ``lazy`` keyword is used, the import becomes *potentially lazy*.
-Unless lazy imports are disabled or suppressed (see below), the module is not
+When the ``lazy`` keyword is used, the import becomes *potentially lazy*
+(see `Lazy imports filter`_ for advanced override mechanisms). The module is not
 loaded immediately at the import statement; instead, a lazy proxy object is
 created and bound to the name. The actual module is loaded on first use of
 that name.
 
-Example:
+When using ``lazy from ... import``, **each imported name** is bound to a lazy
+proxy object. The first access to **any** of these names triggers loading of
+the entire module and reifies **only that specific name** to its actual value.
+Other names remain as lazy proxies until they are accessed. The interpreter's
+adaptive specialization will optimize away the lazy checks after a few accesses.
+
+Example with ``lazy import``:
 
 .. code-block:: python
 
@@ -297,6 +310,24 @@ Example:
 
   print('json' in sys.modules)  # True - now loaded
 
+Example with ``lazy from ... import``:
+
+.. code-block:: python
+
+  import sys
+
+  lazy from json import dumps, loads
+
+  print('json' in sys.modules)           # False - module not loaded yet
+
+  # First use of 'dumps' triggers loading json and reifies ONLY 'dumps'
+  result = dumps({"hello": "world"})
+
+  print('json' in sys.modules)           # True - module now loaded
+
+  # Accessing 'loads' now reifies it (json already loaded, no re-import)
+  data = loads(result)
+
 A module may contain a :data:`!__lazy_modules__` attribute, which is a
 sequence of fully qualified module names (strings) to make *potentially lazy*
 (as if the ``lazy`` keyword was used). This attribute is checked on each
@@ -305,7 +336,7 @@ sequence of fully qualified module names (strings) to make *potentially lazy*
 that module are also lazy, but not necessarily imports of sub-modules.
 
 The normal (non-lazy) import statement will check the global lazy imports
-flag. If it is "enabled", all imports are *potentially lazy* (except for
+flag. If it is "all", all imports are *potentially lazy* (except for
 imports that can't be lazy, as mentioned above.)
 
 Example:
@@ -318,18 +349,26 @@ Example:
     result = json.dumps({"hello": "world"})
     print('json' in sys.modules)  # True
 
-If the global lazy imports flag is set to "disabled", no *potentially lazy*
+If the global lazy imports flag is set to "none", no *potentially lazy*
 import is ever imported lazily, and the behavior is equivalent to a regular
 import statement: the import is *eager* (as if the lazy keyword was not used).
 
 Finally, the application may use a custom filter function on all *potentially
-lazy* imports to determine if they should be lazy or not.
-If a filter function is set, it will be called with the name of the module
-doing the import, the name of the module being imported, and (if applicable)
-the fromlist.
-An import remains lazy only if the filter function returns ``True``.
+lazy* imports to determine if they should be lazy or not (this is an advanced
+feature, see `Lazy imports filter`_). If a filter function is set, it will be
+called with the name of the module doing the import, the name of the module
+being imported, and (if applicable) the fromlist. An import remains lazy only
+if the filter function returns ``True``. If no lazy import filter is set, all
+*potentially lazy* imports are lazy.
 
-If no lazy import filter is set, all *potentially lazy* imports are lazy.
+Lazy objects
+------------
+
+Lazy modules, as well as names lazy imported from modules, are represented
+by :class:`!types.LazyImportType` instances, which are resolved to the real
+object (reified) before they can be used. This reification is usually done
+automatically (see below), but can also be done by calling the lazy object's
+``resolve`` method.
 
 Lazy import mechanism
 ---------------------
@@ -338,12 +377,13 @@ When an import is lazy, ``__lazy_import__`` is called instead of
 ``__import__``. ``__lazy_import__`` has the same function signature as
 ``__import__``. It adds the module name to ``sys.lazy_modules``, a set of
 fully-qualified module names which have been lazily imported at some point
-(primarily for diagnostics and introspection), and returns a "lazy module
-object."
+(primarily for diagnostics and introspection), and returns a
+:class:`!types.LazyImportType`` object for the module.
 
 The implementation of ``from ... import`` (the ``IMPORT_FROM`` bytecode
 implementation) checks if the module it's fetching from is a lazy module
-object, and if so, returns a lazy object for each name instead.
+object, and if so, returns a :class:`!types.LazyImportType` for each name
+instead.
 
 The end result of this process is that lazy imports (regardless of how they
 are enabled) result in lazy objects being assigned to global variables.
@@ -352,7 +392,7 @@ Lazy module objects do not appear in ``sys.modules``, they're just listed in
 the ``sys.lazy_modules`` set. Under normal operation lazy objects should only
 end up stored in global variables, and the common ways to access those
 variables (regular variable access, module attributes) will resolve lazy
-imports ("reify") and replace them when they're accessed.
+imports (reify) and replace them when they're accessed.
 
 It is still possible to expose lazy objects through other means, like
 debuggers. This is not considered a problem.
@@ -360,26 +400,28 @@ debuggers. This is not considered a problem.
 Reification
 -----------
 
-When a lazy object is first used, it needs to be reified. This means resolving
-the import at that point in the program and replacing the lazy object with the
-concrete one. Reification imports the module in the same way as it would have
-been if it had been imported eagerly. Notably, reification still calls
-``__import__`` to resolve the import, which uses the state of the import system
-(e.g. ``sys.path``, ``sys.meta_path``, ``sys.path_hooks`` and ``__import__``)
-at **reification** time, **not** the state when the ``lazy import`` statement
-was evaluated.
+When a lazy object is used, it needs to be reified. This means resolving the
+import at that point in the program and replacing the lazy object with the
+concrete one. Reification imports the module at that point in the program.
+Notably, reification still calls ``__import__`` to resolve the import, which
+uses the state of the import system (e.g. ``sys.path``, ``sys.meta_path``,
+``sys.path_hooks`` and ``__import__``) at **reification** time, **not** the
+state when the ``lazy import`` statement was evaluated.
 
-When the module is first reified, it's removed from ``sys.lazy_modules`` (even
-if there are still other unreified lazy references to it). When a package is
+When the module is reified, it's removed from ``sys.lazy_modules`` (even if
+there are still other unreified lazy references to it). When a package is
 reified and submodules in the package were also previously lazily imported,
 those submodules are *not* automatically reified but they *are* added to the
-reified package's globals (unless the package already assigned something else
-to the name of the submodule).
+reified package's globals (unless the package already assigned something
+else to the name of the submodule).
 
-If reification fails (e.g., due to an ``ImportError``), the exception is
-enhanced with chaining to show both where the lazy import was defined and
-where it was first accessed (even though it propagates from the code that
-triggered reification). This provides clear debugging information:
+If reification fails (e.g., due to an ``ImportError``), the lazy object is
+*not* reified or replaced. Subsequent uses of the lazy object will re-try
+the reification. Exceptions that happen during reification are raised as
+normal, but the exception is enhanced with chaining to show both where the
+lazy import was defined and where it was accessed (even though it propagates
+from the code that triggered reification). This provides clear debugging
+information:
 
 .. code-block:: python
 
@@ -424,8 +466,9 @@ referenced the module. It **only** resolves the lazy object being accessed.
 
 Accessing a lazy object (from a global variable or a module attribute) reifies
 the object. Accessing a module's ``__dict__`` reifies **all** lazy objects in
-that module. Operations that indirectly access ``__dict__`` (such as
-:func:`dir`) also trigger this behavior.
+that module. Calling ``dir()`` at the global scope will not reify the globals
+and calling ``dir(mod)`` will be special cased in ``mod.__dir__`` avoid
+reification as well.
 
 Example using ``__dict__`` from external code:
 
@@ -450,8 +493,8 @@ Example using ``__dict__`` from external code:
 However, calling ``globals()`` does **not** trigger reification -- it returns
 the module's dictionary, and accessing lazy objects through that dictionary
 still returns lazy proxy objects that need to be manually reified upon use. A
-lazy object can be resolved explicitly by calling the ``get`` method. Other,
-more indirect ways of accessing arbitrary globals (e.g. inspecting
+lazy object can be resolved explicitly by calling the ``resolve`` method.
+Other, more indirect ways of accessing arbitrary globals (e.g. inspecting
 ``frame.f_globals``) also do **not** reify all the objects.
 
 Example using ``globals()``:
@@ -465,10 +508,10 @@ Example using ``globals()``:
   g = globals()
 
   print('json' in sys.modules)  # False - still lazy
-  print(type(g['json']))  # <class 'lazy_import'>
+  print(type(g['json']))  # <class 'LazyImport'>
 
-  # Explicitly reify using the get() method
-  resolved = g['json'].get()
+  # Explicitly reify using the resolve() method
+  resolved = g['json'].resolve()
 
   print(type(resolved))  # <class 'module'>
   print('json' in sys.modules)  # True - now loaded
@@ -479,6 +522,9 @@ Reference Implementation
 
 A reference implementation is available at:
 https://github.com/LazyImportsCabal/cpython/tree/lazy
+
+A demo is available (not necessarily synced with the latest PEP) for
+evaluation purposes at: https://lazy-import-demo.pages.dev/
 
 Bytecode and adaptive specialization
 -------------------------------------
@@ -566,20 +612,32 @@ After several calls, ``LOAD_GLOBAL`` specializes to ``LOAD_GLOBAL_MODULE``:
 Lazy imports filter
 -------------------
 
-This PEP adds two new functions to the ``sys`` module to manage the lazy
-imports filter:
+*Note: This is an advanced feature. Library developers should NOT call these
+functions. These are intended for specialized/advanced users who need
+fine-grained control over lazy import behavior when using the global flags.*
 
-* ``sys.set_lazy_imports_filter(func)`` - Sets the filter function. The
-  ``func`` parameter must have the signature: ``func(importer: str, name: str,
-  fromlist: tuple[str, ...] | None) -> bool``
+This PEP adds the following new functions to the ``sys`` module to manage the
+lazy imports filter:
 
-* ``sys.get_lazy_imports_filter()`` - Returns the currently installed filter
-  function, or ``None`` if no filter is set.
+* ``sys.set_lazy_imports_filter(func)`` - Sets the filter function. If
+  ``func=None`` then the import filter is removed. The ``func`` parameter must
+  have the signature: ``func(importer: str, name: str, fromlist: tuple[str, ...] | None) -> bool``
+
+* ``sys.get_lazy_imports_filter()`` - Returns the currently installed
+  filter function, or ``None`` if no filter is set.
+
+* ``sys.set_lazy_imports(mode, /)`` - Programmatic API for
+  controlling lazy imports at runtime. The ``mode`` parameter can be
+  ``"normal"`` (respect ``lazy`` keyword only), ``"all"`` (force all imports to be
+  potentially lazy), or ``"none"`` (force all imports to be eager).
 
 The filter function is called for every potentially lazy import, and must
 return ``True`` if the import should be lazy. This allows for fine-grained
 control over which imports should be lazy, useful for excluding modules with
-known side-effect dependencies or registration patterns.
+known side-effect dependencies or registration patterns. The filter function
+is called at the point of execution of the lazy import or lazy from import
+statement, not at the point of reification. The filter function may be
+called concurrently.
 
 The filter mechanism serves as a foundation that tools, debuggers, linters,
 and other ecosystem utilities can leverage to provide better lazy import
@@ -635,6 +693,10 @@ Example:
 Global lazy imports control
 ----------------------------
 
+*Note: This is an advanced feature. Library developers should NOT use the global
+activation mechanism. This is intended for application developers and framework
+authors who need to control lazy imports across their entire application.*
+
 The global lazy imports flag can be controlled through:
 
 * The ``-X lazy_imports=<mode>`` command-line option
@@ -643,19 +705,19 @@ The global lazy imports flag can be controlled through:
 
 Where ``<mode>`` can be:
 
-* ``"default"`` (or unset): Only explicitly marked lazy imports are lazy
+* ``"normal"`` (or unset): Only explicitly marked lazy imports are lazy
 
-* ``"enabled"``: All module-level imports (except in ``try``  or ``with``
+* ``"all"``: All module-level imports (except in ``try``  or ``with``
   blocks and ``import *``) become *potentially lazy*
 
-* ``"disabled"``: No imports are lazy, even those explicitly marked with
+* ``"none"``: No imports are lazy, even those explicitly marked with
   ``lazy`` keyword
 
-When the global flag is set to ``"enabled"``, all imports at the global level
+When the global flag is set to ``"all"``, all imports at the global level
 of all modules are *potentially lazy* **except** for those inside a ``try`` or
 ``with`` block or any wild card (``from ... import *``) import.
 
-If the global lazy imports flag is set to ``"disabled"``, no *potentially
+If the global lazy imports flag is set to ``"none"``, no *potentially
 lazy* import is ever imported lazily, the import filter is never called, and
 the behavior is equivalent to a regular ``import`` statement: the import is
 *eager* (as if the lazy keyword was not used).
@@ -663,7 +725,7 @@ the behavior is equivalent to a regular ``import`` statement: the import is
 Python code can run the :func:`!sys.set_lazy_imports` function to override
 the state of the global lazy imports flag inherited from the environment or CLI.
 This is especially useful if an application needs to ensure that all imports
-are evaluated eagerly, via ``sys.set_lazy_imports('disabled')``.
+are evaluated eagerly, via ``sys.set_lazy_imports("none")``.
 
 
 Backwards Compatibility
@@ -691,7 +753,7 @@ These changes are limited to bindings explicitly made lazy:
 
 * **Error timing.** Exceptions that would have occurred during an eager import
   (for example ``ImportError`` or ``AttributeError`` for a missing member) now
-  occur at the first *use* of the lazy name.
+  occur at the *use* of the lazy name.
 
   .. code-block:: python
 
@@ -701,7 +763,7 @@ These changes are limited to bindings explicitly made lazy:
     # With lazy import - error deferred
     lazy import broken_module
     print("Import succeeded")
-    broken_module.foo()  # ImportError raised here on first use
+    broken_module.foo()  # ImportError raised here on use
 
 * **Side-effect timing.** Import-time side effects in lazily imported modules
   occur at first use of the binding, not at module import time.
@@ -714,16 +776,17 @@ These changes are limited to bindings explicitly made lazy:
   when it is first used.
 * **Proxy visibility.** Before first use, the bound name refers to a lazy
   proxy. Indirect introspection that touches the value may observe a proxy
-  lazy object representation. After first use, the name is rebound to the real
-  object and becomes indistinguishable from an eager import.
+  lazy object representation. After first use (provied the module was
+  imported succesfully), the name is rebound to the real object and becomes
+  indistinguishable from an eager import.
 
 Thread-safety and reification
 -----------------------------
 
-First use of a lazy binding follows the existing import-lock discipline.
-Exactly one thread performs the import and **atomically rebinds** the
-importing module's global to the resolved object. Concurrent readers
-thereafter observe the real object.
+Reification follows the existing import-lock discipline. Exactly one thread
+performs the import and **atomically rebinds** the importing module's global
+to the resolved object. Concurrent readers thereafter observe the real
+object.
 
 Lazy imports are thread-safe and have no special considerations for
 free-threading. A module that would normally be imported in the main thread
@@ -745,11 +808,11 @@ code that doesn't.
 Runtime performance
 ~~~~~~~~~~~~~~~~~~~
 
-After reification (first use), lazy imports have **zero overhead**. The
-adaptive interpreter specializes the bytecode (typically after 2-3 accesses),
-eliminating any checks. For example, ``LOAD_GLOBAL`` becomes
-``LOAD_GLOBAL_MODULE``, which directly accesses the module identically to
-normal imports.
+After reification (provided the import was succesful), lazy imports have
+**zero overhead**. The adaptive interpreter specializes the bytecode
+(typically after 2-3 accesses), eliminating any checks. For example,
+``LOAD_GLOBAL`` becomes ``LOAD_GLOBAL_MODULE``, which directly accesses the
+module identically to normal imports.
 
 The `pyperformance suite`_ confirms the implementation is performance-neutral.
 
@@ -857,9 +920,18 @@ see:
 - `Inside HRT's Python Fork
   <https://www.hudsonrivertrading.com/hrtbeat/inside-hrts-python-fork/>`__
   (Hudson River Trading)
+- `Create an On-Demand Initializer for PySide
+  <https://bugreports.qt.io/browse/PYSIDE-2404>`__
+  (Qt for Python/PySide) - Christian Tismer's implementation of lazy
+  initialization for PySide6 based on ideas from :pep:`690`, showing 10-20%
+  startup time improvement for PySide applications. This demonstrates the
+  particular value of lazy imports for frameworks with extensive
+  initialization at import time.
 
 The benefits scale with codebase complexity: the larger and more
-interconnected the codebase, the more dramatic the improvements.
+interconnected the codebase, the more dramatic the improvements. The
+PySide implementation particularly highlights how frameworks with heavy
+initialization overhead can benefit significantly from opt-in lazy loading.
 
 Typing and tools
 ----------------
@@ -874,6 +946,10 @@ Security Implications
 =====================
 
 There are no known security vulnerabilities introduced by lazy imports.
+Security-sensitive tools that need to ensure all imports are evaluated eagerly
+can use :func:`!sys.set_lazy_imports` with ``"none"`` to force
+eager evaluation, or use :func:`!sys.set_lazy_imports_filter` for fine-grained
+control.
 
 How to Teach This
 =================
@@ -888,6 +964,14 @@ interested in the performance of their Python binary will likely leverage
 profiling to understand the import time overhead in their codebase and mark
 the necessary imports as ``lazy``. In addition, developers can mark imports
 that will only be used for type annotations as ``lazy``.
+
+Additional documentation will be added to the Python documentation, including
+guidance, a dedicated how-to guide, and updates to the import system
+documentation covering: identifying slow-loading modules with profiling tools
+(such as ``-X importtime``), migration strategies for existing codebases, best
+practices for avoiding common pitfalls with import-time side effects, and
+patterns for using lazy imports effectively with type annotations and circular
+imports.
 
 Below is guidance on how to best take advantage of lazy imports and how to
 avoid incompatibilities:
@@ -969,6 +1053,31 @@ global approach. The key differences are:
 - **Simpler implementation**: Uses proxy objects instead of modifying core
   dictionary behavior.
 
+What changes at reification time? What stays the same?
+------------------------------------------------------
+
+**What changes (the timing):**
+
+* **When** the module is imported - deferred to first use instead of at the
+  import statement
+* **When** import errors occur - at first use rather than at import time
+* **When** module-level side effects execute - at first use rather than at
+  import time
+
+**What stays the same (everything else):**
+
+* The import machinery used - same ``__import__``, same hooks, same loaders
+* The module object created - identical to an eagerly imported module
+* Import state consulted - ``sys.path``, ``sys.meta_path``, etc. at
+  **reification time** (not at import statement time)
+* Module attributes and behavior - completely indistinguishable after
+  reification
+* Thread safety - same import lock discipline as normal imports
+
+In other words: lazy imports only change **when** something happens, not
+**what** happens. After reification, a lazy-imported module is
+indistinguishable from an eagerly imported one.
+
 What happens when lazy imports encounter errors?
 ------------------------------------------------
 
@@ -998,6 +1107,9 @@ it was first used:
     File "broken_module.py", line 2, in <module>
       1/0
   ZeroDivisionError: division by zero
+
+Exceptions during reification prevent the replacement of the lazy object,
+and subsequent uses of the lazy object will retry the whole reification.
 
 How do lazy imports affect modules with import-time side effects?
 -----------------------------------------------------------------
@@ -1084,8 +1196,8 @@ What's the performance overhead of lazy imports?
 
 The overhead is minimal:
 
-- Zero overhead after first use thanks to the adaptive interpreter optimizing
-  the slow path away.
+- Zero overhead after first use (provided the import doesn't fail) thanks to
+  the adaptive interpreter optimizing the slow path away.
 - Small one-time cost to create the proxy object.
 - Reification (first use) has the same cost as a regular import.
 - No ongoing performance penalty.
@@ -1125,7 +1237,7 @@ error. If lazy imports are globally enabled, star imports will still be eager.
 How do lazy imports interact with import hooks and custom loaders?
 ------------------------------------------------------------------
 
-Import hooks and loaders work normally. When a lazy object is first used,
+Import hooks and loaders work normally. When a lazy object is used,
 the standard import protocol runs, including any custom hooks or loaders that
 were in place at reification time.
 
@@ -1140,7 +1252,7 @@ Can I force reification of a lazy import without using it?
 ----------------------------------------------------------
 
 Yes, accessing a module's ``__dict__`` will reify all lazy objects in that
-module. Individual lazy objects can be resolved by calling their ``get()``
+module. Individual lazy objects can be resolved by calling their ``resolve()``
 method.
 
 What's the difference between ``globals()`` and ``mod.__dict__`` for lazy imports?
@@ -1157,7 +1269,7 @@ reifies all lazy imports in that module first. This design ensures:
   lazy import json
 
   g = globals()
-  print(type(g['json']))  # <class 'lazy_import'> - your problem
+  print(type(g['json']))  # <class 'LazyImport'> - your problem
 
   # From external code:
   import sys
@@ -1221,8 +1333,8 @@ The filter function receives the importer module name, the module being
 imported, and the fromlist (if using ``from ... import``). Returning ``False``
 forces an eager import.
 
-Alternatively, set the global mode to ``"disabled"`` via ``-X
-lazy_imports=disabled`` to turn off all lazy imports for debugging.
+Alternatively, set the global mode to ``"none"`` via ``-X
+lazy_imports=none`` to turn off all lazy imports for debugging.
 
 Can I use lazy imports inside functions?
 ----------------------------------------
@@ -1279,9 +1391,8 @@ How do lazy imports interact with ``dir()``, ``getattr()``, and module introspec
 -------------------------------------------------------------------------------------
 
 Accessing lazy imports through normal attribute access or ``getattr()``
-will trigger reification. Calling ``dir()`` on a module will reify all lazy
-imports in that module to ensure the directory listing is complete. This is
-similar to accessing ``mod.__dict__``.
+will trigger reification of the accessed attribute. Calling ``dir()`` on a
+module will be special cased in ``mod.__dir__`` to avoid reification.
 
 .. code-block:: python
 
@@ -1293,7 +1404,6 @@ similar to accessing ``mod.__dict__``.
   # Any of these trigger reification:
   dumps_func = json.dumps
   dumps_func = getattr(json, 'dumps')
-  dir(json)
   # Now json is in sys.modules
 
 Do lazy imports work with circular imports?
@@ -1356,11 +1466,11 @@ The best practice is still to avoid circular imports in your code design.
 Will lazy imports affect the performance of my hot paths?
 ---------------------------------------------------------
 
-After first use, lazy imports have **zero overhead** thanks to the adaptive
-interpreter. The interpreter specializes the bytecode (e.g., ``LOAD_GLOBAL``
-becomes ``LOAD_GLOBAL_MODULE``) which eliminates the lazy check on subsequent
-accesses. This means once a lazy import is reified, accessing it is just as
-fast as a normal import.
+After first use (provided the import succeed), lazy imports have **zero
+overhead** thanks to the adaptive interpreter. The interpreter specializes
+the bytecode (e.g., ``LOAD_GLOBAL`` becomes ``LOAD_GLOBAL_MODULE``) which
+eliminates the lazy check on subsequent accesses. This means once a lazy
+import is reified, accessing it is just as fast as a normal import.
 
 .. code-block:: python
 
@@ -1416,10 +1526,104 @@ No, future imports can't be lazy because they're parser/compiler directives.
 It's technically possible for the runtime behavior to be lazy but there's no
 real value in it.
 
-Why you chose ``lazy`` as the keyword name?
--------------------------------------------
+Why did you choose ``lazy`` as the keyword name?
+------------------------------------------------
 
 Not "why"... memorize! :)
+
+Deferred Ideas
+==============
+
+The following ideas have been considered but are deliberately deferred to focus
+on delivering a stable, usable core feature first. These may be considered for
+future enhancements once we have real-world experience with lazy imports.
+
+Alternative syntax and ergonomic improvements
+----------------------------------------------
+
+Several alternative syntax forms have been suggested to improve ergonomics:
+
+* **Type-only imports**: A specialized syntax for imports used exclusively in
+  type annotations (similar to the ``type`` keyword in other contexts) could be
+  added, such as ``type from collections.abc import Sequence``. This would make
+  the intent clearer than using ``lazy`` for type-only imports and would signal
+  to readers that the import is never used at runtime. However, since ``lazy``
+  imports already solve the runtime cost problem for type annotations, we prefer
+  to start with the simpler, more general mechanism and evaluate whether
+  specialized syntax adds sufficient value after gathering usage data.
+
+* **Block-based syntax**: Grouping multiple lazy imports in a block, such as:
+
+  .. code-block:: python
+
+    as lazy:
+        import foo
+        from bar import baz
+
+  This could reduce repetition when marking many imports as lazy. However, it
+  would require introducing an entirely new statement form (``as lazy:`` blocks)
+  that doesn't fit into Python's existing grammar patterns. It's unclear how
+  this would interact with other language features or what the precedent would
+  be for similar block-level modifiers. This approach also makes it less clear
+  when scanning code whether a particular import is lazy, since you must look at
+  the surrounding context rather than the import line itself.
+
+While these alternatives could provide different ergonomics in certain contexts,
+they share similar drawbacks: they would require introducing new statement
+forms or overloading existing syntax in non-obvious ways, and they open the
+door to many other potential uses of similar syntax patterns that would
+significantly expand the language. We prefer to start with the explicit
+``lazy import`` syntax and gather real-world feedback before considering
+additional syntax variations. Any future ergonomic improvements should be
+evaluated based on actual usage patterns rather than speculative benefits.
+
+Automatic lazy imports for ``if TYPE_CHECKING`` blocks
+-------------------------------------------------------
+
+A future enhancement could automatically treat all imports inside
+``if TYPE_CHECKING:`` blocks as lazy:
+
+.. code-block:: python
+
+  from typing import TYPE_CHECKING
+
+  if TYPE_CHECKING:
+      from foo import Bar  # Could be automatically lazy
+
+However, this would require significant changes to make this work at compile
+time, since ``TYPE_CHECKING`` is currently just a runtime variable. The
+compiler would need special knowledge of this pattern, similar to how
+``from __future__ import`` statements are handled. Additionally, making
+``TYPE_CHECKING`` a built-in would be required for this to work reliably.
+Since ``lazy`` imports already solve the runtime cost problem for type-only
+imports, we prefer to start with the explicit syntax and evaluate whether
+this optimization adds sufficient value.
+
+Module-level lazy import mode
+------------------------------
+
+A module-level declaration to make all imports in that module lazy by default:
+
+.. code-block:: python
+
+  from __future__ import lazy_imports
+  import foo  # Automatically lazy
+
+This was discussed but deferred because it raises several questions. Using
+``from __future__ import`` implies this would become the default behavior in a
+future Python version, which is unclear and not currently planned. It also
+raises questions about how such a mode would interact with the global flag and
+what the transition path would look like. The current explicit syntax and
+``__lazy_modules__`` provide sufficient control for initial adoption.
+
+Package metadata for lazy-safe declarations
+--------------------------------------------
+
+Future enhancements could allow packages to declare in their metadata whether
+they are safe for lazy importing (e.g., no import-time side effects). This
+could be used by the filter mechanism or by static analysis tools. The current
+filter API is designed to accommodate such future additions without requiring
+changes to the core language specification.
 
 Alternate Implementation Ideas
 ==============================
@@ -1492,18 +1696,36 @@ Making ``lazy`` imports find the module without loading it
 
 The Python ``import`` machinery separates out finding a module and loading
 it, and the lazy import implementation could technically defer only the
-loading part. However:
+loading part. However, this approach was rejected for several critical reasons.
 
-- Finding the module does not guarantee the import will succeed, nor even
-  that it will not raise ImportError.
-- Finding modules in packages requires that those packages are loaded, so
-  it would only help with lazy loading one level of a package hierarchy.
-- Since "finding" attributes in modules *requires* loading them, this would
-  create a hard to explain difference between
-  ``from package import module`` and ``from module import function``.
-- A significant part of the performance win is skipping the finding part
-  (which may involve filesystem searches and consulting multiple importers
-  and meta-importers).
+A significant part of the performance win comes from skipping the finding phase.
+The issue is particularly acute on NFS-backed filesystems and distributed
+storage, where each ``stat()`` call incurs network latency. In these kinds of
+environments, ``stat()`` calls can take tens to hundreds of milliseconds
+depending on network conditions. With dozens of imports each doing multiple
+filesystem checks traversing ``sys.path``, the time spent finding modules
+before executing any Python code can become substantial. In some measurements,
+spec finding accounts for the majority of total import time. Skipping only the
+loading phase would leave most of the performance problem unsolved.
+
+More critically, separating finding from loading creates the worst of both
+worlds for error handling. Some exceptions from the import machinery (e.g.,
+``ImportError`` from a missing module, path resolution failures,
+``ModuleNotFoundError``) would be raised at the ``lazy import`` statement, while
+others (e.g., ``SyntaxError``, ``ImportError`` from circular imports, attribute
+errors from ``from module import name``) would be raised later at first use.
+This split is both confusing and unpredictable: developers would need to
+understand the internal import machinery to know which errors happen when. The
+current design is simpler: with full lazy imports, all import-related errors
+occur at first use, making the behavior consistent and predictable.
+
+Additionally, there are technical limitations: finding the module does not
+guarantee the import will succeed, nor even that it will not raise ImportError.
+Finding modules in packages requires that those packages are loaded, so it
+would only help with lazy loading one level of a package hierarchy. Since
+"finding" attributes in modules *requires* loading them, this would create a
+hard to explain difference between ``from package import module`` and
+``from module import function``.
 
 Placing the ``lazy`` keyword in the middle of from imports
 ----------------------------------------------------------
@@ -1559,6 +1781,47 @@ and given the low cost of the flag this seems acceptable. It's also easier
 to add more specific re-enabling mechanisms later, when we have a clearer
 picture of real-world use and patterns, than it is to remove a hastily added
 mechanism that isn't quite right.
+
+Using underscore-prefixed names for advanced features
+------------------------------------------------------
+
+The global activation and filter functions (``sys.set_lazy_imports``,
+``sys.set_lazy_imports_filter``, ``sys.get_lazy_imports_filter``) could be
+marked as "private" or "advanced" by using underscore prefixes (e.g.,
+``sys._set_lazy_imports_filter``). This was rejected because branding as
+advanced features through documentation is sufficient. These functions have
+legitimate use cases for advanced users, particularly operators of large
+deployments. Providing an official mechanism prevents divergence from upstream
+CPython. The global mode is intentionally documented as an advanced feature for
+operators running huge fleets, not for day-to-day users or libraries. Python
+has precedent for advanced features that remain public APIs without underscore
+prefixes - for example, ``gc.disable()``, ``gc.get_objects()``, and
+``gc.set_threshold()`` are advanced features that can cause issues if misused,
+yet they are not underscore-prefixed.
+
+Using a decorator syntax for lazy imports
+------------------------------------------
+
+A decorator-based syntax could mark imports as lazy:
+
+.. code-block:: python
+
+  @lazy
+  import json
+
+  @lazy
+  from foo import bar
+
+This approach was rejected because it introduces too many open questions and
+complications. Decorators in Python are designed to wrap and transform callable
+objects (functions, classes, methods), not statements. Allowing decorators on
+import statements would open the door to many other potential statement
+decorators (``@cached``, ``@traced``, ``@deprecated``, etc.), significantly
+expanding the language's syntax in ways we don't want to explore. Furthermore,
+this raises the question of where such decorators would come from: they would
+need to be either imported or built-in, creating a bootstrapping problem for
+import-related decorators. This is far more speculative and generic than the
+focused ``lazy import`` syntax.
 
 Using a context manager instead of a new soft keyword
 -----------------------------------------------------
