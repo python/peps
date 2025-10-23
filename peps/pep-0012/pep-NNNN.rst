@@ -10,7 +10,7 @@ Topic: <Governance | Packaging | Release | Typing>
 Requires: <pep numbers>
 Created: <date created on, in dd-mmm-yyyy format>
 Python-Version: <version number>
-Post-History: <REQUIRED: dates, in dd-mmm-yyyy format, and corresponding links to PEP discussion threads>
+Post-History: Pending
 Replaces: <pep number>
 Superseded-By: <pep number>
 Resolution: <url>
