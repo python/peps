@@ -184,7 +184,7 @@ like this:
 
 .. code-block:: c
 
-    PyModuleDef_Slot *PyModExport_<NAME>(PyObject *spec);
+    PyModuleDef_Slot *PyModExport_<NAME>(void);
 
 where ``<NAME>`` is the name of the module.
 For non-ASCII names, it will instead look for ``PyModExportU_<NAME>``,
@@ -194,12 +194,7 @@ with ``<NAME>`` encoded as for existing ``PyInitU_*`` hooks
 If not found, the import will continue as in previous Python versions (that is,
 by looking up a ``PyInit_*`` or ``PyInitU_*`` function).
 
-If found, Python will call the hook with the appropriate
-``importlib.machinery.ModuleSpec`` object as *spec*.
-To support duck-typing, extensions should not type-check this object, and
-if possible, implement fallbacks for any missing attributes.
-(The argument is mainly meant for introspection, testing, or use with
-specialized loaders.)
+If found, Python will call the hook with no arguments.
 
 On failure, the export hook must return NULL with an exception set.
 This will cause the import to fail.
@@ -225,12 +220,16 @@ A new function will be added to create a module from an array of slots:
 
 .. code-block:: c
 
-    PyObject *PyModule_FromSlotsAndSpec(PyModuleDef_Slot *slots, PyObject *spec)
+    PyObject *PyModule_FromSlotsAndSpec(const PyModuleDef_Slot *slots, PyObject *spec)
 
 The *slots* argument must point to an array of ``PyModuleDef_Slot`` structures,
 terminated by a slot with ``slot=0`` (typically written as ``{0}`` in C).
 There are no required slots, though *slots* must not be ``NULL``.
 It follows that minimal input contains only the terminator slot.
+
+.. note::
+
+   If :pep:`803` is accepted, the ``Py_mod_abi`` slot will be mandatory.
 
 The *spec* argument is a duck-typed ModuleSpec-like object, meaning that any
 attributes defined for ``importlib.machinery.ModuleSpec`` have matching
@@ -274,11 +273,23 @@ For modules created from a *def*, calling this is equivalent to
 calling ``PyModule_ExecDef(module, PyModule_GetDef(module))``.
 
 
+.. _pep793-token:
+
 Tokens
 ------
 
 Module objects will optionally store a “token”: a ``void*`` pointer
 similar to ``Py_tp_token`` for types.
+
+.. note::
+
+   This is specialized functionality meant replace the
+   ``PyType_GetModuleByDef`` function; users that don't need
+   ``PyType_GetModuleByDef`` will most likely not need tokens either.
+
+   This section contains the technical specification;
+   for an example of intended usage, see ``exampletype_repr`` in the
+   :ref:`Example section <pep793-example>`.
 
 If specified, using a new ``Py_mod_token`` slot, the module token must:
 
@@ -287,7 +298,8 @@ If specified, using a new ``Py_mod_token`` slot, the module token must:
 - "belong" to the extension module where the module lives, so it will not
   clash with other extension modules.
 
-(Typically, it should point to a static constant.)
+(Typically, it should be the slots array or ``PyModuleDef`` that a module is
+created from, or another static constant for dynamically created modules.)
 
 When the address of a ``PyModuleDef`` is used as a module's token,
 the module should behave as if it was created from that ``PyModuleDef``.
@@ -317,7 +329,7 @@ will return 0 on success and -1 on failure:
     int PyModule_GetToken(PyObject *, void **token_p)
 
 A new ``PyType_GetModuleByToken`` function will be added, with a signature
-like the existing ``PyType_GetModuleByDef`` but a ``void *token`` argument,
+like the existing ``PyType_GetModuleByDef`` but a ``const void *token`` argument,
 and the same behaviour except matching tokens rather than only defs,
 and returning a strong reference.
 
@@ -388,17 +400,17 @@ Python will load a new module export hook, with two variants:
 
 .. code-block:: c
 
-    PyModuleDef_Slot *PyModExport_<NAME>(PyObject *spec);
-    PyModuleDef_Slot *PyModExportU_<ENCODED_NAME>(PyObject *spec);
+    PyModuleDef_Slot *PyModExport_<NAME>(void);
+    PyModuleDef_Slot *PyModExportU_<ENCODED_NAME>(void);
 
 The following functions will be added:
 
 .. code-block:: c
 
-    PyObject *PyModule_FromSlotsAndSpec(PyModuleDef_Slot *, PyObject *spec)
+    PyObject *PyModule_FromSlotsAndSpec(const PyModuleDef_Slot *, PyObject *spec)
     int PyModule_Exec(PyObject *)
     int PyModule_GetToken(PyObject *, void**)
-    PyObject *PyType_GetModuleByToken(PyTypeObject *type, void *token)
+    PyObject *PyType_GetModuleByToken(PyTypeObject *type, const void *token)
     int PyModule_GetStateSize(PyObject *, Py_ssize_t *result);
 
 A new macro will be added:
@@ -541,7 +553,7 @@ wrappers, the :ref:`pep793-shim` below may be more useful.
     PyMODEXPORT_FUNC PyModExport_examplemodule(PyObject);
 
     PyMODEXPORT_FUNC
-    PyModExport_examplemodule(PyObject *spec)
+    PyModExport_examplemodule(void)
     {
         return module_slots;
     }
@@ -590,9 +602,6 @@ This implementation places a few additional requirements on the slots array:
 - Slots that correspond to ``PyModuleDef`` members must come first.
 - A ``Py_mod_name`` slot is required.
 - Any ``Py_mod_token`` must be set to ``&module_def_and_token``, defined here.
-
-It also passes ``NULL`` as *spec* to the ``PyModExport`` export hook.
-A proper implementation would pass ``None`` instead.
 
 .. literalinclude:: pep-0793/shim.c
    :language: c
@@ -649,6 +658,33 @@ With a function, we avoid dealing with a new kind of exported symbol.
 
 A function also allows the extension to introspect its environment in a limited
 way -- for example, to tailor the returned data to the current Python version.
+
+
+Changing ``PyModuleDef`` to not be ``PyObject``
+-----------------------------------------------
+
+It is possible to change ``PyModuleDef`` to no longer include the ``PyObject``
+header, and continue using the current ``PyInit_*`` hook.
+There are several issues with this approach:
+
+- The import machinery would need to examine bit-patterns in the objects to
+  distinguish between different memory layouts:
+
+  - the “old” ``PyObject``-based ``PyModuleDef``, returned by current ``abi3``
+    extensions,
+  - the new ``PyModuleDef``,
+  - ``PyObject``-based module objects, for single-phase initialization.
+
+  This is fragile, and places constraints on future changes to ``PyObject``:
+  the memory layouts need to stay *distinguishable* until both single-phase
+  initialization and the current Stable ABI are no longer supported.
+
+
+- ``PyModuleDef_Init`` is documented to “Ensure a module definition is a
+  properly initialized Python object that correctly reports its type and
+  a reference count.”
+  This would need to change without warning, breaking any user code that treats
+  ``PyModuleDef``\ s as Python objects.
 
 
 Possible Future Directions
