@@ -1,0 +1,3296 @@
+PEP: 818
+Title: Upstreaming the Pyodide JavaScript Foreign Function Interface
+Author: Hood Chatham <roberthoodchatham at gmail.com>
+Sponsor: Łukasz Langa <lukasz at python.org>
+Discussions-To:
+Status: Draft
+Type: Standards Track
+Created: 10-Dec-2025
+Python-Version: 3.15
+Post-History:
+
+Abstract
+========
+
+Pyodide is a distribution of Python for JavaScript runtimes, including browsers.
+Browsers are a universal computing platform. As with C for Unix family operating
+systems, in the browser platform all fundamental capabilities are exposed
+through the JavaScript language. For years, Pyodide has included a comprehensive
+JavaScript foreign function interface. This provides the equivalent of the
+``os`` module for the JavaScript world.
+
+This PEP proposes adding the core of the Pyodide foreign function interface to
+Python.
+
+Motivation
+==========
+
+The Pyodide project is a Python distribution for JavaScript runtimes. Pyodide is
+a very popular project. In 2025 to date, Pyodide has received over a billion
+requests on JsDelivr. The popularity is rapidly growing: usage has more than
+doubled in each of the last two years.
+
+Pyodide includes several components:
+
+1. A port of CPython to the Emscripten compiler toolchain (a toolchain to
+   compile linux C/C++ programs to JavaScript and WebAssembly).
+2. A foreign function interface for calling Python from JavaScript and
+   JavaScript from Python.
+3. A JavaScript programmatic interface for managing the Python runtime and
+   package installation.
+4. An ABI for native extensions.
+5. A toolchain to cross-compile Python packages compatible with that ABI for use
+   with Pyodide.
+
+In the long run, we would like to upstream the runtime components (1)--(4) of
+the Pyodide project into CPython. In 2022, Christian Heimes upstreamed (1) the
+Emscripten port of CPython, and Emscripten is currently a tier 3 supported
+platform  (see :pep:`776`). :pep:`783` proposes to allow Pyodide-compatible
+wheels to be uploaded to PyPI. What is needed for these to be
+Emscripten-CPython-compatible wheels is to upstream (2) the Python/JavaScript
+foreign function interface and (4) the ABI for native extensions. This PEP
+concerns partially upstreaming (2) the Python/JavaScript foreign function
+interface.
+
+This interface is similar to the ``os`` module for Python on linux: all IO
+requires going through libc and the ``os`` module provides access to libc calls
+to Python code. Similarly, in a JavaScript runtime, to do any actual work
+requires making calls into JavaScript: for example, it is required to display
+content to the screen, to receive user input, to handle events, to access
+databases, etc. For instance, once Python has a JavaScript foreign function
+interface, it will be possible to support ``urllib`` on Emscripten. Downstream,
+supporting ``urllib3``, ``aiohttp``, and ``httpx`` requires the foreign function
+interface.
+
+In order to keep the length of this PEP reasonable, we focus on the "core" of
+the foreign function interface. Three areas are left to future PEPs:
+
+1. asyncio
+2. integration between the buffer protocol and JavaScript equivalents
+3. a JavaScript interface for managing the Python runtime
+
+
+Rationale
+=========
+
+Our goal here is to upstream Pyodide's foreign function interface, without
+breaking backwards compatibility more than necessary for Pyodide's large
+collection of existing users. On the other hand, the best time to making
+breaking changes is now.
+
+With that in mind, we wish here to justify not that our design is perfect but
+that the costs of any changes outweigh the benefits.
+
+Translating Objects
+-------------------
+
+The most fundamental decision is how we translate objects from one language to
+the other. When translating an object, we can either choose to convert the value
+into a similar object in the target language, or to make a proxy that "wraps"
+the original object. A few considerations apply here:
+
+1. Mutability: If we call a function that expects to mutate its argument, then
+   it is important that we proxy the argument and not convert it. Otherwise, the
+   function mutates a copy that we then throw away. So implicit conversion is
+   only a reasonable option for immutable objects.
+2. Round trip behavior: It is strongly desirable that passing an object from
+   Python to JavaScript back to Python results in the original Python object and
+   vice-versa. If the object is immutable, it is okay if the result is only
+   equal to the original object and not the same object. If the object is
+   mutable, it should be the same object.
+3. Performance characteristics: Converting a complex object entails a lot of up
+   front work. If the object is only minimally used, then it may be less
+   performant. On the other hand, each access to an object via a proxy is slower
+   than to a native object so if the object is used a lot, converting up front
+   is more efficient than proxying. Proxying by default and allowing the user to
+   explicitly convert when they want to gives the user maximum control over
+   performance.
+4. Ergonomics: A native object is in many cases easier to work with.
+
+JavaScript has the following immutable types: ``string``, ``undefined``,
+``boolean``, ``number`` and ``bigint``. It also has the special value ``null``.
+
+Of these, ``string`` and ``boolean`` directly correspond to ``str`` and
+``bool``. ``number`` and ``bigint`` awkwardly correspond to ``float`` and
+``int``. ``undefined`` is the default value for a missing argument so it
+corresponds to ``None``. We invent a new falsey singleton Python value
+``jsnull`` to act as the conversion of ``null``. We also make a new type
+``JsBigInt`` to act as the conversion for ``bigint``. All other types are
+proxied.
+
+In particular, even though ``tuples`` are immutable, they have no equivalent in
+JavaScript so we proxy them. They can be manually converted to an ``Array`` with
+the ``toJs()`` method if desired.
+
+Proxies
+-------
+
+A ``JsProxy`` is a Python object used for accessing a JavaScript object. While
+the ``JsProxy`` exists, the underlying JavaScript object is kept in a table
+which keeps it from being garbage collected.
+
+A ``PyProxy`` is a JavaScript object used for accessing a Python object. When a
+``PyProxy`` is created, the reference count of the underlying Python object is
+incremented. When the ``.destroy()`` method is called, the reference count of the
+underlying Python object is decremented and the proxy is disabled. Any further
+attempt to use it raises an error.
+
+The base ``JsProxy`` implements property access, equality checks, ``__repr__``,
+``__eq__``, ``__bool__``, and a handful of other convenience methods. We also
+define a large number of mixins by mapping abstract Python object protocols to
+abstract JavaScript object protocols (and vice-versa). The mapping described in
+this PEP is as follows:
+
+Base proxies (properties common to all objects):
+
+* ``__getattribute__`` <==> ``Reflect.get`` (proxy handler)
+* ``__setattr__`` <==> ``Reflect.set`` (proxy handler)
+* ``__eq__`` <==> ``===`` (object identity)
+* ``__repr__`` <==> ``toString``
+
+For the ``__str__`` implementation, we inherit the default implementation which
+uses ``__repr__``.
+
+We implement the following mappings between protocols as mixins. When we create
+a proxy, we feature detect which of these abstract and concrete protocols it
+supports and create a class for the proxy with the appropriate mixins.
+
+* ``__iter__`` <==> ``[Symbol.iterator]``
+* ``__next__`` <==> ``next``
+* ``__len__`` <==> ``length``, ``size``
+* ``__getitem__`` <==> ``get``
+* ``__setitem__``, ``__delitem__`` <==> ``set``, ``delete``
+* ``__contains__`` <==> ``includes``, ``has``
+* ``__call__`` <==> ``Reflect.apply`` (proxy handler)
+* ``Generator`` <==> ``Generator``
+* ``Exception`` <==> ``Error``
+* ``MutableSequence`` <==> ``Array``
+
+If a JavaScript object has a ``[Symbol.dispose]()`` method, we make the Python
+object into a context manager, but we do not presently use context managers to
+implement ``[Symbol.dispose]()``.
+
+JavaScript also has ``Reflect.construct`` (the ``new`` keyword). Callable
+JsProxies have a method called ``new()`` which corresponds to
+``Reflect.construct``.
+
+The following additional mappings are defined in Pyodide. It is our intention to
+eventually add them to Python itself, but they are deferred to a future PEP:
+
+* ``__await__`` <==> ``then``
+* ``__aiter__`` <==> ``[Symbol.asyncIterator]``
+* ``__anext__`` <==> ``next`` (same as ``__next__``; check for presence of
+  ``[Symbol.asyncIterator]`` to distinguish)
+* ``AsyncGenerator`` <==> ``AsyncGenerator``
+* buffer protocol <==> typed arrays
+* Async context managers are implemented on JsProxies that implement
+  ``[Symbol.asyncDispose]``.
+
+Garbage Collection and Destruction of Proxies
+---------------------------------------------
+
+The most fundamental difficulty that we face is the existence of two garbage
+collectors, the Python garbage collector and the JavaScript garbage collector.
+Any reference loop from Python to JavaScript back to Python will be leaked.
+Furthermore, even if there is no loop, the JavaScript garbage collector has no
+idea how much memory a ``PyProxy`` owns nor how much memory pressure the Python
+garbage collector faces.
+
+For this reason, we need to include a way to manually break references between
+languages. In Python, destructors are run eagerly when the reference count of an
+object reaches 0. Thus, if a programmer wishes to manually release a JavaScript
+object, they can delete all references to it and after that the JavaScript
+garbage collector will be able to reclaim it.
+
+On the other hand, JavaScript finalizers are not reliable. The proposal that
+introduced them to the language says the following:
+
+    If an application or library depends on GC [calling a finalizer] in a timely,
+    predictable manner, it's likely to be disappointed: the cleanup may happen much
+    later than expected, or not at all.
+
+    ...
+
+    It's best if [finalizers] are used as a way to avoid excess memory usage, or as a
+    backstop against certain bugs, rather than as a normal way to clean up external
+    resources.
+
+https://github.com/tc39/proposal-weakrefs?tab=readme-ov-file#a-note-of-caution
+
+A ``PyProxy`` has a ``destroy()`` method that manually detaches the ``PyProxy``
+and releases the Python reference. We consider destroying a ``PyProxy`` to be
+the correct, normal way to clean it up. As recommended by the proposal, the
+finalizer is treated as a backstop. In the Pyodide test suite, we require that
+every ``PyProxy`` be manually destroyed in the majority of the tests. This helps
+to ensure that our APIs are designed in a way that keeps this ergonomic.
+
+Calling Conventions
+-------------------
+
+Calling a Python Function from JavaScript
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+To call a callable ``PyProxy`` we do the following steps:
+
+1. Translate each argument from JavaScript to Python and place the arguments
+   in a C array.
+2. Use ``PyObject_VectorCall`` to call the Python object.
+3. If a JavaScript error is raised, this is fatal -- Python interpreter
+   invariants have been violated. Report the fatal error and tear down the Python interpreter.
+4. If the Python error flag is set, set ``sys.last_value`` to the current
+   exception. Convert the Python exception to a JavaScript ``PythonError``
+   object. This ``PythonError`` object records the type, the formatted traceback
+   of the Python exception, and a weak reference to the original Python
+   exception. Throw this ``PythonError``.
+5. Translate the result from Python to JavaScript and return it.
+
+Note here that if a ``JsProxy`` is created but the Python function does not
+store a reference to it, it will be released immediately. The JavaScript error
+doesn't hold a strong reference the Python exception because JavaScript errors
+are often leaked and Python error objects hold a reference to frame objects
+which may hold a significant amount of memory.
+
+Calling a JavaScript Function from Python
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+To call a callable ``JsProxy`` we do the following steps:
+
+1. Make an empty array called ``pyproxies``
+2. Translate each positional argument from Python to JavaScript and place these
+   arguments in a JavaScript array called ``jsargs``. If any ``PyProxy`` is
+   generated in this way, don't register a JavaScript finalizer for it and do
+   append it to ``pyproxies``.
+3. If there are any keyword arguments, create an empty JavaScript object
+   ``jskwargs``, translate each keyword argument to JavaScript and assign
+   ``jskwargs[key] = jskwarg``. Append ``jskwargs`` to ``jsargs``. If any
+   ``PyProxy`` is generated in this way, don't register a JavaScript finalizer
+   for it and do append it to ``pyproxies``.
+4. Call the JavaScript function and store the result into ``jsresult``.
+5. If an error is thrown:
+
+    a. If the error is a ``PythonError`` and the weak reference to the Python
+       exception is still alive, raise the referenced Python exception.
+    b. Otherwise, convert the exception from JavaScript to Python and raise the
+       result. Note that the ``JsException`` object holds a reference to the
+       original JavaScript error.
+
+6. If ``jsresult`` is a JavaScript generator, iterate over ``pyproxies`` and
+   register a JavaScript finalizer for each. Wrap the generator with a new
+   generator that destroys ``pyproxies`` when they are exhausted. Translate the
+   wrapped generator to Python and return it.
+7. Otherwise, translate ``jsresult`` to Python and store it in ``pyresult``.
+8. Iterate over ``pyproxies`` and destroy them. If ``jsresult`` is a
+   ``PyProxy``, destroy it too.
+9.  Return ``pyresult``.
+
+This is modeled on the calling convention for C Python APIs.
+
+Defense of the Calling Convention for a ``JsProxy``
+---------------------------------------------------
+
+The calling convention from JavaScript into Python is uncontroversial so we will
+not defend it. The calling convention from Python into JavaScript is more
+controversial so we will explain here why we believe it is a better design than
+the alternatives.
+
+The main disadvantage of this design is that it is not as ergonomic in cases
+where the callee is going to persist its arguments. However, we argue that the
+benefits outweigh this.
+
+The biggest advantage of this approach is that it makes it possible to use
+JavaScript functions that are unaware of the existence of Python without memory
+leaks. Another advantage is that registering a finalizer for a ``PyProxy`` is
+somewhat expensive and so avoiding this step can substantially decrease the
+overhead for certain Python to JavaScript calls.
+
+An Example of a Disadvantage of the Calling Convention
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+We will start by illustrating the common complaint about the Python to
+JavaScript calling convention. Consider the following example:
+
+
+.. code-block:: python
+
+    from pyodide.code import run_js
+    set_x = run_js("(x) => { globalThis.x = x; }")
+    get_x = run_js("(x) => globalThis.x")
+
+    set_x({})
+    get_x()
+
+This code is broken. Calling ``set_x`` creates a PyProxy but it is destroyed
+when the call is done. When we call ``get_x()`` the following error is raised::
+
+    This borrowed proxy was automatically destroyed at the end of a function call.
+
+To fix it to manage memory correctly, we can change ``set_x`` to the following
+function:
+
+.. code-block:: javascript
+
+    (x) => {
+        globalThis.x?.destroy?.();
+        globalThis.x = x?.copy?.() ?? x;
+    }
+
+Or we can manage the memory from Python using ``create_proxy()`` as follows:
+
+.. code-block:: python
+
+    from pyodide.ffi import JsDoubleProxy
+    from pyodide.code import run_js
+
+    setXJs = run_js("(x) => { globalThis.x = x; }")
+    def set_x(x):
+        orig_x = get_x()
+        if isinstance(orig_x, JsDoubleProxy):
+            orig_x.destroy()
+        xpx = create_proxy(x)
+        setXJs(xpx)
+
+This extra boilerplate is not too hard to get right -- it's roughly equivalent
+to what is needed to assign an attribute in C. However, it does impose a
+nontrivial complexity cost on the user and so we need to justify why this is
+better than the alternatives.
+
+A Use Case That Is Made Simpler By This Calling Convention
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Suppose we have a Python function ``render()`` that returns a buffer, and a
+JavaScript function ``drawImageToCanvas(buffer)`` that displays the buffer on a
+canvas. If the buffer is a 1024 by 1024 bitmap with four color channels, then it
+is a 4 megabyte buffer. Imagine the following code:
+
+.. code-block:: python
+
+    @create_proxy
+    def main_loop():
+        update()
+        buf = render()
+        drawImageToCanvas(buffer)
+        requestAnimationFrame(main_loop)
+
+With the calling convention described here, the buffer is released normally
+after each call and memory usage stays consistent, in my tests it stays at 57
+megabytes.
+
+If we rely on a JavaScript finalizer to release ``buffer``, in my tests the
+JavaScript finalizer doesn't run until malloc runs out of space on the
+WebAssembly heap and requests more memory, with the effect that over several
+minutes the WebAssembly heap gradually grows to the maximum allowed 4 gigabytes
+and then a memory error is raised.
+
+Now a cooperating implementation of ``drawImageToCanvas()`` could destroy the
+``buffer`` when it is done, but my philosophy in designing the calling
+convention was that it should be possible to take care of the memory management
+from Python. This necessitates something like the current approach.
+
+Specification
+=============
+
+The Pseudocode in this Document
+-------------------------------
+
+The pseudocode in this PEP is generally written in Python or JavaScript. We
+leave out most resource management and exception handling except when we think
+it is particularly interesting. If an error is raised, we implicitly clean up
+all resources and propagate the error. A large fraction of the real code
+consists of resource management and exception handling.
+
+For the most part the code works as written but in a few spots we directly call
+a C API from Python or otherwise write code that wouldn't run but whose intent
+we believe is clear.
+
+In Python code when we want to execute a JavaScript function inline, we write it
+like:
+
+.. code-block:: python
+
+    jsfunc = run_js("(x, y) => doSomething")
+    jsfunc(x, y)
+
+Conversely, when we want to execute Python code inline in JavaScript we write it
+like this:
+
+.. code-block:: javascript
+
+    const pyfunc = makePythonFunction(`
+        def pyfunc(x, y):
+            # do something
+    `);
+    pyfunc(x, y)
+
+For the most part, this code could actually be used if performance was not a
+concern. In some places there may be bootstrapping issues.
+
+Our first task is to define the Python callable ``run_js`` and the JavaScript
+callable ``makePythonFunction``. ``run_js`` is a ``JsProxy`` and
+``makePythonFunction`` is a ``PyProxy``.
+
+To make sense of this, we need to describe
+
+1. how we convert values from JavaScript to Python and from Python to JavaScript
+2. how to call a Python function from JavaScript and how to call a JavaScript
+   function from Python
+
+We can directly represent a ``PyObject*`` as a ``number`` in JavaScript so we
+can describe the process of calling a ``PyObject*`` from JavaScript. On the
+other hand, JavaScript objects are not directly representable in Python, we have
+to create a ``JsProxy`` of it. We describe first the process of calling a
+``JsProxy``, the process of creating it is described in the section on
+JsProxies.
+
+Converting Values between Python and JavaScript
+-----------------------------------------------
+
+A few primitive types are implicitly converted between Python and JavaScript.
+Implicit conversions are supposed to round trip, so that when converting from
+Python to JavaScript back to Python or from JavaScript to Python back to
+JavaScript, the result is the same primitive as we started with. The one
+exception to this is that a JavaScript ``BigInt`` that is smaller than ``2^53``
+round trips to a ``Number``. We convert ``undefined`` to ``None`` and introduce
+the special falsey singleton ``pyodide.ffi.jsnull`` to convert ``null``. We also
+introduce a subtype of ``int`` called ``pyodide.ffi.JsBigInt`` which converts to
+and from JavaScript ``bigint``.
+
+Implicit conversions are done with the C functions ``_Py_python2js`` and
+``_Py_js2python()``. These functions cannot be called directly from Python code
+because the ``JsVal`` type is not representable in Python.
+
+Implicit conversion from Python to JavaScript
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``JsVal _Py_python2js_track_proxies(PyObject* pyvalue, JsVal pyproxies, bool gc_register)``
+is responsible for implicit conversions from Python to JavaScript. It does the
+following steps:
+
+1. if ``pyvalue`` is ``None``, return ``undefined``
+2. if ``pyvalue`` is ``jsnull``, return ``null``
+3. if ``pyvalue`` is ``True``, return ``true``
+4. if ``pyvalue`` is ``False``, return ``false``
+5. if ``pyvalue`` is a ``str``, convert the string to JavaScript and return the result.
+6. if ``pyvalue`` is an instance of ``JsBigInt``, convert it to a ``BigInt``.
+7. if ``pyvalue`` is an ``int`` and it is less than ``2^53``, convert it to
+   a ``Number``. Otherwise, convert it to a ``BigInt``
+8. if ``pyvalue`` is a ``float``, convert it to  a ``Number``.
+9. if ``pyvalue`` is a ``JsProxy``, convert it to the wrapped JavaScript value.
+10. Let ``result`` be ``createPyProxy(pyvalue, {gcRegister: gc_register})``. If
+    ``pyproxies`` is an array, append ``result`` to ``pyproxies``.
+
+We define ``JsVal _Py_python2js(PyObject* pyvalue)`` to be
+``_Py_python2js_track_proxies(pyvalue, Js_undefined, true)``.
+
+Implicit conversion from JavaScript to Python
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``PyObject* _Py_js2python(JsVal jsvalue)`` is responsible for implicit
+conversions from JavaScript to Python.
+
+We first define the helper function ``PyObject* _Py_js2python_immutable(JsVal jsvalue)``
+does the following steps:
+
+1. if ``jsvalue`` is ``undefined``, return ``None``
+2. if ``jsvalue`` is ``null`` return ``jsnull``
+3. if ``jsvalue`` is ``true`` return ``True``
+4. if ``jsvalue`` is ``false`` return ``False``
+5. if ``jsvalue`` is a ``string``, convert the string to Python and return the
+   result.
+6. if ``jsvalue`` is a ``Number`` and ``Number.isSafeInteger(jsvalue)`` returns
+   ``true``, then convert ``jsvalue`` to an ``int``. Otherwise convert it to a
+   ``float``.
+7. if ``jsvalue`` is a ``BigInt`` then convert it to an ``JsBigInt``.
+8. If ``jsvalue`` is a ``PyProxy`` that has not been destroyed, convert it to
+   the wrapped Python value.
+9. If the ``jsvalue`` is a ``PyProxy`` that has been destroyed, throw an error
+   indicating this.
+10. Return ``NoValue``.
+
+
+``_Py_js2python(JsVal jsvalue)`` does the following steps:
+
+1. Let ``result`` be ``_Py_js2python_immutable(jsvalue)``. If ``result`` is
+   not ``NoValue``, return ``result``.
+2. Return ``create_jsproxy(jsvalue)``.
+
+Error handling
+--------------
+
+At the boundary between JavaScript and C, we have to translate errors.
+
+Executing JavaScript Code from C
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When we execute any JavaScript code from C, we wrap it in a try/catch block. If
+an error is caught, we use ``_Py_js2python(jserror)`` to convert it into a
+Python exception, set the Python error flag to this python exception, and return
+the appropriate error value to signal an error. This makes it ergonomic to
+create JavaScript functions that can be called from C and follow CPython's
+normal conventions for C APIs.
+
+Executing C Code from JavaScript
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Whenever we call into C from JavaScript, we wrap the call in the following
+boilerplate:
+
+.. code-block:: javascript
+
+    try {
+        result = some_c_function();
+    } catch (e) {
+        // If an error was thrown here, the C runtime state is corrupted.
+        // Signal a fatal error and tear down the interpreter.
+        fatal_error(e);
+    }
+    // Depending on the API, we check for -1, 0, _PyErr_Occurred(), etc to
+    // decide if an error occurred.
+    if (result === -1) {
+        // This function takes the error flag and converts it to a JavaScript
+        // exception. It leaves the error flag cleared.
+        throw __Py_pythonexc2js();
+    }
+
+
+Calling Conventions
+-------------------
+
+Calling a Python Function from JavaScript
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+To call a ``PyObject*`` from JavaScript we use the following code:
+
+.. code-block:: javascript
+
+    function callPyObjectKwargs(pyfuncptr, jsargs, kwargs) {
+        const num_pos_args = jsargs.length;
+        const kwargs_names = Object.keys(kwargs);
+        const kwargs_values = Object.values(kwargs);
+        const num_kwargs = kwargs_names.length;
+        jsargs.push(...kwargs_values);
+        // apply the usual error handling logic for calling from JavaScript into C.
+        return _PyProxy_apply(pyfuncptr, jsargs, num_pos_args, kwargs_names, num_kwargs);
+    }
+
+**_PyProxy_apply(PyObject* callable, JsVal jsargs, Py_ssize_t num_pos_args, JsVal kwargs_names, Py_ssize_t num_kwargs)**
+
+1. Let ``total_args`` be ``num_pos_args + numkwargs``.
+2. Create a C array ``pyargs`` of length ``total_args``.
+3. For ``i`` ranging from ``0`` to ``total_args - 1``:
+
+    a. Execute the JavaScript code ``jsargs[i]`` and store the result into
+       ``jsitem``.
+    b. Set ``pyargs[i]`` to ``_Py_js2python(jsitem)``.
+
+4. Let ``pykwnames`` be a new tuple of length ``numkwargs``
+5. For ``i`` ranging from ``0`` to ``numkwargs - 1``:
+
+    a. Execute the JavaScript code ``jskwnames[i]`` and store the result into
+       ``jskey``.
+    b. Set the ith entry of ``pykwnames`` to ``_Py_js2python(jsitem)``.
+
+6. Let ``pyresult`` be ``_PyObject_Vectorcall(callable, pyargs, num_pos_args, pykwnames)``.
+7. Return ``_Py_python2js(pyresult)``.
+
+Calling a JavaScript Function from Python
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**``JsMethod_ConvertArgs(posargs, kwargs, pyproxies)``**
+
+First we define the function ``JsMethod_ConvertArgs`` to convert the Python
+arguments to a JavaScript array of arguments. Any ``PyProxy`` created at this
+stage is not tracked by the finalization registry and is added to the JavaScript
+list ``pyproxies`` so we can either destroy it or track it later. This function
+performs the following steps:
+
+1. Let ``jsargs`` be a new empty JavaScript list.
+2. For each positional argument:
+
+    a. Set ``JsVal jsarg = _Py_python2js_track_proxies(pyarg, proxies, /*gc_register:*/false);``.
+    b. Call ``_PyJsvArray_Push(jsargs, arg);``.
+
+3. If there are any keyword arguments:
+
+    a. Let ``jskwargs`` be a new empty JavaScript object.
+    b. For each keyword argument pykey, pyvalue:
+
+        i.   Set ``JsVal jskey = _Py_python2js(pykey)``
+        ii.  Set ``JsVal jsvalue = _Py_python2js_track_proxies(pyvalue, proxies, /*gc_register:*/false)``
+        iii. Set the ``jskey`` property on ``jskwargs`` to ``jsvalue``.
+
+    c. Call ``_PyJsvArray_Push(jsargs, jskwargs);``
+
+4. Return ``jsargs``
+
+**``JsMethod_Vectorcall(jsproxy, posargs, kwargs)``**
+
+Each ``JsProxy`` of a function has an underlying JavaScript function and an
+underlying ``this`` value.
+
+1.  Let ``jsfunc`` be the JavaScript function associated to ``jsproxy``.
+2.  Let ``jsthis`` be the ``this`` value associated to ``jsproxy``.
+3.  Let ``pyproxies`` be a new empty JavaScript list.
+4.  Execute ``JsMethod_ConvertArgs(posargs, kwargs, pyproxies)`` and store the
+    result into ``jsargs``.
+5.  Execute the JavaScript code ``Function.prototype.apply.apply(jsfunc, [ jsthis, jsargs ])``
+    and store the result into ``jsresult``.
+    (Apply the usual error handling for calling from C into JavaScript.)
+6.  If ``jsresult`` is a ``PyProxy`` run the JavaScript code ``pyproxies.push(jsresult)``
+7.  Set ``destroy_args`` to ``true``
+8.  If ``jsresult`` is a ``Generator`` set ``destroy_args`` to ``false`` and set
+    ``jsresult`` to ``wrap_generator(jsresult, pyproxies)``.
+9. Execute ``_Py_js2python(jsresult)`` and store the result into ``pyresult``.
+10. If ``destroy_args`` is ``true``, then destroy all the proxies in ``pyproxies``.
+11. If ``destroy_args`` is ``false``, gc register all the proxies in ``pyproxies``.
+12. Return ``pyresult``.
+
+``wrap_generator(jsresult, pyproxies)`` is a JavaScript function that wraps a
+JavaScript generator in a new generator that destroys all the proxies in
+``pyproxies`` when the generator is exhausted.
+
+``run_js``
+----------
+
+The Python object ``pyodide.code.run_js`` is defined as follows:
+
+1. Execute the JavaScript code ``eval`` and store the result into ``jseval``.
+2. Run ``_Py_js2python(jseval)`` and store the result into ``run_js``.
+
+``makePythonFunction``
+----------------------
+
+Unlike ``run_js``, the JavaScript object ``makePythonFunction`` is strictly for
+the sake of our pseudocode and will not be included as part of the API. We
+define define ``makePythonFunction`` as follows:
+
+.. code-block:: python
+
+    def make_python_function(code):
+        mod = ast.parse(code)
+        if isinstance(mod.body[0], ast.FunctionDef):
+            d = {}
+            exec(code, d)
+            return d[mod.body[0].name]
+        return eval(code)
+
+1. Let ``make_python_function`` be the function above.
+2. Run ``_Py_python2js(make_python_function)`` and store the result into
+   ``makePythonFunction``.
+
+
+JsProxy
+-------
+
+We define 14 different abstract protocols that a JavaScript object can support.
+These each correspond to a ``JsProxy`` type flag. There are also two additional
+flags ``IS_PY_JSON_DICT`` and ``IS_PY_JSON_SEQUENCE`` which are set by the
+``JsProxy.as_py_json()`` method and do not reflect properties of the underlying
+JavaScript object.
+
+``HAS_GET``
+    Signals whether or not the JavaScript object has a ``get()``
+    method. If present, used to implement ``__getitem__`` on the ``JsProxy``.
+
+``HAS_HAS``
+    Signals whether or not the JavaScript object has a ``has()`` method. If
+    present, used to implement ``__contains__`` on the ``JsProxy``.
+
+``HAS_INCLUDES``
+    Signals whether or not the JavaScript object has an ``includes()`` method.
+    If present, used to implement ``__contains__`` on the ``JsProxy``. We prefer
+    to use ``has()`` to ``includes()`` if both are present.
+
+``HAS_LENGTH``
+    Signals whether or not the JavaScript object has a ``length`` or ``size``
+    property. Used to implement ``__len__`` on the ``JsProxy``.
+
+``HAS_SET``
+    Signals whether or not the JavaScript object has a ``set()`` method. If
+    present, used to implement ``__setitem__`` on the ``JsProxy``.
+
+``HAS_DISPOSE``
+    Signals whether or not the JavaScript object has a ``[Symbol.dispose]()``
+    method. If present, used to implement ``__enter__`` and ``__exit__``.
+
+``IS_ARRAY``
+    Signals whether ``Array.isArray()`` applied to the JavaScript object returns
+    ``true``. If present,  the ``JsProxy`` will be an instance of
+    ``collections.abc.MutableSequence``.
+
+``IS_ARRAY_LIKE``
+    We set this if ``Array.isArray()`` returns ``false`` and the object has a
+    ``length`` property and ``IS_ITERABLE``. If present, the ``JsProxy`` will be
+    an instance of ``collections.abc.Sequence``. This is the case for many
+    interfaces defined in the webidl such as
+    `NodeList <https://github.com/jsdom/jsdom/blob/main/lib/jsdom/living/nodes/NodeList.webidl>`_
+
+``IS_CALLABLE``
+    Signals whether the ``typeof`` the JavaScript object is ``"function"``. If
+    present, used to implement ``__call__`` on the ``JsProxy``.
+
+``IS_ERROR``
+    Signals whether the JavaScript object is an ``Error``. If so, the
+    ``JsProxy`` it will subclass ``Exception`` so it can be raised.
+
+``IS_GENERATOR``
+    Signals whether the JavaScript object is a generator. If so, the ``JsProxy``
+    will be an instance of ``collections.abc.Generator``.
+
+``IS_ITERABLE``
+    Signals whether the JavaScript object has a ``[Symbol.iterator]`` method or
+    the ``IS_PY_JSON_DICT`` flag is set. If so, we use it to implement
+    ``__iter__`` on the ``JsProxy``.
+
+``IS_ITERATOR``
+    Signals whether the JavaScript object has a ``next()`` method and no
+    ``[Symbol.asyncIterator]`` method. If so, we use it to implement
+    ``__next__`` on the ``JsProxy``. (If there is a ``[Symbol.asyncIterator]``
+    method, we assume that the ``next()`` method should be used to implement
+    ``__anext__``.)
+
+``IS_PY_JSON_DICT``
+    This is set on a ``JsProxy`` by the ``as_py_json()`` method if it is not an
+    ``Array``. When this is set, ``__getitem__`` on the ``JsProxy`` will turn
+    into attribute access on the JavaScript object. Also, the return values from
+    iterating over the proxy or indexing it will also have ``IS_PY_JSON_DICT``
+    or ``IS_PY_JSON_SEQUENCE`` set as appropriate.
+
+``IS_PY_JSON_SEQUENCE``
+    This is set on a ``JsProxy`` by the ``as_py_json()`` method if it is an
+    ``Array``. When this is set, when indexing or iterating the ``JsProxy``
+    we'll call ``as_py_json()`` on the result.
+
+``IS_MAPPING``
+    We set this if the flags ``HAS_GET``, ``HAS_LENGTH``, and ``IS_ITERABLE``
+    are set, or if ``IS_PY_JSON_DICT`` is set. In this case, the ``JsProxy``
+    will be an instance of ``collections.abc.Mapping``.
+
+``IS_MUTABLE_MAPPING``
+    We set this if the flags ``IS_MAPPING`` and ``HAS_SET`` are set or if
+    ``IS_PY_JSON_DICT`` is set. In this case, the ``JsProxy`` will be an
+    instance of ``collections.abc.MutableMapping``.
+
+
+Creating a ``JsProxy``
+~~~~~~~~~~~~~~~~~~~~~~
+
+To create a ``JsProxy`` from a JavaScript object and a value ``jsthis`` we do the
+following steps:
+
+1. calculate the appropriate type flags for the JavaScript object
+2. get or create and cache an appropriate ``JsProxy`` class with the mixins
+   appropriate for the set  of type flags that are set
+3. instantiate the class with a reference to the JavaScript object and the
+   ``jsthis`` value.
+
+The value ``jsthis`` is used to determine the value of ``this`` when calling a
+function. If ``jsobj`` is not callable, is has no effect.
+
+Here is pseudocode for the functions ``create_jsproxy`` and
+``create_jsproxy_with_flags``:
+
+.. code-block:: python
+
+    def create_jsproxy(jsobj, jsthis=Js_undefined):
+        # For the definition of ``compute_type_flags``, see "Determining which flags to set".
+        return create_jsproxy_with_flags(compute_type_flags(jsobj), jsobj, jsthis)
+
+    def create_jsproxy_with_flags(type_flags, jsobj, jsthis):
+        cls = get_jsproxy_class(type_flags)
+        return cls.__new__(jsobj, jsthis)
+
+The most important logic is for creating the classes, which works approximately
+as follows:
+
+.. code-block:: python
+
+    @functools.cache
+    def get_jsproxy_class(type_flags):
+        flag_mixin_pairs = [
+            (HAS_GET, JsProxyHasGetMixin),
+            (HAS_HAS, JsProxyHasHasMixin),
+            # ...
+            (IS_PY_JSON_DICT, JsPyJsonDictMixin)
+        ]
+        bases = [mixin for flag, mixin in flag_mixin_pairs if flag & type_flags]
+        bases.insert(0, JsProxy)
+        if type_flags & IS_ERROR:
+            # We want JsException to be pickleable so it needs a distinct name
+            name = "pyodide.ffi.JsException"
+            bases.append(Exception)
+        else:
+            name = "pyodide.ffi.JsProxy"
+        ns = {"_js_type_flags": type_flags}
+        # Note: The actual way that we build the class does not result in the
+        # mixins appearing as entries on the mro.
+        return JsProxyMeta.__new__(JsProxyMeta, name, tuple(bases), ns)
+
+
+The ``JsProxy`` Metaclass
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+This metaclass overrides subclass checks so that if one ``JsProxy`` class has a
+superset of the flags of another ``JsProxy`` class, we report it as a subclass.
+
+.. code:: python
+
+    class _JsProxyMetaClass(type):
+        def __instancecheck__(cls, instance):
+            return cls.__subclasscheck__(type(instance))
+
+        def __subclasscheck__(cls, subcls):
+            if type.__subclasscheck__(cls, subcls):
+                return True
+            if not hasattr(subclass, "_js_type_flags"):
+                return False
+
+            subcls_flags = subcls._js_type_flags
+            # Check whether the flags on subcls are a subset of the flags on cls
+            return cls._js_type_flags & subcls_flags == subcls_flags
+
+
+The ``JsProxy`` Base Class
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The most complicated part of the ``JsProxy`` base class is the implementation of
+``__getattribute__``, ``__setattr__``, and ``__delattr__``. For
+``__getattribute__``, we first check if an attribute is defined on the Python
+object itself by calling ``object.__getattribute__()``. Otherwise, we look up
+the attribute on the JavaScript object.
+
+
+For ``__setattr__`` and ``__delattr__``, we set the keys "__loader__",
+"__name__", "__package__", "__path__", and "__spec__" on the Python object
+itself. All other values are set/deleted on the underlying JavaScript object.
+This is to allow JavaScript objects to serve as Python modules without modifying
+them.
+
+As an odd special case, if the object is an ``Array``, we filter out the
+``keys`` method. We also remove it from the results of ``dir()``. This is to
+ensure that ``dict.update()`` behaves correctly when passed a JavaScript
+``Array``. We want the following behavior:
+
+.. code:: python
+
+    d = {}
+    d.update(run_js("[['a', 'b'], [1, 2]]"))
+    assert d == {"a" : "b", 1 : 2}
+    # The result if we didn't filter out Array.keys would be as follows:
+    assert d != {1 : ['a', 'b'], 2: [1, 2]}
+
+A possible alternative would be to teach add special case handling for
+JavaScript arrays to ``dict.update()``.
+
+It is common for JavaScript objects to have important methods that are named the
+same thing as a Python reserved word (for example, ``Array.from``,
+``Promise.then``). We access these from Python using the valid identifiers
+``from_`` and ``then_``. If we want to access a JavaScript property called
+``then_`` we access it from ``then__`` and so on. So if the attribute is a
+Python reserved word followed by one or more underscores, we remove one
+underscore from the end.   The following helper function is used for this:
+
+.. code:: python
+
+    def normalize_python_reserved_words(attr):
+        stripped = attr.strip("_")
+        if not is_python_reserved_word(stripped):
+            return attr
+        if stripped != attr:
+            return attr[:-1]
+        return attr
+
+We need the following JavaScript function to implement ``__bool__``. In
+JavaScript, empty containers are truthy but in Python they should be falsey, so
+we detect empty containers and return ``false``.
+
+.. code:: javascript
+
+    function js_bool(val) {
+        // if it's a falsey JS object, return false
+        if (!val) {
+            return false;
+        }
+        // We also want to return false on container types with size 0.
+        if (val.size === 0) {
+            // Return true for HTML elements even if they have a size of zero.
+            if (val instanceof HTMLElement) {
+                return true;
+            }
+            return false;
+        }
+        // A function with zero arguments has a length property equal to
+        // zero. Make sure we return true for this.
+        if (val.length === 0 && Array.isArray(val)) {
+            return false;
+        }
+        // An empty buffer
+        if (val.byteLength === 0) {
+            return false;
+        }
+        return true;
+
+    }
+
+The following helper function is used to implement ``__dir__``. It walks the
+prototype chain and accumulates all keys, filtering out keys that start with
+numbers (not valid Python identifiers) and reversing the
+``normalize_python_reserved_words`` transform. We also filter out the
+``Array.keys`` method.
+
+.. code:: javascript
+
+    function js_dir(jsobj) {
+        let result = [];
+        let orig = jsobj;
+        do {
+            let keys = Object.getOwnPropertyNames(jsobj);
+            result.push(...keys);
+        } while ((jsobj = Object.getPrototypeOf(jsobj)));
+        // Filter out numbers
+        result = result.filter((s) => {
+            let c = s.charCodeAt(0);
+            return c < 48 || c > 57;
+        });
+
+        // Filter out "keys" key from an array
+        if (Array.isArray(orig)) {
+            result = result.filter((s) => {
+                return s !== "keys";
+            });
+        }
+
+        // If the key is a reserved word followed by 0 or more underscores,
+        // add an extra underscore to reverse the transformation applied by
+        // normalizeReservedWords.
+        result = result.map((word) =>
+            isReservedWord(word.replace(/_*$/, "")) ? word + "_" : word,
+        );
+
+        return result;
+    };
+
+
+.. code:: python
+
+    class JsProxy:
+        def __getattribute__(self, attr):
+            try:
+                return object.__getattribute__(self, attr)
+            except AttributeError:
+                pass
+            if attr == "keys" and Array.isArray(self):
+                raise AttributeError(attr)
+
+            attr = normalize_python_reserved_words(attr)
+            js_getattr = run_js(
+                """
+                (jsobj, attr) => jsobj[attr]
+                """
+            )
+            js_hasattr = run_js(
+                """
+                (jsobj, attr) => attr in jsobj
+                """
+            )
+            result = js_getattr(self, attr)
+            if isjsfunction(result):
+                result = result.__get__(self)
+            if result is None and not js_hasattr(self, attr):
+                raise AttributeError(attr)
+            return result
+
+        def __setattr__(self, attr, value):
+            if attr in ["__loader__", "__name__", "__package__", "__path__", "__spec__"]:
+                return object.__setattr__(self, attr, value)
+            attr = normalize_python_reserved_words(attr)
+            js_setattr = run_js(
+                """
+                (jsobj, attr) => {
+                    jsobj[attr] = value;
+                }
+                """
+            )
+            js_setattr(self, attr, value)
+
+        def __delattr__(self, attr):
+            if attr in ["__loader__", "__name__", "__package__", "__path__", "__spec__"]:
+                return object.__delattr__(self, attr)
+            attr = normalize_python_reserved_words(attr)
+            js_delattr = run_js(
+                """
+                (jsobj, attr) => {
+                    delete jsobj[attr];
+                }
+                """
+            )
+            js_delattr(self, attr)
+
+        def __dir__(self):
+            return object.__dir__(self) + js_dir(self)
+
+        def __eq__(self, other):
+            if not isinstance(other, JsProxy):
+                return False
+            js_eq = run_js("(x, y) => x === y")
+            return js_eq(self, other)
+
+        def __ne__(self, other):
+            if not isinstance(other, JsProxy):
+                return True
+            js_neq = run_js("(x, y) => x !== y")
+            return js_neq(self, other)
+
+        def __repr__(self):
+            js_repr = run_js("x => x.toString()")
+            return js_repr(self)
+
+        def __bool__(self):
+            return js_bool(self)
+
+        @property
+        def js_id(self):
+            """
+            This returns an integer with the property that jsproxy1 == jsproxy2
+            if and only if jsproxy1.js_id == jsproxy2.js_id. There is no way to
+            express the implementation in pseudocode.
+            """
+            raise NotImplementedError
+
+        def as_py_json(self):
+            """
+            This is actually a mixin method. We leave it out if any of the flags
+            IS_CALLABLE, IS_DOUBLE_PROXY, IS_ERROR, or IS_ITERATOR
+            is set.
+            """
+            flags = self._js_type_flags
+            if (flags & (IS_ARRAY | IS_ARRAY_LIKE)):
+                flags |= IS_PY_JSON_SEQUENCE
+            else:
+                flags |= IS_PY_JSON_DICT
+            return create_jsproxy_with_flags(flags, self, self.jsthis)
+
+        def to_py(self, *, depth=-1, default_converter=None):
+            """
+            See section on deep conversions.
+            """
+            ...
+
+        def object_entries(self):
+            js_object_entries = run_js("x => Object.entries(x)")
+            return js_object_entries(self)
+
+        def object_keys(self):
+            js_object_keys = run_js("x => Object.keys(x)")
+            return js_object_keys(self)
+
+        def object_values(self):
+            js_object_values = run_js("x => Object.values(x)")
+            return js_object_values(self)
+
+        def to_weakref(self):
+            js_weakref = run_js("x => new WeakRef(x)")
+            return js_weakref(self)
+
+We need the following function which calls the ``as_py_json()`` method on
+``value`` if it is present:
+
+.. code-block:: python
+
+    def maybe_as_py_json(value):
+        if (
+            isinstance(value, JsProxy)
+            and hasattr(value, as_py_json)
+        ):
+            return value.as_py_json()
+        return value
+
+
+Determining Which Flags to Set
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+We need the helper function ``getTypeTag``:
+
+.. code:: javascript
+
+    function getTypeTag(x) {
+        try {
+            return Object.prototype.toString.call(x);
+        } catch (e) {
+            // Catch and ignore errors
+            return "";
+        }
+    }
+
+We use the following function to determine which flags to set:
+
+.. code:: javascript
+
+    function compute_type_flags(obj, is_py_json) {
+        let type_flags = 0;
+
+        const typeTag = getTypeTag(obj);
+        const hasLength =
+            isArray || (hasProperty(obj, "length") && typeof obj !== "function");
+
+        SET_FLAG_IF_HAS_METHOD(HAS_GET, "get");
+        SET_FLAG_IF_HAS_METHOD(HAS_SET, "set");
+        SET_FLAG_IF_HAS_METHOD(HAS_HAS, "has");
+        SET_FLAG_IF_HAS_METHOD(HAS_INCLUDES, "includes");
+        SET_FLAG_IF(
+            HAS_LENGTH,
+            hasProperty(obj, "size") || hasLength
+        );
+        SET_FLAG_IF_HAS_METHOD(HAS_DISPOSE, Symbol.dispose);
+        SET_FLAG_IF(IS_CALLABLE, typeof obj === "function");
+        SET_FLAG_IF(IS_ARRAY, Array.isArray(obj));
+        SET_FLAG_IF(
+            IS_ARRAY_LIKE,
+            !isArray && hasLength && (type_flags & IS_ITERABLE));
+        SET_FLAG_IF(IS_DOUBLE_PROXY, isPyProxy(obj));
+        SET_FLAG_IF(IS_GENERATOR, typeTag === "[object Generator]");
+        SET_FLAG_IF_HAS_METHOD(IS_ITERABLE, Symbol.iterator);
+        SET_FLAG_IF(
+            IS_ERROR,
+            hasProperty(obj, "name") &&
+            hasProperty(obj, "message") &&
+            (hasProperty(obj, "stack") || constructorName === "DOMException") &&
+            !(type_flags & IS_CALLABLE)
+        );
+
+        if (is_py_json && type_flags & (IS_ARRAY | IS_ARRAY_LIKE)) {
+            type_flags |= IS_PY_JSON_SEQUENCE;
+        } else if (
+            is_py_json &&
+            !(type_flags & (IS_DOUBLE_PROXY | IS_ITERATOR | IS_CALLABLE | IS_ERROR))
+        ) {
+            type_flags |= IS_PY_JSON_DICT;
+        }
+        const mapping_flags = HAS_GET | HAS_LENGTH | IS_ITERABLE;
+        const mutable_mapping_flags = mapping_flags | HAS_SET;
+        SET_FLAG_IF(IS_MAPPING, type_flags & (mapping_flags === mapping_flags));
+        SET_FLAG_IF(
+            IS_MUTABLE_MAPPING,
+            type_flags & (mutable_mapping_flags === mutable_mapping_flags),
+        );
+
+        SET_FLAG_IF(IS_MAPPING, type_flags & IS_PY_JSON_DICT);
+        SET_FLAG_IF(IS_MUTABLE_MAPPING, type_flags & IS_PY_JSON_DICT);
+
+        return type_flags;
+    }
+
+The ``HAS_GET`` Mixin
+~~~~~~~~~~~~~~~~~~~~~
+
+If a JavaScript ``get()`` method is present, we define ``__getitem__`` as
+follows. If a ``has()`` method is also present, we'll use it to decide whether
+an ``undefined`` return value should be treated as a key error or as ``None``.
+If no ``has()`` method is present, ``undefined`` is treated as ``None``.
+
+.. code-block:: javascript
+
+    function js_get(jsobj, item) {
+        const result = jsobj.get(item);
+        if (result !== undefined) {
+            return result;
+        }
+        if (hasMethod(obj, "has") && !obj.has(key)) {
+            throw new PythonKeyError(item);
+        }
+        return undefined;
+    }
+
+.. code-block:: python
+
+    class JsProxyHasGetMixin:
+        def __getitem__(self, item):
+            result = js_get(self, item)
+            if self._js_type_flags & IS_PY_JSON_DICT:
+                result = maybe_as_py_json(result)
+            return result
+
+The ``HAS_SET`` Mixin
+~~~~~~~~~~~~~~~~~~~~~
+
+If a ``set()`` method is present, we assume a ``delete()`` method is also
+present and define ``__setitem__`` and ``__delitem__`` as follows:
+
+.. code-block:: python
+
+    class JsProxyHasSetMixin:
+        def __setitem__(self, item, value):
+            js_set = run_js(
+                """
+                (jsobj, item, value) => {
+                    jsobj.set(item, value);
+                }
+                """
+            )
+            js_set(self, item, value)
+
+        def __delitem__(self, item, value):
+            js_delete = run_js(
+                """
+                (jsobj, item) => {
+                    jsobj.delete(item);
+                }
+                """
+            )
+            js_delete(self, item)
+
+The ``HAS_HAS`` Mixin
+~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    class JsProxyHasHasMixin:
+        def __contains__(self, item):
+            js_has = run_js(
+                """
+                (jsobj, item) => jsobj.has(item);
+                """
+            )
+            return js_has(self, item)
+
+
+The ``HAS_INCLUDES`` Mixin
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    class JsProxyHasIncludesMixin:
+        def __contains__(self, item):
+            js_includes = run_js(
+                """
+                (jsobj, item) => jsobj.includes(item);
+                """
+            )
+            return js_includes(self, item)
+
+
+The ``HAS_LENGTH`` Mixin
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+We prefer to use the ``size`` attribute if present and a number and if not fall
+back to returning the ``length``. If a JavaScript error is raised when looking
+up either field, we allow it to propagate into Python as a
+``JavaScriptException``.
+
+.. code-block:: python
+
+    class JsProxyHasLengthMixin:
+        def __len__(self, item):
+            js_len = run_js(
+                """
+                (jsobj) => {
+                    const size = val.size;
+                    if (typeof size === "number") {
+                        return size;
+                    }
+                    return val.length
+                }
+                """
+            )
+            result = js_len(self)
+            if not isinstance(result, int):
+                raise TypeError("object does not have a valid length")
+            if result < 0:
+                raise ValueError("length of object is negative")
+            return result
+
+The ``HAS_DISPOSE`` Mixin
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+This makes the ``JsProxy`` into a context manager where ``__enter__`` is a no-op
+and ``__exit__`` calls the ``[Symbol.dispose]()`` method.
+
+.. code-block:: python
+
+    class JsProxyContextManagerMixin:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, type, value, traceback):
+            js_symbol_dispose = run_js(
+                """
+                (jsobj) => jsobj[Symbol.dispose]()
+                """
+            )
+            js_symbol_dispose(self)
+
+
+The ``IS_ARRAY`` Mixin
+~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: javascript
+
+    function js_array_slice(jsobj, length, start, stop, step) {
+        let result;
+        if (step === 1) {
+            result = obj.slice(start, stop);
+        } else {
+            result = Array.from({ length }, (_, i) => obj[start + i * step]);
+        }
+        return result;
+    }
+
+    // we also use this for deletion by setting values to None
+    function js_array_slice_assign(obj, slicelength, start, stop, step, values) {
+        if (step === 1) {
+            obj.splice(start, slicelength, ...(values ?? []));
+            return;
+        }
+        if (values !== undefined) {
+            for (let i = 0; i < slicelength; i++) {
+                obj.splice(start + i * step, 1, values[i]);
+            }
+        }
+        for (let i = slicelength - 1; i >= 0; i --) {
+            obj.splice(start + i * step, 1);
+        }
+    }
+
+.. code-block:: python
+
+    class JsArrayMixin(MutableSequence, JsProxyHasLengthMixin):
+        def __getitem__(self, index):
+            if not isinstance(index, (int, slice)):
+                raise TypeError("Expected index to be an int or a slice")
+            length = len(self)
+            js_array_get = run_js(
+                """
+                (jsobj, index) => jsobj[index]
+                """
+            )
+            if isinstance(index, int):
+                if index >= length:
+                    raise IndexError(index)
+                if index < -length:
+                    raise IndexError(index)
+                if index < 0:
+                    index += length
+                result = js_array_get(self, index)
+                if self._js_type_flags & IS_PY_JSON_SEQUENCE:
+                    result = maybe_as_py_json(result)
+                return result
+            start = index.start
+            stop = index.stop
+            step = index.step
+            slicelength = PySlice_AdjustIndices(length, &start, &stop, &step)
+            if (slicelength <= 0) {
+                return _PyJsvArray_New();
+            }
+            result = js_array_slice(self, slicelength, start, stop, step)
+            if self._js_type_flags & IS_PY_JSON_SEQUENCE:
+                result = result.as_py_json()
+            return result
+
+
+        def __setitem__(self, index, value):
+            if not isinstance(index, (int, slice)):
+                raise TypeError("Expected index to be an int or a slice")
+            length = len(self)
+            js_array_set = run_js(
+                """
+                (jsobj, index, value) => { jsobj[index] = value; }
+                """
+            )
+            if isinstance(index, int):
+                if index >= length:
+                    raise IndexError(index)
+                if index < -length:
+                    raise IndexError(index)
+                if index < 0:
+                    index += length
+                result = js_array_set(self, index, value)
+                return
+            if not isinstance(value, Iterable):
+                raise TypeError("must assign iterable to extended slice")
+            seq = list(value)
+            start = index.start
+            stop = index.stop
+            step = index.step
+            slicelength = PySlice_AdjustIndices(length, &start, &stop, &step)
+            if step != 1 and len(seq) != slicelength:
+                raise TypeError(
+                    f"attempted to assign sequence of length {len(seq)} to"
+                    f"extended slice of length {slicelength}"
+                )
+            if step != 1 and slicelength == 0:
+                return
+            js_array_slice_assign(self, slicelength, start, stop, step, seq)
+
+        def __delitem__(self, index):
+            if not isinstance(index, (int, slice)):
+                raise TypeError("Expected index to be an int or a slice")
+            length = len(self)
+            js_array_delete = run_js(
+                """
+                (jsobj, index) => { jsobj.splice(index, 1); }
+                """
+            )
+            if isinstance(index, int):
+                if index >= length:
+                    raise IndexError(index)
+                if index < -length:
+                    raise IndexError(index)
+                if index < 0:
+                    index += length
+                result = js_array_delete(self, index)
+                return
+            start = index.start
+            stop = index.stop
+            step = index.step
+            slicelength = PySlice_AdjustIndices(length, &start, &stop, &step)
+            if step != 1 and slicelength == 0:
+                return
+            js_array_slice_assign(self, slicelength, start, stop, step, None)
+
+        def insert(self, pos, value):
+            if not isinstance(pos, int):
+                raise TypeError("Expected an integer")
+            js_insert = run_js(
+                """
+                (jsarr, pos, value) => { jsarr.splice(pos, value); }
+                """
+            )
+            js_insert(self, pos, value)
+
+The ``IS_ARRAY_LIKE`` Mixin
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+.. code-block:: python
+
+    class JsArrayLikeMixin(MutableSequence, JsProxyHasLengthMixin):
+        def __getitem__(self, index):
+            if not isinstance(index, int):
+                raise TypeError("Expected index to be an int")
+            JsArrayMixin.__getitem__(self, index)
+
+        def __setitem__(self, index, value):
+            if not isinstance(index, int):
+                raise TypeError("Expected index to be an int")
+            JsArrayMixin.__setitem__(self, index, value)
+
+        def __delitem__(self, index):
+            if not isinstance(index, int):
+                raise TypeError("Expected index to be an int")
+            JsArrayMixin.__delitem__(self, index, value)
+
+The ``IS_CALLABLE`` Mixin
+~~~~~~~~~~~~~~~~~~~~~~~~~
+We already gave more accurate C code for calling a ``JsCallable``. See in
+particular the definition of ``JsMethod_ConvertArgs()`` given there.
+
+.. code-block:: python
+
+    class JsCallableMixin:
+        def __get__(self, obj):
+            """Return a new jsproxy bound to jsthis with the same JS object"""
+            return create_jsproxy(self, jsthis=obj)
+
+        def __call__(self, *args, **kwargs):
+            """See the description of JsMethod_Vectorcall"""
+
+        def new(self, *args, **kwargs):
+            pyproxies = []
+            jsargs = JsMethod_ConvertArgs(args, kwargs, pyproxies)
+
+            do_construct = run_js(
+                """
+                (jsfunc, jsargs) =>
+                    Reflect.construct(jsfunc, jsargs)
+                """
+            )
+            result = do_construct(self, jsargs)
+            msg = (
+                "This borrowed proxy was automatically destroyed "
+                "at the end of a function call."
+            )
+            for px in pyproxies:
+                px.destroy(msg)
+            return result
+
+The ``IS_ERROR`` Mixin
+~~~~~~~~~~~~~~~~~~~~~~
+
+In this case, we inherit from both ``Exception`` and ``JsProxy``. We also make
+sure that the resulting class is pickleable.
+
+The ``IS_ITERABLE`` Mixin
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+If the iterable has the ``IS_PY_JSON_DICT`` flag set, we iterate over the object
+keys. Otherwise, call ``obj[Symbol.iterator]()``. If either
+``IS_PY_JSON_SEQUENCE`` or ``IS_PY_JSON_DICT``, we call ``maybe_as_py_json`` on
+the iteration results.
+
+.. code-block:: python
+
+    def wrap_with_maybe_as_py_json(it):
+        try:
+            while val := it.next()
+                yield maybe_as_py_json(val)
+        except StopIteration(result):
+            return maybe_as_py_json(result)
+
+
+    class JsIterableMixin:
+        def __iter__(self):
+            pyjson = self._js_type_flags & (IS_PY_JSON_SEQUENCE | IS_PY_JSON_DICT)
+            pyjson_dict = self._js_type_flags & IS_PY_JSON_DICT
+            js_get_iter = run_js(
+                """
+                (obj) => obj[Symbol.iterator]()
+                """
+            )
+
+            if pyjson_dict:
+                result = iter(self.object_keys())
+            else:
+                result = js_get_iter(self)
+
+            if pyjson:
+                result = wrap_with_maybe_as_py_json(result)
+            return result
+
+
+The ``IS_ITERATOR`` Mixin
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The JavaScript ``next`` method returns an ``IteratorResult`` which has a
+``done`` field and a ``value`` field. If ``done`` is ``true``, we have to raise
+a ``StopIteration`` exception to convert to the Python iterator protocol.
+
+.. code-block:: python
+
+    class JsIteratorMixin:
+        def __iter__(self):
+            return self
+
+        def send(self, arg):
+            js_next = run_js(
+                """
+                (obj, arg) => obj.next(arg)
+                """
+            )
+            it_result = js_next(self, arg)
+            value = it_result.value
+            if it_result.done:
+                raise StopIteration(value)
+            return value
+
+        def __next__(self):
+            return self.send(None)
+
+
+The ``IS_GENERATOR`` Mixin
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Python generators have a ``close()`` method which takes no arguments instead of
+a ``return()`` method. We also have to translate ``gen.throw(GeneratorExit)``
+into ``jsgen.return_()``. It is possible to call ``jsgen.return_(val)`` directly
+if there is a need to return a specific value.
+
+.. code-block:: python
+
+    class JsGeneratorMixin(JsIteratorMixin):
+        def throw(self, exc):
+            if isinstance(exc, GeneratorExit):
+                js_throw = run_js(
+                    """
+                    (obj, exc) => obj.return()
+                    """
+                )
+            else:
+                js_throw = run_js(
+                    """
+                    (obj, exc) => obj.throw(exc)
+                    """
+                )
+            it_result = js_throw(self, exc)
+            # if the error wasn't caught it will get raised back out.
+            # now handle the case where the error got caught.
+            value = it_result.value
+            if self._js_type_flags & IS_PY_JSON_SEQUENCE:
+                value = maybe_as_py_json(value)
+            if it_result.done:
+                raise StopIteration(value)
+            return value
+
+        def close(self):
+            self.throw(GeneratorExit)
+
+The ``IS_MAPPING`` Mixin
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+If the ``IS_MAPPING`` flag is set, we implement all of the ``Mapping`` methods.
+We only set this flag when there are enough other flags set that the abstract
+``Mapping`` methods are defined. We use the default implementations for all the
+mixin methods.
+
+The ``IS_MUTABLE_MAPPING`` Mixin
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+If the ``IS_MUTABLE_MAPPING`` flag is set, we implement all of the
+``MutableMapping`` methods. We only set this flag when there are enough other
+flags set that the abstract ``MutableMapping`` methods are defined. We use the
+default implementations for all the mixin methods.
+
+
+The ``IS_PY_JSON_SEQUENCE`` Mixin
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+This flag only ever appears with ``IS_ARRAY``. It changes the behavior of
+``JsArray.__getitem__`` to apply ``maybe_as_py_json()`` to the result.
+
+The ``IS_PY_JSON_DICT`` Mixin
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    class JsPyJsonDictMixin(MutableMapping):
+        def __getitem__(self, key):
+            if not isinstance(key, str):
+                raise KeyError(key)
+            js_get = run_js(
+                """
+                (jsobj, key) => jsobj[key]
+                """
+            )
+            result = js_get(self, key)
+            if result is None and not key in self:
+                raise KeyError(key)
+            return maybe_as_py_json(result)
+
+        def __setitem__(self, key, value):
+            if not isinstance(key, str):
+                raise TypeError("only keys of type string are supported")
+            js_set = run_js(
+                """
+                (jsobj, key, value) => {
+                    jsobj[key] = value;
+                }
+                """
+            )
+            js_set(self, key, value)
+
+        def __delitem__(self, key):
+            if not isinstance(key, str):
+                raise TypeError("only keys of type string are supported")
+            if not key in self:
+                raise KeyError(key)
+            js_delete = run_js(
+                """
+                (jsobj, key) => {
+                    delete jsobj[key];
+                }
+                """
+            )
+            js_delete(self, key)
+
+        def __contains__(self, key):
+            if not isinstance(key, str):
+                return False
+            js_contains = run_js(
+                """
+                (jsobj, key) => key in jsobj
+                """
+            )
+            return js_contains(self, key)
+
+        def __len__(self):
+            return sum(1 for _ in self)
+
+        def __iter__(self):
+            # defined by IS_ITERABLE mixin, see implementation there.
+
+
+The ``IS_DOUBLE_PROXY`` Mixin
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+In this case the object is a ``JsProxy`` of a ``PyProxy``. We add an extra
+``unwrap()`` method that returns the inner Python object.
+
+
+PyProxy
+-------
+
+We define 12 mixins that a Python object may support that affect the type of the
+PyProxy we make from it.
+
+``HAS_GET``
+    We set this flag if the Python object has a ``__getitem__`` method. If
+    present, we use it to implement a ``get()`` method on the ``PyProxy``.
+
+``HAS_SET``
+    We set this flag if the Python object has a ``__setitem__`` method. If
+    present, we use it to implement a ``set()`` method on the ``PyProxy``.
+
+``HAS_CONTAINS``
+    We set this flag if the Python object has a ``__contains__`` method. If
+    present, we use it to implement a ``has()`` method on the ``PyProxy``.
+
+``HAS_LENGTH``
+    We set this flag if the Python object has a ``__len__`` method. If present,
+    we use it to implement a ``length`` getter on the ``PyProxy``.
+
+``IS_CALLABLE``
+    We set this flag if the Python object has a ``__call__`` method. If present,
+    we make the ``PyProxy`` callable.
+
+``IS_DICT``
+    We set this flag if the Python object is of exact type ``dict``. If present,
+    we will make property ``pyproxy.some_property`` fall back to
+    ``pyobj.__getitem__("some_property")`` if ``getattr(pyobj, "some_property")``
+    raises an ``AttributeError``.
+
+``IS_GENERATOR``
+    We set this flag if the Python object is an instance of
+    ``collections.abc.Generator``. If present, we make the ``PyProxy`` implement
+    the methods of a JavaScript generator.
+
+``IS_ITERABLE``
+    We set this flag if the Python object has a ``__iter__`` method. If present,
+    we use it to implement a ``[Symbol.iterator]`` method on the ``PyProxy``.
+
+``IS_ITERATOR``
+    We set this flag if the Python object has a ``__next__`` method. If present,
+    we use it to implement a ``next()`` method on the ``PyProxy``.
+
+``IS_SEQUENCE``
+    We set this flag if the Python object is an instance of
+    ``collections.abc.Sequence``. If it is present, we use it to implement all
+    of the ``Array.prototype`` methods that don't mutate on the ``PyProxy``.
+
+``IS_MUTABLE_SEQUENCE``
+    We set this flag if the Python object is an instance of
+    ``collections.abc.MutableSequence``. If it is present, we use it to implement
+    all ``Array.prototype`` methods on the ``PyProxy``.
+
+``IS_JS_JSON_DICT``
+    We set this flag when the ``asJsJson()`` method is used on a dictionary. If
+    this flag is set, property access on the ``PyProxy`` will _only_ look at
+    values from ``__getitem__`` and not at attributes on the Python object. We
+    also will call ``asJsJson()`` on the result of indexing or iterating
+    the ``PyProxy``.
+
+``IS_JS_JSON_SEQUENCE``
+    We set this flag when the ``asJsJson()`` is used on a ``Sequence``. If this
+    flag is set, we will call ``asJsJson()`` on the result of indexing or
+    iterating the ``PyProxy``.
+
+
+A ``PyProxy`` is made up of a mixture of a JavaScript class and a collection of
+ES6 ``Proxy`` handlers. Depending on which flags are present, we construct our
+class out of an appropriate collection of mixins and an appropriate choice of
+handlers.
+
+When a ``PyProxy`` is created, we increment the reference count of the wrapped
+Python object. When a ``PyProxy`` is destroyed, we decrement the reference count
+and mark it as destroyed. As a result, if we attempt to do anything with the
+``PyProxy``, we will call ``_Py_js2python()`` on it and an error will be thrown.
+
+Creating a ``PyProxy``
+~~~~~~~~~~~~~~~~~~~~~~
+
+Given a collection of type flags, we use the following function to generate the
+``PyProxy`` class:
+
+.. code-block:: javascript
+
+    let pyproxyClassMap = new Map();
+    function getPyProxyClass(flags: number) {
+        let result = pyproxyClassMap.get(flags);
+        if (result) {
+            return result;
+        }
+        let descriptors: any = {};
+        const FLAG_MIXIN_PAIRS: [number, any][] = [
+            [HAS_CONTAINS, PyContainsMixin],
+            // ... other flag mixin pairs
+            [IS_MUTABLE_SEQUENCE, PyMutableSequenceMixin],
+        ];
+        for (let [feature_flag, methods] of FLAG_MIXIN_PAIRS) {
+            if (flags & feature_flag) {
+                Object.assign(
+                    descriptors,
+                    Object.getOwnPropertyDescriptors(methods.prototype),
+                );
+            }
+        }
+        // Use base constructor (just throws an error if construction is attempted).
+        descriptors.constructor = Object.getOwnPropertyDescriptor(
+            PyProxyProto,
+            "constructor",
+        );
+        // $$flags static field
+        Object.assign(
+            descriptors,
+            Object.getOwnPropertyDescriptors({ $$flags: flags }),
+        );
+        // We either inherit PyProxyFunction as the base class if we're callable or
+        // from PyProxy if we're not.
+        const superProto = flags & IS_CALLABLE ? PyProxyFunctionProto : PyProxyProto;
+        const subProto = Object.create(superProto, descriptors);
+        function NewPyProxyClass() {}
+        NewPyProxyClass.prototype = subProto;
+        pyproxyClassMap.set(flags, NewPyProxyClass);
+        return NewPyProxyClass;
+    }
+
+To create a ``PyProxy`` we also need to be able to get the appropriate handlers:
+
+.. code-block:: javascript
+
+    function getPyProxyHandlers(flags) {
+        if (flags & IS_JS_JSON_DICT) {
+            return PyProxyJsJsonDictHandlers;
+        }
+        if (flags & IS_DICT) {
+            return PyProxyDictHandlers;
+        }
+        if (flags & IS_SEQUENCE) {
+            return PyProxySequenceHandlers;
+        }
+        return PyProxyHandlers;
+    }
+
+We use the following function to create the target object for the ES6 proxy:
+
+.. code-block:: javascript
+
+    function createTarget(flags) {
+        const pyproxyClass = getPyProxyClass(flags);
+        if (!(flags & IS_CALLABLE)) {
+            return Object.create(cls.prototype);
+        }
+        // In this case we are effectively subclassing Function in order to ensure
+        // that the proxy is callable. With a Content Security Protocol that doesn't
+        // allow unsafe-eval, we can't invoke the Function constructor directly. So
+        // instead we create a function in the universally allowed way and then use
+        // `setPrototypeOf`. The documentation for `setPrototypeOf` says to use
+        // `Object.create` or `Reflect.construct` instead for performance reasons
+        // but neither of those work here.
+        const target = function () {};
+        Object.setPrototypeOf(target, cls.prototype);
+        // Remove undesirable properties added by Function constructor. Note: we
+        // can't remove "arguments" or "caller" because they are not configurable
+        // and not writable
+        delete target.length;
+        delete target.name;
+        // prototype isn't configurable so we can't delete it but it is writable.
+        target.prototype = undefined;
+        return target;
+    }
+
+``createPyProxy`` takes the following options:
+
+flags
+    If this is passed, we use the passed flags rather than feature
+    detecting the object again.
+
+props
+    Information that not shared with other PyProxies of the same lifetime.
+
+shared
+    Data that is shared between all proxies with the same lifetime as this one.
+
+gcRegister
+    Should we register this with the JavaScript garbage collector?
+
+
+.. code-block:: javascript
+
+    const pyproxyAttrsSymbol = Symbol("pyproxy.attrs");
+    function createPyProxy(
+        pyObjectPtr: number,
+        {
+            flags,
+            props,
+            shared,
+            gcRegister,
+        }
+    ) {
+        if (gcRegister === undefined) {
+            // register by default
+            gcRegister = true;
+        }
+
+        // See the section "Determining which flags to set" for the definition of
+        // get_pyproxy_flags
+        const pythonGetFlags = makePythonFunction("get_pyproxy_flags");
+        flags ??= pythonGetFlags(pyObjectPtr);
+        const target = createTarget(flags);
+        const handlers = getPyProxyHandlers(flags);
+        const proxy = new Proxy(target, handlers);
+
+        props = Object.assign(
+            { isBound: false, captureThis: false, boundArgs: [], roundtrip: false },
+            props,
+        );
+
+        // If shared was passed the new PyProxy will have a shared lifetime
+        // with some other PyProxy.
+        // This happens in asJsJson(), bind(), and captureThis().
+        // It specifically does not happen in copy()
+        if (!shared) {
+            shared = {
+                pyObjectPtr,
+                destroyed_msg: undefined,
+                gcRegistered: false,
+            };
+            _Py_IncRef(pyObjectPtr);
+            if (gcRegister) {
+                gcRegisterPyProxy(shared);
+            }
+        }
+        target[pyproxyAttrsSymbol] = { shared, props };
+        return proxy;
+    }
+
+The ``PyProxy`` Base Class
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The default handlers are as follows:
+
+.. code-block:: javascript
+
+    function filteredHasKey(jsobj, jskey, filterProto) {
+        let result = jskey in jsobj;
+        if (jsobj instanceof Function) {
+          // If we are a PyProxy of a callable we have to subclass function so that if
+          // someone feature detects callables with `instanceof Function` it works
+          // correctly. But the callable might have attributes `name` and `length` and
+          // we don't want to shadow them with the values from `Function.prototype`.
+          result &&= !(
+            ["name", "length", "caller", "arguments"].includes(jskey) ||
+            // we are required by JS law to return `true` for `"prototype" in pycallable`
+            // but we are allowed to return the value of `getattr(pycallable, "prototype")`.
+            // So we filter prototype out of the "get" trap but not out of the "has" trap
+            (filterProto && jskey === "prototype")
+          );
+        }
+        return result;
+    }
+
+    const PyProxyHandlers = {
+        isExtensible() {
+            return true;
+        },
+        has(jsobj, jskey) {
+            // Must report "prototype" in proxy when we are callable.
+            // (We can return the wrong value from "get" handler though.)
+            if (filteredHasKey(jsobj, jskey, false)) {
+                return true;
+            }
+            // hasattr will crash if given a Symbol.
+            if (typeof jskey === "symbol") {
+                return false;
+            }
+            if (jskey.startsWith("$")) {
+                jskey = jskey.slice(1);
+            }
+            const pythonHasAttr = makePythonFunction("hasattr");
+            return pythonHasAttr(jsobj, jskey);
+        },
+        get(jsobj, jskey) {
+            // Preference order:
+            // 1. stuff from JavaScript
+            // 2. the result of Python getattr
+            // pythonGetAttr will crash if given a Symbol.
+            if (typeof jskey === "symbol" || filteredHasKey(jsobj, jskey, true)) {
+                return Reflect.get(jsobj, jskey);
+            }
+            if (jskey.startsWith("$")) {
+                jskey = jskey.slice(1);
+            }
+            // 2. The result of getattr
+            const pythonGetAttr = makePythonFunction("getattr");
+            return pythonGetAttr(jsobj, jskey);
+        },
+        set(jsobj, jskey, jsval) {
+            let descr = Object.getOwnPropertyDescriptor(jsobj, jskey);
+            if (descr && !descr.writable && !descr.set) {
+            return false;
+            }
+            // pythonSetAttr will crash if given a Symbol.
+            if (typeof jskey === "symbol" || filteredHasKey(jsobj, jskey, true)) {
+                return Reflect.set(jsobj, jskey, jsval);
+            }
+            if (jskey.startsWith("$")) {
+                jskey = jskey.slice(1);
+            }
+            const pythonSetAttr = makePythonFunction("setattr");
+            pythonSetAttr(jsobj, jskey, jsval);
+            return true;
+        },
+        deleteProperty(jsobj, jskey: string | symbol): boolean {
+            let descr = Object.getOwnPropertyDescriptor(jsobj, jskey);
+            if (descr && !descr.configurable) {
+                // Must return "false" if "jskey" is a nonconfigurable own property.
+                // Strict mode JS will throw an error here saying that the property cannot
+                // be deleted.
+                return false;
+            }
+            if (typeof jskey === "symbol" || filteredHasKey(jsobj, jskey, true)) {
+                return Reflect.deleteProperty(jsobj, jskey);
+            }
+            if (jskey.startsWith("$")) {
+                jskey = jskey.slice(1);
+            }
+            const pythonDelAttr = makePythonFunction("delattr");
+            pythonDelAttr(jsobj, jskey);
+            return true;
+        },
+        ownKeys(jsobj) {
+            const pythonDir = makePythonFunction("dir");
+            const result = pythonDir(jsobj).toJs();
+            result.push(...Reflect.ownKeys(jsobj));
+            return result;
+        },
+        apply(jsobj: PyProxy & Function, jsthis: any, jsargs: any): any {
+            return jsobj.apply(jsthis, jsargs);
+        },
+    };
+
+And the base class has the following methods:
+
+.. code-block:: javascript
+
+    class PyProxy {
+        constructor() {
+            throw new TypeError("PyProxy is not a constructor");
+        }
+        get [Symbol.toStringTag]() {
+            return "PyProxy";
+        }
+        static [Symbol.hasInstance](obj: any): obj is PyProxy {
+            return [PyProxy, PyProxyFunction].some((cls) =>
+                Function.prototype[Symbol.hasInstance].call(cls, obj),
+            );
+        }
+        get type() {
+            const pythonType = makePythonFunction(`
+                def python_type(obj):
+                    ty = type(obj)
+                    if ty.__module__  in ['builtins', 'main']:
+                        return ty.__name__
+                    return ty.__module__ + "." + ty.__name__
+            `);
+            return pythonType(this);
+        }
+        toString() {
+            const pythonStr = makePythonFunction("str");
+            return pythonStr(this);
+        }
+        destroy(options) {
+            const { shared } = proxy[pyproxyAttrsSymbol];
+            if (!shared.pyObjectPtr) {
+                // already destroyed
+                return;
+            }
+            shared.pyObjectPtr = 0;
+            shared.destroyed_msg = options.message ?? "Object has already been destroyed";
+            _Py_DecRef(shared.pyObjectPtr);
+        }
+        [Symbol.dispose]() {
+            this.destroy();
+        }
+        copy() {
+            const { shared, props } = proxy[pyproxyAttrsSymbol];
+            // Don't pass shared as an option since we want this new PyProxy to
+            // have a distinct lifetime from the one we are copying.
+            return createPyProxy(shared.pyObjectPtr, {
+                flags: this.$$flags,
+                props: attrs.props,
+            });
+        }
+        toJs(options) {
+            // See the definition of to_js in "Deep conversions".
+        }
+    }
+
+Determining Which Flags to Set
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+We separate this out into a component ``get_type_flags`` that computes flags
+which only depends on the type and a component that also depends on whether the
+``PyProxy`` has beenJsJson
+
+.. code-block:: python
+
+    def get_type_flags(ty):
+        from collections.abc import Generator, MutableSequence, Sequence
+
+        flags = 0
+        if hasattr(ty, "__len__"):
+            flags |= HAS_LENGTH
+        if hasattr(ty, "__getitem__"):
+            flags |= HAS_GET
+        if hasattr(ty, "__setitem__"):
+            flags |= HAS_SET
+        if hasattr(ty, "__contains__"):
+            flags |= HAS_CONTAINS
+        if ty is dict:
+            # Currently we don't set this on subclasses.
+            flags |= IS_DICT
+        if hasattr(ty, "__call__"):
+            flags |= IS_CALLABLE
+        if hasattr(ty, "__iter__"):
+            flags |= IS_ITERABLE
+        if hasattr(ty, "__next__"):
+            flags |= IS_ITERATOR
+        if issubclass(ty, Generator):
+            flags |= IS_GENERATOR
+        if issubclass(ty, Sequence):
+            flags |= IS_SEQUENCE
+        if issubclass(ty, MutableSequence):
+            flags |= IS_MUTABLE_SEQUENCE
+        return flags
+
+    def get_pyproxy_flags(obj, is_js_json):
+        flags = get_type_flags(type(obj))
+        if not is_js_json:
+            return flags
+        if flags & IS_SEQUENCE:
+            flags |= IS_JS_JSON_SEQUENCE
+        elif flags & HAS_GET:
+            flags |= IS_JS_JSON_DICT
+        return flags
+
+
+The ``HAS_GET`` Mixin
+~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: javascript
+
+    const pythonGetItem = makePythonFunction(`
+        def getitem(obj, key):
+            return obj[key]
+    `);
+    class PyProxyGetItemMixin {
+        get(key) {
+            let result = pythonGetItem(this, key);
+            const isJsJson = !!(this.$$flags & (IS_JS_JSON_DICT | IS_JS_JSON_SEQUENCE));
+            if (isJsJson && result.asJsJson) {
+                result = result.asJsJson();
+            }
+            return result;
+        }
+        asJsJson() {
+            const flags = this.$$flags | IS_JS_JSON_DICT;
+            const { shared, props } = this[pyproxyAttrsSymbol];
+            // Note: The PyProxy created here has the same lifetime as the PyProxy it is
+            // created from. Destroying either destroys both.
+            return createPyProxy(shared.ptr, { flags, shared, props });
+        }
+    }
+
+The ``HAS_SET`` Mixin
+~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: javascript
+
+    class PyProxySetItemMixin {
+        set(key, value) {
+            const pythonSetItem = makePythonFunction(`
+                def setitem(obj, key, value):
+                    obj[key] = value
+            `);
+            pythonSetItem(this, key, value);
+        }
+        delete(key) {
+            const pythonDelItem = makePythonFunction(`
+                def delitem(obj, key):
+                    del obj[key]
+            `);
+            pythonDelItem(this, key);
+        }
+    }
+
+The ``HAS_CONTAINS`` Mixin
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: javascript
+
+    const pythonHasItem = makePythonFunction(`
+        def hasitem(obj, key):
+            return key in obj
+    `);
+    class PyContainsMixin {
+        has(key) {
+            return pythonHasItem(this, key);
+        }
+    }
+
+The ``HAS_LENGTH`` Mixin
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: javascript
+
+    const pythonLength = makePythonFunction("len");
+    class PyLengthMixin {
+        get length() : number {
+            return pythonLength(this);
+        }
+    }
+
+The ``IS_CALLABLE`` Mixin
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+We have to make a custom prototype and class so that this inherits from both
+``PyProxy`` and ``Function``:
+
+.. code-block:: javascript
+
+    const PyProxyFunctionProto = Object.create(
+        Function.prototype,
+        Object.getOwnPropertyDescriptors(PyProxy.prototype),
+    );
+    function PyProxyFunction() {}
+    PyProxyFunction.prototype = PyProxyFunctionProto;
+
+We use the following helper function which inserts ``this`` as the first
+argument if ``captureThis`` is ``true`` and adds any bound arguments.
+
+.. code-block:: javascript
+
+        function _adjustArgs(pyproxy, jsthis, jsargs) {
+            const { props } = this[pyproxyAttrsSymbol];
+            const { captureThis, boundArgs, boundThis, isBound } = props;
+            if (captureThis) {
+                if (isBound) {
+                    return [boundThis].concat(boundArgs, jsargs);
+                } else {
+                    return [jsthis].concat(jsargs);
+                }
+            }
+            if (isBound) {
+                return boundArgs.concat(jsargs);
+            }
+            return jsargs;
+        }
+
+Then we implement the following methods. ``apply()``, ``call()``, and ``bind()``
+are methods from ``Function.prototype``. ``callKwargs()`` and ``captureThis()``
+are special to ``PyProxy``
+
+
+.. code-block:: javascript
+
+    export class PyCallableMixin {
+        apply(thisArg, jsargs) {
+            // Convert jsargs to an array using ordinary .apply in order to match the
+            // behavior of .apply very accurately.
+            jsargs = function (...args) {
+                return args;
+            }.apply(undefined, jsargs);
+            jsargs = _adjustArgs(this, thisArg, jsargs);
+            const pyObjectPtr = this[pyproxyAttrsSymbol].shared.pyObjectPtr;
+            return callPyObjectKwargs(pyObjectPtr, jsargs, {});
+        }
+        call(thisArg, ...jsargs) {
+            jsargs = _adjustArgs(this, thisArg, jsargs);
+            const pyObjectPtr = this[pyproxyAttrsSymbol].shared.pyObjectPtr;
+            return callPyObjectKwargs(pyObjectPtr, jsargs, {});
+        }
+
+        /**
+         * Call the function with keyword arguments. The last argument must be an
+         * object with the keyword arguments.
+         */
+        callKwargs(...jsargs) {
+            jsargs = _adjustArgs(this, thisArg, jsargs);
+            if (jsargs.length === 0) {
+                throw new TypeError(
+                    "callKwargs requires at least one argument (the kwargs object)",
+                );
+            }
+            let kwargs = jsargs.pop();
+            if (
+                kwargs.constructor !== undefined &&
+                kwargs.constructor.name !== "Object"
+            ) {
+                throw new TypeError("kwargs argument is not an object");
+            }
+            const pyObjectPtr = this[pyproxyAttrsSymbol].shared.pyObjectPtr;
+            return callPyObjectKwargs(pyObjectPtr, jsargs, kwargs);
+        }
+        /**
+         * This is our implementation of Function.prototype.bind().
+         */
+        bind(thisArg, ...jsargs) {
+            let { shared, props } = this[pyproxyAttrsSymbol];
+            const { boundArgs: boundArgsOld, boundThis: boundThisOld, isBound } = props;
+            let boundThis = thisArg;
+            if (isBound) {
+                boundThis = boundThisOld;
+            }
+            const boundArgs = boundArgsOld.concat(jsargs);
+            props = Object.assign({}, props, {
+                boundArgs,
+                isBound: true,
+                boundThis,
+            });
+            return createPyProxy(shared.ptr, {
+                shared,
+                flags: this.$$flags,
+                props,
+            });
+        }
+        /**
+          * This method makes a new PyProxy where ``this`` is passed as the
+          * first argument to the Python function. The new PyProxy has the
+          * same lifetime as the original.
+          */
+        captureThis() {
+            let { props, shared } = this[pyproxyAttrsSymbol];
+            props = Object.assign({}, props, {
+                captureThis: true,
+            });
+            return createPyProxy(shared.ptr, {
+                shared,
+                flags: this.$$flags,
+                props,
+            });
+        }
+    }
+
+
+The ``IS_DICT`` Mixin
+~~~~~~~~~~~~~~~~~~~~~
+
+The ``IS_DICT`` mixin does not include any extra methods but it uses a special
+set of handlers. These handlers are a hybrid between the normal handlers and the
+``JS_JSON_DICT`` handlers. We first check whether ``hasattr(d, property)`` and
+if so return ``d.property``. If not, we return ``d.get(property, None)``. The
+other methods all work similarly. See the ``IS_JS_JSON_DICT`` flag for the
+definitions of those handlers.
+
+.. code-block:: javascript
+
+    const PyProxyDictHandlers = {
+        isExtensible(): boolean {
+            return true;
+        },
+        has(jsobj: PyProxy, jskey: string | symbol): boolean {
+            if (PyProxyHandlers.has(jsobj, jskey)) {
+                return true;
+            }
+            return PyProxyJsJsonDictHandlers.has(jsobj, jskey);
+        },
+        get(jsobj: PyProxy, jskey: string | symbol): any {
+            let result = PyProxyHandlers.get(jsobj, jskey);
+            if (result !== undefined || PyProxyHandlers.has(jsobj, jskey)) {
+                return result;
+            }
+            return PyProxyJsJsonDictHandlers.get(jsobj, jskey);
+        },
+        set(jsobj: PyProxy, jskey: string | symbol, jsval: any): boolean {
+            if (PyProxyHandlers.has(jsobj, jskey)) {
+                return PyProxyHandlers.set(jsobj, jskey, jsval);
+            }
+            return PyProxyJsJsonDictHandlers.set(jsobj, jskey, jsval);
+        },
+        deleteProperty(jsobj: PyProxy, jskey: string | symbol): boolean {
+            if (PyProxyHandlers.has(jsobj, jskey)) {
+                return PyProxyHandlers.deleteProperty(jsobj, jskey);
+            }
+            return PyProxyJsJsonDictHandlers.deleteProperty(jsobj, jskey);
+        },
+        getOwnPropertyDescriptor(jsobj: PyProxy, prop: any) {
+            return (
+                Reflect.getOwnPropertyDescriptor(jsobj, prop) ??
+                PyProxyJsJsonDictHandlers.getOwnPropertyDescriptor(jsobj, prop)
+            );
+        },
+        ownKeys(jsobj: PyProxy): (string | symbol)[] {
+            const result = [
+                ...PyProxyHandlers.ownKeys(jsobj),
+                ...PyProxyJsJsonDictHandlers.ownKeys(jsobj)
+            ];
+            // deduplicate
+            return Array.from(new Set(result));
+        },
+    };
+
+
+The ``IS_ITERABLE`` Mixin
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: javascript
+
+    const pythonNext = makePythonFunction("next");
+    const getStopIterationValue = makePythonFunction(`
+        def get_stop_iteration_value():
+            import sys
+            err = sys.last_value
+            return err.value
+    `);
+
+    function* iterHelper(iter, isJsJson) {
+        try {
+            while (true) {
+                let item = pythonNext(iter);
+                if (isJsJson && item.asJsJson) {
+                    item = item.asJsJson();
+                }
+                yield item;
+            }
+        } catch (e) {
+            if (e.type === "StopIteration") {
+                return getStopIterationValue();
+            }
+            throw e;
+        }
+    }
+
+    const pythonIter = makePythonFunction("iter");
+    class PyIterableMixin {
+        [Symbol.iterator]() {
+            const isJsJson = !!(this.$$flags & (IS_JS_JSON_DICT | IS_JS_JSON_SEQUENCE));
+            return iterHelper(pythonIter(this), isJsJson);
+        }
+    }
+
+
+The ``IS_ITERATOR`` Mixin
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: javascript
+
+    const pythonSend = makePythonFunction(`
+        def python_send(it, val):
+            return gen.send(val)
+    `);
+    class PyIteratorMixin {
+        next(x) {
+            try {
+                const result = pythonSend(this, x);
+                return { done: false, value: result };
+            } catch (e) {
+                if (e.type === "StopIteration") {
+                    const result = getStopIterationValue();
+                    return { done: true, value: result };
+                }
+                throw e;
+            }
+        }
+    }
+
+
+The ``IS_GENERATOR`` Mixin
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: javascript
+
+    const pythonThrow = makePythonFunction(`
+        def python_throw(gen, val):
+            return gen.throw(val)
+    `);
+    const pythonClose = makePythonFunction(`
+        def python_close(gen):
+            return gen.close()
+    `);
+    class PyGeneratorMixin extends PyIteratorMixin {
+        throw(exc) {
+            try {
+                const result = pythonThrow(this, exc);
+                return { done: false, value: result };
+            } catch (e) {
+                if (e.type === "StopIteration") {
+                    const result = getStopIterationValue();
+                    return { done: true, value: result };
+                }
+                throw e;
+            }
+        }
+        return(value) {
+            pythonClose(this);
+            return { done: true, value }
+        }
+    }
+
+
+The ``IS_SEQUENCE`` Mixin
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+We define all of the ``Array.prototype`` methods that don't mutate the sequence
+on ``PySequenceMixin``. For most of them, the ``Array`` prototype method works
+without changes. All of these we define with boilerplate of the form:
+
+.. code-block:: javascript
+
+    [methodName](...args) {
+        return Array.prototype[methodName].call(this, ...args)
+    }
+
+These include ``join``, ``slice``, ``indexOf``, ``lastIndexOf``, ``forEach``,
+``map``, ``filter``, ``some``, ``every``, ``reduce``, ``reduceRight``, ``at``,
+``concat``, ``includes``, ``entries``, ``keys``, ``values``, ``find``, and
+``findIndex``. Other than these boilerplate methods, the remaining attributes on
+``PySequenceMixin`` are as follows.
+
+.. code-block:: javascript
+
+    class PySequenceMixin {
+        get [Symbol.isConcatSpreadable]() {
+            return true;
+        }
+        toJSON() {
+            return Array.from(this);
+        }
+        asJsJson() {
+            const flags = this.$$flags | IS_JS_JSON_SEQUENCE;
+            const { shared, props } = this[pyproxyAttrsSymbol];
+            // Note: Because we pass shared down, the PyProxy created here has
+            // the same lifetime as the PyProxy it is created from. Destroying
+            // either destroys both.
+            return createPyProxy(shared.ptr, { flags, shared, props });
+        }
+        // ... boilerplate methods
+    }
+
+
+Instead of the default proxy handlers, we use the following handlers for
+sequences. We don't
+
+.. code-block:: javascript
+
+    const PyProxySequenceHandlers = {
+        isExtensible() {
+            return true;
+        },
+        has(jsobj, jskey) {
+            if (typeof jskey === "string" && /^[0-9]+$/.test(jskey)) {
+                // Note: if the number was negative it didn't match the pattern
+                return Number(jskey) < jsobj.length;
+            }
+            return PyProxyHandlers.has(jsobj, jskey);
+        },
+        get(jsobj, jskey) {
+            if (jskey === "length") {
+                return jsobj.length;
+            }
+            if (typeof jskey === "string" && /^[0-9]+$/.test(jskey)) {
+                try {
+                    return PyProxyGetItemMixin.prototype.get.call(jsobj, Number(jskey));
+                } catch (e) {
+                    if (isPythonError(e) && e.type == "IndexError") {
+                        return undefined;
+                    }
+                    throw e;
+                }
+            }
+            return PyProxyHandlers.get(jsobj, jskey);
+        },
+        set(jsobj: PyProxy, jskey: any, jsval: any): boolean {
+            if (typeof jskey === "string" && /^[0-9]+$/.test(jskey)) {
+                try {
+                    PyProxySetItemMixin.prototype.set.call(jsobj, Number(jskey), jsval);
+                    return true;
+                } catch (e) {
+                    if (isPythonError(e) && e.type == "IndexError") {
+                    return false;
+                    }
+                    throw e;
+                }
+            }
+            return PyProxyHandlers.set(jsobj, jskey, jsval);
+        },
+        deleteProperty(jsobj: PyProxy, jskey: any): boolean {
+            if (typeof jskey === "string" && /^[0-9]+$/.test(jskey)) {
+                try {
+                    PyProxySetItemMixin.prototype.delete.call(jsobj, Number(jskey));
+                    return true;
+                } catch (e) {
+                    if (isPythonError(e) && e.type == "IndexError") {
+                        return false;
+                    }
+                    throw e;
+                }
+            }
+            return PyProxyHandlers.deleteProperty(jsobj, jskey);
+        },
+        ownKeys(jsobj: PyProxy): (string | symbol)[] {
+            const result = PyProxyHandlers.ownKeys(jsobj);
+            result.push(
+                ...Array.from({ length: jsobj.length }, (_, k) => k.toString()),
+            );
+            result.push("length");
+            return result;
+        },
+    };
+
+
+The ``IS_MUTABLE_SEQUENCE`` Mixin
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+This adds some additional ``Array`` methods that mutate the sequence.
+
+.. code-block:: javascript
+
+    class PyMutableSequenceMixin {
+        reverse() {
+            // Same as the Python reverse method except it returns this instead of undefined
+            this.$reverse();
+            return this;
+        }
+            push(...elts: any[]) {
+            for (const elt of elts) {
+                this.append(elt);
+            }
+            return this.length;
+        }
+        splice(start, deleteCount, ...items) {
+            if (deleteCount === undefined) {
+                // Max signed size
+                deleteCount = (1 << 31) - 1;
+            }
+            let stop = start + deleteCount;
+            if (stop > this.length) {
+                stop = this.length;
+            }
+            const pythonSplice = makePythonFunction(`
+                def splice(array, start, stop, items):
+                    from pyodide.ffi import to_js
+                    result = to_js(array[start:stop], depth=1)
+                    array[start:stop] = items
+                    return result
+            `);
+            return pythonSplice(this, start, stop, items);
+        }
+        pop() {
+            const pythonPop = makePythonFunction(`
+                def pop(array):
+                    return array.pop()
+            `);
+            return pythonPop(this);
+        }
+        shift() {
+            const pythonShift = makePythonFunction(`
+                def pop(array):
+                    return array.pop(0)
+            `);
+            return pythonShift(this);
+        }
+        unshift(...elts) {
+            elts.forEach((elt, idx) => {
+                this.insert(idx, elt);
+            });
+            return this.length;
+        }
+        // Boilerplate methods
+        copyWithin(...args): any {
+            Array.prototype.copyWithin.apply(this, args);
+            return this;
+        }
+        fill(...args) {
+            Array.prototype.fill.apply(this, args);
+            return this;
+        }
+    }
+
+The ``IS_JS_JSON_DICT`` Mixin
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+There are no methods special to the ``IS_JS_JSON_DICT`` flag, but we use the
+following proxy handlers. We prefer to look up a property as an item in the
+dictionary with two exceptions:
+
+1. Symbols we always look up on the ``PyProxy`` itself.
+2. We also look up the keys ``$$flags``, ``copy()``, ``constructor``,
+   ``destroy`` and ``toString`` on the ``PyProxy``.
+
+All Python dictionary methods will be shadowed by a key of the same name.
+
+.. code-block:: javascript
+
+    const PyProxyJsJsonDictHandlers = {
+        isExtensible(): boolean {
+            return true;
+        },
+        has(jsobj: PyProxy, jskey: string | symbol): boolean {
+            if (PyContainsMixin.prototype.has.call(jsobj, jskey)) {
+                return true;
+            }
+            // If it doesn't exist as a string key and it looks like a number,
+            // try again with the number
+            if (typeof jskey === "string" && /^-?[0-9]+$/.test(jskey)) {
+                return PyContainsMixin.prototype.has.call(jsobj, Number(jskey));
+            }
+            return false;
+        },
+        get(jsobj, jskey): any {
+            if (
+                typeof jskey === "symbol" ||
+                ["$$flags", "copy", "constructor", "destroy", "toString"].includes(jskey)
+            ) {
+                return Reflect.get(...arguments);
+            }
+            const result = PyProxyGetItemMixin.prototype.get.call(jsobj, jskey);
+            if (
+                result !== undefined ||
+                PyContainsMixin.prototype.has.call(jsobj, jskey)
+            ) {
+                return result;
+            }
+            if (typeof jskey === "string" && /^-?[0-9]+$/.test(jskey)) {
+                return PyProxyGetItemMixin.prototype.get.call(jsobj, Number(jskey));
+            }
+            return Reflect.get(...arguments);
+        },
+        set(jsobj, jskey, jsval): boolean {
+            if (typeof jskey === "symbol") {
+                return false;
+            }
+            if (
+                !PyContainsMixin.prototype.has.call(jsobj, jskey) &&
+                typeof jskey === "string" &&
+                /^-?[0-9]+$/.test(jskey)
+            ) {
+                jskey = Number(jskey);
+            }
+            try {
+                PyProxySetItemMixin.prototype.set.call(jsobj, jskey, jsval);
+                return true;
+            } catch (e) {
+                if (isPythonError(e) && e.type === "KeyError") {
+                    return false;
+                }
+                throw e;
+            }
+        },
+        deleteProperty(jsobj: PyProxy, jskey: string | symbol | number): boolean {
+            if (typeof jskey === "symbol") {
+                return false;
+            }
+            if (
+                !PyContainsMixin.prototype.has.call(jsobj, jskey) &&
+                typeof jskey === "string" &&
+                /^-?[0-9]+$/.test(jskey)
+            ) {
+                jskey = Number(jskey);
+            }
+            try {
+                PyProxySetItemMixin.prototype.delete.call(jsobj, jskey);
+                return true;
+            } catch (e) {
+                if (isPythonError(e) && e.type === "KeyError") {
+                    return false;
+                }
+                throw e;
+            }
+        },
+        getOwnPropertyDescriptor(jsobj: PyProxy, prop: any) {
+            if (!PyProxyJsJsonDictHandlers.has(jsobj, prop)) {
+                return undefined;
+            }
+            const value = PyProxyJsJsonDictHandlers.get(jsobj, prop);
+            return {
+                configurable: true,
+                enumerable: true,
+                value,
+                writable: true,
+            };
+        },
+        ownKeys(jsobj: PyProxy): (string | symbol)[] {
+            const pythonDictOwnKeys = makePythonFunction(`
+                def dict_own_keys(d):
+                    from pyodide.ffi import to_js
+                    result = set()
+                    for key in d:
+                        if isinstance(key, str):
+                            result.add(key)
+                        elif isinstance(key, (int, float)):
+                            result.add(str(key))
+                    return to_js(result)
+            `);
+            return pythonDictOwnKeys(jsobj);
+        },
+    };
+
+
+The ``IS_JS_JSON_SEQUENCE`` Mixin
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+This has no direct impact on the prototype or handlers of the proxy. However,
+when indexing the list or iterating over the list we will apply ``asJsJson()``
+to the results.
+
+Deep Conversions
+----------------
+
+We define ``JsProxy.to_py()`` to make deep conversions from JavaScript to Python
+and ``pyodide.ffi.to_js()`` to make deep conversions from Python to JavaScript.
+Note that it is not intended that these are inverse functions to each other.
+
+From JavaScript to Python
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The ``JsProxy.to_py()`` method makes the following conversions:
+
+* ``Array`` ==> ``list``
+* ``Map`` ==> ``dict``
+* ``Set`` ==> ``set``
+* ``Object`` ==> ``dict`` but only if the ``constructor`` is either ``Object``
+  or ``undefined``. Other objects we leave alone.
+
+It takes the following optional arguments:
+
+``depth``
+    An integer, specifies the maximum depth down to which to convert. For
+    instance, setting ``depth=1`` allows converting exactly one level.
+
+``default_converter``
+    A function to be called when there is no known conversion for an object.
+
+
+The default converter takes three arguments:
+
+``jsobj``
+    The object to convert.
+
+``convert``
+    Allows recursing.
+
+``cache_conversion``
+    Cache the conversion of an object to allow converting self-referential data.
+
+For example, if we have a JavaScript ``Pair`` class and want to convert it to a
+list, we can use the following ``default_converter``:
+
+.. code-block:: python
+
+    def pair_converter(jsobj, convert, cache_conversion):
+        if jsobj.constructor.name != "Pair":
+            return jsobj
+        result = []
+        cache_conversion(jsobj, result)
+        result.append(convert(jsobj.first))
+        result.append(convert(jsobj.second))
+        return result
+
+By first caching the result before making any recursive calls to ``convert``, we
+ensure that if ``jsobj.first`` has a transitive reference to ``jsobj``, we
+convert it correctly.
+
+Complete pseudocode for the ``to_py`` method is as follows:
+
+.. code-block:: python
+
+    def to_py(jsobj, *, depth=-1, default_converter=None):
+        cache = {}
+        return ToPyConverter(depth, default_converter).convert(jsobj)
+
+    class ToPyConverter:
+        def __init__(self, depth, default_converter):
+            self.cache = {}
+            self.depth = depth
+            self.default_converter = default_converter
+
+        def cache_conversion(self, jsobj, pyobj):
+            self.cache[jsobj.js_id] = pyobj
+
+        def convert(self, jsobj):
+            if self.depth == 0 or not isinstance(jsobj, JsProxy):
+                return jsobj
+            if result := self.cache.get(jsobj.js_id):
+                return result
+
+            from js import Array, Object
+            type_tag = getTypeTag(jsobj)
+            self.depth -= 1
+            try:
+                if Array.isArray(jsobj):
+                    return self.convert_list(jsobj)
+                if type_tag == "[object Map]":
+                    return self.convert_map(jsobj, jsobj.entries())
+                if type_tag == "[object Set]":
+                    return self.convert_set(jsobj)
+                if type_tag == "[object Object]" and (jsobj.constructor in [None, Object]):
+                    return self.convert_map(jsobj, Object.entries(jsobj))
+                if self.default_converter is not None:
+                    return self.default_converter(jsobj, self.convert, self.cache_conversion)
+                return jsobj
+            finally:
+                self.depth += 1
+
+        def convert_list(self, jsobj):
+            result = []
+            self.cache_conversion(jsobj, result)
+            for item in jsobj:
+                result.append(self.convert(item))
+            return result
+
+        def convert_map(self, jsobj, entries):
+            result = {}
+            self.cache_conversion(jsobj, result)
+            for [key, val] in entries:
+                result[key] = self.convert(val)
+            return result
+
+        def convert_set(self, jsobj):
+            result = set()
+            self.cache_conversion(jsobj, result)
+            for key in jsobj:
+                result.add(self.convert(key))
+            return result
+
+
+From Python to JavaScript
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    def to_js(
+        obj,
+        /,
+        *,
+        depth=-1,
+        pyproxies=None,
+        create_pyproxies=True,
+        dict_converter=None,
+        default_converter=None,
+        eager_converter=None,
+    ):
+        converter = ToJsConverter(
+            depth,
+            pyproxies,
+            create_pyproxies,
+            dict_converter,
+            default_converter,
+            eager_converter,
+        )
+        result = converter.convert(obj)
+        converter.postprocess()
+        return result
+
+    class ToJsConverter:
+        def __init__(
+            self,
+            depth,
+            pyproxies,
+            create_pyproxies,
+            dict_converter,
+            default_converter,
+            eager_converter,
+        ):
+            self.depth = depth
+            self.pyproxies = pyproxies
+            self.create_pyproxies = create_pyproxies
+            if dict_converter is None:
+                dict_converter = Object.fromEntries
+            self.dict_converter = dict_converter
+            self.default_converter = default_converter
+            self.eager_converter = eager_converter
+            self.cache = {}
+            self.post_process_list = []
+            self.pairs_to_dict_map = {}
+
+        def cache_conversion(self, pyobj, jsobj):
+            self.cache[id(pyobj)] = jsobj
+
+        def postprocess(self):
+            # Replace any NoValue's that appear once we've certainly computed
+            # their correct conversions
+            for parent, key, pyobj_id in self.post_process_list:
+                real_value = self.cache[pyobj_id]
+                # If it was a dictionary, we need to lookup the actual result object
+                real_parent = self.pairs_to_dict_map.get(parent.js_id, parent)
+                real_parent[key] = real_value
+
+        @contextmanager
+        def decrement_depth(self):
+            self.depth -= 1
+            try:
+                yield
+            finally:
+                self.depth += 1
+
+        def convert(self, pyobj):
+            if self.depth == 0 or isinstance(pyobj, JsProxy):
+                return pyobj
+            if result := self.cache.get(id(pyobj)):
+                return result
+
+            with self.decrement_depth():
+                if self.eager_converter:
+                    return self.eager_converter(
+                        pyobj, self.convert_no_eager_public, self.cache_conversion
+                    )
+                return self.convert_no_eager(pyobj)
+
+        def convert_no_eager_public(self, pyobj):
+            with self.decrement_depth():
+                return self.convert_no_eager(pyobj)
+
+        def convert_no_eager(self, pyobj):
+            if isinstance(pyobj, (tuple, list)):
+                return self.convert_sequence(pyobj)
+            if isinstance(pyobj, dict):
+                return self.convert_dict(pyobj)
+            if isinstance(pyobj, set):
+                return self.convert_set(pyobj)
+            if self.default_converter:
+                return self.default_converter(
+                    pyobj, self.convert_no_eager_public, self.cache_conversion
+                )
+            if not self.create_pyproxies:
+                raise ConversionError(
+                    f"No conversion available for {pyobj!r} and create_pyproxies=False passed"
+                )
+            result = create_proxy(pyobj)
+            if self.pyproxies is not None:
+                self.pyproxies.append(result)
+            return result
+
+        def convert_sequence(self, pyobj):
+            from js import Array
+
+            result = Array.new()
+            self.cache_conversion(pyobj, result)
+            for idx, val in enumerate(pyobj):
+                converted = self.convert(val)
+                if converted is NoValue:
+                    self.post_process_list.append((result, idx, id(val)))
+                result.push(converted)
+            return result
+
+        def convert_dict(self, pyobj):
+            from js import Array
+
+            # Temporarily store NoValue in the cache since we only get the
+            # actual value from dict_converter. We'll replace these with the
+            # correct values in the postprocess step
+            self.cache_conversion(pyobj, NoValue)
+            pairs = Array.new()
+            for [key, value] in pyobj.items():
+                converted = self.convert(value)
+                if converted is NoValue:
+                    self.post_process_list.append((pairs, key, id(value)))
+                pairs.push(Array.new(key, converted))
+            result = self.dict_converter(pairs)
+            self.pairs_to_dict_map[pairs.js_id] = result
+            # Update the cache to point to the actual result
+            self.cache_conversion(pyobj, result)
+            return result
+
+        def convert_set(self, pyobj):
+            from js import Set
+            result = Set.new()
+            self.cache_conversion(pyobj, result)
+            for key in pyobj:
+                if isinstance(key, JsProxy):
+                    raise ConversionError(
+                        f"Cannot use {key!r} as a key for a JavaScript Set"
+                    )
+                result.add(key)
+            return result
+
+
+The ``js`` Module
+-----------------
+
+The ``js`` module allows us to import objects from JavaScript. The definition is
+as follows:
+
+.. code:: python
+
+    import sys
+    from _pyodide_core import run_js
+    from pyodide.ffi import JsProxy
+    from importlib.abc import Loader, MetaPathFinder
+    from importlib.util import spec_from_loader
+
+    class JsLoader(Loader):
+        def __init__(self, jsproxy):
+            self.jsproxy = jsproxy
+
+        def create_module(self, spec):
+            return self.jsproxy
+
+        def exec_module(self, module):
+            pass
+
+        def is_package(self, fullname):
+            return True
+
+    class JsFinder(MetaPathFinder):
+        def _get_object(self, fullname):
+            [parent, _, child] = fullname.rpartition(".")
+            if not parent:
+                if child == "js":
+                    return run_js("globalThis")
+                return None
+
+            parent_module = sys.modules[parent]
+            if not isinstance(parent_module, JsProxy):
+                # Not one of us.
+                return None
+            jsproxy = getattr(parent_module, child, None)
+            if not isinstance(jsproxy, JsProxy):
+                raise ModuleNotFoundError(f"No module named {fullname!r}", name=fullname)
+            return jsproxy
+
+        def find_spec(
+            self,
+            fullname,
+            path,
+            target,
+        ):
+            jsproxy = self._get_object(fullname)
+            loader = JsLoader(jsproxy)
+            return spec_from_loader(fullname, loader, origin="javascript")
+
+
+    finder = JsFinder()
+    sys.meta_path.insert(0, finder)
+    del sys.modules["js"]
+    import js
+    sys.meta_path.remove(finder)
+    sys.meta_path.append(finder)
+
+The ``pyodide`` package
+-----------------------
+
+This has an empty ``__init__.py`` and two submodules.
+
+The ``pyodide.ffi`` Module
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+This has the following properties:
+
+``create_proxy(x)``: This returns ``create_jsproxy(createPyProxy(x))``.
+
+``jsnull``: Special value that converts to/from the JavaScript ``null`` value.
+
+.. code-block:: python
+
+    def destroy_proxies(proxies):
+        for proxy in proxies:
+            proxy.destroy()
+
+``to_js``: See definition in the section on deep conversions.
+
+``JsArray``: This is ``type(run_js("[]"))``.
+
+``JsCallable``: This is ``type(run_js("() => {}"))``.
+
+``JsDoubleProxy``: This is ``type(create_proxy({}))``.
+
+``JsException``: This is ``type(run_js("new Error()"))``.
+
+``JsGenerator``: This is ``type(run_js("(function*(){})()"))``.
+
+``JsIterable``: This is ``type(run_js("({[Symbol.iterator](){}})"))``.
+
+``JsIterator``: This is ``type(run_js("({next(){}})"))``.
+
+``JsMap``: This is ``type(run_js("({get(){}})"))``.
+
+``JsMutableMap``: This is ``type(run_js("new Map()"))``.
+
+``JsProxy``: This is ``type(run_js("({})"))``
+
+``JsBigInt``: This is defined as follows:
+
+.. code-block:: python
+
+    def _int_to_bigint(x):
+        if isinstance(x, int):
+            return JsBigInt(x)
+        return x
+
+    class JsBigInt(int):
+        # unary ops
+        def __abs__(self):
+            return JsBigInt(int.__abs__(self))
+
+        def __invert__(self):
+            return JsBigInt(int.__invert__(self))
+
+        def __neg__(self):
+            return JsBigInt(int.__neg__(self))
+
+        def __pos__(self):
+            return JsBigInt(int.__pos__(self))
+
+        # binary ops
+        def __add__(self, other):
+            return _int_to_bigint(int.__add__(self, other))
+
+        def __and__(self, other):
+            return _int_to_bigint(int.__and__(self, other))
+
+        def __floordiv__(self, other):
+            return _int_to_bigint(int.__floordiv__(self, other))
+
+        def __lshift__(self, other):
+            return _int_to_bigint(int.__lshift__(self, other))
+
+        def __mod__(self, other):
+            return _int_to_bigint(int.__mod__(self, other))
+
+        def __or__(self, other):
+            return _int_to_bigint(int.__or__(self, other))
+
+        def __pow__(self, other, modulus = None):
+            return _int_to_bigint(int.__pow__(self, other, modulus))
+
+        def __rshift__(self, other):
+            return _int_to_bigint(int.__rshift__(self, other))
+
+        def __sub__(self, other):
+            return _int_to_bigint(int.__sub__(self, other))
+
+        def __xor__(self, other):
+            return _int_to_bigint(int.__xor__(self, other))
+
+
+The ``pyodide.code`` Module
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+This exposes the ``run_js`` function.
+
+Changes to the ``json`` Module
+------------------------------
+
+The ``json`` module will be updated to serialize ``jsnull`` to ``null``.
+
+Backwards Compatibility
+=======================
+
+This is strictly adding new APIs. There are backwards compatibility concerns for
+Pyodide. We will try to ensure that the implementation allows Pyodide to
+gradually switch to using the CPython implementation with a minimum amount of
+disruption.
+
+Security Implications
+=====================
+
+It improves support for one of the few fully sandboxed platforms that Python can
+run on.
+
+How to Teach This
+=================
+
+
+Reference Implementation
+========================
+
+Pyodide, https://github.com/hoodmane/cpython/tree/js-ffi
+
+
+Acknowledgments
+===============
+
+Mike Droettboom, Roman Yurchak, Gyeongjae Choi, Andrea Giammarchi
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
