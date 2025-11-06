@@ -1,0 +1,119 @@
+PEP: <REQUIRED: pep number>
+Title: WASI Support
+Author: Brett Cannon <brett@python.org>
+Discussions-To: Pending
+Status: Draft
+Type: Informational
+Created: 05-Nov-2025
+Post-History: Pending
+Resolution: <url>
+
+
+Abstract
+========
+
+This PEP outlines the expected support for WASI_ by CPython.
+It contains enough details to know what WASI and WASI SDK version is expected to be supported for any release of CPython when official WASI support is specified in :pep:`11`.
+
+
+Motivation
+==========
+
+[why is this PEP necessary?]
+
+CPython has supported WASI according to :pep:`11` since Python 3.11.
+As part of this support, CPython needs to target two different things: the WASI_ version and the `WASI SDK`_ version (both of whose development is driven by the `Bytecode Alliance`_).
+The former is the specification of WASI itself while the latter is a version of clang_ with wasi-libc_ as the sysroot that allows for compiling CPython to WASI.
+There is roughly an annual release cadence for new WASI versions while there's no set release cadence for WASI SDK.
+
+Agreeing on the WASI and WASI SDK version to support allows for clear targeting of the CPython code base towards those versions.
+That lets the community set appropriate expectations as to what will (not) be considered a bug if it only manifests itself under a different WASI or WASI SDK version.
+It also provides the community an overall target for WASI and WASI SDK for any specific Python version.
+This is important as WASI SDK is NOT forwards- or backwards-compatible, making broad coordination so code works together important.
+
+
+Rationale
+=========
+
+[What do we have to consider when coming up with a spec?]
+
+While technically separate, CPython cannot support a version of WASI until WASI SDK supports it.
+WASI versions are considered backwards-compatible with each other, but WASI SDK is NOT compatible forwards or backwards.
+As such, it's important to set support expectations for a specific WASI SDK version in CPython.
+Historically, the support difference between WASI SDK versions for CPython have involved settings in the ``config.site`` file that is maintained for WASI.
+Support issues have come up due to bugs in WASI SDK itself.
+Finally, new features being supported by WASI SDK can also cause code that wasn't previously used in a WASI build to suddenly be run which can require code updates to pass tests.
+
+As for WASI version support, that typically translates into what stdlib modules are (potentiallly) usable with a WASI build.
+For example, WASI 0.2 added socket support and WASI 0.3.1 is scheduled to have some form of threading support.
+Knowing what WASI version is supported sets expectations for what stdlib modules should be supported.
+
+Interpreter feature availability can be dependent on the WASI version.
+For instance, until there is threading support there can't be free-threading support in WASI.
+Once again, this helps set expectations of what should be working based on the target WASI version.
+
+
+Specification
+=============
+
+[How does it work?]
+
+The WASI and WASI SDK version supported by a CPython version in CI or it stable Buildbot worker (in that order of priority) when b1 is released MUST be the version to be supported for the lifetime of any Python version after this PEP is accepted.
+CI takes priority over the Buildbots, when WASI is run in CI, as it is run more often and what core developers encounter first.
+The WASI version and WASI SDK version supported for a Python version MUST be recorded in this PEP as an official record.
+
+Any updates to :pep:`11` to reflect the appropriate appropriate WASI version for the target triple for the main branch MUST be made as needed, but it does NOT require steering council approval to update.
+The steering council is spared needing to approve such an update as it does not constitute a new platform and is more inline with a new OS release.
+
+
+Designated Support
+==================
+
+====== ==== ========
+Python WASI WASI SDK
+====== ==== ========
+3.14   p1   24
+3.13   p1   24
+3.12   p1   16
+3.11   p1   16
+====== ==== ========
+
+
+Notes
+-----
+
+All versions prior to Python 3.15 predate this PEP.
+The version support for those versions is based on what was supported when this PEP was written.
+
+WASI was a tier 3 platform according to :pep:`11` for Python 3.11 and 3.12.
+WASI became a tier 2 platform starting with Python 3.13.
+
+WASI 0.2 support has been skipped due to lack of time until it was deemed better to go straight to WASI 0.3 instead.
+This is based on a recommendation from the `Bytecode Alliance`_.
+
+
+Acknowledgements
+================
+
+[Thank anyone who has helped with the PEP.]
+
+Thanks to Joel Dice and Ben Brandt of the Python `sub-group <https://github.com/bytecodealliance/SIG-Guest-Languages/blob/main/docs/subgroups.md>`__ of the `guest languages SIG <https://github.com/bytecodealliance/SIG-Guest-Languages>`__ of the `Bytecode Alliance`_ for discussing the specification of this PEP.
+
+
+Footnotes
+=========
+
+[A collection of footnotes cited in the PEP, and a place to list non-inline hyperlink targets.]
+
+.. _WASI: https://wasi.dev
+.. _WASI SDK: https://github.com/WebAssembly/wasi-sdk
+.. _wasi-libc: https://github.com/WebAssembly/wasi-libc
+.. _clang: https://clang.llvm.org
+.. _Bytecode Alliance: https://bytecodealliance.org
+
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
