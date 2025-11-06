@@ -27,9 +27,9 @@ The former is the specification of WASI itself while the latter is a version of 
 There is roughly an annual release cadence for new WASI versions while there's no set release cadence for WASI SDK.
 
 Agreeing on the WASI and WASI SDK version to support allows for clear targeting of the CPython code base towards those versions.
-That lets the community set appropriate expectations as to what will (not) be considered a bug if it only manifests itself under a different WASI or WASI SDK version.
-It also provides the community an overall target for WASI and WASI SDK for any specific Python version.
-This is important as WASI SDK is NOT forwards- or backwards-compatible, making broad coordination so code works together important.
+This lets the community set appropriate expectations as to what will (not) be considered a bug if it only manifests itself under a different WASI or WASI SDK version.
+It also provides the community an overall target for WASI and WASI SDK for any specific Python version when building other software like libraries.
+This is important as WASI SDK is NOT forwards- or backwards-compatible, making broad coordination important so code works together.
 
 
 Rationale
@@ -44,7 +44,7 @@ Historically, the support difference between WASI SDK versions for CPython have 
 Support issues have come up due to bugs in WASI SDK itself.
 Finally, new features being supported by WASI SDK can also cause code that wasn't previously used in a WASI build to suddenly be run which can require code updates to pass tests.
 
-As for WASI version support, that typically translates into what stdlib modules are (potentiallly) usable with a WASI build.
+As for WASI version support, that typically translates into what stdlib modules are (potentially) usable with a WASI build.
 For example, WASI 0.2 added socket support and WASI 0.3.1 is scheduled to have some form of threading support.
 Knowing what WASI version is supported sets expectations for what stdlib modules should be supported.
 
@@ -58,16 +58,22 @@ Specification
 
 [How does it work?]
 
-The WASI and WASI SDK version supported by a CPython version in CI or it stable Buildbot worker (in that order of priority) when b1 is released MUST be the version to be supported for the lifetime of any Python version after this PEP is accepted.
-CI takes priority over the Buildbots, when WASI is run in CI, as it is run more often and what core developers encounter first.
+The WASI and WASI SDK version supported by a CPython version in CI or its stable Buildbot builder when b1 is released MUST be the version to be supported for the lifetime of that Python version after this PEP is accepted.
+CI takes priority over the Buildbot builder as it is run more often and what core developers encounter first.
+This also protects against any lag between the versions tested against in CI and the Buildbot builder as CI is likely to be updated first.
+
 The WASI version and WASI SDK version supported for a Python version MUST be recorded in this PEP as an official record.
 
-Any updates to :pep:`11` to reflect the appropriate appropriate WASI version for the target triple for the main branch MUST be made as needed, but it does NOT require steering council approval to update.
-The steering council is spared needing to approve such an update as it does not constitute a new platform and is more inline with a new OS release.
+Any updates to :pep:`11` to reflect the appropriate WASI version for the target triple for the main branch MUST be made as needed, but it does NOT require steering council approval to update.
+The steering council is spared needing to approve such an update as it does not constitute a new platform and is more in line with a new OS release which currently does not require steering council approval.
 
 
 Designated Support
 ==================
+
+Note that while WASI SDK in some places lists both a major and minor version, in actuality the minor version has never been set to anything other than ``0`` and there's an expectation that `any minor version will be ABI compatible with the overall major version <https://bytecodealliance.zulipchat.com/#narrow/channel/219900-wasi/topic/Platform.20tags.20for.20packages.20targeting.20WASI/near/516771862>`__.
+As well, the WASI community only refers to WASI SDK versions by their major version due to there having never been a minor release.
+Subsequently, this PEP only records the major version of WASI SDK until such time that there's a need to record a minor version.
 
 ====== ==== ========
 Python WASI WASI SDK
@@ -90,6 +96,8 @@ WASI became a tier 2 platform starting with Python 3.13.
 
 WASI 0.2 support has been skipped due to lack of time until it was deemed better to go straight to WASI 0.3 instead.
 This is based on a recommendation from the `Bytecode Alliance`_.
+
+WASI SDK 26 and 27 have a `bug <https://github.com/WebAssembly/wasi-libc/issues/617>`__ which causes CPython to hang in certain situations, and so they have been skipped.
 
 
 Acknowledgements
