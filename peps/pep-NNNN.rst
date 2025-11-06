@@ -59,8 +59,7 @@ Specification
 [How does it work?]
 
 The WASI and WASI SDK version supported by a CPython version in CI or its stable Buildbot builder when b1 is released MUST be the version to be supported for the lifetime of that Python version after this PEP is accepted.
-CI takes priority over the Buildbot builder as it is run more often and what core developers encounter first.
-This also protects against any lag between the versions tested against in CI and the Buildbot builder as CI is likely to be updated first.
+If there is a discrepancy between CI and the Buildbot builder for some reason, the WASI maintainers as specified by :pep:`11` will choose which sets of versions will be designated as the versions to support.
 
 The WASI version and WASI SDK version supported for a Python version MUST be recorded in this PEP as an official record.
 
