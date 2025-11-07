@@ -23,13 +23,13 @@ Motivation
 
 CPython has supported WASI according to :pep:`11` since Python 3.11.
 As part of this support, CPython needs to target two different things: the WASI_ version and the `WASI SDK`_ version (both of whose development is driven by the `Bytecode Alliance`_).
-The former is the specification of WASI itself while the latter is a version of clang_ with wasi-libc_ as the sysroot that allows for compiling CPython to WASI.
+The former is the specification of WASI itself while the latter is a version of clang_ with a specific version of wasi-libc_ as the sysroot that allows for compiling CPython to WASI.
 There is roughly an annual release cadence for new WASI versions while there's no set release cadence for WASI SDK.
 
-Agreeing on the WASI and WASI SDK version to support allows for clear targeting of the CPython code base towards those versions.
+Agreeing on which WASI and WASI SDK versions to support allows for clear targeting of the CPython code base towards those versions.
 This lets the community set appropriate expectations as to what will (not) be considered a bug if it only manifests itself under a different WASI or WASI SDK version.
 It also provides the community an overall target for WASI and WASI SDK for any specific Python version when building other software like libraries.
-This is important as WASI SDK is NOT forwards- or backwards-compatible, making broad coordination important so code works together.
+This is important as WASI SDK is NOT forwards- or backwards-compatible in the ABI it produces, making broad coordination important so code works together.
 
 
 Rationale
@@ -38,7 +38,7 @@ Rationale
 [What do we have to consider when coming up with a spec?]
 
 While technically separate, CPython cannot support a version of WASI until WASI SDK supports it.
-WASI versions are considered backwards-compatible with each other, but WASI SDK is NOT compatible forwards or backwards.
+WASI versions are considered backwards-compatible with each other, but WASI SDK is NOT compatible forwards or backwards in terms of the ABI it produces.
 As such, it's important to set support expectations for a specific WASI SDK version in CPython.
 Historically, the support difference between WASI SDK versions for CPython have involved settings in the ``config.site`` file that is maintained for WASI.
 Support issues have come up due to bugs in WASI SDK itself.
