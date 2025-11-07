@@ -29,7 +29,11 @@ There is roughly an annual release cadence for new WASI versions while there's n
 Agreeing on which WASI and WASI SDK versions to support allows for clear targeting of the CPython code base towards those versions.
 This lets the community set appropriate expectations as to what will (not) be considered a bug if it only manifests itself under a different WASI or WASI SDK version.
 It also provides the community an overall target for WASI and WASI SDK for any specific Python version when building other software like libraries.
-This is important as WASI SDK is NOT forwards- or backwards-compatible in the ABI it produces, making broad coordination important so code works together.
+This is important as WASI SDK is NOT forwards- or backwards-compatible due to the ABI of wasi-libc not making any compatibility guarantees, making broad coordination important so code works together.
+
+This coordination and recording around version targets can be important in situations where the selected versions is non-obvious.
+For example, WASI SDK 26 and 27 have a `bug <https://github.com/WebAssembly/wasi-libc/issues/617>`__ which cause CPython to hang in certain situations (including exiting the REPL).
+Because the bug is in thread support code it wouldn't necessarily be obvious to others in the community that CPython will not target those versions and thus 3rd-party code shouldn't bother with those versions as well.
 
 
 Rationale
@@ -38,7 +42,7 @@ Rationale
 [What do we have to consider when coming up with a spec?]
 
 While technically separate, CPython cannot support a version of WASI until WASI SDK supports it.
-WASI versions are considered backwards-compatible with each other, but WASI SDK is NOT compatible forwards or backwards in terms of the ABI it produces.
+WASI versions are considered backwards-compatible with each other, but WASI SDK is NOT compatible forwards or backwards thanks to wasi-libc not having ABI compatibility guarantees.
 As such, it's important to set support expectations for a specific WASI SDK version in CPython.
 Historically, the support difference between WASI SDK versions for CPython have involved settings in the ``config.site`` file that is maintained for WASI.
 Support issues have come up due to bugs in WASI SDK itself.
@@ -62,6 +66,8 @@ The WASI and WASI SDK version supported by a CPython version in CI or its stable
 If there is a discrepancy between CI and the Buildbot builder for some reason, the WASI maintainers as specified by :pep:`11` will choose which sets of versions will be designated as the versions to support.
 
 The WASI version and WASI SDK version supported for a Python version MUST be recorded in this PEP as an official record.
+If for some reason a supported version needs to change after being recorded, a note will be made as to when and why the change was made.
+Such a change is at the discretion of the maintainers of WASI support as listed in :pep:`11` and does not require steering council approval.
 
 Any updates to :pep:`11` to reflect the appropriate WASI version for the target triple for the main branch MUST be made as needed, but it does NOT require steering council approval to update.
 The steering council is spared needing to approve such an update as it does not constitute a new platform and is more in line with a new OS release which currently does not require steering council approval.
@@ -77,10 +83,10 @@ Subsequently, this PEP only records the major version of WASI SDK until such tim
 ====== ==== ========
 Python WASI WASI SDK
 ====== ==== ========
-3.14   p1   24
-3.13   p1   24
-3.12   p1   16
-3.11   p1   16
+3.14   0.1  24
+3.13   0.1  24
+3.12   0.1  16
+3.11   0.1  16
 ====== ==== ========
 
 
@@ -93,7 +99,7 @@ The version support for those versions is based on what was supported when this 
 WASI was a tier 3 platform according to :pep:`11` for Python 3.11 and 3.12.
 WASI became a tier 2 platform starting with Python 3.13.
 
-WASI 0.2 support has been skipped due to lack of time until it was deemed better to go straight to WASI 0.3 instead.
+WASI 0.2 support has been skipped due to lack of time, to the point that it was deemed better to go straight to WASI 0.3 instead.
 This is based on a recommendation from the `Bytecode Alliance`_.
 
 WASI SDK 26 and 27 have a `bug <https://github.com/WebAssembly/wasi-libc/issues/617>`__ which causes CPython to hang in certain situations, and so they have been skipped.
