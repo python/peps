@@ -44,6 +44,7 @@ def version_info(metadata: VersionMetadata, /) -> dict[str, str | int]:
         'branch': metadata.branch,
         'pep': metadata.pep,
         'status': metadata.status,
+        'feature_freeze': metadata.feature_freeze.isoformat(),
         'first_release': metadata.first_release.isoformat(),
         'end_of_life': end_of_life,
         'release_manager': metadata.release_manager,
