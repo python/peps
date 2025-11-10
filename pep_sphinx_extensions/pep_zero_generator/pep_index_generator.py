@@ -75,7 +75,7 @@ def create_pep_zero(app: Sphinx, env: BuildEnvironment, docnames: list[str]) -> 
     write_peps_json(peps, Path(app.outdir))
 
     release_cycle = create_release_cycle()
-    app.outdir.joinpath('release-cycle.json').write_text(release_cycle, encoding="utf-8")
+    app.outdir.joinpath('api/release-cycle.json').write_text(release_cycle, encoding="utf-8")
 
     release_json = create_release_json()
-    app.outdir.joinpath('python-releases.json').write_text(release_json, encoding="utf-8")
+    app.outdir.joinpath('api/python-releases.json').write_text(release_json, encoding="utf-8")
