@@ -66,8 +66,13 @@ The WASI and WASI SDK version supported by a CPython version in CI or its stable
 If there is a discrepancy between CI and the Buildbot builder for some reason, the WASI maintainers as specified by :pep:`11` will choose which sets of versions will be designated as the versions to support.
 
 The WASI version and WASI SDK version supported for a Python version MUST be recorded in this PEP as an official record.
-If for some reason a supported version needs to change after being recorded, a note will be made as to when and why the change was made.
+
+If for some reason a supported WASI SDK version needs to change after being recorded, a note will be made as to when and why the change was made.
 Such a change is at the discretion of the maintainers of WASI support as listed in :pep:`11` and does not require steering council approval.
+The expectation, though, is that such a change SHOULD NOT occur.
+
+Changing the WASI version MUST NOT occur UNLESS the steering council approves it.
+This is due to the increased support burden for new WASI versions and the shift in expectations of what CPython would support.
 
 Any updates to :pep:`11` to reflect the appropriate WASI version for the target triple for the main branch MUST be made as needed, but it does NOT require steering council approval to update.
 The steering council is spared needing to approve such an update as it does not constitute a new platform and is more in line with a new OS release which currently does not require steering council approval.
