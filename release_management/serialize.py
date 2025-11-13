@@ -3,7 +3,7 @@ from __future__ import annotations
 import dataclasses
 import json
 
-from release_management import ROOT_DIR, load_python_releases
+from release_management import load_python_releases
 
 TYPE_CHECKING = False
 if TYPE_CHECKING:
