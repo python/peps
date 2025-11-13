@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 RELEASE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = RELEASE_DIR.parent
 PEP_ROOT = ROOT_DIR / 'peps'
+_PYTHON_RELEASES = None
 
 dc_kw = {'kw_only': True, 'slots': True} if sys.version_info[:2] >= (3, 10) else {}
 
@@ -68,6 +69,10 @@ class ReleaseInfo:
 
 
 def load_python_releases() -> PythonReleases:
+    global _PYTHON_RELEASES
+    if _PYTHON_RELEASES is not None:
+        return _PYTHON_RELEASES
+
     with open(RELEASE_DIR / 'python-releases.toml', 'rb') as f:
         python_releases = tomllib.load(f)
     all_metadata = {
@@ -78,4 +83,5 @@ def load_python_releases() -> PythonReleases:
         v: [ReleaseInfo(**r) for r in releases]
         for v, releases in python_releases['release'].items()
     }
-    return PythonReleases(metadata=all_metadata, releases=all_releases)
+    _PYTHON_RELEASES = PythonReleases(metadata=all_metadata, releases=all_releases)
+    return _PYTHON_RELEASES

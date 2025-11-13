@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import dataclasses
 import json
 
@@ -8,6 +9,10 @@ from release_management import ROOT_DIR, load_python_releases
 TYPE_CHECKING = False
 if TYPE_CHECKING:
     from release_management import VersionMetadata
+
+# Seven years captures the full lifecycle from prereleases to end-of-life
+TODAY = dt.date.today()
+SEVEN_YEARS_AGO = TODAY.replace(year=TODAY.year - 7)
 
 
 def create_release_json() -> str:
@@ -48,3 +53,41 @@ def version_info(metadata: VersionMetadata, /) -> dict[str, str | int]:
         'end_of_life': end_of_life,
         'release_manager': metadata.release_manager,
     }
+
+
+def create_release_schedule_calendar() -> str:
+    python_releases = load_python_releases()
+    all_releases = [
+        (version, release)
+        for version, releases in python_releases.releases.items()
+        for release in releases
+        # Keep size reasonable by omitting releases older than 7 years
+        if release.date >= SEVEN_YEARS_AGO
+    ]
+    all_releases.sort(key=lambda r: r[1].date)
+
+    lines = [
+        'BEGIN:VCALENDAR',
+        'VERSION:2.0',
+        'PRODID:-//Python Software Foundation//Python release schedule//EN',
+        'X-WR-CALDESC:Python releases schedule from https://peps.python.org',
+        'X-WR-CALNAME:Python releases schedule',
+    ]
+    for version, release in all_releases:
+        normalised_stage = release.stage.casefold().replace(' ', '')
+        note = (f'DESCRIPTION:Note: {release.note}',) if release.note else ()
+        pep_number = python_releases.metadata[version].pep
+        lines += (
+            'BEGIN:VEVENT',
+            f'SUMMARY:Python {release.stage}',
+            f'DTSTART;VALUE=DATE:{release.date.strftime("%Y%m%d")}',
+            f'UID:python-{normalised_stage}@releases.python.org',
+            *note,
+            f'URL:https://peps.python.org/pep-{pep_number:04d}/',
+            'END:VEVENT',
+        )
+    lines += (
+        'END:VCALENDAR',
+        '',
+    )
+    return '\n'.join(lines)
