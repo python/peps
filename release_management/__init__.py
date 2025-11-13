@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 
 try:
@@ -67,6 +68,7 @@ class ReleaseInfo:
         return f'- {self.stage}: {self.date:%A, %Y-%m-%d}'
 
 
+@cache
 def load_python_releases() -> PythonReleases:
     with open(RELEASE_DIR / 'python-releases.toml', 'rb') as f:
         python_releases = tomllib.load(f)
