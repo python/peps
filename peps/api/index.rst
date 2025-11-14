@@ -109,7 +109,7 @@ illustrating some of the possible values for each field:
 release-cycle.json
 ------------------
 
-There is a read-only JSON document of Python releases since version 2.6
+There is a read-only JSON document of Python releases
 available at https://peps.python.org/api/release-cycle.json.
 
 Each feature version is represented as a JSON object,
