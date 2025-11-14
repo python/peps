@@ -127,7 +127,7 @@ The structure of each JSON object is as follows:
        "end_of_life": string,  // Date formatted as YYYY-MM-DD
        "release_manager": string
      },
-}
+   }
 
 For example:
 
