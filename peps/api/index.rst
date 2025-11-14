@@ -112,6 +112,23 @@ release-cycle.json
 There is a read-only JSON document of Python releases since version 2.6
 available at https://peps.python.org/api/release-cycle.json.
 
+Each feature version is represented as a JSON object,
+keyed by the minor version number ("X.Y").
+The structure of each JSON object is as follows:
+
+.. code-block:: typescript
+
+   {
+     "<language version number>": {
+       "branch": string,
+       "pep": integer,
+       "status": 'feature' | 'prerelease' | 'bugfix' | 'security' | 'end-of-life',
+       "first_release": string,  // Date formatted as YYYY-MM-DD
+       "end_of_life": string,  // Date formatted as YYYY-MM-DD
+       "release_manager": string
+     },
+}
+
 For example:
 
 .. code-block:: json
