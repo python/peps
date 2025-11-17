@@ -1,24 +1,18 @@
-import pytest
+import datetime as dt
 
-from release_management import serialize
+from release_management import ReleaseInfo, serialize
 
-
-@pytest.mark.parametrize(
-    ('test_input', 'expected'),
-    [
-        ('3.14.0 alpha 1', 'python-3.14.0alpha1@releases.python.org'),
-        ('3.14.0 beta 2', 'python-3.14.0beta2@releases.python.org'),
-        ('3.14.0 candidate 3', 'python-3.14.0candidate3@releases.python.org'),
-        ('3.14.1', 'python-3.14.1@releases.python.org'),
-    ],
+FAKE_RELEASE = ReleaseInfo(
+    stage='X.Y.Z final',
+    state='actual',
+    date=dt.date(2000, 1, 1),
+    note='These characters need escaping: \\ , ; \n',
 )
-def test_ical_uid(test_input, expected):
-    assert serialize.ical_uid(test_input) == expected
 
 
-def test_create_release_calendar_has_calendar_metadata():
+def test_create_release_calendar_has_calendar_metadata() -> None:
     # Act
-    cal_lines = serialize.create_release_schedule_calendar().split('\n')
+    cal_lines = serialize.create_release_schedule_calendar().split('\r\n')
 
     # Assert
 
@@ -36,15 +30,18 @@ def test_create_release_calendar_has_calendar_metadata():
     ]
 
 
-def test_create_release_calendar_first_event():
+def test_create_release_calendar_first_event() -> None:
     # Act
-    cal_lines = serialize.create_release_schedule_calendar().split('\n')
+    releases = [(9999, FAKE_RELEASE)]
+    cal_lines = serialize.release_schedule_calendar_lines(releases)
 
     # Assert
     assert cal_lines[5] == 'BEGIN:VEVENT'
-    assert cal_lines[6].startswith('SUMMARY:Python ')
-    assert cal_lines[7].startswith('DTSTART;VALUE=DATE:')
-    assert cal_lines[8].startswith('UID:python-')
-    assert cal_lines[8].endswith('@release.python.org')
-    assert cal_lines[9].startswith('URL:https://peps.python.org/pep-')
-    assert cal_lines[10].startswith('END:VEVENT')
+    assert cal_lines[6] == 'SUMMARY:Python X.Y.Z final'
+    assert cal_lines[7] == 'DTSTART;VALUE=DATE:20000101'
+    assert cal_lines[8] == 'UID:python-x.y.zfinal@releases.python.org'
+    assert cal_lines[9] == (
+        'DESCRIPTION:Note: These characters need escaping: \\\\ \\, \\; \\n'
+    )
+    assert cal_lines[10] == 'URL:https://peps.python.org/pep-9999/'
+    assert cal_lines[11] == 'END:VEVENT'

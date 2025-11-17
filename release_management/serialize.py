@@ -8,11 +8,19 @@ from release_management import ROOT_DIR, load_python_releases
 
 TYPE_CHECKING = False
 if TYPE_CHECKING:
-    from release_management import VersionMetadata
+    from release_management import ReleaseInfo, VersionMetadata
 
 # Seven years captures the full lifecycle from prereleases to end-of-life
 TODAY = dt.date.today()
 SEVEN_YEARS_AGO = TODAY.replace(year=TODAY.year - 7)
+
+# https://datatracker.ietf.org/doc/html/rfc5545#section-3.3.11
+CALENDAR_ESCAPE_TEXT = str.maketrans({
+    '\\': r'\\',
+    ';': r'\;',
+    ',': r'\,',
+    '\n': r'\n',
+})
 
 
 def create_release_json() -> str:
@@ -57,15 +65,22 @@ def version_info(metadata: VersionMetadata, /) -> dict[str, str | int]:
 
 def create_release_schedule_calendar() -> str:
     python_releases = load_python_releases()
-    all_releases = [
-        (version, release)
-        for version, releases in python_releases.releases.items()
-        for release in releases
-        # Keep size reasonable by omitting releases older than 7 years
-        if release.date >= SEVEN_YEARS_AGO
-    ]
-    all_releases.sort(key=lambda r: r[1].date)
+    releases = []
+    for version, all_releases in python_releases.releases.items():
+        pep_number = python_releases.metadata[version].pep
+        for release in all_releases:
+            # Keep size reasonable by omitting releases older than 7 years
+            if release.date < SEVEN_YEARS_AGO:
+                continue
+            releases.append((pep_number, release))
+    releases.sort(key=lambda r: r[1].date)
+    lines = release_schedule_calendar_lines(releases)
+    return '\r\n'.join(lines)
 
+
+def release_schedule_calendar_lines(
+    releases: list[tuple[int, ReleaseInfo]], /
+) -> list[str]:
     lines = [
         'BEGIN:VCALENDAR',
         'VERSION:2.0',
@@ -73,10 +88,14 @@ def create_release_schedule_calendar() -> str:
         'X-WR-CALDESC:Python releases schedule from https://peps.python.org',
         'X-WR-CALNAME:Python releases schedule',
     ]
-    for version, release in all_releases:
+    for pep_number, release in releases:
         normalised_stage = release.stage.casefold().replace(' ', '')
-        note = (f'DESCRIPTION:Note: {release.note}',) if release.note else ()
-        pep_number = python_releases.metadata[version].pep
+        normalised_stage = normalised_stage.translate(CALENDAR_ESCAPE_TEXT)
+        if release.note:
+            normalised_note = release.note.translate(CALENDAR_ESCAPE_TEXT)
+            note = (f'DESCRIPTION:Note: {normalised_note}',)
+        else:
+            note = ()
         lines += (
             'BEGIN:VEVENT',
             f'SUMMARY:Python {release.stage}',
@@ -90,4 +109,4 @@ def create_release_schedule_calendar() -> str:
         'END:VCALENDAR',
         '',
     )
-    return '\n'.join(lines)
+    return lines
