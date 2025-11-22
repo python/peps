@@ -89,7 +89,7 @@ def release_schedule_calendar_lines(
         'X-WR-CALNAME:Python releases schedule',
     ]
     for pep_number, release in releases:
-        normalised_stage = release.stage.casefold().replace(' ', '')
+        normalised_stage = release.stage.replace(' ', '')
         normalised_stage = normalised_stage.translate(CALENDAR_ESCAPE_TEXT)
         if release.note:
             normalised_note = release.note.translate(CALENDAR_ESCAPE_TEXT)
