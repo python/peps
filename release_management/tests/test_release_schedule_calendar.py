@@ -39,7 +39,7 @@ def test_create_release_calendar_first_event() -> None:
     assert cal_lines[5] == 'BEGIN:VEVENT'
     assert cal_lines[6] == 'SUMMARY:Python X.Y.Z final'
     assert cal_lines[7] == 'DTSTART;VALUE=DATE:20000101'
-    assert cal_lines[8] == 'UID:python-x.y.zfinal@releases.python.org'
+    assert cal_lines[8] == 'UID:python-X.Y.Zfinal@releases.python.org'
     assert cal_lines[9] == (
         'DESCRIPTION:Note: These characters need escaping: \\\\ \\, \\; \\n'
     )
