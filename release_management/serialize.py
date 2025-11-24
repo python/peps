@@ -81,6 +81,8 @@ def create_release_schedule_calendar() -> str:
 def release_schedule_calendar_lines(
     releases: list[tuple[int, ReleaseInfo]], /
 ) -> list[str]:
+    dtstamp = dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+
     lines = [
         'BEGIN:VCALENDAR',
         'VERSION:2.0',
@@ -98,9 +100,10 @@ def release_schedule_calendar_lines(
             note = ()
         lines += (
             'BEGIN:VEVENT',
-            f'SUMMARY:Python {release.stage}',
-            f'DTSTART;VALUE=DATE:{release.date.strftime("%Y%m%d")}',
+            f'DTSTAMP:{dtstamp}',
             f'UID:python-{normalised_stage}@releases.python.org',
+            f'DTSTART;VALUE=DATE:{release.date.strftime("%Y%m%d")}',
+            f'SUMMARY:Python {release.stage}',
             *note,
             f'URL:https://peps.python.org/pep-{pep_number:04d}/',
             'END:VEVENT',

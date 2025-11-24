@@ -37,11 +37,13 @@ def test_create_release_calendar_first_event() -> None:
 
     # Assert
     assert cal_lines[5] == 'BEGIN:VEVENT'
-    assert cal_lines[6] == 'SUMMARY:Python X.Y.Z final'
-    assert cal_lines[7] == 'DTSTART;VALUE=DATE:20000101'
-    assert cal_lines[8] == 'UID:python-X.Y.Zfinal@releases.python.org'
-    assert cal_lines[9] == (
+    assert cal_lines[6].startswith('DTSTAMP:')
+    assert cal_lines[6].endswith('Z')
+    assert cal_lines[7] == 'UID:python-X.Y.Zfinal@releases.python.org'
+    assert cal_lines[8] == 'DTSTART;VALUE=DATE:20000101'
+    assert cal_lines[9] == 'SUMMARY:Python X.Y.Z final'
+    assert cal_lines[10] == (
         'DESCRIPTION:Note: These characters need escaping: \\\\ \\, \\; \\n'
     )
-    assert cal_lines[10] == 'URL:https://peps.python.org/pep-9999/'
-    assert cal_lines[11] == 'END:VEVENT'
+    assert cal_lines[11] == 'URL:https://peps.python.org/pep-9999/'
+    assert cal_lines[12] == 'END:VEVENT'
