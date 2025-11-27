@@ -22,6 +22,7 @@ ALLSPHINXOPTS = --builder $(BUILDER) \
 .PHONY: html
 html: venv
 	$(SPHINXBUILD) $(ALLSPHINXOPTS)
+	$(VENVDIR)/bin/python3 -m pagefind --site $(BUILDDIR) --verbose
 
 ## htmlview       to open the index page built by the html target in your browser
 .PHONY: htmlview
