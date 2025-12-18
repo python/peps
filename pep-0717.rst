@@ -1,0 +1,919 @@
+PEP: 717
+Title: Delegated Repository Authentication
+Author: Donald Stufft <donald@stufft.io>
+PEP-Delegate: Paul Moore <p.f.moore@gmail.com>
+Discussions-To:
+Status: Draft
+Type: Standards Track
+Topic: Packaging
+Content-Type: text/x-rst
+Created: 11-Jun-2023
+Post-History:
+
+
+Abstract
+========
+
+This PEP proposes a mechanism to allow clients to delegate the job of
+authentication to a Python Package Repository to an external tool, which would
+allow repositories to support more complex authentication schemes without having
+individual clients implement support for them.
+
+
+Motivation
+==========
+
+Currently authentication to a repository is effectively undefined, but in
+practice PyPI has supported HTTP's :rfc:`Basic Authentication <7617>` for its
+entire life, which means that every client implements basic auth and typically
+nothing else. This makes basic auth our "Lingua Franca" of authentication on a
+repository.
+
+Basic Authentication as a common ground is "OK", but it hard codes in an
+assumption of a username and a password which forces other authentication
+schemes to force itself into a username/password-shaped box. Sometimes this
+means using a fake static username or encoding multiple values into the password
+field.
+
+The client also needs to know what credentials should be used for a given
+repository, which historically means that the clients accept a username/password
+and nothing else, often stored in plaintext in a config file. In recent years,
+some clients have started using `keyring <https://pypi.org/project/keyring/>`__
+to support storing and fetching credentials from the platform's secure
+credential storage and some repository providers have used keyring to delegate
+credentials to their custom authentication flow.
+
+Using the keyring library in this way is again, "OK", but it forces every
+repository provider to make something that is importable as a Python package in
+order to support their authentication mechanism.
+
+This can end up causing problems because all of those need to be installed into
+the same environment as the client, which means that their dependencies can
+influence the dependencies that the user is able to also install into that
+environment. This can be a problem even if you isolate the client from the
+user's actual environments, because you need to be able to install all of the
+keyrings that all of your providers may use, which themselves may have
+conflicting requirements.
+
+Every client is also currently on its own for deciding how to implement
+authentication, meaning support can vary widely from one client to another,
+forcing repositories to only support the most common clients.
+
+Providing a pluggable authentication hook has been an oft-requested feature in
+many of our clients with:
+`pypa/twine#362 <https://github.com/pypa/twine/issues/362>`__,
+`pypa/pip#4475 <https://github.com/pypa/pip/issues/4475>`__,
+`psf/fundable-packaging-improvements#35 <https://github.com/psf/fundable-packaging-improvements/issues/35>`__,
+`pypa/pip#4789 <https://github.com/pypa/pip/issues/4789>`__,
+`pypa/pip#8042 <https://github.com/pypa/pip/issues/8042>`__,
+`pypa/pip#10389 <https://github.com/pypa/pip/issues/10389>`__.
+
+
+PyPI's Trusted Publishers
+-------------------------
+
+An example of the current awkwardness around authentication can be found in
+PyPI's `Trusted Publisher <https://docs.pypi.org/trusted-publishers/>`__ feature.
+
+The way this feature works is that whenever a client running in a supported
+CI/CD provider detects that there are "ambient" credentials in the form of an
+OIDC identity token, it is supposed to make a request against a well known
+endpoint on PyPI with that OIDC token. When PyPI gets that request it will
+validate that OIDC token and look to see if there is a trusted publisher
+registered for it, and if there is it will create a short-lived API token and
+return that back to the client. The client can then upload to PyPI using that
+token as normal.
+
+This feature is PyPI specific, and requires the client authentication process to
+understand the authentication flow, what CI/CD providers it is supported on, etc.
+However, all of the main available upload clients essentially support only basic
+authentication with hardcoded credentials or using the keyring module to ask the
+keyring backend what credentials it should use.
+
+This leaves us in an awkward situation, where to support this feature we have to
+choose between several less than ideal options:
+
+* Have each and every upload client implement this PyPI specific authentication
+  flow as a special case for when uploading to PyPI.
+* Have PyPI implement a keyring backend that does this authentication flow
+  whenever it's asked to provide a credential for PyPI, but otherwise dispatches
+  to some underlying keyring backend.
+* Have an external "driver" that implements the authentication flow, and then
+  makes the api token available to the upload client somehow (configuration,
+  environment variable, etc).
+
+All of these have pretty severe downsides that make them pretty unattractive for
+our use cases.
+
+
+Cloud Providers
+---------------
+
+Many cloud providers offer some sort of a Python Artifact Repository, and all of
+them need to provide some mechanism for authenticating to their repositories
+both for upload and for download.
+
+While every cloud provider is a little different, they all tend to implement
+this in roughly the same way. They typically have some standard authentication
+mechanism across their API which isn't suitable for use directly to authenticate
+with their repository.
+
+Instead they create an API on their platform which uses their standard
+authentication mechanism, but returns some short-lived (typically some number of
+hours) credentials that can be used with the "standard" tooling for that
+language like pip, twine, poetry, hatch, etc.
+
+This flow is basically the same thing as we have with PyPI's trusted publishers,
+just with different specifics that will all vary from provider to provider.
+
+Since this is the same basic flow as PyPI, we have the same 3 basic options,
+which are all still pretty unattractive for our use cases.
+
+
+Rationale
+=========
+
+This PEP specifies a mechanism for clients to delegate repository authentication
+by defining a protocol for a client to execute another command and get back the
+information that they need to use to authenticate with the repository.
+
+It uses a command-based protocol rather than a Python API for a few reasons:
+
+* Commands allows the client and authenticator to be written in different
+  languages, which allows greater flexibility and code reusability.
+* Commands allow isolation between authenticators and each other or the
+  environment that the client is running in.
+* Commands alleviate the need to install authenticators into every environment,
+  you can install them once and have them available in all environments.
+* The API is relatively simple, so there is little need for complex objects that
+  a Python API would be needed to support.
+
+This pattern has already been deployed in the `Docker <https://www.docker.com/>`__
+ecosystem, where they have a concept called "credential helpers" and
+`NuGet <https://learn.microsoft.com/en-us/nuget/reference/extensibility/nuget-exe-credential-providers>`__
+where they have the concept called "credential providers", which are both
+roughly the same idea as being proposed by this PEP, other than those only
+support basic auth.
+
+By defining a standard mechanism, we enable repositories to support authentication
+in every client, without having to do any extra work for each client.
+
+
+Specification
+=============
+
+The keywords "**MUST**", "**MUST NOT**", "**REQUIRED**", "**SHALL**",
+"**SHALL NOT**", "**SHOULD**", "**SHOULD NOT**", "**RECOMMENDED**", "**MAY**",
+and "**OPTIONAL**"" in this document are to be interpreted as described in
+:rfc:`RFC 2119 <2119>`.
+
+General
+-------
+
+Every credential helper **MUST** be named with the prefix
+``pyrepo-credential-`` and then the name of the credential helper. For example,
+``pyrepo-credential-pypi`` would be a credential helper named ``pypi``.
+
+There is a special prefix, ``generic``, which may be used to indicate a
+credential helper that provides generic support for credentials, rather than
+specific to one repository. Generic credential helpers **SHOULD** name
+themselves using this, like ``pyrepo-credential-generic-$name``.
+
+When providing a generic credential helper, the credential helper name
+**MUST NOT** include the generic prefix. For example,
+``pyrepo-credential-generic-keyring`` would be a generic credential helper named
+``keyring``.
+
+These names **SHOULD** be alphanumeric only, with the addition of the ``-``
+character and **SHOULD** be lowercase only.
+
+Credential helpers **MUST NOT** write anything to stdout other than responses to
+the client.
+
+Credential helpers **MAY** write warnings and errors to stderr.
+
+Clients **SHOULD** look on ``$PATH`` for credential helpers by default and **MAY**
+allow configuration of explicit paths.
+
+Clients **SHOULD** pass on the environment variables that they have access to
+when calling a credential helper.
+
+
+Error Handling
+--------------
+
+Credential helpers **MUST** return a ``0`` exit code if they were able to
+successfully provide authentication for the repository.
+
+Whenever a credential helper encounters an error, it **MUST** return a nonzero
+error code and **SHOULD** print any relevant information to stderr.
+
+The error code ``113`` is reserved, and credential helpers **MUST** return it
+when they are not able to provide authentication for a particular repository,
+but not due to an actual error.
+
+Clients calling a credential helper **SHOULD** output the stderr from the
+credential helper to the user as it receives it, regardless of mode or error
+code.
+
+
+Credential Helper Protocol
+--------------------------
+
+Credential helpers support a single operation, ``authenticate``, which is used
+by a client to attempt to authenticate a request for a particular repository.
+
+Operations are exposed as sub commands to the credential helper named after the
+operation in all lowercase. For example, ``pyrepo-credential-pypi authenticate``.
+
+Credential helpers **MUST** ignore unknown parameters passed to them.
+
+Clients **MUST** ignore unknown keys in the ``JSON`` response objects.
+
+Clients **MUST** pass all parameters after the named sub command and **MUST NOT**
+intersperse the sub command and parameters.
+
+
+Authenticate
+++++++++++++
+
+The ``authenticate`` operation is the primary operation for authenticating a
+client to a repository.
+
+It takes the following parameters:
+
+* ``--repository-url URL``: The base repository URL that the client is trying to
+  authenticate with.
+* ``--(no-)interactive``: A flag that controls whether the credential helper is
+  allowed to interact with the user using stderr and stdin to support prompting.
+* ``--retry``:  A flag that indicates that the client had already attempted to
+  authenticate with the repository, and had received an HTTP ``401`` response anyways, but
+  is attempting to retry.
+
+Clients **MUST** provide the ``--repository-url`` parameter, and it **MUST** be
+the "base" of the repository. For instance, on PyPI this would be
+``https://pypi.org/simple/`` for the repository API and ``https://upload.pypi.org/legacy/``
+for the upload API.
+
+Clients **MAY** provide the ``--interactive`` and/or ``--no-interactive`` flags,
+to indicate whether or not a credential helper is allowed to interact with the
+user using stderr and stdin. Clients **MAY** specify this multiple times, and if
+so the value of the last one **MUST** be used. If unspecified, clients and
+credential helpers **SHOULD** default to allowing interaction.
+
+Credential helpers **MAY** return cached credentials, and if clients get a ``401``
+response to an authenticated request **MAY** choose to attempt to re-authenticate
+in case their credentials have expired. Re-authentication requests **SHOULD**
+pass the ``--retry`` parameter.
+
+Credential helpers **MUST** be prepared to handle a repository URL that their
+authentication method is not applicable for, and MUST return a ``113`` error code
+when this is the case. Credential helpers **SHOULD** avoid emitting anything to
+stderr when returning a ``113`` error code.
+
+Credential helpers **MAY** take any action, unless otherwise noted, they need in
+order to authenticate the client, including but not limited to: accessing
+platform trust stores, reading the file system, reading the environment,
+prompting the user (when interaction is allowed), or making http requests.
+
+Once a credential helper has determined the credentials for the client, it
+**MUST** return a JSON object on stdout, with the following structure:
+
+.. code-block::
+
+  {
+    "op": "authenticate",
+    "repository-url": "...",
+    "headers": {...}
+  }
+
+The keys have the following requirements:
+
+* ``op``: This key **MUST** be present, and is always a hardcoded ``"authenticate"``,
+  and is used to make the payload self describing.
+
+* ``repository-url``: This key **MUST** be present and is the root URL of the
+  repository, it **MUST** be equal to the ``--repository-url`` value.
+
+  * *Note: This is different from the "canonical root URL" in HTTP Basic Auth,
+    this is the root URL that the repository API that is being called lives at.*
+
+* ``headers``: This key **MUST** be present, and the value **MUST** be a ``dict``
+  where each key value pair is the name of a header and the value  the client
+  should include in the request. The header names **MUST** be in lowercase.
+
+When authenticating the request using the credentials provided by a credential
+helper, the client **MUST** use all of the request headers provided and they
+**SHOULD** override any other values it has for that header.
+
+
+Discovery
+---------
+
+Clients need to be able to determine what credential helpers are available, and
+which ones are applicable to the repository that they are attempting to
+authenticate against.
+
+To generate a list of credential helpers, clients **SHOULD** inspect the ``$PATH``
+environment variable, looking for any executable command that has the expected
+naming pattern. If the environment variable ``$PYREPO_CREDENTIALHELPERS_PATH``
+is set, then clients **MUST** use that instead of ``$PATH``.
+
+When generating the list of credential helpers, the client **SHOULD** sort them
+by:
+
+* Preferring non-generic credential helpers over generic credential helpers.
+* Sorting credential helpers alphabetically by name, case insensitively.
+
+Clients can then iterate over this list, calling the ``authenticate`` operation
+on each credential helper until it gets a successful authentication. Clients
+**SHOULD** skip any credential helper that returns a ``113`` error code, and
+**MAY** error or skip on other nonzero error codes.
+
+Clients **MAY** provide configuration to allow users to specify their credential
+helpers in a different way, but **SHOULD** still support this discovery mechanism
+when applicable.
+
+
+Backwards Compatibility
+=======================
+
+This PEP provides a new mechanism for a client to delegate authentication to an
+external tool. It does not require that they remove their existing supported
+authentication methods, though they are of course free to do so, so this PEP
+alone does not affect backwards compatibility.
+
+If clients choose not to continue to support their previous methods of
+authentication that would mean a compatibility break for their users. However
+the reference implementation of this PEP implements the same keyring based
+approach that twine and pip both currently support, meaning that they can shift
+uses of keyring to use this PEP if they desire without a large compatibility
+break.
+
+
+Security Implications
+=====================
+
+This PEP itself only has one minor security implication that differs from the
+status quo: If someone is able to place a malicious binary on someone's
+``$PATH`` that matches the naming scheme, then a client will implicit execute it.
+
+We don't consider that to be a major issue, as anyone in position to place
+arbitrary binaries on ``$PATH`` could simply replace ``pip`` or some other
+command.
+
+Otherwise, it does not require any sensitive material to exist anywhere but on
+stdin/stdout of the short-lived credential helper process, and it is assumed
+that anyone in a position to access the stdin/stdout of that credential process
+is also in a position to read the memory of the client itself.
+
+Credential helpers themselves have security implications depending on what they
+are doing (if they're storing the credential in plain text in a file then it
+will be easier for that credential to leak).
+
+
+How To Teach This
+=================
+
+The primary thing that we would have to teach users, is that to authenticate
+with something more than a hardcoded basic auth credential they'll need to
+install a credential helper. It is likely that we'll end up with one standard
+implementation that just dispatches to the underlying keyring library, and then
+each repository that wants to support something more complex will be required
+to implement their own.
+
+Thus for the most part, we're only needed to teach people that to get better
+credential support that they should install that standard keyring based
+credential helper. Depending on the client we may even be able to simply depend
+on it to make it available by default.
+
+Teaching people how to use keyring is something that clients like
+`pip <https://pip.pypa.io/en/stable/topics/authentication/#keyring-support>`__
+and `twine <https://twine.readthedocs.io/en/stable/#keyring-support>`__ already
+have to do. By creating a standard implementation, we can centralize learning
+how to authenticate to a repository.
+
+
+Reference Implementation
+========================
+
+Credential Fetcher
+------------------
+
+Below is a rough implementation of a credential fetcher, which is designed to
+be used with the popular Requests library:
+
+.. code-block:: python3
+
+  import dataclasses
+  import functools
+  import json
+  import os
+  import subprocess
+  import typing
+
+  import requests
+
+
+  @dataclasses.dataclass(frozen=True)
+  class CredentialHelper:
+      name: str
+      generic: bool
+      command: str
+
+      @classmethod
+      def from_command(cls, command: str) -> typing.Self:
+          generic = False
+          name = command.removeprefix("pyrepo-credential-")
+          if name.startswith("generic-"):
+              generic = True
+              name = name.removeprefix("generic-")
+          return cls(name=name, generic=generic, command=command)
+
+      def authenticate(
+          self, repo_url: str, /, interactive: bool = True, retry: bool = False
+      ) -> dict[str, str] | None:
+          cmd = [self.command, "authenticate", "--repository-url", repo_url]
+
+          if interactive:
+              cmd.append("--interactive")
+          else:
+              cmd.append("--no-interactive")
+
+          if retry:
+              cmd.append("--retry")
+
+          kwargs = dict(stdout=subprocess.PIPE, timeout=5, text=True)
+          if not interactive:
+              kwargs["stdin"] = subprocess.DEVNULL
+          proc = subprocess.run(cmd)
+          if proc.returncode == 113:
+              return None
+          proc.check_returncode()
+
+          data = json.loads(proc.stdout)
+          if data["op"] != "authenticate":
+              raise ValueError("unknown operation")
+          if data["repository-url"] != repo_url:
+              raise ValueError("unknown repository url")
+          return data["headers"]
+
+
+  @functools.cache
+  def _get_credential_helpers() -> list[CredentialHelper]:
+      # Get a list of our "raw" command names.
+      commands = set()
+      pathenv = os.environ.get(
+          "PYREPO_CREDENTIALHELPERS_PATH", os.environ.get("PATH", "")
+      )
+      pathdirs = pathenv.split(os.pathsep)
+      for path in pathdirs:
+          with os.scandir(path) as p:
+              for entry in p:
+                  if (
+                      entry.name.lower().startswith("pyrepo-credential-")
+                      and entry.is_file()
+                      and os.access(entry.path, os.X_OK)
+                  ):
+                      commands.add(entry.name)
+
+      # Get our Credential Helpers
+      helpers = [CredentialHelper.from_command(c) for c in commands]
+      helpers.sort(key=lambda h: (h.generic, h.name.lower()))
+      return helpers
+
+
+  class CredentialHelperAuth:
+      _repositories: list[str]
+      _interactive: bool
+
+      def __init__(self, repositories: list[str], /, interactive: bool = True):
+          self._repositories = repositories
+          self._interactive = interactive
+
+      def __call__(self, req: requests.Request) -> requests.Request:
+          # Determine what our repository URL should be, this uses an
+          # intentionally "dumb" algorithm in the interest of brevity.
+          for repo_url in self._repositories:
+              # Normalize our  URLs so that they always end with / so
+              # that we don't do partial segment matches.
+              if not repo_url.endswith("/"):
+                  repo_url = repo_url + "/"
+              req_url = req.url
+              if not req.url.endswith("/"):
+                  req_url = req_url + "/"
+
+              # Check if this request is a "sub url" of the repository.
+              if req_url.startswith(repo_url):
+                  # we've found our repo url, so dispatch to our credential
+                  # helpers.
+                  headers = self._get_auth_headers(repo_url)
+                  if headers is not None:
+                      req.headers.update(headers)
+                  return req
+          return req
+
+      def _get_auth_headers(self, repo_url: str) -> dict[str, str] | None:
+          for helper in _get_credential_helpers():
+              headers = helper.authenticate(repo_url, interactive=self._interactive)
+              if headers is not None:
+                  return headers
+          return None
+
+
+Credential Helper
+-----------------
+
+Below is a rough implementation of a credential helper, which is designed to
+use keyring to mimic how pip and twine already use keyring:
+
+
+.. code-block:: python3
+
+  import argparse
+  import base64
+  import getpass
+  import json
+  import sys
+
+  import keyring
+
+  parser = argparse.ArgumentParser()
+  parser.add_argument("--repository-url")
+  parser.add_argument(
+      "--interactive", action=argparse.BooleanOptionalAction, default=True
+  )
+  parser.add_argument("--retry", action="store_true")
+
+  args, _ = parser.parse_known_args(sys.argv)
+
+  username, password = keyring.get_credential(args.repository_url, None), None
+  if username is not None:
+      password = keyring.get_password(args.repository_url, username)
+
+  if (username is None or password is None) and args.interactive:
+      # It's unclear if input uses stdout or stderr, and in what cases
+      sys.stderr.write("Username: ")
+      sys.stderr.flush()
+      username = input("")
+
+      password = getpass.getpass(stream=sys.stderr)
+
+  if username is None or password is None:
+      sys.stderr.write("could not find a username or password")
+      sys.stderr.flush()
+      sys.exit(1)
+
+  basic = base64.b64encode(f"{username}:{password}".encode("utf8")).decode("utf8")
+
+  data = {
+      "op": "authenticate",
+      "repository-url": args.repository_url,
+      "headers": {"authorization": f"Basic {basic}"},
+  }
+
+  sys.stdout.write(json.dumps(data))
+  sys.stdout.flush()
+
+
+Recommendations
+===============
+
+The recommendations in this section, other than this notice itself, are
+non-normative, and represent what the PEP authors believe to be the best default
+implementation decisions for something implementing this PEP, but it does **not**
+represent any sort of requirement to match these decisions.
+
+Clients that are able to cleanly implement a way to configure a specific
+credential helper for a specific repository, should do so. The discovery protocol
+should still be used when one is not configured, but favoring explicit
+configuration over discovery is recommended.
+
+
+Rejected Ideas
+==============
+
+Leave authentication to be client specific
+------------------------------------------
+
+The simplest thing we could do is nothing. Client specific authentication with
+basic authentication as the "Lingua Franca" has served us reasonably well for
+decades, and it likely would continue to do so.
+
+However, we reject this idea for a few reasons:
+
+* This puts clients in a position where the varying authentication requirements
+  on different repositories cause people to push them to add ever increasing
+  features or special cases to cleanly handle different repositories.
+
+  * When one of these repositories that need the flow is PyPI, it creates a
+    strong incentive for those clients to solve the problem just for PyPI with a
+    special case, rather than solving it generally.
+
+* Client specific typically ends up meaning that only the most popular clients
+  get supported well, or maybe even at all, and that every other client is
+  forced to just cargo cult their mechanism, whether it makes sense or not.
+
+* The various workarounds that different repositories have created all have
+  major caveats that this PEP resolves.
+
+* It limits us to basic authentication, which has only a user and a password in
+  a single header. While this is enough to cover a lot of broad use cases, it
+  does force other reasonable methods to have to adapt to it, often in ways that
+  make the total request size larger and less efficient.
+
+
+There's really two main ways that repositories have worked around the current
+limitation, either by providing some additional command that does the repository
+specific authentication flow or using the keyring library that most clients
+currently support.
+
+Both of these options have serious drawbacks.
+
+Having some additional command to provide the authentication has the very large
+drawback that the clients are completely unaware of it, which means that there
+is no standard way for that command to communicate the credentials to the
+client. Different repositories have opted to handle this in different ways,
+such as:
+
+* Having a command that outputs the credentials and expecting the user to
+  manually copy/paste them to their client.
+
+  * Requiring users to manually invoke a command, shuffle around credentials,
+    then manually invoke another command is a pretty awful workflow, especially
+    when those credentials are often fairly short lived, forcing the user to
+    keep repeating this process.
+
+* Having a command that will automatically configure the various clients (that
+  the command knows about) to use the authentication credentials by editing the
+  different config files for each client.
+
+  * While this provides a somewhat nicer user experience, it still requires
+    invoking two commands whenever you want to do something, and it also ends up
+    modifying the user's configuration files (which is error prone), and only
+    supports whatever clients the repository decided to implement support for.
+
+* Having a wrapper command that does the authentication flow, then calls some
+  specific client with the correct credentials.
+
+  * This has the best user experience, but it's often very limited in what
+    clients it supports (typically one), and also means that the user is forced
+    to use some other command in place of the command that they expect to use.
+
+The other approach that some repositories use is to take advantage of the fact
+that many of these clients support the keyring library for secure storage of
+credentials by providing a special keyring backend that implements their
+authentication flow.
+
+This does fix some of the biggest downsides of the first strategy, it integrates
+directly with these clients so there's no need to call some separate command, so
+things will just often "just work". However this has its own disadvantages:
+
+* The keyring library only supports a single backend to be activated as the
+  "default" backend, and none of the clients support the ability to specify a
+  different backend than the default. This makes it impossible to authenticate
+  to multiple different types of repositories at once.
+
+  * Setting the default backend is typically something that is done for the
+    entire user in a configuration file, though it can be overridden with an
+    environment variable.
+
+  * This also makes the setting "leaky", where you may get a keyring backend
+    that expects to be used to access only the credentials for some repository,
+    suddenly get used for unrelated reasons because something else used the
+    keyring library.
+
+* Keyring backends that wish to themselves use the keyring have no "default
+  keyring" able to be configured for the user, since that configuration was used
+  to enable them. This forces them to either force a specific backend or provide
+  some sort of configuration for the "real" backend.
+
+  * For instance, PyPI would want to have a backend that checks if it's running
+    on a known CI/CD provider, and attempts to use the trusted publisher
+    workflow, but would fall back to fetching credentials securely from a
+    keyring.
+
+* There's no standard on requiring clients to implement this, or that they'll
+  all implement it in the same way, so repositories have to worry about the
+  implementation details of multiple clients.
+
+* Using the keyring library, as a library, requires installing that library, all
+  its dependencies, the keyring backend, and all of its dependencies into the
+  same environment as the client. Some clients expect or are typically installed
+  into the same environment as end user dependencies are, which means that there
+  can be conflicts between what the user wants installed and what the credential
+  providers want installed.
+
+  * This also means that for those clients, the dependencies have to be
+    installed into every environment, which often means manually executing an
+    install command after creating a new environment.
+
+  * Some clients optionally also support calling out the keyring command rather
+    than using it as a library, which alleviates some of the above problems, but
+    doing this is rare and still has many of the other problems.
+
+Overall, the status quo isn't the worst thing, but every option has strong
+enough drawbacks and rough edges that the experiences in trying to use and
+implement them are pretty poor.
+
+
+Standardize on Keyring
+----------------------
+
+Since the keyring library provides much of the same benefits as this PEP and
+clients already support it, then it becomes attractive to just standardize that.
+While this does solve some of the problems, it has many shortcomings which cause
+us to reject it.
+
+Some of those shortcomings were documented in the rejection of the status quo,
+but include:
+
+* The keyring library only supports a single backend that can be activated as
+  the default at one time, which does not work in situations that the client
+  needs to authenticate to multiple repositories.
+
+* The keyring library does not provide any mechanism to set a backend for a
+  specific repository, you can only set (with either a user level config file or
+  an environment variable) the default backend for any operation that wants to
+  access a keyring.
+
+  * This is because the keyring library is operating under the assumption that
+    backends are interchangeable credential stores, and the user is going to
+    select one that they want to use and every use of keyring should use that
+    same backend.
+
+* When setting the "default" backend provider to a repository specific one, the
+  repository specific one then cannot easily use the keyring library itself
+  unless it overrides the default with specific backends, preventing the user
+  from being able to configure it, or provides another option to pass through a
+  default to the repository keyring backend.
+
+* Clients could provide configuration allowing the user to specify a specific
+  keyring backend for each repository, but not every client has good patterns
+  for configuring a repository with "related" settings such as a backend.
+
+* Standards ideally should be independent of any specific library or tool,
+  unless that library is part of Python itself. Standardizing on keyring would
+  essentially just be saying "do whatever keyring does", which may change over
+  time.
+
+* Standardizing on the keyring library precludes clients that are written in
+  languages other than Python. While Python is obviously the primary language
+  that we expect our main clients to be written in, there is a wide variety of
+  use cases and supporting clients to be written in other languages can make
+  integration with other systems easier.
+
+* Using the keyring library means that the keyring library, the keyring backend,
+  and all of their dependencies have to be installed into the same environment
+  as the client itself. In many cases this will also be the same environment
+  that the user is installing things into, which means that it raises the
+  potential for dependency conflicts between the tools the user needs to use and
+  their own code.
+
+* Installing into the same environment also means that in cases like virtual
+  environments, those things won't be installed and users will have to manually
+  install them into each individual environment.
+
+Some of the tools have attempted to mitigate some of the above concerns by using
+the keyring CLI that the keyring library provides. While that does solve some of
+the shortcomings, most of them exist even when using the keyring CLI.
+
+Ultimately, the keyring library is intended to abstract over interchangeable
+storage backends for arbitrary credentials, not as a means of providing domain-specific
+authentication logic. Attempting to use it in this way introduces a lot
+of rough edges anywhere where our specific needs diverge from that of a general
+credential storage system.
+
+
+Support Only Basic Auth
+-----------------------
+
+All clients effectively only support basic authentication, which means that all
+repositories currently support basic authentication. The prior art in this space
+for Docker credential helpers and NuGet credential providers also only support
+basic auth. This suggests that the flexibility provided by this PEP in
+supporting other, non-basic auth protocols is unneeded.
+
+Ultimately, the complexity difference between supporting only basic auth and
+supporting any header based authentication is pretty trivial. It largely boils
+down to who is responsible for constructing the ``Authorization`` header, which
+can be done as so:
+
+.. code-block:: python3
+
+  from base64 import b64encode as b64
+
+  username = "..."
+  password = "..."
+
+  basic = b64(f"{username}:{password}".encode("utf8")).decode("utf8")
+  header = f"Basic {basic}"
+
+
+We do not think that there is a major complexity difference between having the
+credential helper vs the client be responsible for those handful lines of code.
+
+However, by supporting arbitrary headers for authentication, we allow
+repositories more flexibility in how they implement their authentication
+schemes, including ones that might use a different header, or multiple headers.
+
+
+Support Complex Authentication
+------------------------------
+
+This PEP assumes that authentication can be boiled down to "for this repository
+URL, set these request headers". This assumption covers the vast majority of
+ways that a repository may want clients to authenticate, however there are
+other, more complex authentication schemes that do not fit those assumptions.
+
+One example is the `AWS4-HMAC-SHA256 <https://docs.aws.amazon.com/AmazonS3/latest/API/sigv4-auth-using-authorization-header.html>`__
+authentication scheme that many AWS services use, which rather than sending some
+basic credential, instead sends a signature over the request body and several
+request headers.
+
+Another example is PyPI's API Tokens, which do not currently, but could be made
+to allow a client to locally restrict an API token to only allow uploading a
+specific file with a certain hash, or only a certain version, or some other
+restriction that relies on asserting against some property of the request
+itself.
+
+These types of authentication schemes tend to require accessing properties of
+the request itself, rather than just knowing what repository that you are
+attempting to access. This becomes complicated to support with our protocol
+where we would have to pass these request properties as command arguments,
+potentially requiring the entire request to be serialized prior to
+authentication.
+
+These types of schemes are fairly unusual and would require a lot more
+complexity in implementation than we're currently requiring, so for that this
+PEP rejects supporting them.
+
+However, this PEP does require credential helpers to ignore unknown parameters,
+so a future PEP could extend this protocol to support these types of
+authentication schemes if desired.
+
+
+Open Questions
+==============
+
+Support a "little" bit of complexity?
+-------------------------------------
+
+We reject supporting complex authentication schemes that require access to large
+portions of the request prior to authentication, for good reasons.
+
+However, there is a simpler problem, we currently assume that there is a 1:1
+mapping between repository URL and credential, which is an assumption that is
+currently being made, however there have been many requests to figure out a way
+around that:
+
+* `pypa/twine#565 <https://github.com/pypa/twine/issues/565>`__
+* `pypa/twine#496 <https://github.com/pypa/twine/issues/496>`__
+* `pypa/packaging.python.org#297 <https://github.com/pypa/packaging.python.org/issues/297>`__
+* `pypa/packaging.python.org#628 <https://github.com/pypa/packaging.python.org/issues/628>`__
+* `pypa/flit#276 <https://github.com/pypa/flit/issues/276>`__
+
+There's probably more.
+
+Unfortunately this starts to get hard, because it's not wholly clear what all we
+would need to support. For PyPI we'd want per-project at a minimum for upload,
+but we don't need it at all for download.
+
+Part of the problem becomes that we're using this credential helper in multiple
+contexts (download and upload, possibly more in the future?) and they don't
+always need to alter authentication on the same axis.
+
+My random, 3 AM off the cuff idea here is to support a "context" parameter. In
+that we can do something like ``--context "{... json object … }"``.
+
+We could then define context objects that clients can optionally support (but
+not require), so for instance, since upload is the most common place to need
+this, we could say that there is an upload context that looks like:
+
+.. code-block:: json
+
+  {
+    "_type": "upload",
+    "project": "...",
+    "filename": "...",
+    "file-hashes": {"sha256": "..."}
+  }
+
+Not sure, there's a bunch of stuff we could add in here that only makes sense
+for upload.
+
+I'm not sure if there's anything like this for download (e.g. pip)... at most
+probably a project? But I don't think there is any established pattern around
+wanting to swap out different credentials for the same repository in pip based
+on some property of the request.
+
+Credential helpers could just ignore this context if they don't care about it,
+and clients could just not send it if they don't want to or can't support it, so
+it would effectively be optional, but provide information when needed.
+
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
