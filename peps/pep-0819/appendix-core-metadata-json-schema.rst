@@ -1,6 +1,6 @@
 :orphan:
 
-.. _9999-core-metadata-json-schema:
+.. _0819-core-metadata-json-schema:
 
 Appendix: JSON Schema for Core Metadata
 =======================================
@@ -10,7 +10,7 @@ Appendix: JSON Schema for Core Metadata
     :linenos:
     :name: core-metadata-schema
 
-.. _9999-wheel-json-schema:
+.. _0819-wheel-json-schema:
 
 Appendix: JSON Schema for Wheel Metadata
 ========================================
