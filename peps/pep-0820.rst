@@ -1,0 +1,576 @@
+PEP: 820
+Title: PySlot: Unified slot system for the C API
+Author: Petr Viktorin <encukou@gmail.com>
+Discussions-To: Pending
+Status: Draft
+Type: Standards Track
+Created: 17-Dec-2025
+Python-Version: 3.15
+Post-History: Pending
+
+
+Abstract
+========
+
+Replace type and module slots with a new, more type-safe structure that allows
+adding new slots in a more forward-compatible way.
+
+The existing slot structures and related API is soft-deprecated.
+(That is: it will continue to work without warnings, and it’ll be fully
+documented and supported, but we plan to not add any new features to it.)
+
+
+Background
+==========
+
+The C API in Python 3.14 contains two extendable structs used to provide
+information when creating a new object: :c:type:`PyType_Spec` and
+:c:type:`PyModuleDef`.
+
+Each has a family of C API functions that create a Python object from it.
+(Each family works as a single function, with optional arguments that
+got added over time.) These are:
+
+* ``PyType_From*`` functions, like :c:func:`PyType_FromMetaclass`,
+  for ``PyType_Spec``;
+* ``PyModule_FromDef*`` functions, like :c:func:`PyModule_FromDefAndSpec`,
+  for ``PyModuleDef``.
+
+Separating "input" structures from runtime objects allows the internal
+structure of the object to stay opaque (in both the API and the ABI),
+allowing future CPython versions (or even alternative implementations) to
+change the details.
+
+Both structures contain a *slots* field – essentially an array of
+`tagged unions <https://en.wikipedia.org/wiki/Tagged_union>`_,
+which allows for future expansion.
+(In practice, slots are ``void`` pointers taged with an ``int`` ID.)
+
+In :pep:`793`, new module creation API was added.
+Instead of the ``PyModuleDef`` structure, it uses only an array of *slots*.
+To replace the existing members of ``PyModuleDef``, it adds
+corresponding slot IDs -- for example, the module name is specified in a
+``Py_mod_name`` slot, rather than in ``PyModuleDef.m_name``.
+That PEP notes:
+
+
+    The PyModuleDef_Slot struct does have some downsides compared to fixed
+    fields.
+    We believe these are fixable, but leave that out of scope of this PEP.
+
+This proposal addresses the downsides.
+
+
+Motivation
+==========
+
+The main shortcomings of the existing ``PyModuleDef_Slot`` and ``PyType_Slot``
+are:
+
+Type safety
+    ``void *`` is used for data pointers, function pointers and small integers,
+    requiring casting that works in practice on all relevant architectures,
+    but is technically undefined or implementation-defined behaviour in C.
+
+    For example: :c:macro:`Py_tp_doc` marks a string; :c:macro:`Py_mod_gil`
+    an integer, and :c:macro:`Py_tp_repr` a function; all must
+    be cast to ``void*``.
+
+Limited forward compatibility
+    If an extension provides a slot ID that's unknown to the current
+    interpreter, type/module creation will fail.
+    This makes it cumbersome to use "optional" features – ones that should
+    only take effect if the interpreter supports them.
+    The recently added slots :c:macro:`Py_mod_gil` and
+    :c:macro:`Py_mod_multiple_interpreters` are good examples.
+
+    One workaround is to check the Python version, and omit slots
+    that predate the current interpreter.
+    This is cumbersome for users.
+    It also constraints possible non-CPython implementations of the C API,
+    preventing them from "cherry-picking" features introduced in newer CPython
+    versions.
+
+
+Example
+=======
+
+This proposal adds API to create classes and modules from arrays of slots,
+which can be specified as C literals using macros, like this::
+
+    static PySlot myClass_slots[] = {
+       PySlot_STATIC(tp_name, "mymod.MyClass"),
+       PySlot_SIZE(tp_extra_basicsize, sizeof(struct myClass)),
+       PySlot_FUNC(tp_repr, myClass_repr),
+       PySlot_INT64(tp_flags, Py_TPFLAGS_DEFAULT | Py_TPFLAGS_MANAGED_DICT),
+       PySlot_END,
+    }
+
+    ...
+
+        PyObject *MyClass = PyType_FromSlots(myClass_slots, -1);
+
+The macros simplify hand-written literals.
+For more complex use cases, like compatibility between several Python versions,
+or templated/auto-generated slot arrays, as well as for non-C users of the
+C API, the slot struct definitions can be written out.
+For example, if the transition from ``tp_getattr`` to ``tp_getattro``
+was happening in the near future (say, CPython 3.17), rather than 1.4, and
+the user wanted to support CPython with and without ``tp_getattro``, they could
+add a "``HAS_FALLBACK``" flag::
+
+    static PySlot myClass_slots[] = {
+       ...
+       {   // skipped if not supported
+           .sl_id=Py_tp_getattro,
+           .sl_flags=PySlot_HAS_FALLBACK,
+           .sl_func=myClass_getattro,
+       },
+       {    // used if if the slot above was skipped
+           .sl_id=Py_tp_getattr,
+           .sl_func=myClass_old_getattr,
+       },
+       PySlot_END,
+    }
+
+Similarly, if the ``nb_matrix_multiply`` slot (:pep:`465`) was added in the
+near future, users could add it with an "``OPTIONAL``" flag, making their class
+support the ``@`` operator only on CPython versions with that operator.
+
+
+Rationale
+=========
+
+Here we explain the design decisions in this proposal.
+
+Some of the rationale is repeated from :pep:`793`, which replaced
+the :c:type:`PyModuleDef` struct with an array of slots.
+
+
+Using slots
+-----------
+
+The main alternative to slots is using a versioned ``struct`` for input.
+
+There are two variants of such a design:
+
+- A large struct with fields for all info. As we can see with
+  ``PyTypeObject``, most of such a struct tends to be NULLs in practice.
+  As more fields become obsolete, either the wastage grows, or we introduce
+  new struct layouts (while keeping compatibility with the old ones for a while).
+
+- A small struct with only the info necessary for initial creation, with other
+  info added afterwards (with dedicated function calls, or Python-level
+  ``setattr``). This design:
+
+  - makes it cumbersome to add/obsolete/adjust the required info (for example,
+    in :PEP:`697` I gave meaning to negative values of an existing field; adding
+    a new field would be cleaner in similar situations);
+  - increases the number of API calls between an extension and the interpreter.
+
+  We believe that “batch” API for type/module creation makes sense,
+  even if it partially duplicates an API to modify “live” objects.
+
+
+Using slots *only*
+------------------
+
+The classes ``PyType_Spec`` and ``PyModuleDef`` have explicit fields
+in addition to a slots array. These include:
+
+- Required information, such as the class name (``PyType_Spec.name``).
+  This proposal adds a *slot* ID for the name, and makes it required.
+- Non-pointers (``basicsize``, ``flags``).
+  Originally, slots were intended to
+  only contain *function pointers*; they now contain *data pointers* as well as
+  integers or flags. This proposal uses an union to handle types cleanly.
+- Items added before the slots mechanism. The ``PyModuleDef.m_slots``
+  itself was repurposed from ``m_reload`` which was always NULL;
+  the optional ``m_traverse`` or ``m_methods`` members predate it.
+
+We can do without these fields, and have *only* an array of slots.
+A wrapper class around the array would complicate the design.
+If fields in such a class ever become obsolete, they are hard to remove or
+repurpose.
+
+
+Nested slot tables
+------------------
+
+In this proposal, the array of slots can reference another array of slots,
+which is treated as if it was merged into its “parent”, recursively.
+This complicates slot handling inside the interpreter, but allows:
+
+- Mixing dynamically allocated (or stack-allocated) slots with ``static`` ones.
+  This solves the issue that lead to the ``PyType_From*`` family of
+  functions expanding with values that typically can't  be ``static``
+  (i.e. it's often a symbol from another DLL, which can't be ``static``
+  data on Windows).
+- Sharing a subset of the slots to implement functionality
+  common to several classes/modules.
+- Easily including some slots conditionally, e.g. based on the Python version.
+
+
+Nested “legacy” slot tables
+---------------------------
+
+Similarly to nested arrays of ``PyType_Slot``, we also propose supporting
+arrays of “legacy” slots (``PyType_Slot`` and ``PyModuleDef_Slot``) in
+the “new” slots, and vice versa.
+
+This way, users can reuse code they already have written without
+rewriting/reformatting,
+and only use the “new” slots if they need any new features.
+
+
+Fixed-width integers
+---------------------
+
+This proposal uses fixed-width integers (``uint16_t``), for slot IDs and
+flags.
+With the C ``int`` type, using more that 16 bits would not be portable,
+but it would silently work on common platforms.
+Using ``int`` but avoiding values over ``UINT16_MAX`` wastes 16 bits
+on common platforms.
+
+With these defined as ``uint16_t``, it seems natural to use fixed-width
+integers for everything except pointers and sizes.
+
+Memory layout
+-------------
+
+On common 64-bit platforms, we can keep the size of the new struct the same
+as the existing ``PyType_Slot`` and ``PyModuleDef_Slot``. (The existing
+struct waste 6 out of 16 bytes due to ``int`` portability and padding;
+this proposal puts those bits to use for new features.)
+On 32-bit platforms, this proposal calls for the same layout as on 64-bit,
+doubling the size compared to the existing structs (from 8 bytes to 16).
+For “configuration” data that's usually ``static``, it should be OK.
+
+The proposal does not use bit-fields and enums, whose memory representation is
+compiler-dependent, causing issues when using the API from languages other
+than C.
+
+The structure is laid out assuming that a type's alignment matches its size.
+
+
+Single ID space
+---------------
+
+Currently, the numeric values of *module* and *type* slots overlap:
+
+- ``Py_bf_getbuffer`` == ``Py_mod_create`` == 1
+- ``Py_bf_releasebuffer`` == ``Py_mod_exec`` == 2
+- ``Py_mp_ass_subscript`` == ``Py_mod_multiple_interpreters`` == 3
+- ``Py_mp_length`` == ``Py_mod_gil`` == 4
+- and similar for module slots added in CPython 3.15
+
+This proposal use a single sequence for both, so future slots avoid this
+overlap. This is to:
+
+- Avoid *accidentally* using type slots for modules, and vice versa
+- Allow external libraries or checkers to determine a slot's meaning
+  (and type) based on the ID.
+
+The 4 existing overlaps means we don't reach these goals right now,
+but we can gradually migrate to new numeric IDs in a way that's transparent
+to the user.
+
+The main disadvantage is that any internal lookup tables will be either bigger
+(if we use separate ones for types & modules, so they'll contain blanks),
+or harder to manage (if they're merged).
+
+
+Specification
+=============
+
+A new ``PySlot`` structure will be defined as follows::
+
+    typedef struct PySlot {
+        uint16_t sl_id;
+        uint16_t sl_flags;
+        union {
+            uint32_t _sl_reserved;  // must be 0
+        };
+        union {
+            void *sl_ptr;
+            void (*sl_func)(void);
+            Py_ssize_t sl_size;
+            int64_t sl_int64;
+            uint64_t sl_uint64;
+        };
+    } PySlot;
+
+
+- ``sl_id``: A slot number, identifying what the slot does.
+- ``sl_flags``: Flags, defined below.
+- 32 bits reserved for future extensions (expected to be enabled by
+  future flags).
+- An union with the data, whose type depends on the slot.
+
+
+Functions that use slots
+------------------------
+
+The following function will be added.
+It will create the corresponding Python type object from the given
+array of slots::
+
+    PyObject *PyType_FromSlots(const PySlot *slots);
+
+The ``PyModule_FromSlotsAndSpec`` function (added in CPython 3.15 in :pep:`793`)
+will be *changed* to take the new slot structure::
+
+    PyObject *PyModule_FromSlotsAndSpec(const PySlot *slots, PyObject *spec)
+
+
+General slot semantics
+----------------------
+
+When slots are passed to a function that applies them, the function will not
+modify the slot array, nor any data it points to (recursively).
+
+After the function is done, the user is allowed to modify or deallocate the
+array, and any data it points to (recursively), unless it's explicitly marked
+as "static" (see ``PySlot_STATIC`` below).
+This means the interpreter needs typically needs to make a copy of all data
+in the struct, including ``char *`` text.
+
+
+Flags
+-----
+
+``sl_flags`` may set the following bits. Unassigned bits must be set to zero.
+
+- ``PySlot_OPTIONAL``: If the slot ID is unknown, the interpreter should
+  ignore the slot entirely. (For example, if ``nb_matrix_multiply`` was being
+  added to CPython now, your type could use this.)
+
+- ``PySlot_STATIC``: All data the slot points to is statically allocated
+  and constant.
+  Thus, the interpreter does not need to copy the information.
+  This flag is implied for function pointers.
+
+  The flag applies even to data the slot points to "indirectly", except for
+  nested slots -- see ``Py_slot_subslots`` below -- which can have their
+  own ``PySlot_STATIC`` flag.
+  For example, if applied to a ``Py_tp_members`` slot that points to an
+  *array* of ``PyMemberDef`` structures, then the entire array, as well as the
+  ``name`` and ``doc`` strings in its elements, must be static and constant.
+
+- ``PySlot_HAS_FALLBACK``: If the slot ID is unknown, the interpreter will
+  ignore the slot.
+  If it's known, the interpreter should ignore subsequent slots up to
+  (and including) the first one without HAS_FALLBACK.
+
+  Effectively, consecutive slots with the HAS_FALLBACK flag, plus the first
+  non-HAS_FALLBACK slot after them, form a “block” where the the interpreter
+  will only consider the *first* slot in the block that it understands.
+  If the entire block is to be optional, it should end with a ``Py_slot_end``
+  with the OPTIONAL flag.
+
+- ``PySlot_IS_PTR``: The data is stored in ``sl_ptr``, and must be cast to
+  the appropriate type.
+
+  This flag simplifies porting from the existing ``PyType_Slot`` and
+  ``PyModuleDef_Slot``, where all slots work this way.
+
+
+Convenience macros
+------------------
+
+The following macros will be added to the API to simplify slot definition::
+
+    #define PySlot_DATA(NAME, VALUE) \
+       {.sl_id=NAME, .sl_ptr=(void*)(VALUE)}
+
+    #define PySlot_FUNC(NAME, VALUE) \
+       {.sl_id=NAME, .sl_func=(VALUE)}
+
+    #define PySlot_SIZE(NAME, VALUE) \
+       {.sl_id=NAME, .sl_size=(VALUE)}
+
+    #define PySlot_INT64(NAME, VALUE) \
+       {.sl_id=NAME, .sl_int64=(VALUE)}
+
+    #define PySlot_UINT64(NAME, VALUE) \
+       {.sl_id=NAME, .sl_uint64=(VALUE)}
+
+    #define PySlot_STATIC_DATA(NAME, VALUE) \
+       {.sl_id=NAME, .sl_flags=PySlot_STATIC, .sl_ptr=(VALUE)}
+
+    #define PySlot_END {0}
+
+We'll also add two more macros that avoid named initializers,
+for use in C++11-compatibile code::
+
+    #define PySlot_PTR(NAME, VALUE) \
+       {NAME, PySlot_IS_PTR, {0}, {(void*)(VALUE)}}
+
+    #define PySlot_PTR_STATIC(NAME, VALUE) \
+       {NAME, PySlot_IS_PTR|Py_SLOT_STATIC, {0}, {(void*)(VALUE)}}
+
+
+Nested slot tables
+------------------
+
+A new slot, ``Py_slot_subslots``, will be added to allow nesting slot tables.
+Its value (``sl_ptr``) should point to an array of ``PySlot`` structures,
+which will be treated as if they were part of the current slot array.
+``sl_ptr`` can be ``NULL`` to indicate that there are no slots.
+
+Two more slots will allow similar nesting for existing slot structures:
+
+- ``Py_tp_slots`` for an array of ``PyType_Slot``
+- ``Py_mod_slots`` for an array of ``PyModuleDef_Slot``
+
+Each ``PyType_Slot`` in the array will be converted to
+``(PySlot){.sl_id=slot, .sl_flags=PySlot_IS_PTR, .sl_ptr=func}``,
+and similar with ``PyModuleDef_Slot``.
+
+The initial implementation will have restrictions that may be lifted
+in the future:
+
+- ``Py_slot_subslots``, ``Py_tp_slots`` and ``Py_mod_slots`` cannot use
+  ``PySlot_HAS_FALLBACK`` (the flag cannot be set on them nor a slot that
+  precedes them).
+- Nesting depth will be limited to 5 levels.
+  (4 levels for the existing ``PyType_From*``, ``PyModule_From*`` functions,
+  which will use up one level internally.)
+
+
+New slot IDs
+------------
+
+The following new slot IDs, usable for both type and module
+definitions, will be added:
+
+- ``Py_slot_end`` (defined as ``0``)
+
+  - With ``sl_flags=Py_SLOT_OPTIONAL``, this slot is ignored.
+    Otherwise, this slot marks the end of the slots array.
+  - The ``PySlot_INTPTR`` flag is ignored.
+  - Other flags ( ``PySlot_STATIC``, ``PySlot_HAS_FALLBACK``) are
+    not allowed with ``Py_slot_end``.
+
+- ``Py_slot_subslots``, ``Py_tp_slots``, ``Py_mod_slots``: see
+  *Nested slot tables* above
+- ``Py_slot_invalid``: treated as an unknown slot ID. (Useful for testing
+  how optional and fallback slots work.)
+
+The following new slot IDs will be added to cover existing
+members of ``PyModuleDef``:
+
+- ``Py_tp_name`` (mandatory for type creation)
+- ``Py_tp_basicsize`` (of type ``Py_ssize_t``)
+- ``Py_tp_extra_basicsize`` (equivalent to setting ``PyType_Spec.basicsize``
+  to ``-extra_basicsize``)
+- ``Py_tp_itemsize``
+- ``Py_tp_flags``
+
+The following new slot IDs will be added to cover
+arguments of ``PyType_FromMetaclass``:
+
+- ``Py_tp_metaclass`` (used to set ``ob_type`` after metaclass calculation)
+- ``Py_tp_module``
+
+Note that ``Py_tp_base`` and ``Py_tp_bases`` already exist.
+The interpreter will treat them identically: either can specify a class
+object or a tuple of them.
+``Py_tp_base`` will be soft-deprecated in favour of ``Py_tp_bases``.
+Specifying both in a single definition will be deprecated (currently,
+``Py_tp_bases`` overrides ``Py_tp_base``).
+
+None of the new slots will be usable with ``PyType_GetSlot``.
+(This limitation may be lifted in the future, with C API WG approval.)
+
+
+Slot renumbering
+----------------
+
+New slots IDs will have unique numeric values (that is, ``Py_slot_*``,
+``Py_tp_*`` and ``Py_mod_*`` won't share IDs).
+
+Slots numbered 1 through 4
+(``Py_bf_getbuffer``...\ ``Py_mp_length`` and ``Py_mod_create``...\ ``Py_mod_gil``)
+will be redefined as new (larger) numbers.
+The old numbers will remain as aliases, and will be used when compiling for
+Stable ABI versions below 3.15.
+
+Slots for members of ``PyType_Spec``, which were added in
+:ref:`PEP 793 <pep793-api-summary>`, will be renumbered so that they have
+unique IDs:
+
+- ``Py_mod_name``
+- ``Py_mod_doc``
+- ``Py_mod_state_size``
+- ``Py_mod_methods``
+- ``Py_mod_state_traverse``
+- ``Py_mod_state_clear``
+- ``Py_mod_state_free``
+
+
+Soft deprecation
+----------------
+
+These existing functions will be `soft-deprecated <https://peps.python.org/pep-0387/#soft-deprecation>`__:
+
+- ``PyType_FromSpec``
+- ``PyType_FromSpecWithBases``
+- ``PyType_FromModuleAndSpec``
+- ``PyType_FromMetaclass``
+- ``PyModule_FromDefAndSpec``
+- ``PyModule_FromDefAndSpec2``
+- ``PyModule_ExecDef``
+
+(As a reminder: soft-deprecated API is not scheduled for removal, does not
+raise warnings, and remains documented and tested. However, no new
+functionality will be added to it.)
+
+Arrays of ``PyType_Slot`` or ``PyModuleDef_Slot``, which are accepted by
+these functions, can contain any slots, including "new" ones defined
+in this PEP.
+This includes nested "new-style" slots (``Py_slot_subslots``).
+
+
+Backwards Compatibility
+=======================
+
+This PEP only adds APIs, so it's backwards compatible.
+
+
+Security Implications
+=====================
+
+None known
+
+
+How to Teach This
+=================
+
+Adjust the "Extending and Embedding" tutorial to use this.
+
+
+Reference Implementation
+========================
+
+None yet.
+
+
+Rejected Ideas
+==============
+
+None yet.
+
+
+Open Issues
+===========
+
+None yet.
+
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
