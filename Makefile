@@ -64,6 +64,7 @@ venv:
 		echo "venv already exists."; \
 		echo "To recreate it, remove it first with \`make clean-venv'."; \
 	else \
+		set -e; \
 		echo "Creating venv in $(VENVDIR)"; \
 		if $(UV) --version >/dev/null 2>&1; then \
 			$(UV) venv --python=$(PYTHON) $(VENVDIR); \
@@ -106,6 +107,11 @@ test: venv
 .PHONY: spellcheck
 spellcheck: _ensure-pre-commit
 	$(VENVDIR)/bin/python3 -m pre_commit run --all-files --hook-stage manual codespell
+
+## regen-all      to regenerate generated source files
+.PHONY: regen-all
+regen-all:
+	$(PYTHON) -m release_management update-peps
 
 .PHONY: help
 help : Makefile
