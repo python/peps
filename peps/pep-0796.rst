@@ -1,0 +1,319 @@
+PEP: 796
+Title: Relative Home Path in Virtual Environments
+Author: Richard Levasseur <richardlev@gmail.com>
+Sponsor: Alyssa Coghlan <ncoghlan@gmail.com>
+Discussions-To: Pending
+Status: Draft
+Type: Standards Track
+Created: 02-Jul-2025
+Python-Version: 3.15
+
+
+Abstract
+========
+
+This PEP formally specifies the use of a relative path for ``home``
+in a Python virtual environment's :file:`pyvenv.cfg` file.
+
+Specifically, we will discuss how such relative paths are understood
+by the Python startup process, including their conversion to absolute
+paths for use by the runtime.
+This is a fundamental building block for virtual environments to
+become more portable.
+
+Motivation
+==========
+
+The ``home`` field in :file:`pyvenv.cfg` is used on interpreter startup to
+determine the actual Python interpreter installation that is used to execute
+code in that virtual environment. Currently, this path is required to be
+absolute for consistent virtual environment operation (the original :pep:`405`
+specifying virtual environments didn't cover any specific way of processing
+relative paths, so their behaviour is implementation dependent). CPython releases
+up to and including CPython 3.14 resolve them relative to the current process
+working directory, making them too unreliable to use in practice.
+
+The reason to support a relative path is to support portable virtual
+environments, which rely on using a host-agnostic relative path to point to
+:envvar:`PYTHONHOME`.
+A portable virtual environment is one that can be moved between
+platform-compatible hosts, which is an important feature for some projects (see
+`Why portable virtual environments matter`_).
+
+The reason support for a relative ``home`` path needs to be
+in the interpreter itself is because locating ``PYTHONHOME`` happens
+very early in the interpreter startup process, which limits the options for
+customizing how it's computed. Without the ability to specify where the
+supporting Python runtime files are, the interpreter can't finish startup,
+so other hook points (e.g. ``site`` initialization) never trigger.
+
+Tools that currently look to enable virtual environment portability across
+machines do so either by relying on undocumented interpreter behaviour
+(Bazel, omitting the ``home`` key entirely to trigger an implementation
+dependent fallback to resolving via a symlinked interpreter binary on
+non-Windows systems, see :cpython-issue:`135773`) or by requiring a post-installation script to be executed
+after the environment is placed in its target location (`venvstacks
+<https://lmstudio.ai/blog/venvstacks#publishing-environment-layer-archives>`__).
+
+While this PEP on its own isn't sufficient to enable portable virtual
+environments, it allows tools like Bazel or venvstacks to more easily prepare
+constrained environments that allow for such use cases.
+
+Why portable virtual environments matter
+----------------------------------------
+
+Portable virtual environments are important for the efficiency and
+reproducibility benefits they bring from being created once and reused multiple
+times later in different locations. For example, a build farm can build a
+virtual environment once, cache it, and then re-use it as-is to run CI jobs.
+
+
+Rationale
+=========
+
+Defining semantics for a relative ``home`` path is the chosen design for the
+following reasons.
+
+First, it is a small change to interpreter startup, in particular of an
+unreliable behavior that isn't specified. Currently, relative paths are
+resolved to the process's current working directory, which makes them
+unreliable for use in practice.
+
+Second, for portable virtual environments, relative paths allow more
+efficient, simple, and correct reproduction of virtual environments between
+hosts. This is because they can be copied as-is to different locations. Some
+example capabilities this allows are:
+
+* A build farm creating (and caching) a virtual environment, which is then
+  served to developers (e.g. Bazel).
+* Composing virtual environments together (e.g. venvstacks).
+* Installing multiple arbitrary virtual environments into a container to
+  save disk space.
+* Layering a virtual environment atop a container image for faster image
+  building.
+* Not needing virtual environment creation tools on the host that uses a
+  virtual environment.
+* Exact reproduction of an application's virtual environment between a
+  developer's host and a production host.
+
+Third, requiring an absolute path is inherently overly proscriptive. The
+interpreter itself doesn't care whether paths are relative or absolute, merely
+that they point to valid locations, so users should be given the ability to use
+a path of their choosing. Given a known anchor point, it's easy to transform a
+relative path to an absolute path and still retain predictable and reliable
+behavior that produces correct values.
+
+Deferring the design of fully portable virtual environments
+-----------------------------------------------------------
+
+This PEP purposely only focuses on the interpreter startup behavior to limit
+its scope. There are multiple implementations and many design questions for how
+to fully implement portable virtual environments (e.g. what installers should
+do), but they are separate from the Python runtime initialization phase.
+
+
+Specification
+=============
+
+The ``home`` value in ``pyvenv.cfg`` is permitted to use a relative path value.
+These may contain parent-directory references outside of the virtual environment root
+directory.
+For example:
+
+* ``subdir/whatever/bin`` (a directory within the virtual environment)
+* ``./subdir/whatever/bin`` (same as above)
+* ``../../../../../elsewhere/runtime/bin`` (a directory outside the virtual
+  environment)
+
+Relative paths are relative to the directory containing :file:`pyvenv.cfg`.
+During interpreter startup (i.e. :file:`getpath.py`), the relative path is joined to the
+directory containing ``pyvenv.cfg`` to form an absolute path.
+Parent-directory references (``../``) and current
+directory references (``./``) are resolved syntactically (i.e. not resolving
+symlinks). Symlinks are *not* resolved prior to construction of the absolute
+path to ensure semantics between a relative path and absolute path remain the
+same.
+
+For example, given
+``/home/user/venv/bin/pyvenv.cfg`` with
+``home = ../../runtime/./bin``, the result is ``home = /home/user/runtime/bin``,
+i.e. it's equivalent to using that value verbatim in ``pyvenv.cfg``.
+
+
+CPython Runtime Changes
+-----------------------
+
+The CPython runtime itself *almost* already supports relative paths. The
+primitives are there, so the only change needed is to define how it resolves
+relative paths for ``home`` in ``pyvenv.cfg``.
+
+Currently, relative paths resolve relative to the process's current working
+directory. Because the current working directory isn't knowable in advance, it
+makes using relative paths today effectively impossible.
+
+Instead, the paths should be relative to the location of the ``pyvenv.cfg``
+file. This file is chosen as the anchor point because the tool that creates the
+file also has to know where the Python runtime is, so can easily calculate the
+correct relative path. For tools that read the ``pyvenv.cfg``, it is also easy
+to simply join the directory name of where ``pyvenv.cfg`` was found with the
+path in the config file. When a person reads the config file, they can do
+something similar, which results in a lower cognitive burden and helps avoid
+the question of "relative to what?"
+
+This change is only a couple of lines in the startup code. Specifically, when
+parsing the ``pyvenv.cfg`` file and finding the ``home`` value, it just needs
+to be checked if it's already absolute. If not, then join it to the directory
+name of the ``pyvenv.cfg`` file. The code already knows the directory and has
+helpers already exist for checking if a path is absolute and joining two
+paths.
+
+A proof-of-concept of this is implemented in the author's branch,
+`rickeylev/feat.relative.pyvenv.home
+<https://github.com/python/cpython/compare/main...rickeylev:cpython:feat.relative.pyvenv.home>`__.
+
+Backwards Compatibility
+=======================
+
+Tools that work around the absolute ``home`` key limitation the way Bazel
+and venvstacks currently do (omitting the ``home`` key, or editing it after
+moving the environment) will be unaffected.
+
+While the PEP author and sponsor aren't aware of any projects that work around
+the limitation by carefully controlling the current working directory used to
+launch the deployed Python environments on target systems, any such projects
+would be unaffected if they already ensured the working directory was set to
+the folder containing ``pyvenv.cfg`` (which seems like a plausible choice,
+since that is typically the root directory of the virtual environment). In the
+even more unlikely case where that assumption doesn't hold, tools generating
+relative virtual environment paths will typically be aware of the underlying
+base runtime Python version, and hence able to update the emitted relative path
+accordingly.
+
+Security Implications
+=====================
+
+A relative path in :file:`pyvenv.cfg` may resolve differently depending on the
+location of the virtual environment. This *could* point to a surprising,
+potentially malicious, location.
+
+However, this risk already exists today because a relative path isn't
+*rejected*, but resolved relative to the current working directory. This PEP
+just changes the anchor point to ``pyvenv.cfg`` itself.
+
+Similarly, the same concern exists for absolute paths. The two are
+fundamentally the same because they both rely on trusting whoever created
+the ``pyvenv.cfg`` file, which requires having run another tool or downloaded
+something from elsewhere.
+
+
+How to Teach This
+=================
+
+Teaching this should be straightforward: if you use a relative path in
+``pyvenv.cfg``, then it's relative to the directory containing the
+``pyvenv.cfg`` file. This is simple to explain and easy to understand for
+anyone that is already familiar with handling relative filesystem paths.
+
+
+Reference Implementation
+========================
+
+A reference implementation is available by using the combination of:
+
+* Python runtime from `rickeylev/feat.relative.pyvenv.home <https://github.com/python/cpython/compare/main...rickeylev:cpython:feat.relative.pyvenv.home>`__
+* Relative venv from `rickeylev/relvenv <https://github.com/rickeylev/relvenv>`__
+
+And following the
+`relvenv README <https://github.com/rickeylev/relvenv/blob/main/README.md>`__.
+
+Open Issues
+===========
+
+This PEP does not specify how to create a ``pyvenv.cfg`` with a relative path,
+nor how downstream tools (e.g. installers) should identify them or process
+them. These questions are best addressed separately by tool owners.
+
+References
+==========
+
+portable virtual environment
+    A portable virtual environment is one that can be copied from
+    one host to another that is platform compatible (e.g. same OS, CPU
+    architecture, etc), with little or no modification or post processing.
+
+* `rules_python <https://github.com/bazel-contrib/rules_python>`__: implements
+  host-relocatable virtual environments.
+* `rules_py <https://github.com/aspect-build/rules_py>`__: implements
+  host-relocatable virtual environments.
+* `python-build-standalone <https://github.com/astral-sh/python-build-standalone>`__
+* `venvstacks <https://pypi.org/project/venvstacks/>`__: a tool for creating
+  reproducible distribution artifacts from virtual environments. A relocatable
+  Python runtime.
+* `Python Ideas "Making venvs relocatable friendly" discussion <https://discuss.python.org/t/making-venvs-relocatable-friendly/96177>`__
+
+Rejected Ideas
+==============
+
+Relative to virtual env root
+----------------------------
+
+Having the ``home`` value in ``pyvenv.cfg`` relative to the virtual
+environment's root directory would work just as well, but this idea is rejected
+because it requires additional effort to compute the virtual env root.
+
+Unspecified home means to dynamically compute home
+----------------------------------------------------
+
+Today, if a ``pyvenv.cfg`` file doesn't set ``home``, the runtime will try to
+dynamically compute it by checking if the current executable (which is
+typically the venv's ``bin/python3`` symlink) is a symlink and, if so, use
+where that points as ``PYTHONHOME``.
+
+While currently used as a workaround by some tools, *standardising* this
+behavior is undesirable for a couple reasons:
+
+1. It presents platform-specific issues, namely with Windows. Windows does
+   support symlinks, but not by default, and it can require special
+   permissions to do so.
+2. It *requires* that a symlink be used, which precludes using otherwise
+   equivalent mechanisms for creating an executable (e.g. a wrapper script,
+   hard links, etc).
+
+In general, symlinks work best when they aren't special cased by consumers.
+
+Using the term "relocatable"
+----------------------------
+
+Discussions pointed out that the term "relocatable" is somewhat ambiguous and
+misleading for a couple reasons.
+
+First, absolute paths make a venv arbitrarily relocatable *within* a host, but
+not between hosts, so "relocatable" requires *some* qualification for
+clarity.
+
+Second, when using relative paths that point outside the venv, the venv is only
+relocatable insofar as those external artifacts are also relocated. This is an
+additional nuance that requires qualification of the term.
+
+To better avoid this confusion, "relative" is chosen, which more naturally
+invites the question *"Relative to what?"*.
+
+
+Using PYTHONHOME at runtime to specify home
+-------------------------------------------
+
+Using the ``PYTHONHOME`` environment variable (or any environment variable) is
+problematic because it's difficult to know and control when an environment
+variable should or shouldn't be inherited by subprocesses. In some cases, it's
+not feasible because of how layers of programs calling programs interact.
+
+Code generally assumes that any virtual environment will be
+automatically detected and activated by the presence of ``pyvenv.cfg``, so
+things work better when alterations to the environment aren't a concern.
+
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
