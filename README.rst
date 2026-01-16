@@ -20,6 +20,17 @@ Shortcut redirects are also available.
 For example, ``https://peps.python.org/8`` redirects to the canonical link.
 
 
+API
+===
+
+Several data files are available at https://peps.python.org/api/:
+
+- ``peps.json``: All PEP metadata
+- ``release-cycle.json``: Python release cycle information
+- ``python-releases.json``: Complete Python release history
+- ``release-schedule.ics``: Python release dates in calendar format. 
+
+
 Contributing to PEPs
 ====================
 
