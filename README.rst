@@ -25,10 +25,10 @@ API
 
 Several data files are available at https://peps.python.org/api/:
 
-- ``peps.json``: All PEP metadata
-- ``release-cycle.json``: Python release cycle information
-- ``python-releases.json``: Complete Python release history
-- ``release-schedule.ics``: Python release dates in calendar format. 
+- `peps.json <https://peps.python.org/api/peps.json>`_: All PEP metadata
+- `release-cycle.json <https://peps.python.org/api/release-cycle.json>`_: Python release cycle information
+- `python-releases.json <https://peps.python.org/api/python-releases.json>`_: Complete Python release history
+- `release-schedule.ics <https://peps.python.org/api/release-schedule.ics>`_: Python release dates in calendar format 
 
 
 Contributing to PEPs
