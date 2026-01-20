@@ -23,12 +23,7 @@ For example, ``https://peps.python.org/8`` redirects to the canonical link.
 API
 ===
 
-Several data files are available at https://peps.python.org/api/:
-
-- `peps.json <https://peps.python.org/api/peps.json>`_: All PEP metadata
-- `release-cycle.json <https://peps.python.org/api/release-cycle.json>`_: Python release cycle information
-- `python-releases.json <https://peps.python.org/api/python-releases.json>`_: Complete Python release history
-- `release-schedule.ics <https://peps.python.org/release-schedule.ics>`_: Python release dates in calendar format
+Several data files are available at https://peps.python.org/api/
 
 
 Contributing to PEPs
