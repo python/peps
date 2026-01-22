@@ -207,3 +207,9 @@ for example:
        ]
      }
    }
+
+release-schedule.ics
+--------------------
+
+An iCalendar file of Python release dates is available at
+https://peps.python.org/api/release-schedule.ics.
