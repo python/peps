@@ -54,7 +54,47 @@ automatically but it isn't obvious where the environment was placed.
 Rationale
 =========
 
-[Describe why particular design decisions were made.]
+There are three aspects to where a virtual environment is placed. The first is
+whether the virtual environment is local to the project or stored globally with
+other virtual environments. Keeping the virtual environment local means that it
+is isolated and unique to the project. As well, it means that if you delete the
+project you also delete the virtual environment. If you store the virtual
+environment globally then you can share it among multiple projects and delete
+all virtual environments at once by deleting the directory that contains them
+all. Keeping virtual environments global also means it won't be backed up
+automatically if a project is stored e.g. in a directory automatically backed
+up to remote storage where you pay based on how much storage you use.
+
+Another aspect is the directory name used for the virtual environment
+(although this really only affects local virtual environments). If one views
+virtual environments as more of a implementation detail, a directory name
+starting with ``.`` seemingly makes sense to mark it hidden or de-emphasized
+in various tools such as shells and code editors. But hiding it can make
+accessing the directory harder by some tools.
+
+Lastly, there's whether you have one virtual environment at a time or many.
+Having only one minimizes disk space and keeps it simple by not trying to
+manage multiple virtual environments. Having multiple virtual environments,
+though, means not having to constantly recreate virtual environments when e.g.
+needing to test against multiple python versions.
+
+This PEP takes a two-pronged approach to making virtual environments easily
+discoverable while supporting all aspects mentioned above. First, by default,
+the virtual environment for the project should be put in the ``.venv``
+directory of the project. This name has been chosen due to preexisting tool
+support: `Poetry <https://python-poetry.org/docs/configuration#virtualenvsin-project>`__
+will detect a virtual environment in such a location,
+`PDM <https://pdm-project.org/en/latest/usage/venv/#virtualenv-auto-creation>`__
+and `uv <https://docs.astral.sh/uv/concepts/projects/layout/#the-project-environment>`__
+create their environments their by default already (
+`Hatch can support <https://hatch.pypa.io/latest/blog/2022/10/08/hatch-v160/#virtual-environment-location>`__
+a virtual environment there). `VS Code <https://www.jetbrains.com/help/pycharm/creating-virtual-environment.html#env-requirements>`__
+will select it automatically while you can configure
+`PyCharm <https://www.jetbrains.com/help/pycharm/creating-virtual-environment.html#env-requirements>`__
+to use it. The default ``.gitignore`` file for
+`GitHub <https://github.com/github/gitignore/blob/main/Python.gitignore>`__,
+`GitLab <https://gitlab.com/gitlab-org/gitlab/-/blob/master/vendor/gitignore/Python.gitignore>`__,
+XXX codeberg?
 
 
 Specification
@@ -101,6 +141,8 @@ Open Issues
 
 Acknowledgements
 ================
+
+https://discuss.python.org/t/setting-up-some-guidelines-around-discovering-finding-naming-virtual-environments/22922/
 
 [Thank anyone who has helped with the PEP.]
 
