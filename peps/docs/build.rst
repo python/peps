@@ -1,4 +1,4 @@
-:author: Adam Turner
+:author: andreanadr <121737246+andreanadr@users.noreply.github.com>
 
 
 Building PEPs Locally
@@ -9,7 +9,7 @@ This can also be used to check that the PEP is valid reStructuredText before
 submission to the PEP editors.
 
 The rest of this document assumes you are working from a local clone of the
-`PEPs repository <https://github.com/python/peps>`__,
+`PEPs repository <https://github.com/andreanadr/python-peps>`__,
 with **Python 3.9 or later** installed.
 
 
@@ -24,7 +24,7 @@ Render PEPs locally
 
    If you don't have access to ``make``, run:
 
-   .. code-block:: ps1con
+   .. code-block:: ps1
 
       PS> python -m venv .venv
       PS> .\.venv\Scripts\activate
@@ -46,7 +46,7 @@ Render PEPs locally
 
    If you don't have access to ``make``, run:
 
-   .. code-block:: ps1con
+   .. code-block:: ps1
 
       (venv) PS> python build.py
 
@@ -68,7 +68,7 @@ created earlier:
 
 Or on Windows:
 
-.. code-block:: ps1con
+.. code-block:: ps1
 
    PS> .\.venv\Scripts\activate
 
