@@ -31,7 +31,7 @@ tools could be custom scripts in the project like running the test script or
 Unfortunately, there's no guidance on where tools should put a virtual
 environment or how to find where one is ultimately put. There's somewhat of a
 convention in the community to put a virtual environment locally at the root of
-the project in a directory named ``.venv``, but being a convention means it
+the project in a directory named :file:`.venv`, but being a convention means it
 isn't consistently followed. As well, there is no mechanism to point to a
 virtual environment regardless of its location.
 
@@ -68,7 +68,7 @@ up to remote storage where you pay based on how much storage you use.
 Another aspect is the directory name used for the virtual environment
 (although this really only affects local virtual environments). If one views
 virtual environments as more of a implementation detail, a directory name
-starting with ``.`` seemingly makes sense to mark it hidden or de-emphasized
+starting with :file:`.` seemingly makes sense to mark it hidden or de-emphasized
 in various tools such as shells and code editors. But hiding it can make
 accessing the directory harder by some tools.
 
@@ -80,9 +80,10 @@ needing to test against multiple python versions.
 
 This PEP takes a two-pronged approach to making virtual environments easily
 discoverable while supporting all aspects mentioned above. First, by default,
-the virtual environment for the project should be put in the ``.venv``
-directory of the project. This name has been chosen due to preexisting tool
-support: `Poetry <https://python-poetry.org/docs/configuration#virtualenvsin-project>`__
+the virtual environment for the project should be put in the :file:`.venv`
+directory of the project (this could be a hardlink, symlink, etc). This name
+has been chosen due to preexisting tool support:
+`Poetry <https://python-poetry.org/docs/configuration#virtualenvsin-project>`__
 will detect a virtual environment in such a location,
 `PDM <https://pdm-project.org/en/latest/usage/venv/#virtualenv-auto-creation>`__
 and `uv <https://docs.astral.sh/uv/concepts/projects/layout/#the-project-environment>`__
@@ -91,16 +92,75 @@ create their environments their by default already (
 a virtual environment there). `VS Code <https://www.jetbrains.com/help/pycharm/creating-virtual-environment.html#env-requirements>`__
 will select it automatically while you can configure
 `PyCharm <https://www.jetbrains.com/help/pycharm/creating-virtual-environment.html#env-requirements>`__
-to use it. The default ``.gitignore`` file for
+to use it. The default :file:`.gitignore` file for
 `GitHub <https://github.com/github/gitignore/blob/main/Python.gitignore>`__,
 `GitLab <https://gitlab.com/gitlab-org/gitlab/-/blob/master/vendor/gitignore/Python.gitignore>`__,
-XXX codeberg?
+and `Codeberg <https://codeberg.org/forgejo/forgejo/src/branch/forgejo/options/gitignore/Python>`__
+already ignore the path.
+
+But for various reasons (from personal preference to preexisting tool defaults),
+the :file:`.venv` directory in the project root may not work. In those cases a
+:file:`.venv` **file** which points to the virtual environment by default
+should be provided in the project's root directory (i.e. the same location as
+specified above for the :file:`.venv` directory). This file should point to the
+virtual environment to use by default; there can be other virtual environments
+for the project, but the :file:`.venv` file should point to the virtual
+environment to be used if no preference is specified. While a hardlink or
+symlink could serve the same purpose, not all file systems support such links.
+As well, situations like the automatic backup case mentioned previously
+requires a level of indirection that backup tools don't implicitly follow.
 
 
 Specification
 =============
 
-[Describe the syntax and semantics of any new language feature.]
+The virtual environment for a project SHOULD be in a directory named
+:file:`.venv` (i.e. :file:`.venv/pyvenv.cfg` will exist which can be used to
+detect the existence of a virtual environment) in the root of the project
+(typically next to the :file:`pyproject.toml`` file) if it makes sense for it
+to reside there (e.g. the tool creating the virtual environment doesn't already
+use a different location by default or the user didn't specify a location).
+This can be a hardlink or symlink to a virtual environment.
+
+In all other situations where placing a virtual environment at the project root
+in a :file:`.venv` directory is not possible or desirable, a :file:`.venv`
+**file** SHOULD be written in the project root instead. The file's contents
+are to be a single line containing the path to the directory containing the
+virtual environment (i.e. the directory containing :file:`pyvenv.cfg`). A
+trailing newline in the file is acceptable, and so code reading the file
+should strip off any trailing newline. The path in the file is expected to be
+specific to the machine it's on, so there are no requirements on path
+formatting (i.e. a POSIX path is not required). The path MAY be relative to
+ease in creating the file by hand.
+
+Tools looking for a virtual environment SHOULD look for the :file:`.venv`
+directory or file and handle them appropriately. Tools SHOULD NOT prefer one
+format over another when searching for a virtual environment (e.g. if a tool
+looks up through parent directories for a virtual environment, it shouldn't
+look for a directory first and then a file; the first thing found with the
+:file:`.venv` path name should be chosen).
+
+This PEP proposes some changes to the :mod:`venv` module to go along with the
+above recommendations:
+
+1. A ``DEFAULT_DIR: str`` global that's set to ``".venv"``.
+2. :meth:`venv.EnvBuilder.create` gains a keyword-only
+   ``project_root: os.PathLike | None`` parameter that will write out a
+   :file:`.venv` file to that directory if the *env_dir* parameter is given a
+   path that doesn't end in ``DEFAULT_DIR``.
+3. The ``-m venv`` CLI will gain a default value for its *ENV_DIR* argument of
+   ``DEFAULT_DIR`` (it's currently an error not to provide the argument)
+4. The ``-m venv`` CLI will gain a ``--project-root`` option that mirrors the
+   new parameter to :meth:`venv.EnvBuilder.create`; it will be an error to use
+   the option when multiple *ENV_DIR* arguments are provided.
+5. A function named
+  ``executable(dir: os.PathLike, *, traverse: bool = False)) -> pathlib.Path``
+  will be added; it will look for a virtual environment in *dir* at
+  ``DEFAULT_DIR`` (directory or redirect file) and return the path to the
+  Python executable in the virtual environment, raising
+  :exc:`FileNotFoundError` if the path to a virtual environment is not found.
+  If *traverse* is true, then traversal through the parent directories of *dir*
+  to look for ``DEFAULT_DIR`` will be done.
 
 
 Backwards Compatibility
