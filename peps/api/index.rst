@@ -1,6 +1,9 @@
 PEPs API
 ========
 
+peps.json
+---------
+
 There is a read-only JSON document of every published PEP available at
 https://peps.python.org/api/peps.json.
 
@@ -102,3 +105,111 @@ illustrating some of the possible values for each field:
        "url": "https://peps.python.org/pep-3124/"
      }
    }
+
+release-cycle.json
+------------------
+
+There is a read-only JSON document of Python releases
+available at https://peps.python.org/api/release-cycle.json.
+
+Each feature version is represented as a JSON object,
+keyed by the minor version number ("X.Y").
+The structure of each JSON object is as follows:
+
+.. code-block:: typescript
+
+   {
+     "<language version number>": {
+       "branch": string,
+       "pep": integer,
+       "status": 'feature' | 'prerelease' | 'bugfix' | 'security' | 'end-of-life',
+       "first_release": string,  // Date formatted as YYYY-MM-DD
+       "end_of_life": string,  // Date formatted as YYYY-MM-DD
+       "release_manager": string
+     },
+   }
+
+For example:
+
+.. code-block:: json
+
+   {
+     "3.15": {
+       "branch": "main",
+       "pep": 790,
+       "status": "feature",
+       "first_release": "2026-10-01",
+       "end_of_life": "2031-10",
+       "release_manager": "Hugo van Kemenade"
+     },
+     "3.14": {
+       "branch": "3.14",
+       "pep": 745,
+       "status": "bugfix",
+       "first_release": "2025-10-07",
+       "end_of_life": "2030-10",
+       "release_manager": "Hugo van Kemenade"
+     }
+   }
+
+python-releases.json
+--------------------
+
+A more complete JSON document of all Python releases since version 1.6 is
+available at https://peps.python.org/api/python-releases.json and includes
+metadata about each feature release cycle, for example:
+
+.. code-block:: json
+
+   {
+     "metadata": {
+       "3.14": {
+         "pep": 745,
+         "status": "bugfix",
+         "branch": "3.14",
+         "release_manager": "Hugo van Kemenade",
+         "start_of_development": "2024-05-08",
+         "feature_freeze": "2025-05-07",
+         "first_release": "2025-10-07",
+         "end_of_bugfix": "2027-10-07",
+         "end_of_life": "2030-10-01"
+       }
+     }
+   }
+
+
+And also detailed information about each individual release within that cycle,
+for example:
+
+.. code-block:: json
+
+   {
+     "releases": {
+       "3.14": [
+         {
+           "stage": "3.14.0 candidate 3",
+           "state": "actual",
+           "date": "2025-09-18",
+           "note": ""
+         },
+         {
+           "stage": "3.14.0 final",
+           "state": "actual",
+           "date": "2025-10-07",
+           "note": ""
+         },
+         {
+           "stage": "3.14.1",
+           "state": "expected",
+           "date": "2025-12-02",
+           "note": ""
+         }
+       ]
+     }
+   }
+
+release-schedule.ics
+--------------------
+
+An iCalendar file of Python release dates is available at
+https://peps.python.org/api/release-schedule.ics.
