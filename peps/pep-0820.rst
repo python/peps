@@ -14,11 +14,17 @@ Post-History: `06-Jan-2026 <https://discuss.python.org/t/105552>`__
 Abstract
 ========
 
-Replace type and module slots with a new, more type-safe structure that allows
-adding new slots in a more forward-compatible way.
+Replace type and module slots with a new structure: a tagged anonymous
+union with flags.
+This improves type safety and allows adding new slots
+in a more forward-compatible way.
+
+API added in 3.15 (:external+py3.15:c:func:`PyModule_FromSlotsAndSpec` and the
+new :external+py3.15:ref:`extension export hook <extension-export-hook>`)
+will be changed to use the new slots.
 
 The existing slot structures and related API is soft-deprecated.
-(That is: it will continue to work without warnings, and it’ll be fully
+(That is: they will continue to work without warnings, and it’ll be fully
 documented and supported, but we plan to not add any new features to it.)
 
 
@@ -43,10 +49,10 @@ structure of the object to stay opaque (in both the API and the ABI),
 allowing future CPython versions (or even alternative implementations) to
 change the details.
 
-Both structures contain a *slots* field – essentially an array of
-`tagged unions <https://en.wikipedia.org/wiki/Tagged_union>`__,
-which allows for future expansion.
-(In practice, slots are ``void`` pointers taged with an ``int`` ID.)
+Both structures contain a *slots* field, essentially an array of
+`tagged unions <https://en.wikipedia.org/wiki/Tagged_union>`__
+(``void`` pointers taged with an ``int`` ID).
+This allows for future expansion.
 
 In :pep:`793`, new module creation API was added.
 Instead of the ``PyModuleDef`` structure, it uses only an array of *slots*.
@@ -75,7 +81,7 @@ Type safety
     but is technically undefined or implementation-defined behaviour in C.
 
     For example: :c:macro:`Py_tp_doc` marks a string; :c:macro:`Py_mod_gil`
-    an integer, and :c:macro:`Py_tp_repr` a function; all must
+    a small integer, and :c:macro:`Py_tp_repr` a function; all must
     be cast to ``void*``.
 
 Limited forward compatibility
@@ -139,6 +145,8 @@ Similarly, if the ``nb_matrix_multiply`` slot (:pep:`465`) was added in the
 near future, users could add it with an "``OPTIONAL``" flag, making their class
 support the ``@`` operator only on CPython versions with that operator.
 
+
+.. _pep820-rationale:
 
 Rationale
 =========
@@ -205,9 +213,9 @@ This complicates slot handling inside the interpreter, but allows:
 
 - Mixing dynamically allocated (or stack-allocated) slots with ``static`` ones.
   This solves the issue that lead to the ``PyType_From*`` family of
-  functions expanding with values that typically can't  be ``static``
-  (i.e. it's often a symbol from another DLL, which can't be ``static``
-  data on Windows).
+  functions expanding with values that typically can't  be ``static``.
+  For example, the *module* argument to :c:func:`PyType_FromModuleAndSpec`
+  should be a heap-allocated module object.
 - Sharing a subset of the slots to implement functionality
   common to several classes/modules.
 - Easily including some slots conditionally, e.g. based on the Python version.
@@ -228,15 +236,13 @@ and only use the “new” slots if they need any new features.
 Fixed-width integers
 ---------------------
 
-This proposal uses fixed-width integers (``uint16_t``), for slot IDs and
+This proposal uses fixed-width integers (``uint16_t``) for slot IDs and
 flags.
-With the C ``int`` type, using more that 16 bits would not be portable,
+With the C ``int`` type, using more than 16 bits would not be portable,
 but it would silently work on common platforms.
 Using ``int`` but avoiding values over ``UINT16_MAX`` wastes 16 bits
 on common platforms.
 
-With these defined as ``uint16_t``, it seems natural to use fixed-width
-integers for everything except pointers and sizes.
 
 Memory layout
 -------------
@@ -244,7 +250,7 @@ Memory layout
 On common 64-bit platforms, we can keep the size of the new struct the same
 as the existing ``PyType_Slot`` and ``PyModuleDef_Slot``. (The existing
 struct waste 6 out of 16 bytes due to ``int`` portability and padding;
-this proposal puts those bits to use for new features.)
+this proposal puts some of those bits to use for new features.)
 On 32-bit platforms, this proposal calls for the same layout as on 64-bit,
 doubling the size compared to the existing structs (from 8 bytes to 16).
 For “configuration” data that's usually ``static``, it should be OK.
@@ -283,6 +289,27 @@ The main disadvantage is that any internal lookup tables will be either bigger
 or harder to manage (if they're merged).
 
 
+Deprecation warnings
+--------------------
+
+Multiple slots are documented to not allow NULL values, but CPython allows
+NULL for backwards compatibility.
+Similarly, multiple slot IDs should not appear more than once in a single
+array, but CPython allows such duplicates.
+
+This is a maintenance issue, as CPython should preserve its undocumented
+(and often untested) behaviour in these cases as the implementation is changed.
+
+It also prevents API extensions.
+For example, instead of adding the :c:macro:`Py_TPFLAGS_DISALLOW_INSTANTIATION`
+flag in 3.10, we could have allowed settning the ``Py_tp_new`` slot to NULL for
+the same effect.
+
+To allow changing the edge case behaviour in the (far) future,
+and to allow freedom for possible alternative implementations of the C API,
+we'll start issuing runtime deprecation warnings in these cases.
+
+
 Specification
 =============
 
@@ -311,8 +338,8 @@ A new ``PySlot`` structure will be defined as follows::
 - An union with the data, whose type depends on the slot.
 
 
-Functions that use slots
-------------------------
+New API
+-------
 
 The following function will be added.
 It will create the corresponding Python type object from the given
@@ -320,10 +347,23 @@ array of slots::
 
     PyObject *PyType_FromSlots(const PySlot *slots);
 
+With this function, the ``Py_tp_token`` slot may not be set to
+``Py_TP_USE_SPEC`` (i.e. ``NULL``).
+
+
+Changed API
+-----------
+
 The ``PyModule_FromSlotsAndSpec`` function (added in CPython 3.15 in
 :pep:`793`) will be *changed* to take the new slot structure::
 
     PyObject *PyModule_FromSlotsAndSpec(const PySlot *slots, PyObject *spec)
+
+The :external+py3.15:ref:`extension module export hook <extension-export-hook>`
+added in :pep:`793` (:samp:`PyModExport_{<name>}`) will be *changed* to
+return the new slot structure.
+The :external+py3.15:c:macro:`PyMODEXPORT_FUNC` macro will
+be updated accordingly.
 
 
 General slot semantics
@@ -354,7 +394,7 @@ Flags
   This flag is implied for function pointers.
 
   The flag applies even to data the slot points to "indirectly", except for
-  nested slots -- see ``Py_slot_subslots`` below -- which can have their
+  nested slots -- see :ref:`pep820-nested-tables` below -- which can have their
   own ``PySlot_STATIC`` flag.
   For example, if applied to a ``Py_tp_members`` slot that points to an
   *array* of ``PyMemberDef`` structures, then the entire array, as well as the
@@ -371,7 +411,7 @@ Flags
   If the entire block is to be optional, it should end with a
   slot with the OPTIONAL flag.
 
-- ``PySlot_IS_PTR``: The data is stored in ``sl_ptr``, and must be cast to
+- ``PySlot_INTPTR``: The data is stored in ``sl_ptr``, and must be cast to
   the appropriate type.
 
   This flag simplifies porting from the existing ``PyType_Slot`` and
@@ -404,14 +444,18 @@ The following macros will be added to the API to simplify slot definition::
     #define PySlot_END {0}
 
 We'll also add two more macros that avoid named initializers,
-for use in C++11-compatibile code::
+for use in C++11-compatibile code.
+Note that these cast the value to ``void*``, so they do not improve type safety
+over existing slots::
 
     #define PySlot_PTR(NAME, VALUE) \
-       {NAME, PySlot_IS_PTR, {0}, {(void*)(VALUE)}}
+       {NAME, PySlot_INTPTR, {0}, {(void*)(VALUE)}}
 
     #define PySlot_PTR_STATIC(NAME, VALUE) \
-       {NAME, PySlot_IS_PTR|Py_SLOT_STATIC, {0}, {(void*)(VALUE)}}
+       {NAME, PySlot_INTPTR|Py_SLOT_STATIC, {0}, {(void*)(VALUE)}}
 
+
+.. _pep820-nested-tables:
 
 Nested slot tables
 ------------------
@@ -427,7 +471,7 @@ Two more slots will allow similar nesting for existing slot structures:
 - ``Py_mod_slots`` for an array of ``PyModuleDef_Slot``
 
 Each ``PyType_Slot`` in the array will be converted to
-``(PySlot){.sl_id=slot, .sl_flags=PySlot_IS_PTR, .sl_ptr=func}``,
+``(PySlot){.sl_id=slot, .sl_flags=PySlot_INTPTR, .sl_ptr=func}``,
 and similar with ``PyModuleDef_Slot``.
 
 The initial implementation will have restrictions that may be lifted
@@ -437,8 +481,6 @@ in the future:
   ``PySlot_HAS_FALLBACK`` (the flag cannot be set on them nor a slot that
   precedes them).
 - Nesting depth will be limited to 5 levels.
-  (4 levels for the existing ``PyType_From*``, ``PyModule_From*`` functions,
-  which will use up one level internally.)
 
 
 New slot IDs
@@ -454,8 +496,9 @@ definitions, will be added:
     allowed with ``Py_slot_end``.
 
 - ``Py_slot_subslots``, ``Py_tp_slots``, ``Py_mod_slots``: see
-  *Nested slot tables* above
-- ``Py_slot_invalid``: treated as an unknown slot ID.
+  :ref:`pep820-nested-tables` above
+- ``Py_slot_invalid`` (defined as ``UINT16_MAX``, i.e. ``-1``): treated as an
+  unknown slot ID.
 
 The following new slot IDs will be added to cover existing
 members of ``PyModuleDef``:
@@ -483,6 +526,9 @@ Specifying both in a single definition will be deprecated (currently,
 None of the new slots will be usable with ``PyType_GetSlot``.
 (This limitation may be lifted in the future, with C API WG approval.)
 
+Of the new slots, only ``Py_slot_end``, ``Py_slot_subslots``, ``Py_tp_slots``,
+``Py_mod_slots`` will be allowed in ``PyType_Spec`` and/or ``PyModuleDef``.
+
 
 Slot renumbering
 ----------------
@@ -496,7 +542,7 @@ Slots numbered 1 through 4 (``Py_bf_getbuffer``...\ ``Py_mp_length`` and
 The old numbers will remain as aliases, and will be used when compiling for
 Stable ABI versions below 3.15.
 
-Slots for members of ``PyType_Spec``, which were added in
+Slots for members of ``PyModuleDef``, which were added in
 :ref:`PEP 793 <pep793-api-summary>`, will be renumbered so that they have
 unique IDs:
 
@@ -532,10 +578,48 @@ in this PEP.
 This includes nested "new-style" slots (``Py_slot_subslots``).
 
 
+.. _pep820-hard-deprecations:
+
+Deprecation warnings
+--------------------
+
+CPython will emit runtime deprecation warnings for the following cases,
+for slots where the case is currently disallowed in documentation but allowed
+by the runtime:
+
+- setting a slot value to NULL:
+
+  - all type slots except ``Py_tp_doc``
+  - ``Py_mod_create``
+  - ``Py_mod_exec``
+
+- repeating a slot ID in a single slots array (including sub-slot arrays
+  added in this PEP):
+
+  - all type slots, except slots where this is already a runtime error
+    (``Py_tp_doc``, ``Py_tp_members``)
+  - ``Py_mod_create``
+  - ``Py_mod_abi``
+
+
 Backwards Compatibility
 =======================
 
-This PEP only adds APIs, so it's backwards compatible.
+This PEP proposes to change API that was already released in alpha versions of
+Python 3.15.
+This will inconvenience early adopters of that API, but -- as long as the
+PEP is accepted and implemented before the first bety -- this change is within
+the letter and spirit of our backwards compatibility policy.
+
+Renumbering of slots is done in a backwards-compatible way.
+Old values continue to be accepted, and are used when compiling for
+earlier Stable ABI.
+
+Some cases that are documented as illegal will begin emitting deprecation
+warnings (see :ref:`pep820-hard-deprecations`).
+
+Otherwise, this PEP only adds and soft-deprecates APIs, which is backwards
+compatible.
 
 
 Security Implications
@@ -553,19 +637,82 @@ Adjust the "Extending and Embedding" tutorial to use this.
 Reference Implementation
 ========================
 
-None yet.
+Draft implementation is available as `pull request #37 in the author's fork
+<https://github.com/encukou/cpython/pull/37>`__.
 
 
 Rejected Ideas
 ==============
 
-None yet.
+See the :ref:`pep820-rationale` section for several alternative ideas.
+
+Third-party slot ID allocation
+------------------------------
+
+It was suggested to allow third parties to reserve slot IDs for their own use.
+This would be mainly useful for alternate implementations. For example,
+something like GraalPy might want custom type slots (e.g. an "inherits
+from this Java class" slot).
+Similarly, at one point PyPy had an extra ``tp_pypy_flags`` in their
+typeobject struct.
+
+This PEP does not specify a namespace mechanism.
+One can be added in the future.
+We're also free to reserve individual slot IDs for alternate implementations.
+
+Note that slots are not a good way for *extension modules* to add extra data
+to types or modules, as there is no API to retrieve the slots used to create
+a specific object.
+
+Avoiding anonymous unions
+-------------------------
+
+This PEP proposes a struct with *anonymous unions*, which are not yet used in
+CPython's documented public API.
+
+There is no known issue with adding these, but the following notes may
+be relevant:
+
+- Anonymous unions are only supported in C since C11.
+  But, CPython already requires the feature, and uses it for internal members
+  of the ``PyObject`` struct.
+
+- Until C++20, which adds C-style designated initializers, C++ initializers
+  only allow setting the first member of a union.
+  However, this is an issue for *named* unions as well.
+  Avoiding unions entirely would mean losing most of the type-safety
+  improvements of this PEP.
+
+  Note that the proposed flag ``PySlot_INTPTR``, and the workaround macros
+  ``PySlot_PTR`` & ``PySlot_PTR_STATIC``, allow using this API in
+  code that needs to be compatible with C++11 or has similar union-related
+  limitations.
+
+- C++ doesn't have anonymous *structs*.
+  This might surprise C programmers for whom anonymous structs/unions are
+  a single language feature.
+
+- Non-C/C++ language wrappers may need to give the union a name.
+  This is fine.
+  (Dear reader: if you need this, please open a CPython issue about
+  exposing a preferred name in headers and documentation.)
+
+For a bigger picture: anonymous unions can be a helpful tool for implemeting
+tagged unions and for evolving public API in backwards-compatible ways.
+This PEP intentionally opens the door to using them more often.
 
 
 Open Issues
 ===========
 
 None yet.
+
+
+Acknowledgements
+================
+
+Thanks to Da Woods, Antoine Pitrou and Mark Shannon
+for substantial input on this iteration of the proposal.
 
 
 Copyright
