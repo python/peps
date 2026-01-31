@@ -88,6 +88,13 @@ Footnotes
 [A collection of footnotes cited in the PEP, and a place to list non-inline hyperlink targets.]
 
 
+Change History
+==============
+
+A summary of major changes the PEP has undergone.  Add a dated entry here whenever you update the
+``Post-History`` header.
+
+
 Copyright
 =========
 
