@@ -1,0 +1,1330 @@
+PEP: 823
+Title: None-aware access operators
+Author: Marc Mueller
+Sponsor: Guido van Rossum <guido@python.org>
+Discussions-To: Pending
+Status: Draft
+Type: Standards Track
+Created: 31-Jan-2025
+Python-Version: 3.15
+
+
+Abstract
+========
+
+This PEP proposes adding two new operators.
+
+* The "``None``-aware attribute access" operator ``?.`` ("maybe dot")
+* The "``None``-aware indexing" operator ``?[ ]`` ("maybe subscript")
+
+Both operators evaluate the left hand side, check if it is ``not None``
+and only then evaluate the full expression. They are roughly equivalent
+to:
+
+.. code-block:: python
+
+    # a.b?.c
+    _t.c if ((_t := a.b) is not None) else None
+
+    # a.b?[c]
+    _t[c] if ((_t := a.b) is not None) else None
+
+See the `Specification`_ section for more details.
+
+
+Terminology
+===========
+
+An attribute or value is ``optional``
+    In the context of this PEP an attribute or value is considered
+    ``optional`` if it is always present but can be ``None``.
+
+    .. code-block:: python-console
+
+        >>> class A:
+        ...     def __init__(self, val: int | None) -> None:
+        ...         self.val = val
+        ...
+        >>> a = A(None)
+        >>> hasattr(a, "val")
+        True
+
+An attribute or value is ``missing``
+    An attribute or value is considered ``missing`` if it is not present
+    at all. For ``typing.TypedDict`` these would be ``typing.NotRequired``
+    keys when they are not preset.
+
+    .. code-block:: python-console
+
+        >>> class A:
+        ...     val: int | None
+        ...
+        >>> a = A()
+        >>> hasattr(a, "val")
+        False
+
+
+Motivation
+==========
+
+First officially proposed ten years ago in (the now deferred) :pep:`505`
+the idea to add ``None``-aware access operators has been along for
+some time now, discussed at length in numerous threads, most recently
+in [#discuss_revisit_505]_ and [#discuss_safe_navigation_op]_. This PEP
+aims to capture the current state of discussion and proposes a specification
+for addition to the Python language. In contrast to :pep:`505`, it will
+only focus on the two access operators. See the `Deferred Ideas`_ section
+for more details.
+
+``None``-aware access operators are not a new invention. Several other
+modern programming languages have so called "``null``-aware" or
+"optional chaining" operators, including TypeScript [#ts]_,
+ECMAScript (a.k.a. JavaScript) [#js]_, C# [#csharp]_, Dart [#dart]_,
+Swift [#swift]_, Kotlin [#kotlin]_, Ruby [#ruby]_, PHP [#php]_ and more.
+
+The general idea is to provide access operators which can traverse
+``None`` values without raising exceptions.
+
+Nested objects with ``optional`` attributes
+-------------------------------------------
+
+When writing Python code, it is common to encounter objects with ``optional``
+attributes. Accessing attributes, subscript or function calls can raise
+``AttributeError`` or ``TypeError`` at runtime if the value is ``None``.
+Several common patterns have developed to ensure these operations will
+not raise. The goal for ``?.`` and ``?[ ]`` is to make reading and writing
+these expressions much simpler while being predictable and doing the
+correct things intuitively.
+
+.. code-block:: python
+
+    from dataclasses import dataclass
+
+    @dataclass
+    class Sensor:
+        machine: Machine | None
+
+    @dataclass
+    class Machine:
+        line: Line | None
+
+    @dataclass
+    class Line:
+        department: Department
+
+    @dataclass
+    class Department:
+        engineer: Person | None
+
+    @dataclass
+    class Person:
+        emails: list[str] | None
+
+    def get_person_email(sensor: Sensor) -> str | None:
+        """Get first listed email address if it exists."""
+        if (
+            sensor.machine
+            and sensor.machine.line
+            and sensor.machine.line.department.engineer
+            and sensor.machine.line.department.engineer.emails
+        ):
+            return sensor.machine.line.department.engineer.emails[0]
+        return None
+
+A simple function which will most likely work just fine. However, there
+are a few subtle issues. For one, each condition only checks for truthiness.
+Would for example ``Machine`` overwrite ``__bool__`` to return ``False`` at
+some point, the function would just return ``None``. This is problematic
+since ``None`` is a valid return value already. Thus this would not raise
+an exception in the caller and even type checkers would not be able to
+detect it. The solution here is to compare with ``None`` instead.
+
+.. note::
+
+    It is assumed that if ``Person.emails is not None``, it will
+    always contain at least one item. This is done in order to avoid
+    confusion around potential error cases. The goal for this PEP is to
+    make the ``[ ]`` operator safe for ``optional`` attributes which
+    could raise a ``TypeError``. It is not to simplify accessing
+    elements in a sequence of unknown length which could raise an
+    ``IndexError`` instead. See `Add list.get(key, default=None)`_ in
+    the deferred ideas section for that.
+
+.. code-block:: python
+
+    def get_person_email(sensor: Sensor) -> str | None:
+        if (
+            sensor.machine is not None
+            and sensor.machine.line is not None
+            and sensor.machine.line.department.engineer is not None
+            and sensor.machine.line.department.engineer.emails is not None
+        ):
+            return sensor.machine.line.department.engineer.emails[0]
+        return None
+
+This is better, but here each attribute lookup is still performed
+multiple times. If one of these attributes were a custom property or
+a class would overwrite ``__getattribute__``, it could be possible
+that the attribute values are different for each line. To resolve that
+the lookup results need to be stored in a temporary variable.
+
+.. code-block:: python
+
+    def get_person_email(sensor: Sensor) -> str | None:
+        if (
+            (machine := sensor.machine) is not None
+            and (line := machine.line) is not None
+            and (engineer := line.department.engineer) is not None
+            and (emails := engineer.emails) is not None
+        ):
+            return emails[0]
+        return None
+
+Writing it like this is correct but, especially for deeply nested
+object hierarchies, difficult to read and easy to get wrong.
+
+Alternative approaches include wrapping the whole expression with
+a try-except block. While this would also achieve the desired
+output, it as well has the potential to introduce errors which
+might get unnoticed. E.g. if the ``Line.department`` attribute gets
+deprecated, in the process making it ``optional`` and always return
+``None``, the function would still succeed, even though the input changed
+significantly.
+
+.. code-block:: python
+
+    def get_person_email(sensor: Sensor) -> str | None:
+        try:
+            return sensor.machine.line.department.engineer.emails[0]
+        except AttributeError, TypeError:
+            return None
+
+Another approach would be to use a ``match`` statement instead. This
+will work fine but is easy to get wrong as well. It is strongly
+recommended to use keyword attributes as otherwise any change in
+``__match_args__`` would cause the pattern match to fail.
+If any attribute names change, the match statement needs to be
+updated as well. Even IDEs can not reliably do that themselves since a
+class pattern is not restricted to existing attributes and can instead
+match any possible name. For sequence patterns it is also necessary
+to remember the wildcard pattern. Lastly, using ``match`` is significantly
+slower because for each class pattern an ``isinstance`` check is performed
+first. This could be somewhat mitigated by using ``object(...)`` instead,
+though reading the pattern would be considerably more difficult.
+
+.. code-block:: python
+
+    def get_person_email(sensor: Sensor) -> str | None:
+        match sensor:
+            case Sensor(
+                machine=Machine(
+                    line=Line(
+                        department=Department(
+                            engineer=Person(
+                                emails=[email, *_]))))):
+                return email
+            case _:
+                return None
+
+In contrast to the code shown so far, the "``None``-aware attribute access"
+and the "``None``-aware indexing" operators are designed to make writing
+safe nested attribute access, subscript and function calls easy.
+
+To start, assume each attribute, subscript and function call is
+``not-optional``:
+
+.. code-block:: python
+
+    def get_person_email(sensor: Sensor) -> str | None:
+        return sensor.machine.line.department.engineer.email[0]
+
+Now insert ``?`` after each ``optional`` subexpression. IDEs and most
+type checkers will be able to help with identifying these. *Spaces added
+for clarity only, though still valid*:
+
+::
+
+    def get_person_email(sensor: Sensor) -> str | None:
+        return sensor.machine? .line? .department.engineer? .email? [0]
+        #            ^^^^^^^^  ^^^^^             ^^^^^^^^^  ^^^^^^
+
+The complete function would then be:
+
+::
+
+    def get_person_email(sensor: Sensor) -> str | None:
+        return sensor.machine?.line?.department.engineer?.email?[0]
+
+Which is roughly equivalent to the example code above if the temporary
+variables ``_t1`` till ``_t4`` would not be created at runtime:
+
+.. code-block:: python
+
+    def get_person_email(sensor: Sensor) -> str | None:
+        if (
+            (_t1 := sensor.machine) is not None
+            and (_t2 := _t1.line) is not None
+            and (_t3 := _t2.department.engineer) is not None
+            and (_t4 := _t3.emails) is not None
+        ):
+            return _t4[0]
+        return None
+
+See `Specification`_ for more details on how the expression is evaluated.
+
+Parsing structured data
+-----------------------
+
+The ``?.`` and ``?[ ]`` operators can also aid in the traversal of
+structured data, oftentimes coming from JSON and parsed as nested
+dicts and lists. It is worth noting though that the operators do not
+handle ``missing`` attributes / data. For dictionaries a useful helper is
+the ``.get(key, default=None)`` method with a default. Depending on
+the specific use case, pattern matching might also be a viable
+alternative here.
+
+.. code-block:: python
+
+    from typing import NotRequired, TypedDict
+
+    class Sensor(TypedDict):
+        machine: Machine | None
+
+    class Machine(TypedDict):
+        # Note the 'NotRequired' here!
+        line: NotRequired[Line | None]
+
+    class Line(TypedDict):
+        department: Department
+
+    class Department(TypedDict):
+        engineer: Person | None
+
+    class Person(TypedDict):
+        emails: list[str] | None
+
+    def get_person_email(data: Sensor) -> str | None:
+        match data:
+            case {
+                "machine": {
+                    "line": {
+                        "department": {
+                            "engineer": {
+                                "emails": [email, *_],
+                            }
+                        }
+                    }
+                }
+            }:
+                return email
+            case _:
+                return None
+
+Writing it using ``?.`` and ``?[ ]`` would look like this. Note that
+``NotRequired`` is "translated" to ``.get("line")``.
+
+::
+
+    def get_person_email(data: Sensor) -> str | None:
+        return (
+            data["machine"]?.get("line")?
+                ["department"]["engineer"]?["emails"]?[0]
+        )
+
+Which is roughly equivalent to:
+
+.. code-block:: python
+
+    def get_person_email(data: Sensor) -> str | None:
+        if (
+            (_t1 := data["machne"]) is not None
+            and (_t2 := _t1.get("line")) is not None
+            and (_t3 := _t2["department"]["engineer"]) is not None
+            and (_t4 := _t3["emails"]) is not None
+        ):
+            return _t4[0]
+        return None
+
+Other common patterns
+---------------------
+
+A collection of additional patterns which could be improved with
+``?.`` and ``?[ ]``. It is not the goal to list every foreseeable
+use case but rather to help recognize these patterns which often
+hide in plain sight. Attribute and function names have been shortened.
+
+.. note::
+
+    Most patterns below are **not** fully identical. As mentioned
+    `earlier <Nested objects with optional attributes_>`_, it is common
+    to use boolean expressions to filter out ``None`` values. Other
+    falsy values, e.g. ``False``, ``""``, ``0``, ``[]``, ``{}`` or custom
+    objects which overwrite ``__bool__``, are filtered out too though.
+    If code relied on this property, the expression cannot necessarily
+    be replaced with ``?.`` or ``.[ ]``.
+
+::
+
+    # In assignments
+
+    x = a.b if (a is not None) else None
+    x = a?.b
+
+::
+
+    # In if statements often used as guard clause with early
+    # return or raising of an exception
+
+    if not (a and a.b == val): ...
+    if not (a?.b == val): ...
+
+    if not (a and a.lower()): ...
+    if not a?.lower(): ...
+
+::
+
+    # Misc expressions
+
+    a and a.b and a.b.c
+    a?.b?.c
+
+    a.b and a.b[0].c and a.b[0].c.d and a.b[0].c.d[0].e
+    a.b?[0].c?.d?[0].e
+
+    d1: dict | None
+    d1 and key in d1 and d1[key]
+    d1?.get(key)
+
+    d2: dict
+    key in d2 and d2[key][other]
+    d2.get(key)?[other]
+
+    key in d2 and d2[key].do_something()
+    d2.get(key)?.do_something()
+
+    (c := a.b) and c.startswith(key)
+    a.b?.startswith(key)
+
+    (b := a.get(key)) and b.get(other) == 2
+    a.get(key)?.get(other) == 2
+
+    (b := a.get(key)) and b.strip().lower()
+    a.get(key)?.strip().lower()
+
+
+Specification
+=============
+
+The maybe-dot and maybe-subscript operators
+-------------------------------------------
+
+Two new operators are added, ``?.`` ("maybe-dot") and ``?[ ]``
+("maybe subscript"). Both operators first evaluate the left hand side
+(the ``base``). The result is cached, so that the expression is not
+evaluated again. It is checked if the result is not ``None`` and only
+then is the remaining expression (the ``tail``) evaluated as if normal
+attribute or subscript access were used.
+
+.. code-block:: python
+
+    # base?.tail
+    (_t.tail) if ((_t := base) is not None) else None
+
+The ``base`` can be replace with any number of expressions, including
+`Groups`_ while the ``tail`` is limited to attribute access, subscript,
+their ``None``-aware variants and call expressions.
+
+.. code-block:: python
+
+    # a.b?.c
+    _t.c if ((_t := a.b) is not None) else None
+
+    # a.b?[c]
+    _t[c] if ((_t := a.b) is not None) else None
+
+    # a.b?.c()
+    _t.c() if ((_t := a.b) is not None) else None
+
+    # a?.b?.c.d
+    _t2.c.d if (
+        (_t2 := _t1.b if ((_t1 := a) is not None) else None) is not None
+    ) else None
+
+Short-circuiting
+****************
+
+If the left hand side (the ``base``) for ``?.`` or ``?[ ]`` evaluates to
+``None``, the remaining expression (the ``tail``) is skipped and the
+result will be set to ``None`` instead. The ``AttributeError`` for
+accessing a member of ``None`` or ``TypeError`` for trying to subscribe
+to ``None`` are omitted. It is therefore not necessary to change
+subsequent ``.`` or ``[ ]`` on the right hand side just because a
+``?.`` or ``?[ ]`` is used prior.
+
+::
+
+    >>> a = None
+    >>> print(a?.b.c[0].some_function())
+    None
+
+The ``None``-aware access operators will only short-circuit expressions
+containing name, attribute access, subscript, their ``None``-aware
+counterparts and call expressions. As a rule of thumb, short-circuiting
+is broken once a (soft-) keyword is reached.
+
+::
+
+    >>> a = None
+    >>> print(a?.b.c)
+    None
+    >>> print(a?.b.c or "Hello")
+    'Hello'
+    >>> 2 in a?.b.c
+    Traceback (most recent call last):
+    File "<python-input>", line 1, in <module>
+        2 in a?.b.c
+    TypeError: argument of type 'NoneType' is not a container or iterable
+    >>> 2 in (a?.b.c or ())
+    False
+
+Grouping
+********
+
+Using ``?.`` and ``?[ ]`` inside groups is possible. In addition to the
+rules laid out in the `previous <Short-circuiting_>`_ section,
+short-circuiting will also be broken at the end of a group. For example
+the expression ``(a?.b).c`` will raise an ``AttributeError`` on ``.c``
+if ``a = None``. This is conceptually identical to extracting the group
+contents and storing the result in a temporary variable before
+substituting it back into the original expression.
+
+::
+
+    # (a?.b).c
+
+    _t = a?.b
+    _t.c
+
+Common use cases for ``None``-aware access operators in groups are
+boolean or conditional expressions which can provide a fallback value
+in case the first part evaluates to ``None``.
+
+::
+
+    (a.b?.c or d).e?.func()
+
+    # a.b?.c
+    _t2 = _t1.c if ((t1 := a.b) is not None) else None
+
+    # (... or d)
+    _t3 = _t2 if _t2 else d
+
+    # (...).e?.func()
+    _t4.func() if ((_t4 := _t3.e) is not None) else None
+
+Assignments
+***********
+
+``None``-aware access operators may only be used in a ``Load`` context.
+Assignments are not permitted and will raise a ``SyntaxError``.
+
+::
+
+    >>> a?.b = 1
+    File "<python-input>", line 1
+        a?.b = 1
+        ^^^^
+    SyntaxError: cannot assign to none aware expression
+
+It is however possible to use them in `groups <Grouping>`_, though care
+must be taken so these can be evaluate properly.
+
+::
+
+    class D:
+        c = 0
+
+    a = None
+    d = D()
+
+    (a?.b or d).c = 1
+
+    # This would be evaluated as
+    _t2 = t1.b if ((t1 := a) is not None) else None
+
+    if _t2:
+        _t2.c = 1
+    else:
+        d.c = 1
+
+Await expressions
+*****************
+
+``None``-aware access operations are permitted in ``await`` expressions.
+It is up to the developer to make sure they do not evaluate to ``None``
+at runtime otherwise a ``TypeError`` is raised. This behavior is similar
+to awaiting any other variable which can be ``None``.
+
+AST changes
+-----------
+
+Two new AST nodes are added ``NoneAwareAttribute`` and ``NoneAwareSubscript``.
+They are the counterparts to the existing ``Attribute`` and ``Subscript``
+nodes. Notably there is no ``expr_context`` attribute because the new nodes
+do not support assignments themselves and thus the context will always be
+``Load``. Furthermore, an optional ``group`` attribute is added for all
+expression nodes. It is set to ``1`` if the expression is the topmost
+node in a group, ``0`` otherwise.
+
+::
+
+    expr = ...
+        | Attribute(expr value, identifier attr, expr_context ctx)
+        | Subscript(expr value, expr slice, expr_context ctx)
+        ...
+        | NoneAwareAttribute(expr value, identifier attr)
+        | NoneAwareSubscript(expr value, expr slice)
+
+        attributes (int? group, int lineno, int col_offset,
+                    int? end_lineno, int? end_col_offset)
+
+Grammar changes
+---------------
+
+A new ``?`` token is added. In addition the ``primary`` grammar rule is
+updated to include ``none_aware_attribute`` and ``none_aware_subscript``.
+
+.. code-block:: PEG
+
+    primary:
+        | primary '.' NAME
+        | none_aware_attribute
+        | primary genexp
+        | primary '(' [arguments] ')'
+        | primary '[' slices ']'
+        | none_aware_subscript
+        | atom
+
+    none_aware_attribute:
+        | primary '?' '.' NAME
+
+    none_aware_subscript:
+        | primary '?' '[' slices ']'
+
+Multiline formatting
+********************
+
+Using two separate tokens to express ``?.`` and ``?[`` allows developers
+to insert a space or line break as needed. For multiline expressions it
+enables that ``?`` is appended to the ``optional`` subexpression whereas
+``.`` or ``[`` could be moved to the next line. This is indented merely
+as an option for developers. Everyone is free to choose a style that fits
+their needs, especially code formatters might prefer a style which
+conforms better to their existing preferences. An example of what
+is possible:
+
+::
+
+    def get_person_email(data: Sensor) -> str | None:
+        return (
+            data["machine"]?
+                .get("line")?
+                ["department"]["engineer"]?
+                ["emails"]?
+                [0]
+        )
+
+
+Backwards Compatibility
+=======================
+
+``None``-aware access operators are **opt-in**. Existing programs will
+continue to run as is. So far code which used either ``?.`` or ``?[ ]``
+raised a ``SyntaxError``.
+
+
+Security Implications
+=====================
+
+There are no new security implications from this proposal.
+
+
+How to Teach This
+=================
+
+After students know how the attribute access ``.`` and subscript ``[ ]``
+operators work, they may learn about the "``None``-aware" versions for
+both.
+
+Students may find it helpful to think of ``?.`` and ``?[ ]`` as a
+combination of two different actions. First the ``?`` postfix represents
+an ``is not None`` check on the subexpression with short-circuiting
+if the check fails. If it succeeds, the attribute and subscript access
+are performed like normal.
+
+Experienced developers may find that, after learning about the PEP, they
+start to notice the patterns described in the `Motivation`_ section in
+their own code bases.
+
+
+Reference Implementation
+========================
+
+A reference implementation is available at
+https://github.com/cdce8p/cpython/tree/pep-XXX. A online demo can be
+tested at https://pepXXX-demo.pages.dev/.
+
+
+Deferred Ideas
+==============
+
+Coalesce ``??`` and coalesce assignment operator ``??=``
+--------------------------------------------------------
+
+:pep:`505` also suggested the addition of a "``None`` coalescing" operator
+``??`` and a "coalescing assignment" operator ``??=``. As the ``None``-aware
+access operators have their own use cases, the coalescing operators were
+moved into a separate document, see PEP-824. Both proposals can be
+adopted independently of one another.
+
+``None``-aware function calls
+-----------------------------
+
+The ``None``-aware access operators work for attribute and index access.
+It seems natural to ask if there should be a variant which works for
+function invocations. It might be written as ``a.foo?()`` which would
+be equivalent to:
+
+.. code-block:: python
+
+    _t1() if ((_t1 := a.foo) is not None) else None
+
+This has been deferred on the basis that the proposed operators are
+intended to help for nested objects with ``optional`` attributes and
+the parsing of structured data, *not* the traversal of arbitrary class
+hierarchies.
+
+A workaround would be to write ``a.foo?.__call__(arguments)``.
+
+Add ``list.get(key, default=None)``
+-----------------------------------
+
+It was suggested to add a ``.get(key, default=None)`` method to ``list``
+and ``tuple`` objects, similar to the existing ``dict.get`` method. This
+could further make parsing of structured data easier since it would no
+longer be necessary to check if a ``list`` or ``tuple`` is long enough
+before trying to access the n-th element avoiding a possible
+``IndexError``. While potentially useful, the idea is out of the scope
+for this PEP.
+
+
+Rejected Ideas
+==============
+
+Exception-aware operators
+-------------------------
+
+Arguably, the reason to short-circuit an expression when ``None`` is
+encountered is to avoid the ``AttributeError`` or ``TypeError`` that
+would be raised under normal circumstances. Instead of testing for
+``None``, it was suggested that ``?.`` and ``?[ ]`` could instead handle
+``AttributeError`` and ``TypeError`` and skip the remainder of the
+expression. Similar to nested try-except blocks.
+
+While this would technically work, it's not at all clear what the result
+should be if an error is caught. Furthermore, this approach would hide
+genuine issues like a misspelled attribute which would have raised an
+``AttributeError``. There are also already established patterns to
+handle these kinds of errors in the form of ``getattr`` and
+``.get(key, default=None)``.
+
+As catching exceptions would be unexpected and hide potential errors,
+it is rejected.
+
+Add a ``maybe`` keyword
+-----------------------
+
+The ``None``-aware access operators only check for ``None`` in the place
+there are used. If multiple attributes in an expression can return ``None``,
+it might be necessary to add them multiple times ``a?.b.c?[0].d?.e()``.
+It was suggested to instead add a new soft-keyword ``maybe`` to prefix
+the expression: ``maybe a.b.c[0].d.e()``. A ``None`` check would then be
+added for each attribute and item access automatically.
+
+While this might be easier to write at first, it introduces new issues.
+When using explicit ``?.`` and ``?[ ]`` operators, the input space is well
+defined. Only ``a``, ``.c`` and ``.d`` are expected to possibly be ``None``.
+If ``.b`` all of the sudden is also ``None``, it would still raise an
+``AttributeError`` since it was unexpected. That would not happen for
+``maybe``. This behavior is problematic since it can subtly hide real
+issues. As the expression output can already be ``None``, the space of
+potential outputs didn't change and as such no error would appear.
+
+If it is the intend to catch all ``AttributeError`` and ``TypeError``,
+a try-except block can be used instead.
+
+As the ``?.`` and ``?[ ]`` would allow developers to be more explicit in
+their intend, this suggestion is rejected.
+
+Remove short-circuiting
+-----------------------
+
+It was suggested to remove the `Short-circuiting`_ behavior completely
+because it might be too difficult to understand. Developers should
+instead change any subsequent attribute access or subscript to their
+``None``-aware variants.
+
+::
+
+    # before
+    a.b.optional?.c.d.e
+
+    # after
+    a.b.optional?.c?.d?.e
+
+The idea has some of the same challenges as `Add a maybe keyword`_.
+By forcing the use of ``?.`` or ``?[ ]`` for attributes which are
+``not-optional``, it will be difficult to know if the ``not-optional``
+attributes ``.c`` or ``.d`` suddenly started to return ``None`` as well.
+The ``AttributeError`` would have been silenced.
+
+Another issue especially for longer expressions is that **all**
+subsequent attribute access and subscript operators need to be changed
+as soon as just one attribute in a long chain is ``optional``. Missing
+just one can instantly cause a new ``AttributeError`` or ``TypeError``.
+
+``?`` Unary Postfix operator
+----------------------------
+
+To generalize the ``None``-aware behavior and limit the number of new
+operators introduced, a unary, postfix operator ``?`` was considered.
+``?.`` or ``?[ ]`` could then be considered to be two separate operators.
+
+While this might have made teaching the operators a bit easier, just one
+instead of two new operators, it may also be **too general**, in a sense
+that it can be combine with any other operator. For example it is not
+clear what the following expressions would mean:
+
+::
+
+    >>> x? + 1
+    >>> x? -= 1
+    >>> x? == 1
+    >>> ~x?
+    >>> [*x?]
+
+Even if a default meaning of ``is not None else None`` is assumed, the
+expressions are likely to raise errors at some point.
+
+::
+
+    >>> x? + 1
+    >>> (_t1 if ((_t1 := x) is not None) else None) + 1
+
+This degree of generalization is not useful. The ``None``-aware access
+operators where intentionally chosen to make it easier to access
+values in nested objects with ``optional`` attributes.
+
+If future PEPs want to introduce new operators to access attributes or
+call methods, e.g. a chaining operator, it would be advisable to consider
+if a ``None``-aware variant for it could be useful, at that time.
+
+Builtin function for traversal
+------------------------------
+
+There are a number of libraries which provide some kind of object
+traversal functions. The most popular likely being ``glom`` [#glom]_.
+Others include ``jmespath`` [#jmespath]_ and ``nonesafe`` [#nonesafe]_.
+The idea is usually to pass an object and the lookup attributes as
+string to a function which handles the evaluation. It was suggested
+to add a ``traverse`` or ``deepget`` function to the stdlib.
+
+.. code-block:: python-console
+
+    # pip install glom
+    >>> from glom import glom
+    >>> data = {"a": {"b": {"c": "d"}}}
+    >>> glom(data, "a.b.c")
+    'd'
+    >>> glom(data, "a.b.f.g", default=2)
+    2
+
+While these libraries do work and have its use cases, especially
+``glom`` provides an excellent interface to extract and combine multiple
+data points from deeply nested objects, they do also have some
+disadvantages. Passing the lookup attributes as a string means that often
+times there are no more IDE suggestions. Type checking these expressions
+is also limited. Furthermore, normal function calls can not provide
+short-circuiting, so they would still need to be combined with assignment
+and conditional expressions.
+
+Maybe function
+--------------
+
+Another suggestion was to add a ``maybe`` function which would return
+either an instance of ``Something`` or an instance of ``Nothing``.
+``Nothing`` would override the dunder methods in order to allow chaining
+on ``optional`` attributes.
+
+A Python package called ``pymaybe`` [#pymaybe]_ provides a rough
+approximation. An example could look like this:
+
+.. code-block:: python-console
+
+    # pip install pymaybe
+    >>> from pymaybe import maybe
+    >>> data = {"a": {"b": {"c": "d"}}}
+    >>> type(maybe(data)["a"]["b"]["c"])
+    <class 'pymaybe.Something'>
+    >>> maybe(data)["a"]["b"]["c"]
+    'd'
+    >>> type(maybe(data)["a"]["b"]["c"]["e"])
+    <class 'pymaybe.Nothing'>
+    >>> maybe(data)["a"]["b"]["c"]["e"]
+    None
+
+While this could work, ``Something`` and ``Nothing`` are only wrapper
+classes for the actual values which adds its own challenges. For example
+to filter out ``None`` in a subsequent operation an ``is not None``
+check would always return ``True`` and instead ``.is_some()`` would need
+to be used. This would make adopting it across a large codebase
+difficult and limit its usefulness. Additionally any pure Python
+implementation can not really short-circuit the expression. The best
+it can do is to implement no-ops on the wrapper classes.
+
+As such a builtin ``maybe`` function to support accessing nested objects
+with ``optional`` attributes is rejected.
+
+Result object
+-------------
+
+It was suggested to introduce a ``Result`` object similar to how
+``asyncio.Future`` works today. Expressions marked with a special
+keyword or syntax would then return an instance of ``Result`` instead
+of the evaluated expression. The actual value could then be retrieved
+by calling ``.result()`` or ``.exception()`` on it. With that it could
+be possible to gracefully handle ``None``-aware expression as well.
+
+While this is an interesting idea, it would be a disruptive change how
+expressions need to be written and evaluated today.
+
+An advantages of the ``?.`` and ``?[ ]`` operators is that they do not
+change the result much aside from adding ``None`` as a possible return
+value of an expression. As such they are a better solution for the use
+cases outlined in the `Motivation`_  section.
+
+No-Value Protocol
+-----------------
+
+The ``None``-aware access operators could be generalized to user-defined
+types by defining a protocol to indicate when a value represents
+"no value". Such a protocol may be a dunder method ``__has_value__(self)``
+that returns ``True`` if the value should be treated as having a value
+and ``False`` if the value should be treated as no value.
+
+In the specification section, all uses of ``x is not None`` would be
+replaced with ``x.__has_value__()``.
+
+There are a few obvious candidates like ``math.nan`` and ``NotImplemented``.
+However, while these could be interpreted as representing no value, the
+interpretation is **domain specific**. For the language itself they *should*
+still be treated as values. For example ``math.nan.imag`` is well defined
+(it is ``0.0``) and so short-circuiting ``math.nan?.imag`` to return
+``None`` would be incorrect.
+
+As ``None`` is already defined by the language as being the value that
+represents "no value" the idea is rejected.
+
+Use existing syntax or keyword
+------------------------------
+
+Some comments suggested to use existing syntax like ``->`` for the
+``None``-aware access operators, e.g. ``a->b.c``.
+
+Though possible, the ``->`` operator is already used in Python for
+something completely different. Additionally, a majority of other
+languages which support "``null``-aware" or "optional chaining"
+operators use ``?.``. Some exceptions being Ruby [#ruby]_ with ``&.``
+or PHP [#php]_ with ``?->``. The ``?`` character does not have an
+assigned meaning in Python just yet. As such it makes sense to adopt
+the most common spelling for the ``None``-aware access operators.
+Especially considering that it also works well with the "normal"
+``.`` and ``[ ]`` operators.
+
+Defer ``None``-aware indexing operator
+--------------------------------------
+
+A point of discussion was the ``?[ ]`` operator. Some thought it might be
+missed to easily in an expression ``a.b?[c]``. To move the discussion
+forward, it was suggested to defer the operator for later.
+
+Though it is often helpful to reduce the scope to move forward at all,
+the ``?[ ]`` operator is necessary to efficiently get items from
+``optional`` objects. While for dictionaries a suitable alternative is to
+use ``d?.get(key)``, for general objects developers would have needed
+to defer to ``o?.__getitem__(key)``.
+
+Furthermore, any future PEP just for a ``?[ ]`` would have likely needed
+to included a lot of the arguments and objections listed in this one
+again. As such it makes sense to include both operators in the same PEP.
+
+While adding ``list.get(key, default=None)`` as suggested in
+`Add list.get(key, default=None)`_  would reduce the need for ``?[ ]``
+for lists and tuples and as such would be a valuable addition to the
+language itself, it doesn't remove the need for arbitrary objects which
+implement a custom ``__getitem__`` method.
+
+Ignore groups for short-circuiting
+----------------------------------
+
+An earlier version of this PEP suggested the short-circuiting
+behavior should be indifferent towards grouping. It was assumed that
+short-circuiting would be broken already for more complex group
+expressions like ``(a?.b or c).d`` by the behavior outline in the
+`Short-circuiting`_ section, while for simpler ones like ``(a?.b).c``
+the grouping was considered trivial and the expression would be equal to
+``a?.b.c``. The advantage being that developers would not have to
+look for groupings when evaluating simpler expressions. As long as
+any ``None``-aware access operator was used and the expression was not
+broken by a (soft-) keyword, it would return ``None`` instead of raising
+an ``AttributeError`` or ``TypeError``.
+
+This suggestion was rejected in favor of the specification outline in
+the `Grouping`_ section since it violates the substitution principle.
+An expression ``(a?.b).c`` should behave the same whether or not ``a?.b``
+is written inline inside a group or defined as a separate variable.
+
+::
+
+    (a?.b).c
+
+    _t = a?.b
+    _t.c
+
+Furthermore, defining the short-circuiting behavior that way would have
+been a deviation from the already established behavior in
+languages like JS [#js_short_circuiting]_ and C# [#csharp]_.
+
+Change ``primary`` rule to be right-recursive
+---------------------------------------------
+
+The ``primary`` grammar rule as it is defined [#py_grammar]_ is
+left-recursive. This can make it difficult to reason about especially
+with regards to the `Short-circuiting`_ and `Grouping`_ behavior.
+
+It was therefore proposed to make the ``None``-aware access operators
+part of the ``primary`` rule right-recursive instead. The expression
+``a.b?.c[0].func()`` would then roughly be parsed as:
+
+.. code-block:: python
+
+    NoneAwareAttribute(
+        base=Attribute(
+            expr=Name(identifier="a"),
+            identifier="b"
+        )
+        tail=[
+            AttributeTail(identifier="c"),
+            SubscriptTail(slice=Constant(value=0)),
+            AttributeTail(identifier="func")
+            CallTail(args=[], keyword=[])
+        ]
+    )
+
+While this approach would clearly define which parts of an expression
+would be short-circuited, it has several drawbacks. To implement it at
+least three additional AST nodes have to be added ``AttributeTail``,
+``SubscriptTail`` and ``CallTail``. As these are right-recursive now,
+reusing code from the ``Attribute``, ``Subscript`` and ``Call`` nodes
+might prove difficult. Not to mention that the ``NoneAware*`` nodes
+would contain parts that are both left- and right-recursive which
+would be confusing.
+
+In comparison the proposed `Grammar changes`_ are intentional kept to
+a minimum. The ``None``-aware access operators should behave more or
+less like a drop-in replacement for ``.`` and ``[ ]``, only with the
+behavior outline in this PEP.
+
+
+Common objections
+=================
+
+Difficult to read
+-----------------
+
+A common objection raised during the discussion was that ``None``-aware
+operators are difficult to read in expressions and add line noise. They
+might be too easy to miss besides "normal" attribute access and subscript
+operators.
+
+This is a valid concern. Especially for long lines, it is not difficult
+to imaging a ``?`` hiding somewhere. However, as with all proposals the
+downsides have to be weight against the alternatives. As shown in the
+`Motivation`_ section, accessing nested values from objects with
+``optional`` attributes can be quite cumbersome. Getting all steps right,
+often involves a combination of assignment expressions, temporary
+variables and chained conditionals. Especially for beginners this can be
+overwhelming and it is frequently just faster to repeat each subexpression
+as well as only relying on the implicit ``bool(...) is True`` check instead
+of ``is not None``, which as shown can fail in unexpected ways. It is also
+a bit slower. Even if the conditional expression is written correctly,
+reading it again is far from simple.
+
+In contrast, ``?.`` and ``?[ ]`` leave the core of the expression mostly
+untouched. It is thus fairly strait forward to see what is happening.
+Furthermore, it will be easier to write since one can start from the
+normal attribute access and subscript operators and just insert ``?``
+as needed. The Python error messages for accessing a member or subscript
+of ``None`` can help here, similarly type checkers and IDEs will be
+able to assist. For conditional expressions it is necessary to first
+split it up the expression, combine both parts with ``and``, add an
+assignment expression (do not miss the brackets!) and add the
+``is not None`` check. The whole process is a lot more involved.
+
+Easy to get ``?.`` wrong
+------------------------
+
+It was pointed out that it is too easy to switch up the characters in
+``?.`` .
+
+During the PEP discussion numerous alternatives have been proposed. This
+contributed to a sense of not knowing which is the "current" or "right"
+one. The author believes that this is only temporary and will resolve
+itself once a PEP has been accepted. Any spelling mistake will also
+raise a ``SyntaxError``.
+
+As described in the `How to Teach This`_ section, it can be helpful to
+think of ``?.`` and ``?[ ]`` as a combination of two different actions
+which need to be performed in a certain order. The ``?`` postfix
+represents an ``is not None`` check on the subexpression and as such
+should always come first.
+
+Not obvious what ``?.`` and ``?[ ]`` do
+---------------------------------------
+
+A lot of the discussion centered around the interpretation of the
+``None``-aware operators, should they only work for ``optional``,
+i.e. perform ``is not None`` checks, or also work for ``missing``
+attributes, i.e. do ``getattr(obj, attr, None) is not None``.
+
+It was agreed that the ``None``-aware operators should only handle
+``optional`` attributes, see the `Exception-aware operators`_ section
+section for more details why the latter interpretation was rejected.
+
+Similar to `Easy to get ?. wrong`_ the discussion created a lot of
+confusion what the agreed upon interpretation should be. This will also
+resolve itself once a PEP has been accepted.
+
+``?.`` and ``?[ ]`` should handle missing attributes
+----------------------------------------------------
+
+Some comments pointed out that the ``None``-aware operators should
+handle ``missing`` attributes to be useful.
+
+As shown in the `Motivation`_ section, the operators are not designed
+to handle arbitrary data, rather to make it easier to work with nested
+objects with ``optional`` attributes. If arbitrary data handling is the
+goal, other language concepts are likely better suited, like try-except,
+a match statement or data traversal libraries from PyPI.
+
+See the `Exception-aware operators`_ section for more details why
+this was rejected.
+
+Short circuiting is difficult to understand
+-------------------------------------------
+
+Some have pointed the `Short-circuiting`_ behavior might be difficult
+to understand and suggested to remove it in favor of a simplified
+proposal.
+
+It is true that using short-circuiting that way is uncommon in Python and
+as such unknown. That closest analogs would be boolean expressions like
+``a or b``, ``a and b`` which do also short-circuit the expression if
+the first value is truthy or falsy respectively. However, while
+the details are complex, the behavior itself is rather intuitive.
+To understand it, it is often enough to know that once a subexpression
+for an ``optional`` value evaluates to ``None``, the result will be
+``None`` as well. Any subsequent attribute access, subscript or call
+will be skipped. In the example below, if ``a.b`` is ``None``, so will
+be ``a.b?.c``:
+
+::
+
+    a.b?.c
+    ^^^
+
+On a technical level, removing short-circuiting would make it difficult
+to detect if ``not-optional`` attributes suddenly started to return
+``None`` as well. See `Remove short-circuiting`_ in the rejected ideas
+section for more details on that.
+
+Lastly, the short-circuiting behavior as proposed is identical to that
+of other languages like TS [#ts]_, JS [#js_short_circuiting]_ and
+C# [#csharp]_.
+
+Just use ...
+------------
+
+A common reply towards the proposal was to use an existing language
+concept instead of introducing a new syntax. A few alternatives have
+been proposed.
+
+... a conditional expression
+****************************
+
+Conditional expressions provide the basis for this PEP. As shown in the
+`Motivation`_ section, each operator can effectively be written as such.
+The ``None``-aware access operators could therefore simply be considered
+syntactic sugar. While this is true, this PEP has highlighted repeatedly
+that conditional expressions can often times get fairly complex and are
+difficult to get right to the point that it is not uncommon for
+developers to prefer a less safe and slower alternative with repetitions
+just because it is easier to write. The ``?.`` and ``?[ ]`` operators
+will provide a better alternative for these exact situations.
+
+... a match statement
+*********************
+
+Match statements can be a great option to parse any kind of data and,
+as shown in the `Motivation`_  section, could also be used to deal with
+``optional`` attributes. However, getting them right can be equally
+tricky as the conditional expression. There are a few pitfalls to watch
+out for, only using keyword attributes for class patterns, making sure
+the attribute names are correct since the class pattern can also match
+``missing`` once and as such will not emit an error if it is misspelled,
+and the performance impact from an often times unnecessary ``isinstance``
+check. Furthermore, great care must be taking during refactorings as
+patterns often can not be updated automatically.
+
+While the match statement has been available in Python since 3.10,
+anecdotal evidence suggests that developers still prefer other
+alternatives for ``optional`` attributes, at least for simple,
+strait-forward expression. Pattern matching starts to become much more
+useful once multiple attributes or values need to be checked at the
+same time.
+
+... try ... except ...
+**********************
+
+Especially for deeply nested data, a common suggestion was to use
+try-except:
+
+.. code-block:: python
+
+    def get_person_email(sensor: Sensor) -> str | None:
+        try:
+            return sensor.machine.line.department.engineer.emails[0]
+        except AttributeError, TypeError:
+            return None
+
+While this will likely work, it does not provide nearly the same level
+as granularity as a conditional expression would. It is often desired
+to raise an exception if something unexpected changes. The try-except
+block would simply swallow it.
+
+... a traversal library
+***********************
+
+Data traversal libraries like ``glom`` [#glom]_ can be used to access
+data from nested objects with ``optional`` attributes. However, as
+highlighted in the `Builtin function for traversal`_ section passing
+the attribute lookup as a string usually means developers will not
+get any more IDE suggestions and type checking these expressions is
+also fairly limited. Furthermore, normal functions do not support
+short-circuiting for the remaining expression.
+
+Proliferation of ``None`` in code bases
+---------------------------------------
+
+One of the reasons why :pep:`505` stalled was that some expressed their
+concern how ``None``-aware access operators will effect the code written
+by developers. If it is easier to work with ``optional`` attributes,
+this will encourage developers to use them more. They believe that e.g.
+returning an ``optional`` (can be ``None``) value from a function is
+usually an anti-pattern. In an ideal world the use of ``None`` would
+be limited as much as possible, for example with early data validation.
+
+It is certainly true that new language features effect how the language
+as a whole develops. Therefore any changes should be considered carefully.
+However, just because ``None`` represents an anti-pattern for some, has
+not prevented the community as a whole from using it extensively. Rather
+the lack of ``None``-aware access operators has stopped developers from
+writing concise expressions to access ``optional`` attributes and instead
+often leads to code which is difficult to understand and can contain
+subtly errors, see the `Motivation`_ section for more details.
+
+``None`` is not special enough
+------------------------------
+
+Some mentioned that ``None`` is not special enough to warrant dedicated
+operators.
+
+"``null``-aware" or "optional chaining" operators have been added to a
+number of other modern programming languages. Furthermore, adding
+``None``-aware access operators is something which was suggested numerous
+times since :pep:`505` was first proposed ten years ago.
+
+In Python ``None`` is frequently used to indicate the absence of
+something better or a missing value, e.g. ``dict.get(key)``. Other
+languages do often have two separate sentinels for that, e.g. JavaScript
+with ``null`` and ``undefined``. This only contributes further to the
+prevalence of ``None`` in Python.
+
+``?`` last available ASCII character
+------------------------------------
+
+Another objections was that ``?`` is one of the last available ASCII
+characters for new syntax. It was suggested to use something else.
+
+While this is true, the use of ``?.`` and ``?[ ]`` for "null"- /
+``None``-aware operators in other languages means that it would be
+difficult to us ``?`` for anything else.
+
+Furthermore, it is common for developers to use / be fluent in multiple
+programming languages. It is up the Python language specification to
+provide a meaning for these operators which roughly matches those in
+other languages while still respecting the norms in Python itself.
+
+
+Footnotes
+=========
+
+.. [#discuss_revisit_505] discuss.python.org: Revisiting PEP 505 - None-aware operators
+   (https://discuss.python.org/t/revisiting-pep-505-none-aware-operators/74568)
+.. [#discuss_safe_navigation_op] discuss.python.org: Introducing a Safe Navigation Operator in Python
+   (https://discuss.python.org/t/introducing-a-safe-navigation-operator-in-python/35480)
+.. [#ts] TypeScript: Optional Chaining
+   (https://www.typescriptlang.org/docs/handbook/release-notes/typescript-3-7.html#optional-chaining)
+.. [#js] JavaScript: Optional chaining (?.)
+   (https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/Optional_chaining)
+.. [#js_short_circuiting] JavaScript: Optional chaining (?.) - Short-circuiting
+   (https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/Optional_chaining#short-circuiting)
+.. [#csharp] C# Reference: Member access operators
+   (https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/member-access-operators#null-conditional-operators--and-)
+.. [#dart] Dart: Other operators
+   (https://dart.dev/language/operators#other-operators)
+.. [#swift] Swift: Optional Chaining
+   (https://docs.swift.org/swift-book/documentation/the-swift-programming-language/optionalchaining/)
+.. [#kotlin] Kotlin: Safe call operator
+   (https://kotlinlang.org/docs/null-safety.html#safe-call-operator)
+.. [#ruby] Ruby: Safe navigation operator
+   (https://ruby-doc.org/core-2.6/doc/syntax/calling_methods_rdoc.html#label-Safe+navigation+operator)
+.. [#php] PHP: Nullsafe operator
+   (https://wiki.php.net/rfc/nullsafe_operator)
+.. [#glom] PyPI: glom
+   (https://pypi.org/project/glom/)
+.. [#jmespath] PyPI: jmespath
+   (https://pypi.org/project/jmespath/)
+.. [#nonesafe] PyPI: nonesafe
+   (https://pypi.org/project/nonesafe/)
+.. [#pymaybe] PyPI: pymaybe
+   (https://pypi.org/project/pymaybe/)
+.. [#py_grammar] Python documentation: Full Grammar specification
+   (https://docs.python.org/3/reference/grammar.html)
+
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
