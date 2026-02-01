@@ -91,8 +91,8 @@ Footnotes
 Change History
 ==============
 
-A summary of major changes the PEP has undergone.  Add a dated entry here whenever you update the
-``Post-History`` header.
+[A summary of major changes the PEP has undergone.  Add a dated entry here whenever you update the
+``Post-History`` header.]
 
 
 Copyright
