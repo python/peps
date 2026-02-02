@@ -76,8 +76,8 @@ Open Issues
 [Any points that are still being decided/discussed.]
 
 
-Acknowledgments
-===============
+Acknowledgements
+================
 
 [Thank anyone who has helped with the PEP.]
 

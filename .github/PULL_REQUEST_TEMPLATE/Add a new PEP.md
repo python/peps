@@ -37,7 +37,7 @@ If your PEP is not Standards Track, remove the corresponding section.
     * [ ] Reference Implementation
     * [ ] Rejected Ideas
     * [ ] Open Issues
-    * [ ] Acknowledgments
+    * [ ] Acknowledgements
     * [ ] Footnotes
     * [ ] Change History
 * [ ] ``Python-Version`` set to valid (pre-beta) future Python version, if relevant
