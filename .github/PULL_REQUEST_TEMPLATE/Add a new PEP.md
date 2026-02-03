@@ -37,6 +37,9 @@ If your PEP is not Standards Track, remove the corresponding section.
     * [ ] Reference Implementation
     * [ ] Rejected Ideas
     * [ ] Open Issues
+    * [ ] Acknowledgements
+    * [ ] Footnotes
+    * [ ] Change History
 * [ ] ``Python-Version`` set to valid (pre-beta) future Python version, if relevant
 * [ ] Any project stated in the PEP as supporting/endorsing/benefiting from the PEP formally confirmed such
 * [ ] Right before or after initial merging, [PEP discussion thread](https://peps.python.org/pep-0001/#discussing-a-pep) created and linked to in ``Discussions-To`` and ``Post-History``
