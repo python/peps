@@ -91,10 +91,11 @@ Footnotes
 Change History
 ==============
 
-[A summary of major changes the PEP has undergone.  Whenever you update the ``Post-History``, add a new bullet
-item in newest-first (i.e. reverse chronological) order, using the same ``DD-MMM-YYYY`` format, with
-sub-bullets summarizing the changes.  You can use the same link for the date bullet as you do in the
-``Post-History`` addition.]
+[A summary of major changes the PEP has undergone.  Whenever you update the
+``Post-History``, add a new bullet item in newest-first (i.e. reverse
+chronological) order, using the same ``DD-MMM-YYYY`` format, with sub-bullets
+summarizing the changes.  You can use the same link for the date bullet as you
+do in the ``Post-History`` addition.]
 
 
 Copyright
