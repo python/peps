@@ -18,11 +18,24 @@ from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_VALUES
 from pep_sphinx_extensions.pep_zero_generator.errors import PEPError
 
 
-@dataclasses.dataclass(order=True, frozen=True)
-class _Author:
+_frozen_ordered = dataclasses.dataclass(order=True, frozen=True)
+
+
+@_frozen_ordered
+class _Participant:
+    """Represent PEP participant."""
+    full_name: str  # The participant's name.
+    email: str  # The participant's email address.
+
+
+@_frozen_ordered
+class _Author(_Participant):
     """Represent PEP authors."""
-    full_name: str  # The author's name.
-    email: str  # The author's email address.
+
+
+@_frozen_ordered
+class _Sponsor(_Participant):
+    """Represent PEP sponsors."""
 
 
 class PEP:
@@ -95,6 +108,9 @@ class PEP:
         if not self.authors:
             raise _raise_pep_error(self, "no authors found", pep_num=True)
 
+        # Parse PEP sponsors
+        self.sponsor: str | None = _parse_sponsor(metadata["Sponsor"]).full_name if metadata["Sponsor"] else None
+
         # Topic (for sub-indices)
         _topic = metadata.get("Topic", "").lower().split(",")
         self.topic: set[str] = {topic for topic_raw in _topic if (topic := topic_raw.strip())}
@@ -157,6 +173,7 @@ class PEP:
             "number": self.number,
             "title": self.title,
             "authors": ", ".join(self._author_names),
+            "sponsor": self.sponsor,
             "discussions_to": self.discussions_to,
             "status": self.status,
             "type": self.pep_type,
@@ -182,25 +199,32 @@ def _raise_pep_error(pep: PEP, msg: str, pep_num: bool = False) -> None:
 
 jr_placeholder = ",Jr"
 
-
-def _parse_author(data: str) -> list[_Author]:
-    """Return a list of author names and emails."""
-
-    author_list = []
+def _parse_participants(data: str) -> tuple[str, str]:
+    participants_list = []
     data = (data.replace("\n", " ")
                 .replace(", Jr", jr_placeholder)
                 .rstrip().removesuffix(","))
-    for author_email in data.split(", "):
-        if ' <' in author_email:
-            author, email = author_email.removesuffix(">").split(" <")
+    for participant_email in data.split(", "):
+        if ' <' in participant_email:
+            participant, email = participant_email.removesuffix(">").split(" <")
         else:
-            author, email = author_email, ""
+            participant, email = participant_email, ""
 
-        author = author.strip()
-        if author == "":
+        participant = participant.strip()
+        if participant == "":
             raise ValueError("Name is empty!")
 
-        author = author.replace(jr_placeholder, ", Jr")
+        participant = participant.replace(jr_placeholder, ", Jr")
         email = email.lower()
-        author_list.append(_Author(author, email))
-    return author_list
+        participants_list.append((participant, email))
+    return participants_list
+
+
+
+def _parse_author(data: str) -> list[_Author]:
+    """Return a list of author names and emails."""
+    return [_Author(author, email) for author, email in _parse_participants(data)]
+
+def _parse_sponsor(data: str) -> _Sponsor:
+   """Return sponsor name and email"""
+   return _Sponsor(*_parse_participants(data)[0])
