@@ -1,6 +1,6 @@
 :orphan:
 
-.. _0825-variant-json-schema:
+.. _pep825-variant-json-schema:
 
 Appendix: JSON Schema for Variant Metadata
 ==========================================
