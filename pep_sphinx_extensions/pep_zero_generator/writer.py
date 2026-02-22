@@ -331,36 +331,25 @@ def _classify_peps(peps: list[PEP]) -> tuple[list[PEP], ...]:
 
 
 def _verify_email_addresses(peps: list[PEP]) -> dict[str, str]:
-    authors_dict: dict[str, set[str]] = {}
+    authors_dict: dict[str, list[str]] = {}
     for pep in peps:
         for author in pep.authors:
             # If this is the first time we have come across an author, add them.
             if author.full_name not in authors_dict:
-                authors_dict[author.full_name] = set()
+                authors_dict[author.full_name] = []
 
             # If the new email is an empty string, move on.
             if not author.email:
                 continue
             # If the email has not been seen, add it to the list.
-            authors_dict[author.full_name].add(author.email)
+            emails = authors_dict[author.full_name]
+            if author.email not in emails:
+                emails.append(author.email)
 
-    valid_authors_dict: dict[str, str] = {}
-    too_many_emails: list[tuple[str, set[str]]] = []
-    for full_name, emails in authors_dict.items():
-        if len(emails) > 1:
-            too_many_emails.append((full_name, emails))
-        else:
-            valid_authors_dict[full_name] = next(iter(emails), "")
-    if too_many_emails:
-        err_output = []
-        for author, emails in too_many_emails:
-            err_output.append(" " * 4 + f"{author}: {emails}")
-        raise ValueError(
-            "some authors have more than one email address listed:\n"
-            + "\n".join(err_output)
-        )
-
-    return valid_authors_dict
+    # Combine multiple email addresses with commas. Since peps is
+    # sorted by PEP number, this should produce a deterministic
+    # output.
+    return {name: ', '.join(emails) for name, emails in authors_dict.items()}
 
 
 def _sort_authors(authors_dict: dict[str, str]) -> list[str]:
