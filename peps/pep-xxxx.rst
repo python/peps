@@ -42,7 +42,7 @@ Expected:
 - 3.16.0 alpha 4: Tuesday, 2027-01-12
 - 3.16.0 alpha 5: Tuesday, 2027-02-09
 - 3.16.0 alpha 6: Tuesday, 2027-03-09
-- 3.16.0 alpha 7: Tuesday, 2027-03-10
+- 3.16.0 alpha 7: Tuesday, 2027-04-12
 - 3.16.0 beta 1: Tuesday, 2027-05-04
   (No new features beyond this point.)
 - 3.16.0 beta 2: Tuesday, 2027-05-25
