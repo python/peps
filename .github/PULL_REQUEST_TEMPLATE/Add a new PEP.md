@@ -29,8 +29,8 @@ If your PEP is not Standards Track, remove the corresponding section.
 * [ ] PEP topic [discussed in a suitable venue](https://peps.python.org/pep-0001/#start-with-an-idea-for-python) with general agreement that a PEP is appropriate
 * [ ] [Suggested sections](https://peps.python.org/pep-0012/#suggested-sections) included (unless not applicable)
     * [ ] Motivation
-    * [ ] Rationale
     * [ ] Specification
+    * [ ] Rationale
     * [ ] Backwards Compatibility
     * [ ] Security Implications
     * [ ] How to Teach This
