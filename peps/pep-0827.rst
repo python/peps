@@ -250,7 +250,7 @@ functions that generate Pydantic models at runtime based on whatever
 rules we wished. But this is unsatisfying, because we would not be
 able to properly statically typecheck the functions.
 
-(Example code for implementing this :ref:`below <fastapi-impl>`.)
+(Example code for implementing this :ref:`below <pep827-fastapi-impl>`.)
 
 
 dataclasses-style method generation
@@ -269,7 +269,7 @@ Making it possible for libraries to implement more of these patterns
 directly in the type system will give better typing without needing
 further special casing, typechecker plugins, hardcoded support, etc.
 
-(Example code for implementing this :ref:`below <init-impl>`.)
+(Example code for implementing this :ref:`below <pep827-init-impl>`.)
 
 More powerful decorator typing
 ------------------------------
@@ -294,7 +294,7 @@ We have two subproposals that are necessary to get mileage out of the
 main part of this proposal.
 
 
-.. _unpack-kwargs:
+.. _pep827-unpack-kwargs:
 
 Unpack of typevars for ``**kwargs``
 -----------------------------------
@@ -344,7 +344,7 @@ This is potentially moderately useful on its own but is being done to
 support processing ``**kwargs`` with type level computation.
 
 
-.. _extended-callables-prereq:
+.. _pep827-extended-callables-prereq:
 
 Extended Callables
 ------------------
@@ -415,7 +415,7 @@ or, using the type abbreviations we provide::
         int,
     ]
 
-(Rationale discussed :ref:`below <callable-rationale>`.)
+(Rationale discussed :ref:`below <pep827-callable-rationale>`.)
 
 Specification
 =============
@@ -475,7 +475,7 @@ to the grammar of what Python expressions are considered as valid types.
 Where:
 
 * ``<bool-operator>`` refers to any of the names defined in the
-  :ref:`Boolean Operators <boolean-ops>` section, whether used directly,
+  :ref:`Boolean Operators <pep827-boolean-ops>` section, whether used directly,
   qualified, or under another name.
 
 * ``<type-bool-for>`` is identical to ``<type-for>`` except that the
@@ -484,7 +484,7 @@ Where:
 There are three and a half core syntactic features introduced: type booleans,
 conditional types, unpacked comprehension types, and type member access.
 
-:ref:`"Generic callables" <generic-callable>` are also technically a
+:ref:`"Generic callables" <pep827-generic-callable>` are also technically a
 syntactic feature, but are discussed as an operator.
 
 Type booleans
@@ -492,10 +492,10 @@ Type booleans
 
 Type booleans are a special subset of the type language that can be
 used in the body of conditionals.  They consist of the :ref:`Boolean
-Operators <boolean-ops>`, defined below, potentially combined with
+Operators <pep827-boolean-ops>`, defined below, potentially combined with
 ``and``, ``or``, ``not``, ``all``, and ``any``. For ``all`` and
 ``any``, the argument is a comprehension of type booleans, evaluated
-in the same way as the :ref:`unpacked comprehensions <unpacked>`.
+in the same way as the :ref:`unpacked comprehensions <pep827-unpacked>`.
 
 When evaluated in type annotation context, they will evaluate to
 ``Literal[True]`` or ``Literal[False]``.
@@ -516,7 +516,7 @@ type, which resolves to ``true_typ`` if ``bool_typ`` is equivalent to
 ``bool_typ`` is a type, but it needs to syntactically be a type boolean,
 defined above.
 
-.. _unpacked:
+.. _pep827-unpacked:
 
 Unpacked comprehension
 ''''''''''''''''''''''
@@ -548,13 +548,13 @@ Many of the operators specified have type bounds listed for some of
 their operands. These should be interpreted more as documentation than
 as exact type bounds. Trying to evaluate operators with invalid
 arguments will produce ``Never`` as the return. (There is some
-discussion of potential alternatives :ref:`below <strict-kinds>`.)
+discussion of potential alternatives :ref:`below <pep827-strict-kinds>`.)
 
 Note that in some of these bounds below we write things like
 ``Literal[int]`` to mean "a literal that is of type ``int``".
 We don't propose to add that as actual syntax yet.
 
-.. _boolean-ops:
+.. _pep827-boolean-ops:
 
 Boolean operators
 '''''''''''''''''
@@ -613,7 +613,7 @@ Basic operators
   Returns the value as a ``Literal[str]``.
 
 All of the operators in this section are :ref:`lifted over union types
-<lifting>`.
+<pep827-lifting>`.
 
 Union processing
 ''''''''''''''''
@@ -649,7 +649,7 @@ Object inspection
   * ``T`` is the type. Accessible with ``.type``.
   * ``Q`` is a union of qualifiers (see ``MemberQuals`` below). Accessible with ``.quals``.
   * ``Init`` is the literal type of the attribute initializer in the
-    class (see :ref:`InitField <init-field>`). Accessible with ``.init``.
+    class (see :ref:`InitField <pep827-init-field>`). Accessible with ``.init``.
   * ``D`` is the defining class of the member. (That is, which class
     the member is inherited from. Always ``Never``, for a ``TypedDict``).
     Accessible with ``.definer``.
@@ -667,7 +667,7 @@ qualifier. ``staticmethod`` and ``classmethod`` will return
 of Python 3.14.
 
 All of the operators in this section are :ref:`lifted over union types
-<lifting>`.
+<pep827-lifting>`.
 
 Object creation
 '''''''''''''''
@@ -682,7 +682,7 @@ Note that we are not currently proposing any way to create *nominal* classes
 or any way to make new *generic* types.
 
 
-.. _init-field:
+.. _pep827-init-field:
 
 InitField
 '''''''''
@@ -727,7 +727,7 @@ Callable format discussed above.
 The names, type, and qualifiers share associated type names with
 ``Member`` (``.name``, ``.type``, and ``.quals``).
 
-.. _generic-callable:
+.. _pep827-generic-callable:
 
 Generic Callable
 ''''''''''''''''
@@ -740,7 +740,7 @@ Generic Callable
 For now, we restrict the use of ``GenericCallable`` to
 the type argument of ``Member``, to disallow its use for
 locals, parameter types, return types, nested inside other types,
-etc.  Rationale discussed :ref:`below <generic-callable-rationale>`.
+etc.  Rationale discussed :ref:`below <pep827-generic-callable-rationale>`.
 
 Overloaded function types
 '''''''''''''''''''''''''
@@ -758,7 +758,7 @@ Raise error
 
   Any additional type arguments should be included in the message.
 
-.. _update-class:
+.. _pep827-update-class:
 
 Update class
 ''''''''''''
@@ -776,7 +776,7 @@ Update class
   parameterized by ``type[T]``, then the class type should be
   substituted in for ``T``.
 
-.. _lifting:
+.. _pep827-lifting:
 
 Lifting over Unions
 -------------------
@@ -806,7 +806,7 @@ the results together. In Python, the logic looks like::
         return Never
 
 
-.. _rt-support:
+.. _pep827-rt-support:
 
 Runtime evaluation support
 --------------------------
@@ -827,7 +827,7 @@ those cases, we add a new hook to ``typing``:
 * ``special_form_evaluator``: This is a ``ContextVar`` that holds a
   callable that will be invoked with a ``typing._GenericAlias``
   argument when ``__bool__`` is called on a
-  :ref:`Boolean Operator <boolean-ops>` or ``__iter__`` is called
+  :ref:`Boolean Operator <pep827-boolean-ops>` or ``__iter__`` is called
   on ``typing.Iter``.
   The returned value will then have ``bool`` or ``iter`` called upon
   it before being returned.
@@ -848,7 +848,7 @@ Here we will take something of a tutorial approach in discussing how
 to achieve the goals in the examples in the motivation section,
 explain the features being used as we use them.
 
-.. _qb-impl:
+.. _pep827-qb-impl:
 
 Prisma-style ORMs
 -----------------
@@ -960,7 +960,7 @@ contains all the ``Property`` attributes of ``T``.
 The full test is `in our test suite <#qb-test_>`_.
 
 
-.. _fastapi-impl:
+.. _pep827-fastapi-impl:
 
 Automatically deriving FastAPI CRUD models
 ------------------------------------------
@@ -1006,7 +1006,7 @@ from a ``default`` argument to a field or specified directly as an
 initializer).
 
 
-.. _init-impl:
+.. _pep827-init-impl:
 
 dataclasses-style method generation
 -----------------------------------
@@ -1124,7 +1124,7 @@ Note that this is meant to be an example of the expressiveness of type
 manipulation, and not any kind of final proposal about the typing of
 tensor types.
 
-.. _numpy-impl:
+.. _pep827-numpy-impl:
 
 Implementation
 ''''''''''''''
@@ -1181,7 +1181,7 @@ until one of them is empty.
 Rationale
 =========
 
-.. _callable-rationale:
+.. _pep827-callable-rationale:
 
 Extended Callables
 ------------------
@@ -1207,7 +1207,7 @@ We are proposing a fully new extended callable syntax because:
     closely mimic the ``mypy_extensions`` version though, if something new
     is a non-starter).
 
-.. _generic-callable-rationale:
+.. _pep827-generic-callable-rationale:
 
 Generic Callable
 ----------------
@@ -1344,7 +1344,7 @@ This is in some ways an extension of the :pep:`764` (still draft)
 proposal for inline typed dictionaries.
 
 Combined with the above proposal, using it for ``NewProtocol`` might
-look (using something from :ref:`the query builder example <qb-impl>`)
+look (using something from :ref:`the query builder example <pep827-qb-impl>`)
 something like:
 
 ::
@@ -1556,7 +1556,7 @@ being added to the type language, and avoiding needing to either
 introduce a new general mechanism for associated types or having a
 special-case for ``Member``.
 
-``PropsOnly`` (from :ref:`the query builder example <qb-impl>`) would
+``PropsOnly`` (from :ref:`the query builder example <pep827-qb-impl>`) would
 look like::
 
     type PropsOnly[T] = typing.NewProtocol[
@@ -1567,7 +1567,7 @@ look like::
         ]
     ]
 
-.. _less_syntax:
+.. _pep827-less_syntax:
 
 
 Use type operators for conditional and iteration
@@ -1588,7 +1588,7 @@ etc).
 
 The advantage of this is that constructing a type annotation never
 needs to do non-trivial computation (assuming we also get rid of dot
-notation), and thus we don't need :ref:`runtime hooks <rt-support>` to
+notation), and thus we don't need :ref:`runtime hooks <pep827-rt-support>` to
 support evaluating them.
 
 It would also mean that it would be much easier to extract the raw
@@ -1644,7 +1644,7 @@ not yet integrated into the main proposal) would improve the syntactic
 situation at lower cost.
 
 
-.. _strict-kinds:
+.. _pep827-strict-kinds:
 
 Make the type-level operations more "strictly-typed"
 ----------------------------------------------------
@@ -1730,7 +1730,7 @@ concatenation, also.
 * ``Uncapitalize[S: Literal[str]]``: uncapitalize a string literal
 
 All of the operators in this section are :ref:`lifted over union types
-<lifting>`.
+<pep827-lifting>`.
 
 NewProtocolWithBases
 ''''''''''''''''''''
@@ -1758,17 +1758,17 @@ Open Issues
 
 * What invalid operations should be errors and what should return ``Never``?
 
-* :ref:`Unpack of typevars for **kwargs <unpack-kwargs>`: Should
+* :ref:`Unpack of typevars for **kwargs <pep827-unpack-kwargs>`: Should
   whether we try to infer literal types for extra arguments be
   configurable in the ``TypedDict`` serving as the bound somehow? If
   ``readonly`` had been added as a parameter to ``TypedDict`` we would
   use that, but it wasn't.
 
-* :ref:`Extended Callables <extended-callables-prereq>`: Should the extended
+* :ref:`Extended Callables <pep827-extended-callables-prereq>`: Should the extended
   argument list be wrapped in a ``typing.Parameters[*Params]`` type (that
   will also kind of serve as a bound for ``ParamSpec``)?
 
-* :ref:`Extended Callables <extended-callables-prereq>`: Currently the
+* :ref:`Extended Callables <pep827-extended-callables-prereq>`: Currently the
   qualifiers are short strings for code brevity, but an alternate approach
   would be to mirror ``inspect.Signature`` more directly, and have an enum
   with names like ``ParamKind.POSITIONAL_OR_KEYWORD``. Would that be better?
@@ -1777,11 +1777,11 @@ Open Issues
   there is a default, and have whether there is a default represented in
   an ``init`` field, like we do for class member initializers with ``Member``.
 
-* :ref:`Generic Callable <generic-callable>`: Should we have any mechanisms
+* :ref:`Generic Callable <pep827-generic-callable>`: Should we have any mechanisms
   to inspect/destruct ``GenericCallable``? Maybe can fetch the variable
   information and maybe can apply it to concrete types?
 
-* :ref:`Update class <update-class>`: ``UpdateClass`` introduces
+* :ref:`Update class <pep827-update-class>`: ``UpdateClass`` introduces
   type-evaluation-order dependence; if the ``UpdateClass`` return type for
   some ``__init_subclass__`` inspects some unrelated class's ``Members``,
   and that class also has an ``__init_subclass__``, then the results might
