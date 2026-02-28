@@ -46,7 +46,7 @@ this gap by adding type manipulation facilities that
 are better able to keep up with dynamic Python code.
 
 There is demand for this. In the analysis of the
-responses to Meta's 2025 Typed Python Survey [#survey]_, the first
+responses to Meta's `2025 Typed Python Survey <#survey_>`__, the first
 entry on the list of "Most Requested Features" was:
 
   **Missing Features From TypeScript and Other Languages**: Many respondents
@@ -150,13 +150,13 @@ Even further, an IDE could offer code completion for
 all arguments of the ``db.select()`` call (matching the
 actual database column names), recursively.
 
-(Example code for implementing this :ref:`below <qb-impl>`.)
+(Example code for implementing this :ref:`below <pep827-qb-impl>`.)
 
 
 Automatically deriving FastAPI CRUD models
 ------------------------------------------
 
-In the `FastAPI tutorial <#fastapi-tutorial_>`_, they show how to
+The `FastAPI tutorial <#fastapi-tutorial_>`_, shows how to
 build CRUD endpoints for a simple ``Hero`` type.  At its heart is a
 series of class definitions used both to define the database interface
 and to perform validation and filtering of the data in the endpoint::
@@ -261,7 +261,7 @@ based on the attributes of an object. The most well-known example of
 this is generating ``__init__`` methods for dataclasses,
 which we present a simplified example of.
 
-This kind of pattern is widespread enough that :pep:`PEP 681 <681>`
+This kind of pattern is widespread enough that :pep:`681`
 was created to represent a lowest-common denominator subset of what
 existing libraries do.
 
@@ -279,7 +279,7 @@ typing. The situation was substantially improved by the introduction of
 ``ParamSpec`` in :pep:`612`, but a number of patterns remain
 unsupported:
 
-* Adding/removing/modifying a keyword parameter
+* Adding/removing/modifying a keyword parameter.
 * Adding/removing/modifying a variable number of parameters. (Though
   ``TypeVarTuple`` is close to being able to support adding and
   removing, if multiple unpackings were to be allowed, and Pyre
@@ -312,7 +312,7 @@ Here ``BaseTypedDict`` is defined as::
     class BaseTypedDict(typing.TypedDict):
         pass
 
-But any TypedDict would be allowed there.
+But any :class:`~typing.TypedDict` would be allowed there.
 
 Then, if we had a call like::
 
@@ -325,9 +325,9 @@ the type inferred for ``K`` would be something like::
     TypedDict({'x': int, 'y': list[str]})
 
 This is basically a combination of
-"PEP 692 – Using TypedDict for more precise ``**kwargs`` typing"
+:pep:`692` "Using TypedDict for more precise ``**kwargs`` typing"
 and the behavior of ``Unpack`` for ``*args``
-from "PEP 646 – Variadic Generics".
+from :pep:`646` "Variadic Generics".
 
 When inferring types here, the type checker should **infer literal
 types when possible**.  This means inferring literal types for
@@ -339,7 +339,6 @@ matching argument provided, then if the item is read-only, it will
 have its type inferred as ``Never``, to indicate that it was not
 provided.  (This can only be done for read-only items, since non
 read-only items are invariant.)
-
 
 This is potentially moderately useful on its own but is being done to
 support processing ``**kwargs`` with type level computation.
@@ -563,8 +562,8 @@ Boolean operators
 * ``IsAssignable[T, S]``: Returns a boolean literal type indicating whether
   ``T`` is assignable to ``S``.
 
-   That is, it is a "consistent subtype". This is subtyping extended
-   to gradual types.
+  That is, it is a "consistent subtype". This is subtyping extended
+  to gradual types.
 
 * ``IsEquivalent[T, S]``:
   Equivalent to ``IsAssignable[T, S] and IsAssignable[S, T]``.
@@ -595,23 +594,18 @@ Basic operators
   will be packed in a tuple, and a ``...`` will become
   ``SpecialFormEllipsis``.
 
-
 * ``GetArgs[T, Base]``: returns a tuple containing all of the type
   arguments of ``T`` when interpreted as ``Base``, or ``Never`` if it
   cannot be.
 
-
 * ``GetMemberType[T, S: Literal[str]]``: Extract the type of the
   member named ``S`` from the class ``T``.
-
 
 * ``Length[T: tuple]`` - Gets the length of a tuple as an int literal
   (or ``Literal[None]`` if it is unbounded)
 
-
 * ``Slice[S: tuple, Start: Literal[int | None], End: Literal[int | None]]``:
   Slices a tuple type.
-
 
 * ``GetSpecialAttr[T, Attr: Literal[str]]``: Extracts the value
   of the special attribute named ``Attr`` from the class ``T``. Valid
@@ -670,7 +664,7 @@ Methods are returned as callables using the new ``Param`` based
 extended callables, and carrying the ``ClassVar``
 qualifier. ``staticmethod`` and ``classmethod`` will return
 ``staticmethod`` and ``classmethod`` types, which are subscriptable as
-of 3.14.
+of Python 3.14.
 
 All of the operators in this section are :ref:`lifted over union types
 <lifting>`.
@@ -694,7 +688,7 @@ InitField
 '''''''''
 
 We want to be able to support transforming types based on
-dataclasses/attrs/pydantic style field descriptors.  In order to do
+dataclasses/attrs/Pydantic-style field descriptors.  In order to do
 that, we need to be able to consume operations like calls to ``Field``.
 
 Our strategy for this is to introduce a new type
@@ -911,7 +905,7 @@ as a literal type--all of these mechanisms lean very heavily on literal types.
     ]:
         raise NotImplementedError
 
-ConvertField is our first type helper, and it is a conditional type
+``ConvertField`` is our first type helper, and it is a conditional type
 alias, which decides between two types based on a (limited)
 subtype-ish check.
 
@@ -972,9 +966,7 @@ Automatically deriving FastAPI CRUD models
 ------------------------------------------
 
 We have a more `fully-worked example <#fastapi-test_>`_ in our test
-suite, but here is a possible implementation of just ``Public``
-
-::
+suite, but here is a possible implementation of just ``Public``::
 
     # Extract the default type from an Init field.
     # If it is a Field, then we try pulling out the "default" field,
@@ -1096,7 +1088,7 @@ arrays, such as::
 The example in that PEP shows how ``TypeVarTuple`` can be used to
 make sure that both sides of an arithmetic operation have matching
 shapes. Most multi-dimensional array libraries, however, also support
-broadcasting [#broadcasting]_, which allows the mixing of differently
+`broadcasting <#broadcasting_>`__, which allows the mixing of differently
 shaped data.  With this PEP, we can define a ``Broadcast[A, B]`` type
 alias, and then use it as a return type::
 
@@ -1207,13 +1199,13 @@ which wouldn't be any simpler.)
 
 We are proposing a fully new extended callable syntax because:
  1. The ``mypy_extensions`` functions are full no-ops, and we need
-    real runtime objects
+    real runtime objects.
  2. They use parentheses and not brackets, which really goes against
     the philosophy here.
  3. We can make an API that more nicely matches what we are going to
     do for inspecting members (we could introduce extended callables that
     closely mimic the ``mypy_extensions`` version though, if something new
-    is a non-starter)
+    is a non-starter).
 
 .. _generic-callable-rationale:
 
@@ -1250,7 +1242,6 @@ functions with explicit generic annotations. For old-style generics,
 we'll probably have to try to evaluate it and then raise an error when
 we encounter a variable.)
 
-
 The reason we suggest restricting the use of ``GenericCallable`` to
 the type argument of ``Member`` is because impredicative
 polymorphism (where you can instantiate type variables with other
@@ -1258,7 +1249,6 @@ generic types) and rank-N types (where generics can be bound in nested
 positions deep inside function types) are cans of worms when combined
 with type inference [#undecidable]_.  While it would be nice to support,
 we don't want to open that can of worms now.
-
 
 The unbound type variable tuple is so that bounds and defaults and
 ``TypeVarTuple``-ness can be specified, though maybe we want to come
@@ -1329,10 +1319,10 @@ and APIs they introduce.
 Reference Implementation
 ========================
 
-There is a demo of a runtime evaluator [#runtime]_, which is
+There is a `demo of a runtime evaluator <#runtime_>`__, which is
 also where this PEP draft currently lives.
 
-There is an in-progress proof-of-concept implementation in mypy [#ref-impl]_.
+There is an in-progress `proof-of-concept implementation <#ref-impl_>`__ in mypy.
 
 It can type check the ORM, FastAPI-style model derivation, and
 NumPy-style broadcasting examples.
@@ -1529,7 +1519,7 @@ behavior of lifting the conditional over unions.
 Replace ``IsAssignable`` with something weaker than "assignable to" checking
 ----------------------------------------------------------------------------
 
-Full python typing assignability checking is not fully implementable
+Full Python typing assignability checking is not fully implementable
 at runtime (in particular, even if all the typeshed types for the
 stdlib were made available, checking against protocols will often not
 be possible, because class attributes may be inferred and have no visible
@@ -1636,7 +1626,7 @@ It would require a well-defined and safe-to-run subset of the language
 typecheckers. Subsets like this have been defined in other systems
 (see `Starlark <#starlark_>`_, the configuration language for Bazel),
 but it's still a lot of surface area, and programmers would need to
-keep in mind the boundaries of it.
+keep in mind its boundaries.
 
 Additionally there would need to be a clear specification of how types
 are represented in the "mini-plugin" functions, as well as defining
@@ -1674,7 +1664,7 @@ machinery.
   treated as having some type like ``tuple[Member[KeyOf[T], object,
   str, ..., ...], ...]``
 * ``GetMemberType[T, S: KeyOf[T]]`` - but this isn't supported yet.
-  TS supports it.
+  TypeScript supports it.
 * We would also need to do context sensitive type bound inference
 
 
@@ -1731,12 +1721,9 @@ for all unicode!).
 It would definitely be possible to take just slicing and
 concatenation, also.
 
-
 * ``Slice[S: Literal[str], Start: Literal[int | None], End: Literal[int | None]]``:
   Also support slicing string types. (Currently tuples are supported.)
-
 * ``Concat[S1: Literal[str], S2: Literal[str]]``: concatenate two strings
-
 * ``Uppercase[S: Literal[str]]``: uppercase a string literal
 * ``Lowercase[S: Literal[str]]``: lowercase a string literal
 * ``Capitalize[S: Literal[str]]``: capitalize a string literal
@@ -1824,6 +1811,7 @@ substantial influence on this proposal!
 Footnotes
 =========
 
+.. _#broadcasting: https://numpy.org/doc/stable/user/basics.broadcasting.html
 .. _#fastapi: https://fastapi.tiangolo.com/
 .. _#pydantic: https://docs.pydantic.dev/latest/
 .. _#fastapi-tutorial: https://fastapi.tiangolo.com/tutorial/sql-databases/#heroupdate-the-data-model-to-update-a-hero
@@ -1831,13 +1819,12 @@ Footnotes
 .. _#prisma: https://www.prisma.io/
 .. _#prisma-example: https://github.com/prisma/prisma-examples/tree/latest/orm/express
 .. _#qb-test: https://github.com/vercel/python-typemap/blob/main/tests/test_qblike_2.py
+.. _#ref-impl: https://github.com/msullivan/mypy/tree/typemap
+.. _#runtime: https://github.com/vercel/python-typemap
 .. _#starlark: https://starlark-lang.org/
+.. _#survey: https://engineering.fb.com/2025/12/22/developer-tools/python-typing-survey-2025-code-quality-flexibility-typing-adoption/
 .. _#ast_format: https://imogenbits-peps.readthedocs.io/en/ast_format/pep-9999/
 
-.. [#broadcasting] http://docs.scipy.org/doc/numpy/user/basics.broadcasting.html
-.. [#ref-impl] https://github.com/msullivan/mypy/tree/typemap
-.. [#runtime] https://github.com/vercel/python-typemap/
-.. [#survey] https://engineering.fb.com/2025/12/22/developer-tools/python-typing-survey-2025-code-quality-flexibility-typing-adoption/
 .. [#undecidable]
 
 * "Partial polymorphic type inference is undecidable" by Hans Boehm: https://dl.acm.org/doi/10.1109/SFCS.1985.44
