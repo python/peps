@@ -28,16 +28,16 @@ Motivation
 [Clearly explain why the existing language specification is inadequate to address the problem that the PEP solves.]
 
 
-Rationale
-=========
-
-[Describe why particular design decisions were made.]
-
-
 Specification
 =============
 
 [Describe the syntax and semantics of any new language feature.]
+
+
+Rationale
+=========
+
+[Describe why particular design decisions were made.]
 
 
 Backwards Compatibility
