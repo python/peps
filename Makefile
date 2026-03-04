@@ -22,6 +22,7 @@ ALLSPHINXOPTS = --builder $(BUILDER) \
 .PHONY: html
 html: venv
 	$(SPHINXBUILD) $(ALLSPHINXOPTS)
+	$(VENVDIR)/bin/python3 -m pagefind --site $(BUILDDIR) --verbose
 
 ## htmlview       to open the index page built by the html target in your browser
 .PHONY: htmlview
@@ -107,6 +108,11 @@ test: venv
 .PHONY: spellcheck
 spellcheck: _ensure-pre-commit
 	$(VENVDIR)/bin/python3 -m pre_commit run --all-files --hook-stage manual codespell
+
+## regen-all      to regenerate generated source files
+.PHONY: regen-all
+regen-all:
+	$(PYTHON) -m release_management update-peps
 
 .PHONY: help
 help : Makefile
