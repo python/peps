@@ -42,9 +42,9 @@ dirhtml: BUILDER = dirhtml
 dirhtml: html
 	mv $(BUILDDIR)/404/index.html $(BUILDDIR)/404.html
 
-## pagefind       to rebuild the search index
-.PHONY: pagefind
-pagefind: venv
+## search         to rebuild the search index
+.PHONY: search
+search: venv
 	$(VENVDIR)/bin/python3 -m pagefind --site $(BUILDDIR) --verbose
 
 ## linkcheck      to check validity of links within PEP sources
