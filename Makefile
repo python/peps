@@ -22,7 +22,6 @@ ALLSPHINXOPTS = --builder $(BUILDER) \
 .PHONY: html
 html: venv
 	$(SPHINXBUILD) $(ALLSPHINXOPTS)
-	$(VENVDIR)/bin/python3 -m pagefind --site $(BUILDDIR) --verbose
 
 ## htmlview       to open the index page built by the html target in your browser
 .PHONY: htmlview
@@ -42,6 +41,11 @@ htmllive: _ensure-sphinx-autobuild html
 dirhtml: BUILDER = dirhtml
 dirhtml: html
 	mv $(BUILDDIR)/404/index.html $(BUILDDIR)/404.html
+
+## search         to rebuild the search index
+.PHONY: search
+search: venv
+	$(VENVDIR)/bin/python3 -m pagefind --site $(BUILDDIR) --verbose
 
 ## linkcheck      to check validity of links within PEP sources
 .PHONY: linkcheck
