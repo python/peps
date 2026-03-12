@@ -43,6 +43,9 @@ include_patterns = [
     "api/*.rst",
     # Documentation
     "docs/*.rst",
+    # Generated index files
+    "numerical.rst",
+    "topic/*.rst",
 ]
 # And to ignore when looking for source files.
 exclude_patterns = [
