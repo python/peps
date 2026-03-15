@@ -1,11 +1,11 @@
 PEP: 8XX
-Title: Add timestamps to exception tracebacks
+Title: Add timestamps to exceptions and tracebacks
 Author: Gregory P. Smith <greg@krypto.org>
 PEP-Delegate:
 Discussions-To: TODO
 Status: Draft
 Type: Standards Track
-Created: 09-Sep-2025
+Created: 15-March-2026
 Python-Version: 3.15
 Post-History:
 
@@ -13,216 +13,95 @@ Post-History:
 Abstract
 ========
 
-This PEP proposes adding optional timestamps to Python exception objects that
-can be displayed in tracebacks. When enabled, each exception will record the
-time it was instantiated (typically when raised), and this timestamp can be
-displayed alongside the exception message in formatted tracebacks. This feature
-is particularly useful for debugging complex asynchronous applications, exception
-groups, and distributed systems where understanding the temporal ordering of
-exceptions is critical.
+This PEP adds an optional ``__timestamp_ns__`` attribute to ``BaseException``
+that records when the exception was instantiated.  When enabled via environment
+variable or command-line flag, formatted tracebacks display this timestamp
+alongside the exception message.
 
 
 Motivation
 ==========
 
-In modern Python applications, especially those using asynchronous programming
-patterns and exception groups introduced in :pep:`654`, understanding the
-temporal relationships between exceptions has become increasingly important.
-Consider the following scenarios:
+With the introduction of exception groups (:pep:`654`), Python programs can now
+propagate multiple unrelated exceptions simultaneously.  When debugging these,
+or when correlating exceptions with external logs and metrics, knowing *when*
+each exception occurred is often as important as knowing *what* occurred.
 
-1. **Async servers with exception groups**: When multiple exceptions are caught
-   and grouped together, it's often difficult to understand which exception
-   occurred first and how they relate temporally to each other and to external
-   events in the system.
+Currently there is no standard way to obtain this information.  Developers must
+manually add timing to exception messages or rely on logging frameworks, which
+is inconsistent and error-prone.
 
-2. **Distributed systems debugging**: When correlating exceptions across
-   different services, having precise timestamps allows developers to match
-   exceptions with logs from other systems, making root cause analysis more
-   straightforward.
-
-3. **Complex exception chains**: In applications with deep exception chains
-   (exceptions raised during handling of other exceptions), timestamps help
-   clarify the sequence of events that led to the final error state.
-
-4. **Performance debugging**: Timestamps can reveal performance issues, such as
-   delays between exception creation and handling, or help identify timeout-related
-   problems.
-
-Currently, developers must manually add timing information to exception messages
-or use external logging frameworks, which can be cumbersome and inconsistent.
-This PEP proposes a built-in, standardized approach.
-
-
-Compelling Example: Async Service with Exception Groups
---------------------------------------------------------
-
-Consider an async web service that fetches data from multiple backends
-concurrently. When failures occur, understanding the timing is crucial for
-diagnostics::
+Consider an async service that fetches data from multiple backends concurrently
+using ``asyncio.TaskGroup``.  When several backends fail, the resulting
+``ExceptionGroup`` contains all the errors but no indication of their temporal
+ordering::
 
     import asyncio
-    from datetime import datetime
 
-    async def fetch_user_data(user_id: str):
-        # Simulating a service that fails after 0.5 seconds
+    async def fetch_user(uid):
         await asyncio.sleep(0.5)
-        raise ConnectionError(f"User service timeout for {user_id}")
+        raise ConnectionError(f"User service timeout for {uid}")
 
-    async def fetch_order_data(user_id: str):
-        # Simulating a service that fails after 0.1 seconds
+    async def fetch_orders(uid):
         await asyncio.sleep(0.1)
-        raise ValueError(f"Invalid user_id format: {user_id}")
+        raise ValueError(f"Invalid user_id format: {uid}")
 
-    async def fetch_recommendations(user_id: str):
-        # Simulating a service that fails after 2.3 seconds
+    async def fetch_recommendations(uid):
         await asyncio.sleep(2.3)
-        raise TimeoutError(f"Recommendation service timeout")
+        raise TimeoutError("Recommendation service timeout")
 
-    async def fetch_inventory(items: list):
-        # Simulating a service that fails after 0.8 seconds
+    async def fetch_inventory(items):
         await asyncio.sleep(0.8)
-        raise KeyError(f"Item 'widget-42' not found in inventory")
+        raise KeyError("Item 'widget-42' not found in inventory")
 
-    async def get_user_dashboard(user_id: str):
-        """Fetch all user dashboard data concurrently."""
+    async def get_dashboard(uid):
         async with asyncio.TaskGroup() as tg:
-            user_task = tg.create_task(fetch_user_data(user_id))
-            order_task = tg.create_task(fetch_order_data(user_id))
-            rec_task = tg.create_task(fetch_recommendations(user_id))
-            inv_task = tg.create_task(fetch_inventory(['widget-42']))
+            tg.create_task(fetch_user(uid))
+            tg.create_task(fetch_orders(uid))
+            tg.create_task(fetch_recommendations(uid))
+            tg.create_task(fetch_inventory(['widget-42']))
 
-With ``PYTHON_TRACEBACK_TIMESTAMPS=iso``, the output would be::
+With ``PYTHON_TRACEBACK_TIMESTAMPS=iso``, the output becomes::
 
     Traceback (most recent call last):
       ...
     ExceptionGroup: unhandled errors in a TaskGroup (4 sub-exceptions)
       +-+---------------- 1 ----------------
         | Traceback (most recent call last):
-        |   File "service.py", line 11, in fetch_order_data
-        |     raise ValueError(f"Invalid user_id format: {user_id}")
+        |   File "service.py", line 11, in fetch_orders
+        |     raise ValueError(f"Invalid user_id format: {uid}")
         | ValueError: Invalid user_id format: usr_12@34 <@2025-03-15T10:23:41.142857Z>
         +---------------- 2 ----------------
         | Traceback (most recent call last):
-        |   File "service.py", line 7, in fetch_user_data
-        |     raise ConnectionError(f"User service timeout for {user_id}")
+        |   File "service.py", line 7, in fetch_user
+        |     raise ConnectionError(f"User service timeout for {uid}")
         | ConnectionError: User service timeout for usr_12@34 <@2025-03-15T10:23:41.542901Z>
         +---------------- 3 ----------------
         | Traceback (most recent call last):
         |   File "service.py", line 19, in fetch_inventory
-        |     raise KeyError(f"Item 'widget-42' not found in inventory")
+        |     raise KeyError("Item 'widget-42' not found in inventory")
         | KeyError: "Item 'widget-42' not found in inventory" <@2025-03-15T10:23:41.842856Z>
         +---------------- 4 ----------------
         | Traceback (most recent call last):
         |   File "service.py", line 15, in fetch_recommendations
-        |     raise TimeoutError(f"Recommendation service timeout")
+        |     raise TimeoutError("Recommendation service timeout")
         | TimeoutError: Recommendation service timeout <@2025-03-15T10:23:43.342912Z>
 
-From these timestamps, we can immediately see:
-
-1. The ``ValueError`` from order validation failed first (at .142s)
-2. The user service timed out 400ms later (at .542s)
-3. The inventory service failed 300ms after that (at .842s)
-4. The recommendation service was the slowest, timing out after 2.3 seconds (at 43.342s)
-
-This temporal information is invaluable for debugging:
-
-- We can see the order service fails fast with validation, suggesting a data
-  quality issue rather than a performance problem
-- The 2.3-second delay for recommendations indicates it might be the bottleneck
-- The failures are spread across 3.2 seconds, showing they're not caused by a
-  single systemic issue (like a network partition)
-- We can correlate these timestamps with metrics from monitoring systems,
-  load balancer logs, or database query logs
-
-Without timestamps, we would only know that four services failed, but not
-their temporal relationship, making root cause analysis significantly harder.
-
-
-Why Exception Groups Need Timestamps
--------------------------------------
-
-While exception groups are conceptually "unrelated" exceptions that happen to be
-raised together, in practice they often have important temporal relationships:
-
-1. **Causality isn't always explicit**: When multiple services fail in sequence,
-   one failure might trigger cascading failures in seemingly unrelated services.
-   Without timestamps, these cascade patterns are invisible. For example, a
-   database connection pool exhaustion might cause multiple "unrelated" query
-   failures across different services.
-
-2. **Concurrent doesn't mean simultaneous**: Tasks in an exception group may
-   start concurrently but fail at very different times. A service that fails
-   after 100ms versus one that fails after 5 seconds tells a different story
-   about what went wrong - the first might be a validation error, the second
-   a timeout.
-
-3. **Debugging distributed systems**: In microservice architectures, exception
-   groups often collect failures from multiple remote services. Timestamps allow
-   correlation with external observability tools (logs, metrics, traces) that
-   are essential for understanding the full picture.
-
-4. **Performance analysis**: Even for "unrelated" exceptions, knowing their
-   temporal distribution helps identify performance bottlenecks and timeout
-   configurations that need adjustment.
-
-
-Why Not Use ``.add_note()`` When Catching?
---------------------------------------------
-
-A common question is why we don't simply use :pep:`678`'s ``.add_note()`` to add
-timestamps when exceptions are caught and grouped. This approach has several
-significant drawbacks:
-
-1. **Not all exceptions are caught**: Exceptions that propagate to the top level
-   or are logged directly never get the opportunity to have notes added. The
-   timestamp of when an error occurred is lost forever.
-
-2. **Timing accuracy**: Adding a note when catching introduces variable delay.
-   The timestamp would reflect when the exception was caught and processed, not
-   when it actually occurred. In async code with complex exception handling,
-   this delay can be significant and misleading.
-
-3. **Inconsistent application**: Relying on exception handlers to add timestamps
-   means some exceptions get timestamps and others don't, depending on code
-   paths. This inconsistency makes debugging harder, not easier.
-
-4. **Performance overhead**: Creating note strings for every caught exception
-   adds overhead even when timestamps aren't being displayed. With the proposed
-   approach, formatting only happens when tracebacks are rendered.
-
-5. **Complexity burden**: Every exception handler that wants timing information
-   would need to remember to add notes. This is error-prone and adds boilerplate
-   to exception handling code.
-
-6. **Lost original timing**: By the time an exception is caught, the original
-   failure moment is lost. In retry loops or complex error handling, the catch
-   point might be seconds or minutes after the actual error.
-
-The key insight is that **when** an exception is created is intrinsic, immutable
-information about that exception - just like its type and message. This information
-should be captured at the source, not added later by consumers.
+The timestamps immediately reveal that the order validation failed first
+(at .142s), while the recommendation service was the slowest at 2.3 seconds.
+They can also be correlated with metrics dashboards, load balancer logs, or
+traces from other services to build a complete picture of the incident.
 
 
 Rationale
 =========
 
-The decision to add timestamps directly to exception objects rather than using
-alternative approaches (such as exception notes from :pep:`678`) was driven by
-several factors:
-
-1. **Performance**: Adding timestamps as notes would require creating string
-   and list objects for every exception, even when timestamps aren't being
-   displayed. The proposed approach stores a single integer (nanoseconds since
-   epoch) and only formats it when needed.
-
-2. **Consistency**: Having a standardized timestamp attribute ensures consistent
-   formatting and behavior across the Python ecosystem.
-
-3. **Backwards compatibility**: The feature is entirely opt-in, with no impact
-   on existing code unless explicitly enabled.
-
-4. **Simplicity**: The implementation is straightforward and doesn't require
-   changes to exception handling semantics.
+The timestamp is stored as a single ``int64_t`` field in the ``BaseException``
+C struct, recording nanoseconds since the Unix epoch.  This design was chosen
+over using exception notes (:pep:`678`) because a struct field costs nothing
+when not populated, avoids creating string and list objects at raise time, and
+defers all formatting work to traceback rendering.  The feature is entirely
+opt-in and does not change exception handling semantics.
 
 
 Specification
@@ -231,153 +110,126 @@ Specification
 Exception Timestamp Attribute
 -----------------------------
 
-A new attribute ``__timestamp_ns__`` will be added to the ``BaseException``
-class. This attribute will store the time in nanoseconds since the Unix epoch
-(same precision as ``time.time_ns()``) when the exception was instantiated.
-
-- The attribute will be set to ``0`` by default (timestamps disabled)
-- When timestamps are enabled, it will be set automatically during exception
-  instantiation
-- The timestamp represents when the exception object was created, which is
-  typically when it was raised
+A new read/write attribute ``__timestamp_ns__`` is added to ``BaseException``.
+It stores nanoseconds since the Unix epoch (same precision as
+``time.time_ns()``) as a C ``int64_t`` exposed via a member descriptor.  When
+timestamps are disabled, or for control flow exceptions (see below), the value
+is ``0``.
 
 Control Flow Exceptions
 ------------------------
 
-To avoid performance impacts on normal control flow, timestamps will **not** be
-collected for certain exception types even when the feature is enabled. By default:
-
-- ``StopIteration``
-- ``AsyncStopIteration``
-
-These exceptions are frequently used for control flow in iterators and async
-iterators. However, other projects also use custom exceptions for control flow
-(e.g., Sphinx's ``Skip`` exception), making the need for configurability clear.
-
-The current implementation hard-codes these two exceptions for performance
-reasons. See Open Issues for discussion about making this configurable.
+To avoid performance impact on normal control flow, timestamps are **not**
+collected for ``StopIteration`` or ``StopAsyncIteration`` even when the feature
+is enabled.  These exceptions are raised at extremely high frequency during
+iteration; the check uses C type pointer identity (not ``isinstance``) and adds
+negligible overhead.
 
 Configuration
 -------------
 
-The feature can be enabled through two mechanisms:
+The feature is enabled through CPython's two standard mechanisms:
 
-1. **Environment variable**: ``PYTHON_TRACEBACK_TIMESTAMPS``
-   
-   - ``"us"`` or ``"1"``: Display timestamps in microseconds
-   - ``"ns"``: Display timestamps in nanoseconds  
-   - ``"iso"``: Display timestamps in ISO 8601 format
-   - Empty or unset: Timestamps disabled (default)
+``PYTHON_TRACEBACK_TIMESTAMPS`` environment variable
+    Set to ``us`` or ``1`` for microsecond-precision decimal timestamps,
+    ``ns`` for raw nanoseconds, or ``iso`` for ISO 8601 UTC format.
+    Empty, unset, or ``0`` disables timestamps (the default).
 
-2. **Command-line option**: ``-X traceback_timestamps=<format>``
-   
-   Uses the same format options as the environment variable.
+``-X traceback_timestamps=<format>`` command-line option
+    Accepts the same values.  Takes precedence over the environment variable.
 
-The command-line option takes precedence over the environment variable if both
-are specified.
+A new ``traceback_timestamps`` field in ``PyConfig`` stores the selected format,
+accessible as ``sys.flags.traceback_timestamps``.
 
 Display Format
 --------------
 
-When timestamps are enabled, they will be displayed at the end of exception
-messages in tracebacks, using the format: ``<@timestamp>``
-
-Example with ``PYTHON_TRACEBACK_TIMESTAMPS=iso``::
+Timestamps are appended to the exception message line in tracebacks using
+the format ``<@timestamp>``.  Example with ``iso``::
 
     Traceback (most recent call last):
       File "<stdin>", line 3, in california_raisin
         raise RuntimeError("not enough sunshine")
     RuntimeError: not enough sunshine <@2025-02-01T20:43:01.026169Z>
-    
-    During handling of the above exception, another exception occurred:
-    
-    Traceback (most recent call last):
-      File "<stdin>", line 1, in <module>
-        california_raisin()
-      File "<stdin>", line 5, in california_raisin
-        raise OSError(2, "on a cloudy day")
-    FileNotFoundError: [Errno 2] on a cloudy day <@2025-02-01T20:43:01.026176Z>
+
+When colorized output is enabled, the timestamp is rendered in a muted color
+to keep it visually distinct from the exception message.
 
 Traceback Module Updates
 ------------------------
 
-The ``traceback`` module will be updated to support the new timestamp feature:
-
-1. ``TracebackException`` class will gain a ``no_timestamp`` parameter
-   (default ``False``) to control whether timestamps are displayed
-
-2. Functions like ``print_exception()`` will gain a ``no_timestamp`` parameter
-   to allow suppressing timestamp display even when globally enabled
-
-3. The formatting functions will check the global configuration and the
-   ``__timestamp_ns__`` attribute to determine whether and how to display
-   timestamps
-
-Python Configuration
---------------------
-
-A new field ``traceback_timestamps`` will be added to ``PyConfig`` to store
-the selected timestamp format. This will be accessible through
-``sys.flags.traceback_timestamps``.
+``TracebackException`` and the public formatting functions (``print_exception``,
+``format_exception``, ``format_exception_only``) gain a ``no_timestamp``
+keyword argument (default ``False``) that suppresses timestamp display even
+when globally enabled.
 
 
 Backwards Compatibility
 =======================
 
-This proposal maintains full backwards compatibility:
+The feature is disabled by default and does not affect existing exception
+handling code.  The ``__timestamp_ns__`` attribute is always readable on
+``BaseException`` instances, returning ``0`` when timestamps are not collected.
 
-1. The feature is disabled by default
-2. Existing exception handling code continues to work unchanged
-3. The new attribute is only set when the feature is explicitly enabled
-4. Pickle/unpickle of exceptions works correctly with the new attribute
-5. Third-party exception formatting libraries can ignore the attribute if desired
+When timestamps are disabled, exceptions pickle in the traditional 2-tuple
+format ``(type, args)``.  When a nonzero timestamp is present, exceptions
+pickle as ``(type, args, state_dict)`` with ``__timestamp_ns__`` in the state
+dictionary.  Older Python versions unpickle these correctly via
+``__setstate__``.  Always emitting the 3-tuple form (with a zero timestamp)
+would simplify the logic, but was avoided to keep the pickle output
+byte-identical when the feature is off and to avoid any performance impact
+on the common case.
+
+
+Maintenance Burden
+==================
+
+The ``__timestamp_ns__`` field is a single ``int64_t`` in the ``BaseException``
+C struct, present in every exception object regardless of configuration.  The
+collection code is a guarded ``clock_gettime`` call; the formatting code only
+runs at traceback display time.  Both are small and self-contained.
+
+The main ongoing cost is in the test suite.  Tests that compare traceback
+output literally need to account for the optional timestamp suffix.  Two
+helpers are provided for this:
+
+- ``traceback.strip_exc_timestamps(text)`` strips ``<@...>`` suffixes from
+  formatted traceback strings.
+- ``test.support.force_no_traceback_timestamps`` is a decorator that disables
+  timestamp collection for the duration of a test.
+
+Outside of the traceback-specific tests, approximately 14 of ~1230 test files
+(roughly 1%) needed one of these helpers, typically tests that capture
+``stderr`` and match against expected traceback output (e.g. ``test_logging``,
+``test_repl``, ``test_wsgiref``, ``test_threading``).  The pattern follows the same approach used by ``force_not_colorized`` for
+ANSI color codes in tracebacks.
+
+Outside of CPython's own CI, where timestamps are enabled on a couple of
+GitHub Actions runs to maintain coverage, most projects are unlikely to
+have the feature enabled while running their test suites.
 
 
 Security Implications
 =====================
 
-Timestamps in exceptions could potentially reveal information about:
-
-1. System performance characteristics
-2. Timing of operations that might be security-sensitive
-3. Patterns of exception handling that could be used for timing attacks
-
-However, since the feature is opt-in and primarily intended for development
-and debugging, these concerns are minimal. Production systems concerned about
-information leakage should not enable this feature.
+None.  The feature is opt-in and disabled by default.
 
 
 How to Teach This
 =================
 
-The feature should be documented in:
+The ``__timestamp_ns__`` attribute and configuration options will be documented
+in the ``exceptions`` module reference, the ``traceback`` module reference,
+and the command-line interface documentation.
 
-1. The Python documentation for the ``exceptions`` module
-2. The ``traceback`` module documentation
-3. The Python tutorial section on exception handling (as an advanced topic)
-4. The command-line interface documentation
-
-Example use cases should focus on:
-
-- Debugging async applications with multiple concurrent exceptions
-- Correlating exceptions with external system logs
-- Understanding performance issues in exception-heavy code
+This is a power feature: disabled by default and invisible unless explicitly
+enabled.  It does not need to be covered in introductory material.
 
 
 Reference Implementation
 ========================
 
-The reference implementation is available in `CPython PR #129337
-<https://github.com/python/cpython/pull/129337>`_.
-
-The implementation includes:
-
-- Core exception object changes to add the ``__timestamp_ns__`` attribute
-- Traceback formatting updates to display timestamps
-- Configuration through environment variables and command-line options
-- Special handling for ``StopIteration`` and ``AsyncStopIteration``
-- Comprehensive test coverage
-- Documentation updates
+`CPython PR #129337 <https://github.com/python/cpython/pull/129337>`_.
 
 
 Rejected Ideas
@@ -386,77 +238,63 @@ Rejected Ideas
 Using Exception Notes
 ---------------------
 
-An alternative approach would be to use the exception notes feature from
-:pep:`678` to store timestamps. This was rejected because:
+Using :pep:`678`'s ``.add_note()`` to attach timestamps was rejected for
+several reasons.  Notes require creating string and list objects at raise time,
+imposing overhead even when timestamps are not displayed.  Notes added when
+*catching* an exception reflect the catch time, not the raise time, and in
+async code this difference can be significant.  Not all exceptions are caught
+(some propagate to top level or are logged directly), so catch-time notes
+would be applied inconsistently.  A struct field captures the timestamp at the
+source and defers all formatting to display time.
 
-1. It would require creating string and list objects for every exception
-2. The performance impact would be significant even when not displaying timestamps
-3. It would make the timestamp less structured and harder to process programmatically
+Always Collecting vs. Always Displaying
+----------------------------------------
 
-Always Collecting Timestamps
------------------------------
+*Collecting* timestamps (a ``clock_gettime`` call during instantiation) and
+*displaying* them in formatted tracebacks are separate concerns.
 
-Collecting timestamps for all exceptions unconditionally was considered but
-rejected due to:
+Always displaying was rejected because it adds noise that most users do not
+need.  Always collecting (even when display is disabled) is cheap since the
+``int64_t`` field exists in the struct regardless, but not collecting avoids
+any potential for performance impact when the feature is turned off, and there
+is no current reason to collect timestamps that will never be shown.  This could be
+revisited if programmatic access to exception timestamps becomes useful
+independent of traceback display.
 
-1. Performance overhead for exceptions used in control flow
-2. Unnecessary memory usage for the vast majority of use cases
-3. Potential security concerns in production environments
+Runtime API
+-----------
+
+A Python API to toggle timestamps at runtime is unnecessary complexity.
+Applications that want timestamps are expected to enable them in their
+environment; a runtime toggle would make it harder to reason about program
+state.  The feature is configured at startup and remains fixed.
+
+Custom Timestamp Formats
+-------------------------
+
+User-defined format strings would add significant complexity.  The three
+built-in formats (``us``, ``ns``, ``iso``) cover the common needs:
+human-readable decimal seconds, raw nanoseconds for programmatic use, and
+ISO 8601 for correlation with external systems.
+
+Configurable Control Flow Exception Set
+-----------------------------------------
+
+Allowing users to register additional exceptions to skip was rejected.  The
+exclusion check runs in the hot path of exception creation and uses C type
+pointer identity for speed.  Supporting a configurable set would require
+either ``isinstance`` checks (too slow, walks the MRO) or a hash set of
+type pointers (complexity with unclear benefit).  ``StopIteration`` and
+``StopAsyncIteration`` are the only exceptions raised at frequencies where
+the cost of ``clock_gettime`` is measurable.  If a practical need arises, an
+API to register additional exclusions efficiently could be added as a follow-on
+enhancement.
 
 Millisecond Precision
 ---------------------
 
-Using millisecond precision instead of nanosecond was considered, but
-nanosecond precision was chosen to:
-
-1. Match the precision of ``time.time_ns()``
-2. Ensure sufficient precision for high-frequency exception scenarios
-3. Allow for future use cases that might require sub-millisecond precision
-
-
-Open Issues
-===========
-
-1. Should there be a Python API to programmatically enable/disable timestamps
-   at runtime?
-
-2. Should there be a way to retroactively add timestamps to existing exception
-   objects?
-
-3. Should the timestamp format be customizable beyond the predefined options?
-
-4. **Always collecting timestamps vs. conditional collection**: Performance testing
-   shows that collecting timestamps at exception instantiation time is cheap enough
-   to do unconditionally. If we always collect them:
-
-   - The ``__timestamp_ns__`` attribute would always exist, simplifying the
-     implementation and making the pickle code cleaner (though pickled exceptions
-     would be slightly larger)
-   - Exceptions will unpickle cleanly on older Python versions (they'll just have
-     an extra attribute that older versions ignore)
-   - However, we don't currently have extensive testing for cross-version pickle
-     compatibility of exceptions with new attributes. Should we add such tests?
-     Is this level of compatibility testing necessary?
-
-5. **Control flow exception handling**: The current implementation does not collect
-   timestamps for ``StopIteration`` and ``AsyncStopIteration`` to avoid performance
-   impact on normal control flow. However, other projects use custom exceptions for
-   control flow (e.g., Sphinx's ``Skip`` exception), requiring configurability.
-
-   Key challenges:
-
-   - **API Design**: What's the best way to allow projects to register their
-     control-flow exceptions? Environment variable? Python API? Both?
-   - **Performance**: The check is in the hot path of exception creation and must
-     be extremely fast. How can we make this configurable without impacting
-     performance for the common case?
-   - **Subclass handling**: Should exclusions apply to subclasses? This adds
-     complexity and performance overhead.
-   - **Default set**: Should we expand the default exclusion list beyond
-     ``StopIteration`` and ``AsyncStopIteration``?
-
-   This needs careful API design and performance testing before committing to
-   a specific approach.
+Nanosecond precision was chosen over millisecond to match ``time.time_ns()``
+and to provide sufficient resolution for high-frequency exception scenarios.
 
 
 Acknowledgements
@@ -466,14 +304,14 @@ Thanks to Nathaniel J. Smith for the original idea suggestion, and to
 dcolascione for initial review feedback on the implementation.
 
 
-Footnotes
-=========
+References
+==========
 
-References:
+.. [1] `CPython PR #129337 <https://github.com/python/cpython/pull/129337>`_
 
-- `CPython PR #129337 <https://github.com/python/cpython/pull/129337>`_
-- :pep:`654` -- Exception Groups and except*
-- :pep:`678` -- Enriching Exceptions with Notes
+.. [2] :pep:`654` -- Exception Groups and except*
+
+.. [3] :pep:`678` -- Enriching Exceptions with Notes
 
 
 Copyright
