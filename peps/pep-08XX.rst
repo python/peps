@@ -163,6 +163,21 @@ Traceback Module Updates
 keyword argument (default ``False``) that suppresses timestamp display even
 when globally enabled.
 
+A new utility function ``traceback.strip_exc_timestamps(text)`` is provided
+to strip ``<@...>`` timestamp suffixes from formatted traceback strings.
+This is useful for anything that compares traceback output literally.
+
+Doctest Updates
+---------------
+
+A new ``doctest.IGNORE_EXCEPTION_TIMESTAMPS`` option flag is added.  When
+enabled, the doctest output checker strips timestamps from actual output before
+comparison, so that doctests producing exceptions pass regardless of whether
+timestamps are enabled.
+
+Third-party projects are **not** expected to support running their tests with
+timestamps enabled, and we do not expect many projects would ever want to.
+
 
 Backwards Compatibility
 =======================
