@@ -74,6 +74,11 @@ def test_validate_discussions_to_invalid_list_domain(line: str):
             "`31-Jul-2015 <https://discuss.python.org/t/123456>`__,"
         ),
         "01-Jan-2001, `02-Feb-2002 <https://discuss.python.org/t/123456>`__,\n03-Mar-2003",
+        (
+            "`06-Feb-2025 <https://discuss.python.org/t/thread-name/79724/1>`__,\n              "
+            "`30-May-2025 <https://discuss.python.org/t/thread-name/93904>`__,\n              "
+            "Pending"
+        ),
     ],
 )
 def test_validate_post_history_valid(body: str):

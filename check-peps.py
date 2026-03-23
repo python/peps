@@ -406,6 +406,8 @@ def _validate_post_history(line_num: int, body: str) -> MessageIterator:
 
     for offset, line in enumerate(body.removesuffix(",").split("\n"), start=line_num):
         for post in line.removesuffix(",").strip().split(", "):
+            if post == "Pending":
+                continue
             prefix, postfix = (post.startswith("`"), post.endswith(">`__"))
             if not prefix and not postfix:
                 yield from _date(offset, post, "Post-History")
