@@ -9,11 +9,9 @@ from typing import TYPE_CHECKING, Any
 from docutils.writers.html5_polyglot import HTMLTranslator
 from sphinx import environment
 
-from pep_sphinx_extensions.generate_rss import (
-    create_rss_feed,
-    get_from_doctree,
-    pep_abstract,
-)
+from pep_sphinx_extensions.doctree import get_from_doctree
+from pep_sphinx_extensions.generate_bibtex import create_bibtex_files
+from pep_sphinx_extensions.generate_rss import create_rss_feed
 from pep_sphinx_extensions.pep_processor.html import (
     pep_html_builder,
     pep_html_translator,
@@ -51,6 +49,7 @@ def _post_build(app: Sphinx, exception: Exception | None) -> None:
     if "internal_builder" not in app.tags:
         create_index_file(Path(app.outdir), app.builder.name)
     create_rss_feed(app.doctreedir, app.outdir)
+    create_bibtex_files(app.doctreedir, app.outdir)
 
 
 def set_description(

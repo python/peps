@@ -50,6 +50,7 @@ class PEPFooter(transforms.Transform):
                 self.document += nodes.transition()
             self.document += _add_source_link(pep_source_path)
             self.document += _add_commit_history_info(pep_source_path)
+            self.document += _add_bibtex_link(pep_source_path)
 
 
 def _add_source_link(pep_source_path: Path) -> nodes.paragraph:
@@ -69,6 +70,13 @@ def _add_commit_history_info(pep_source_path: Path) -> nodes.paragraph:
     commit_link = f"https://github.com/python/peps/commits/main/peps/{pep_source_path.name}"
     link_node = nodes.reference("", f"{iso_time} GMT", refuri=commit_link)
     return nodes.paragraph("", "Last modified: ", link_node)
+
+
+def _add_bibtex_link(pep_source_path: Path) -> nodes.paragraph:
+    """Add link to download BibTeX citation."""
+    bib_url = f"{pep_source_path.stem}.bib"
+    link_node = nodes.reference("", "BibTeX", refuri=bib_url)
+    return nodes.paragraph("", "Cite: ", link_node)
 
 
 def _get_last_modified_timestamps():
