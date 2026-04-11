@@ -39,7 +39,8 @@ quickly and reliably.  Omitting them (the compiler's default at ``-O1`` and
 above) prevents these tools from producing useful call stacks for Python
 processes, and undermines the perf trampoline support CPython shipped in 3.12.
 
-The measured overhead is under 2% geometric mean for typical workloads.
+The measured overhead is under 2% geometric mean for typical workloads
+(see `Backwards Compatibility`_ for per-platform numbers).
 Multiple major Linux distributions, language runtimes, and Python ecosystem
 tools have already adopted this change.  No existing PEP covers this topic;
 CPython issue `#96174`_ has been open since August 2022 without resolution.
@@ -67,8 +68,10 @@ default experience for Python.
 
 The performance wins that profiling enables far outweigh the modest overhead of
 frame pointers.  As Brendan Gregg notes: "I've seen frame pointers help find
-performance wins ranging from 5% to 500%" [#gregg2024]_.  A 0.5-2% overhead that
-unlocks the ability to find 5-500% improvements is a favourable trade.
+performance wins ranging from 5% to 500%" [#gregg2024]_.  These wins come from
+identifying hot paths in production systems; they are not about CPython's own
+overhead, but about what profiling enables across the full stack.  A 0.5-2%
+overhead that unlocks such insights is a favourable trade.
 
 What Are Frame Pointers?
 ------------------------
@@ -79,7 +82,7 @@ arguments, and the address to return to when the function finishes.  The **call
 stack** is the chain of all active stack frames: it records which function
 called which, all the way from ``main()`` to the function currently executing.
 
-A **frame pointer** is a CPU register (``%rbp`` on x86-64, ``x29`` on AArch64)
+A **frame pointer** is a CPU register (for example, ``%rbp`` on x86-64, ``x29`` on AArch64)
 that each function sets to point to the base of its own stack frame.  Each
 frame also stores the *previous* frame pointer, creating a linked list through
 the entire call stack::
@@ -101,23 +104,24 @@ the entire call stack::
 Stack unwinding is the process of walking this chain to reconstruct the call
 stack.  Profilers do it to find out where the program is spending time;
 debuggers do it to show backtraces; crash handlers do it to produce useful
-error reports.  With frame pointers, unwinding is a simply following pointers: read
-``%rbp``, follow the link, repeat. It is very fast and requires no
-external data.
+error reports.  With frame pointers, unwinding is simply following pointers: read
+``%rbp``, follow the link, repeat.  It requires no external data.
 
 At optimisation levels ``-O1`` and above, GCC and Clang omit frame pointers by
 default [#gcc_fomit]_.  This frees the ``%rbp`` register for general use,
 giving the optimiser one more register to work with. On x86-64 this is a gain
 of one register out of 16 (about 7%).  The performance benefit is small
-(typically 0.5-2%) but it was considered worthwhile when the convention was
-established for 32-bit x86, where the gain was one register out of 6 (~20%).
+(typically a few percent) but it was considered worthwhile when the convention
+was established for 32-bit x86, where the gain was one register out of 6
+(~20%).  See `Detailed Performance Analysis of CPython with Frame Pointers`_
+for a full breakdown by platform and workload.
 
 Without frame pointers, the linked list does not exist.  Tools that need to
 walk the call stack must instead parse DWARF debug information (a complex,
-variable-length encoding of how each function laid out its stack frame).  This
-is slower, more fragile, and impossible in some contexts (such as inside the
-Linux kernel).  In the worst case, tools simply produce broken or incomplete
-results.
+variable-length encoding of how each function laid out its stack frame) or,
+on Windows, ``.pdata`` / ``.xdata`` unwind metadata.  This is slower, more
+fragile, and impossible in some contexts (such as inside the Linux kernel).
+In the worst case, tools simply produce broken or incomplete results.
 
 Here is a concrete example.  A ``perf`` profile of a Python process **without**
 frame pointers typically shows::
@@ -322,8 +326,7 @@ BPF programs for production monitoring), frame pointers are the only viable
 unwinding mechanism because they are the only mechanism the kernel's built-in
 helpers support.
 
-:ref:`CPython's own documentation <python:perf_profiling>`__ already states the
-recommended fix:
+CPython's own documentation already states the recommended fix:
 
     For best results, Python should be compiled with
     ``CFLAGS="-fno-omit-frame-pointer -mno-omit-leaf-frame-pointer"``
@@ -393,7 +396,7 @@ extension builds. If only the interpreter has frame pointers but extensions do
 not, the chain is still broken at every C extension boundary.  By adding the
 flags to ``CFLAGS`` as reported by ``sysconfig``, extension builds that consume
 CPython's compiler flags (for example via ``pip install``, Setuptools, or
-``python setup.py build``) will inherit frame pointers by default.  Extensions
+other build backends) will inherit frame pointers by default.  Extensions
 and libraries with independent build systems still need to enable the same
 flags themselves for the frame-pointer chain to remain continuous.
 
@@ -476,7 +479,7 @@ Using ``CFLAGS`` ensures:
    the ``python`` binary, ``libpython``, and built-in extension modules under
    ``Modules/``.
 2. The flags **are** written into the ``sysconfig`` data, so that third-party C
-   extensions built against this Python (via ``pip``, ``setuptools``, or direct
+   extensions built against this Python (via ``pip``, Setuptools, or direct
    ``sysconfig`` queries) inherit frame pointers by default.
 
 This is an intentional design choice.  For profiling data to be useful, the
@@ -514,7 +517,7 @@ Ecosystem Impact
 
 Because the flags are in ``CFLAGS``, they propagate automatically to consumers
 that build against CPython's reported compiler flags, such as C extensions
-built via pip, Setuptools, or direct ``sysconfig`` queries.  Those
+built via ``pip``, Setuptools, or direct ``sysconfig`` queries.  Those
 consumers need take no additional action to benefit from this change.
 
 Not all compiled code in the Python ecosystem inherits CPython's ``CFLAGS``.
@@ -522,7 +525,7 @@ Rust extensions built with ``pyo3`` or ``maturin``, C++ libraries with their
 own build systems, and embedding applications that compile CPython from source
 each manage their own compiler flags. This PEP recommends that all such
 projects also enable ``-fno-omit-frame-pointer -mno-omit-leaf-frame-pointer``
-in their builds.  A frame-pointer chain is only as complete as its weakest
+in their builds.  A frame-pointer chain is only as strong as its weakest
 link: a single library in the call stack without frame pointers breaks the
 chain for the entire process, regardless of whether CPython and every other
 library has them.  The goal is that every native component in a Python process
@@ -838,7 +841,7 @@ Machine                                Geometric mean effect
 =====================================  =======================
 Apple M2 Mac Mini (arm64)              0.1% faster
 macOS M3 Pro (arm64)                   0.1% slower
-Raspberry Pi (aarch64).                0.2% slower
+Raspberry Pi (aarch64)                 0.2% slower
 Ampere Altra Max (aarch64)             0.9% faster
 AWS Graviton c7g.16xlarge (aarch64)    0.8% slower
 Intel i7 12700H (x86-64)               1.9% slower
@@ -1053,7 +1056,7 @@ Footnotes
    https://github.com/Fidget-Spinner/python-framepointer-bench
 
 .. [#missing_benchmarks] Some benchmarks are missing due to incompatibilities with
-   Python 3.15alpha.
+   Python 3.15 alpha.
 
 .. _#96174: https://github.com/python/cpython/issues/96174
 .. _python/cpython issue #96174: https://github.com/python/cpython/issues/96174
@@ -1065,7 +1068,7 @@ Appendix
 
 For all graphs below, the green dots are geometric means of the
 individual benchmark's median, while orange lines are the median of our data points.
-Hollow circles reperesent outliers.
+Hollow circles represent outliers.
 
 The first graph is the overall effect on pyperformance seen on each system.
 All system configurations have below 2% geometric mean and median slowdown:
