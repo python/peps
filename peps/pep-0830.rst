@@ -25,7 +25,8 @@ Motivation
 With the introduction of exception groups (:pep:`654`), Python programs can now
 propagate multiple unrelated exceptions simultaneously.  When debugging these,
 or when correlating exceptions with external logs and metrics, knowing *when*
-each exception occurred is often as important as knowing *what* occurred.
+each exception occurred is often as important as knowing *what* occurred;
+a common pain point when diagnosing problems in production.
 
 Currently there is no standard way to obtain this information.  Python authors
 must manually add timing to exception messages or rely on logging frameworks,
@@ -124,11 +125,16 @@ The feature is enabled through CPython's two standard mechanisms:
 
 ``PYTHON_TRACEBACK_TIMESTAMPS`` environment variable
     Set to ``us`` or ``1`` for microsecond-precision decimal timestamps,
-    ``ns`` for raw nanoseconds, or ``iso`` for ISO 8601 UTC format.
+    ``ns`` for nanoseconds, or ``iso`` for ISO 8601 UTC format.
     Empty, unset, or ``0`` disables timestamps (the default).
 
 ``-X traceback_timestamps=<format>`` command-line option
     Accepts the same values.  Takes precedence over the environment variable.
+    If ``-X traceback_timestamps`` is specified with no ``=<format>`` value,
+    that acts as an implicit ``=1`` (microsecond-precision format).
+
+Consistent with other CPython config behavior, an invalid environment variable
+value is silently ignored while an invalid ``-X`` flag value is an error.
 
 A new ``traceback_timestamps`` field in ``PyConfig`` stores the selected format,
 accessible as ``sys.flags.traceback_timestamps``.
@@ -144,18 +150,21 @@ the format ``<@timestamp>``.  Example with ``iso``:
     Traceback (most recent call last):
       File "<stdin>", line 3, in california_raisin
         raise RuntimeError("not enough sunshine")
-    RuntimeError: not enough sunshine <@2025-02-01T20:43:01.026169Z>
+    RuntimeError: not enough sunshine <@2026-04-12T18:07:30.346914Z>
 
 When colorized output is enabled, the timestamp is rendered in a muted color
 to keep it visually distinct from the exception message.
 
+The ``us`` format produces ``<@1776017164.530916>`` and the ``ns`` format
+produces ``<@1776017178687320256ns>``.
+
 Traceback Module Updates
 ------------------------
 
-``TracebackException`` and the public formatting functions (``print_exception``,
-``format_exception``, ``format_exception_only``) gain a ``no_timestamp``
-keyword argument (default ``False``) that suppresses timestamp display even
-when globally enabled.
+``TracebackException`` and the public formatting functions (``print_exc``,
+``print_exception``, ``format_exception``, ``format_exception_only``) gain a
+``no_timestamp`` keyword argument (default ``False``) that suppresses timestamp
+display even when globally enabled.
 
 A new utility function ``traceback.strip_exc_timestamps(text)`` is provided
 to strip ``<@...>`` timestamp suffixes from formatted traceback strings.
@@ -181,7 +190,24 @@ C struct, recording nanoseconds since the Unix epoch.  This design was chosen
 over using exception notes (:pep:`678`) because a struct field costs nothing
 when not populated, avoids creating string and list objects at raise time, and
 defers all formatting work to traceback rendering.  The feature is entirely
-opt-in and does not change exception handling semantics or performance.
+opt-in and does not change exception handling semantics.
+
+The use of exception notes as a carrier for the information was deemed
+infeasible due to their performance overhead and lack of explicit purpose.
+Notes are great, but were designed for a far different use case, not as a
+way to collect data captured upon every Exception instantiation.
+
+Performance Measurements
+------------------------
+
+The pyperformance suite has been run on the merge base, on the PR branch with
+the feature disabled, and on the PR branch with the feature enabled in both
+``ns`` and ``iso`` modes.
+
+TODO(@gpshead): summarize results of the most recent run here.
+
+TODO(@gpshead): Do another run with the feature enabled but without the StopIteration special case to demonstrate why that choice was made.
+
 
 
 Backwards Compatibility
@@ -201,9 +227,39 @@ byte-identical when the feature is off and to avoid any performance impact
 on the common case.  As much as this author prefers simpler code, it felt
 riskier to have exception pickles all increase in size as a default behavior.
 
+Pickled Exception Examples
+--------------------------
+
+With traceback timestamp collection enabled:
+
+.. code-block:: text
+
+    ❯ build/python -X traceback_timestamps=iso -c 'import pickle; print(pickle.dumps(RuntimeError("pep-830"), protocol=pickle.HIGHEST_PROTOCOL))'
+    b'\x80\x05\x95L\x00\x00\x00\x00\x00\x00\x00\x8c\x08builtins\x94\x8c\x0cRuntimeError\x94\x93\x94\x8c\x07pep-830\x94\x85\x94R\x94}\x94\x8c\x10__timestamp_ns__\x94\x8a\x08\xf4\xd8\x94`\x15\xaf\xa5\x18sb.'
+
+The special case for ``StopIteration`` means it does not carry the dict with timestamp data:
+
+.. code-block:: text
+
+    ❯ build/python -X traceback_timestamps=iso -c 'import pickle; print(pickle.dumps(StopIteration("pep-830"), protocol=pickle.HIGHEST_PROTOCOL))'
+    b'\x80\x05\x95,\x00\x00\x00\x00\x00\x00\x00\x8c\x08builtins\x94\x8c\rStopIteration\x94\x93\x94\x8c\x07pep-830\x94\x85\x94R\x94.'
+
+Nor do exceptions carry the timestamp when the feature is disabled (the default):
+
+.. code-block:: text
+
+    ❯ build/python -X traceback_timestamps=0 -c 'import pickle; print(pickle.dumps(RuntimeError("pep-830"), protocol=pickle.HIGHEST_PROTOCOL))'
+    b'\x80\x05\x95+\x00\x00\x00\x00\x00\x00\x00\x8c\x08builtins\x94\x8c\x0cRuntimeError\x94\x93\x94\x8c\x07pep-830\x94\x85\x94R\x94.'
+
+Which matches what Python 3.13 produces:
+
+.. code-block:: text
+
+    ❯ python3.13 -c 'import pickle; print(pickle.dumps(RuntimeError("pep-830"), protocol=pickle.HIGHEST_PROTOCOL))'
+    b'\x80\x05\x95+\x00\x00\x00\x00\x00\x00\x00\x8c\x08builtins\x94\x8c\x0cRuntimeError\x94\x93\x94\x8c\x07pep-830\x94\x85\x94R\x94.'
 
 Maintenance Burden
-==================
+------------------
 
 The ``__timestamp_ns__`` field is a single ``int64_t`` in the ``BaseException``
 C struct, present in every exception object regardless of configuration.  The
@@ -216,8 +272,9 @@ helpers are provided for this:
 
 - ``traceback.strip_exc_timestamps(text)`` strips ``<@...>`` suffixes from
   formatted traceback strings.
-- ``test.support.force_no_traceback_timestamps`` is a decorator that disables
-  timestamp collection for the duration of a test.
+- ``test.support.force_no_traceback_timestamps`` and a ``_test_class`` suffixed
+  variant are decorators that disable timestamp collection for the duration of
+  a test or ``TestCase`` class.
 
 Outside of the traceback-specific tests, approximately 14 of ~1230 test files
 (roughly 1%) needed one of these helpers, typically tests that capture
@@ -228,18 +285,6 @@ ANSI color codes in tracebacks.
 Outside of CPython's own CI, where timestamps are enabled on a couple of
 GitHub Actions runs to maintain coverage, most projects are unlikely to
 have the feature enabled while running their test suites.
-
-
-Performance Measurements
-========================
-
-The pyperformance suite has been run on the merge base, on the PR branch with
-the feature disabled, and on the PR branch with the feature enabled in both
-``ns`` and ``iso`` modes.
-
-TODO(@gpshead): summarize results of the most recent run here.
-
-TODO(@gpshead): Do another run with the feature enabled but without the StopIteration special case to demonstrate why that choice was made.
 
 
 Security Implications
