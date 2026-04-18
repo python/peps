@@ -40,7 +40,6 @@ htmllive: _ensure-sphinx-autobuild html
 .PHONY: dirhtml
 dirhtml: BUILDER = dirhtml
 dirhtml: html
-	mv $(BUILDDIR)/404/index.html $(BUILDDIR)/404.html
 
 ## search         to rebuild the search index
 .PHONY: search
