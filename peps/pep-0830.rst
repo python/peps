@@ -61,6 +61,8 @@ ordering::
             tg.create_task(fetch_recommendations(uid))
             tg.create_task(fetch_inventory(['widget-42']))
 
+    asyncio.run(get_dashboard("usr_12@34"))
+
 With ``PYTHON_TRACEBACK_TIMESTAMPS=iso``, the output becomes:
 
 .. code-block:: text
@@ -103,10 +105,15 @@ Exception Timestamp Attribute
 -----------------------------
 
 A new read/write attribute ``__timestamp_ns__`` is added to ``BaseException``.
-It stores nanoseconds since the Unix epoch (same precision as
-``time.time_ns()``) as a C ``int64_t`` exposed via a member descriptor.  When
-timestamps are disabled, or for control flow exceptions (see below), the value
-is ``0``.
+It stores nanoseconds since the Unix epoch in UTC (same semantics and
+precision as ``time.time_ns()``) as a C ``int64_t`` exposed via a member
+descriptor.  When timestamps are disabled, for control flow exceptions (see
+below), or if reading the clock fails, the value is ``0``.
+
+Exception instances reused from an internal free list, such as
+``MemoryError``, are timestamped when handed out rather than when originally
+allocated.  The interpreter's last-resort static ``MemoryError`` singleton
+retains a ``__timestamp_ns__`` of ``0``.
 
 Control Flow Exceptions
 ------------------------
@@ -123,14 +130,14 @@ Configuration
 The feature is enabled through CPython's two standard mechanisms:
 
 ``PYTHON_TRACEBACK_TIMESTAMPS`` environment variable
-    Set to ``us`` or ``1`` for microsecond-precision decimal timestamps,
-    ``ns`` for nanoseconds, or ``iso`` for ISO 8601 UTC format.
-    Empty, unset, or ``0`` disables timestamps (the default).
+    Set to ``ns`` or ``1`` for nanosecond-precision decimal timestamps, or
+    ``iso`` for ISO 8601 UTC format.  Empty, unset, or ``0`` disables
+    timestamps (the default).
 
 ``-X traceback_timestamps=<format>`` command-line option
     Accepts the same values.  Takes precedence over the environment variable.
     If ``-X traceback_timestamps`` is specified with no ``=<format>`` value,
-    that acts as an implicit ``=1`` (microsecond-precision format).
+    that acts as an implicit ``=1`` (nanosecond-precision format).
 
 Consistent with other CPython config behavior, an invalid environment variable
 value is silently ignored while an invalid ``-X`` flag value is an error.
@@ -142,7 +149,8 @@ Display Format
 --------------
 
 Timestamps are appended to the exception message line in tracebacks using
-the format ``<@timestamp>``.  Example with ``iso``:
+the format ``<@timestamp>``.  This affects formatted traceback output only;
+``str(exc)`` and ``repr(exc)`` are unchanged.  Example with ``iso``:
 
 .. code-block:: pytb
 
@@ -154,8 +162,10 @@ the format ``<@timestamp>``.  Example with ``iso``:
 When colorized output is enabled, the timestamp is rendered in a muted color
 to keep it visually distinct from the exception message.
 
-The ``us`` format produces ``<@1776017164.530916>`` and the ``ns`` format
-produces ``<@1776017178687320256ns>``.
+The ``ns`` format renders seconds since the epoch with nine fractional
+digits, for example ``<@1776017178.687320256>``.  The ``iso`` format renders
+at microsecond resolution; the underlying ``__timestamp_ns__`` value is
+always nanosecond precision regardless of the display format.
 
 Traceback Module Updates
 ------------------------
@@ -199,25 +209,27 @@ way to collect data captured upon every Exception instantiation.
 Performance Measurements
 ------------------------
 
-The pyperformance suite has been run on the merge base, on the PR branch with
-the feature disabled, and on the PR branch with the feature enabled in both
-``us`` and ``iso`` modes.
+The pyperformance suite was run on the merge base, on the PR branch with the
+feature disabled, and on the PR branch with the feature enabled in both
+``us`` and ``iso`` modes.  These measurements were taken against the
+reference implementation matching the original version of this PEP, prior to
+the revisions recorded in `Change History`_; those revisions are
+simplifications of the display layer only, so no performance difference is
+expected.
 
-There were no significant performance changes observed by this author. Just
-occasional varying 1-2% measurement noise that could not be reliably
-reproduced.  Below the benchmarking setup noise threshold as far as the author
-is concerned.
+No significant performance changes were observed: only occasional 1-2%
+variations that could not be reliably reproduced and fall below the
+benchmarking setup's noise threshold.
 
-What about the special case performance optimization?  If I omit the two-line
-special case to avoid collecting timestamps on ``StopIteration`` and
-``StopAsyncIteration`` in ``Objects/exception.c``, only a single benchmark
-showed a regression: ``async_generators``. That one would reliably run on the
-order of 10% slower without that optimization.  It is likely effectively a
-microbenchmark that does not reflect most application behavior.  Regardless, it
-demonstrates the importance of that optimization.
+To validate the control flow special case, the suite was also run with the
+two-line ``StopIteration`` / ``StopAsyncIteration`` exclusion in
+``Objects/exceptions.c`` removed.  Only a single benchmark,
+``async_generators``, showed a regression, reliably running on the order of
+10% slower.  It is likely effectively a microbenchmark that does not reflect
+most application behavior, but it demonstrates the value of that optimization.
 
-I used ``configure --enable-optimizations`` builds for my benchmarks and ran
-them using commands such as:
+Benchmarks were run against ``configure --enable-optimizations`` builds using
+commands such as:
 
 .. code-block:: shell
 
@@ -241,9 +253,10 @@ pickle as ``(type, args, state_dict)`` with ``__timestamp_ns__`` in the state
 dictionary.  Older Python versions unpickle these correctly via
 ``__setstate__``.  Always emitting the 3-tuple form (with a zero timestamp)
 would simplify the logic, but was avoided to keep the pickle output
-byte-identical when the feature is off and to avoid any performance impact
-on the common case.  As much as this author prefers simpler code, it felt
-riskier to have exception pickles all increase in size as a default behavior.
+byte-identical when the feature is off and to avoid any performance impact on
+the common case.  Simpler code is generally preferable, but having every
+exception pickle increase in size as a default behavior was judged the
+greater risk.
 
 Pickled Exception Examples
 --------------------------
@@ -366,12 +379,11 @@ environment; a runtime toggle would make it harder to reason about program
 state.  The feature is configured at startup and remains fixed.
 
 Custom Timestamp Formats
--------------------------
+------------------------
 
-User-defined format strings would add significant complexity.  The three
-built-in formats (``us``, ``ns``, ``iso``) cover the common needs:
-human-readable decimal seconds, raw nanoseconds for programmatic use, and
-ISO 8601 for correlation with external systems.
+User-defined format strings would add significant complexity.  The two
+built-in formats (``ns``, ``iso``) cover the common needs: decimal seconds
+for programmatic use and ISO 8601 for correlation with external systems.
 
 Configurable Control Flow Exception Set
 -----------------------------------------
@@ -392,6 +404,36 @@ Millisecond Precision
 Nanosecond precision was chosen over millisecond to match ``time.time_ns()``
 and to provide sufficient resolution for high-frequency exception scenarios.
 
+Separate Millisecond and Microsecond Display Formats
+----------------------------------------------------
+
+Earlier drafts offered a ``us`` display format alongside ``ns``, and a
+``ms`` format was also suggested.  These differed from ``ns`` only in the
+number of fractional digits shown.  Since the decimal output is intended for
+machine consumption, truncating precision provides no real benefit, so only
+the full-precision ``ns`` format is offered.  Users wanting a
+human-readable form should use ``iso``.
+
+Returning ``None`` When Unset
+-----------------------------
+
+Returning ``None`` rather than ``0`` when no timestamp was collected would be
+slightly more Pythonic, but ``__timestamp_ns__`` is exposed as a plain
+``int64_t`` member descriptor on the C struct.  Supporting ``None`` would
+require a custom getter and boxed storage, adding complexity for little
+practical benefit; ``0`` is an unambiguous sentinel for a Unix-epoch
+nanosecond value.
+
+Using a Coarse Clock
+--------------------
+
+``CLOCK_REALTIME_COARSE`` (and equivalents on other platforms) is faster to
+read than ``CLOCK_REALTIME`` but typically offers only millisecond
+resolution, which is insufficient for distinguishing exceptions raised in
+quick succession.  The reference implementation uses ``PyTime_TimeRaw``,
+which reads the standard wall clock at full resolution; benchmarking shows
+this cost is not observable in practice.
+
 
 Acknowledgements
 ================
@@ -403,7 +445,21 @@ Daniel Colascione for initial 2025 review feedback on the implementation.
 Change History
 ==============
 
-the future is now
+- 18-Apr-2026
+
+  - Clarified that ``__timestamp_ns__`` is UTC, that clock-read failure
+    yields ``0``, and how free-list and singleton ``MemoryError`` instances
+    are timestamped.
+  - Clarified that ``str(exc)`` and ``repr(exc)`` are unchanged, and that
+    the ``iso`` display format has microsecond resolution.
+  - Changed the ``ns`` display format from an integer with an ``ns`` suffix
+    to seconds with nine decimal digits, allowing direct use with
+    ``datetime.fromtimestamp()``.  Dropped the ``us`` format; ``ns`` is now
+    the default format when the feature is enabled via ``1`` or with no
+    explicit format value.
+  - Added Rejected Ideas entries for returning ``None`` when unset and for
+    using a coarse-resolution clock.
+  - Made the Motivation example self-contained.
 
 
 Copyright
