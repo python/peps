@@ -6,7 +6,8 @@ Status: Draft
 Type: Standards Track
 Created: 15-Mar-2026
 Python-Version: 3.15
-Post-History: `12-Apr-2026 <https://discuss.python.org/t/106942>`__
+Post-History: `12-Apr-2026 <https://discuss.python.org/t/106942>`__,
+              `18-Apr-2026 <https://discuss.python.org/t/pep-830-add-timestamps-to-exceptions-and-tracebacks/106942/27>`__
 
 
 Abstract
@@ -31,10 +32,10 @@ Currently there is no standard way to obtain this information.  Python authors
 must manually add timing to exception messages or rely on logging frameworks,
 which can be costly and is inconsistently done and error-prone.
 
-Consider an async service that fetches data from multiple backends concurrently
-using ``asyncio.TaskGroup``.  When several backends fail, the resulting
-``ExceptionGroup`` contains all the errors but no indication of their temporal
-ordering::
+Consider an async service that fetches data from multiple backends
+concurrently and reports every failure rather than failing fast.  The
+resulting ``ExceptionGroup`` contains all the errors in submission order,
+with no indication of when each one occurred::
 
     import asyncio
 
@@ -50,50 +51,53 @@ ordering::
         await asyncio.sleep(2.3)
         raise TimeoutError("Recommendation service timeout")
 
-    async def fetch_inventory(items):
-        await asyncio.sleep(0.8)
-        raise KeyError("Item 'widget-42' not found in inventory")
-
     async def get_dashboard(uid):
-        async with asyncio.TaskGroup() as tg:
-            tg.create_task(fetch_user(uid))
-            tg.create_task(fetch_orders(uid))
-            tg.create_task(fetch_recommendations(uid))
-            tg.create_task(fetch_inventory(['widget-42']))
+        results = await asyncio.gather(
+            fetch_user(uid),
+            fetch_orders(uid),
+            fetch_recommendations(uid),
+            return_exceptions=True,
+        )
+        errors = [r for r in results if isinstance(r, Exception)]
+        if errors:
+            raise ExceptionGroup("dashboard fetch failed", errors)
+
+    asyncio.run(get_dashboard("usr_12@34"))
 
 With ``PYTHON_TRACEBACK_TIMESTAMPS=iso``, the output becomes:
 
 .. code-block:: text
 
-    Traceback (most recent call last):
-      ...
-    ExceptionGroup: unhandled errors in a TaskGroup (4 sub-exceptions)
+      + Exception Group Traceback (most recent call last):
+      |   File "service.py", line 26, in <module>
+      |     asyncio.run(get_dashboard("usr_12@34"))
+      |   ...
+      |   File "service.py", line 24, in get_dashboard
+      |     raise ExceptionGroup("dashboard fetch failed", errors)
+      | ExceptionGroup: dashboard fetch failed (3 sub-exceptions) <@2026-04-19T07:24:31.102431Z>
       +-+---------------- 1 ----------------
         | Traceback (most recent call last):
-        |   File "service.py", line 11, in fetch_orders
-        |     raise ValueError(f"Invalid user_id format: {uid}")
-        | ValueError: Invalid user_id format: usr_12@34 <@2025-03-15T10:23:41.142857Z>
+        |   File "service.py", line 5, in fetch_user
+        |     raise ConnectionError(f"User service timeout for {uid}")
+        | ConnectionError: User service timeout for usr_12@34 <@2026-04-19T07:24:29.300461Z>
         +---------------- 2 ----------------
         | Traceback (most recent call last):
-        |   File "service.py", line 7, in fetch_user
-        |     raise ConnectionError(f"User service timeout for {uid}")
-        | ConnectionError: User service timeout for usr_12@34 <@2025-03-15T10:23:41.542901Z>
+        |   File "service.py", line 9, in fetch_orders
+        |     raise ValueError(f"Invalid user_id format: {uid}")
+        | ValueError: Invalid user_id format: usr_12@34 <@2026-04-19T07:24:28.899918Z>
         +---------------- 3 ----------------
         | Traceback (most recent call last):
-        |   File "service.py", line 19, in fetch_inventory
-        |     raise KeyError("Item 'widget-42' not found in inventory")
-        | KeyError: "Item 'widget-42' not found in inventory" <@2025-03-15T10:23:41.842856Z>
-        +---------------- 4 ----------------
-        | Traceback (most recent call last):
-        |   File "service.py", line 15, in fetch_recommendations
+        |   File "service.py", line 13, in fetch_recommendations
         |     raise TimeoutError("Recommendation service timeout")
-        | TimeoutError: Recommendation service timeout <@2025-03-15T10:23:43.342912Z>
+        | TimeoutError: Recommendation service timeout <@2026-04-19T07:24:31.102394Z>
+        +------------------------------------
 
-The timestamps immediately reveal that the order validation failed first
-(at .142s), while the recommendation service was the slowest at 2.3 seconds.
-That could also be correlated with metrics dashboards, load balancer logs, or
-traces from other services or even logs from the program itself to build a
-complete picture.
+The sub-exceptions are listed in submission order, but the timestamps reveal
+that the order validation actually failed first (at 28.899s), the user
+service half a second later (at 29.300s), and the recommendation service last after 2.3
+seconds (at 31.102s).  These can also be correlated with metrics dashboards, load
+balancer logs, traces from other services, or the program's own logs to
+build a complete picture.
 
 
 Specification
@@ -103,10 +107,15 @@ Exception Timestamp Attribute
 -----------------------------
 
 A new read/write attribute ``__timestamp_ns__`` is added to ``BaseException``.
-It stores nanoseconds since the Unix epoch (same precision as
-``time.time_ns()``) as a C ``int64_t`` exposed via a member descriptor.  When
-timestamps are disabled, or for control flow exceptions (see below), the value
-is ``0``.
+It stores nanoseconds since the Unix epoch in UTC (same semantics and
+precision as ``time.time_ns()``) as a C ``int64_t`` exposed via a member
+descriptor.  When timestamps are disabled, for control flow exceptions (see
+below), or if reading the clock fails, the value is ``0``.
+
+Exception instances reused from an internal free list, such as
+``MemoryError``, are timestamped when handed out rather than when originally
+allocated.  The interpreter's last-resort static ``MemoryError`` singleton
+retains a ``__timestamp_ns__`` of ``0``.
 
 Control Flow Exceptions
 ------------------------
@@ -117,20 +126,26 @@ is enabled.  These exceptions are raised at extremely high frequency during
 iteration; the check uses C type pointer identity (not ``isinstance``) for
 negligible overhead.
 
+Other idioms sometimes described as exceptions-as-control-flow, such as
+``hasattr``, three-argument ``getattr``, ``dict.get``, ``dict.setdefault``,
+and ``__missing__`` dispatch, do not need special handling: the hot paths in
+CPython's C internals already return "not found" without instantiating an
+exception object.
+
 Configuration
 -------------
 
 The feature is enabled through CPython's two standard mechanisms:
 
 ``PYTHON_TRACEBACK_TIMESTAMPS`` environment variable
-    Set to ``us`` or ``1`` for microsecond-precision decimal timestamps,
-    ``ns`` for nanoseconds, or ``iso`` for ISO 8601 UTC format.
-    Empty, unset, or ``0`` disables timestamps (the default).
+    Set to ``ns`` or ``1`` for nanosecond-precision decimal timestamps, or
+    ``iso`` for ISO 8601 UTC format.  Empty, unset, or ``0`` disables
+    timestamps (the default).
 
 ``-X traceback_timestamps=<format>`` command-line option
     Accepts the same values.  Takes precedence over the environment variable.
     If ``-X traceback_timestamps`` is specified with no ``=<format>`` value,
-    that acts as an implicit ``=1`` (microsecond-precision format).
+    that acts as an implicit ``=1`` (nanosecond-precision format).
 
 Consistent with other CPython config behavior, an invalid environment variable
 value is silently ignored while an invalid ``-X`` flag value is an error.
@@ -142,7 +157,8 @@ Display Format
 --------------
 
 Timestamps are appended to the exception message line in tracebacks using
-the format ``<@timestamp>``.  Example with ``iso``:
+the format ``<@timestamp>``.  This affects formatted traceback output only;
+``str(exc)`` and ``repr(exc)`` are unchanged.  Example with ``iso``:
 
 .. code-block:: pytb
 
@@ -154,16 +170,31 @@ the format ``<@timestamp>``.  Example with ``iso``:
 When colorized output is enabled, the timestamp is rendered in a muted color
 to keep it visually distinct from the exception message.
 
-The ``us`` format produces ``<@1776017164.530916>`` and the ``ns`` format
-produces ``<@1776017178687320256ns>``.
+The ``ns`` format renders seconds since the epoch with nine fractional
+digits, for example ``<@1776017178.687320256>``.  The ``iso`` format renders
+at microsecond resolution; the underlying ``__timestamp_ns__`` value is
+always nanosecond precision regardless of the display format.
 
 Traceback Module Updates
 ------------------------
 
 ``TracebackException`` and the public formatting functions (``print_exc``,
 ``print_exception``, ``format_exception``, ``format_exception_only``) gain a
-``no_timestamp`` keyword argument (default ``False``) that suppresses timestamp
-display even when globally enabled.
+``timestamps`` keyword argument (default ``None``):
+
+``None``
+    Follow the global configuration.  Timestamps are shown only when the
+    feature is enabled, using the configured format.
+``False``
+    Never show timestamps, even when the feature is enabled.
+``True``
+    Show any non-zero ``__timestamp_ns__`` regardless of the global
+    configuration, using the configured format if one is set and ``ns``
+    otherwise.
+
+Only non-zero values are ever rendered.  When collection is disabled,
+non-zero values can still arise on instances unpickled from a process where
+collection was enabled, or where ``__timestamp_ns__`` was assigned directly.
 
 A new utility function ``traceback.strip_exc_timestamps(text)`` is provided
 to strip ``<@...>`` timestamp suffixes from formatted traceback strings.
@@ -196,28 +227,51 @@ infeasible due to their performance overhead and lack of explicit purpose.
 Notes are great, but were designed for a far different use case, not as a
 way to collect data captured upon every Exception instantiation.
 
+Instantiation Time vs. Raise Time
+---------------------------------
+
+The timestamp is recorded when the exception object is created rather than
+when it is raised.  In the overwhelmingly common ``raise SomeError(...)``
+form these are the same moment.  Where they differ, instantiation time is
+generally the more useful value: a bare ``raise`` or ``raise exc`` re-raise
+preserves the time the error first occurred, not when it was last
+re-thrown, and code that constructs exceptions, accumulates them, and later
+wraps them in an ``ExceptionGroup`` gets the time each error was detected.
+
+Instantiation time is also the cleaner implementation point.  Exception instantiation
+funnels through ``BaseException.__init__`` and its vectorcall path.  Raising
+does not have an equivalent single funnel: the lowest-level
+``_PyErr_SetRaisedException`` is also invoked by routine save/restore of the
+thread's exception state, and the Python ``raise`` statement, C
+``PyErr_SetObject``, and direct ``PyErr_SetRaisedException`` calls are
+distinct code paths above it.
+
+See `Recording Time of First Raise`_ under Open Issues.
+
 Performance Measurements
 ------------------------
 
-The pyperformance suite has been run on the merge base, on the PR branch with
-the feature disabled, and on the PR branch with the feature enabled in both
-``us`` and ``iso`` modes.
+The pyperformance suite was run on the merge base, on the PR branch with the
+feature disabled, and on the PR branch with the feature enabled in both
+``us`` and ``iso`` modes.  These measurements were taken against the
+reference implementation matching the original version of this PEP, prior to
+the revisions recorded in `Change History`_; those revisions are
+simplifications of the display layer only, so no performance difference is
+expected.
 
-There were no significant performance changes observed by this author. Just
-occasional varying 1-2% measurement noise that could not be reliably
-reproduced.  Below the benchmarking setup noise threshold as far as the author
-is concerned.
+No significant performance changes were observed: only occasional 1-2%
+variations that could not be reliably reproduced and fall below the
+benchmarking setup's noise threshold.
 
-What about the special case performance optimization?  If I omit the two-line
-special case to avoid collecting timestamps on ``StopIteration`` and
-``StopAsyncIteration`` in ``Objects/exception.c``, only a single benchmark
-showed a regression: ``async_generators``. That one would reliably run on the
-order of 10% slower without that optimization.  It is likely effectively a
-microbenchmark that does not reflect most application behavior.  Regardless, it
-demonstrates the importance of that optimization.
+To validate the control flow special case, the suite was also run with the
+two-line ``StopIteration`` / ``StopAsyncIteration`` exclusion in
+``Objects/exceptions.c`` removed.  Only a single benchmark,
+``async_generators``, showed a regression, reliably running on the order of
+10% slower.  It is likely effectively a microbenchmark that does not reflect
+most application behavior, but it demonstrates the value of that optimization.
 
-I used ``configure --enable-optimizations`` builds for my benchmarks and ran
-them using commands such as:
+Benchmarks were run against ``configure --enable-optimizations`` builds using
+commands such as:
 
 .. code-block:: shell
 
@@ -241,9 +295,10 @@ pickle as ``(type, args, state_dict)`` with ``__timestamp_ns__`` in the state
 dictionary.  Older Python versions unpickle these correctly via
 ``__setstate__``.  Always emitting the 3-tuple form (with a zero timestamp)
 would simplify the logic, but was avoided to keep the pickle output
-byte-identical when the feature is off and to avoid any performance impact
-on the common case.  As much as this author prefers simpler code, it felt
-riskier to have exception pickles all increase in size as a default behavior.
+byte-identical when the feature is off and to avoid any performance impact on
+the common case.  Simpler code is generally preferable, but having every
+exception pickle increase in size as a default behavior was judged the
+greater risk.
 
 Pickled Exception Examples
 --------------------------
@@ -343,6 +398,48 @@ async code this difference can be significant.  Not all exceptions are caught
 would be applied inconsistently.  A struct field captures the timestamp at the
 source and defers all formatting to display time.
 
+Using ``sys.excepthook``
+------------------------
+
+``sys.excepthook`` runs only when an uncaught exception reaches the top
+level, at display time rather than when the exception was created.  For the
+motivating example above, the hook would fire once for the resulting
+``ExceptionGroup`` after all tasks have completed, so every sub-exception
+would receive the same timestamp.  Exceptions that are caught and logged
+never reach the hook at all.
+
+Using ``sys.monitoring``
+------------------------
+
+An equivalent feature could in principle be built on :pep:`669` as a
+third-party add-on without interpreter changes: register a C-implemented
+callable for ``sys.monitoring.events.RAISE`` that reads the clock and either
+sets a ``__timestamp_ns__`` attribute on the exception or calls
+``add_note()``.  ``STOP_ITERATION`` and ``RERAISE`` are separate events, so
+subscribing only to ``RAISE`` avoids the iterator hot path and naturally
+preserves the original timestamp on re-raise.
+
+This is expected to cost more than the struct-field approach.  ``RAISE``
+fires once per Python frame during unwind rather than once per exception, so
+the callback runs more often than the task requires, and each invocation is
+dispatched through vectorcall, not called directly.  Without a struct
+field, storing the value allocates the exception's instance ``__dict__``
+plus a ``PyLongObject`` for the timestamp, or for ``add_note()`` the dict
+plus a ``__notes__`` list and formatted string.  One of the limited
+monitoring tool IDs is also consumed.  The ``add_note()`` variant renders in
+tracebacks without further integration; the ``__timestamp_ns__`` variant
+would also need the ``sys.excepthook`` singleton, which other code may be
+using, or a monkeypatch of the ``traceback`` module to display the value.
+Allocating a list, a string, and potentially an instance dict on every raise
+in a program felt extreme enough overhead-wise that this has not been tried.
+
+A middle ground would use ``sys.monitoring`` only for collection while
+keeping this PEP's ``int64_t`` struct field on ``BaseException`` and the
+``traceback`` module's display of any non-zero ``__timestamp_ns__``.  That
+removes the conditional clock read from the ``BaseException`` constructor,
+giving a tiny saving when the feature is off, at the cost of notably more
+overhead when it is on.
+
 Always Collecting vs. Always Displaying
 ----------------------------------------
 
@@ -360,18 +457,51 @@ independent of traceback display.
 Runtime API
 -----------
 
-A Python API to toggle timestamps at runtime is unnecessary complexity.
-Applications that want timestamps are expected to enable them in their
-environment; a runtime toggle would make it harder to reason about program
-state.  The feature is configured at startup and remains fixed.
+This is an operator-level setting, intended to be configured by whoever
+launches the process rather than by library or application code.  Exposing a
+runtime toggle for process-wide state invites different parts of a program to
+fight over its value; keeping it fixed at startup avoids that.  It has been
+omitted for now to keep things simple.  If there is demand for runtime
+configurability, nothing blocks adding that at a later date.
+
+Timestamp in the Traceback Header Line
+--------------------------------------
+
+Placing the timestamp in the ``Traceback (most recent call last):`` header
+was suggested as less disruptive to tools that parse the ``Type: message``
+line.  Each link in a ``__cause__`` or ``__context__`` chain, and each
+sub-exception in an ``ExceptionGroup``, does get its own header, so this
+covers the common case.  However, the header is only emitted when the
+exception has a ``__traceback__``; an exception constructed and attached
+directly renders as just ``Type: message`` with no header.  The standard
+library itself does this: ``concurrent.futures.ProcessPoolExecutor`` and
+``multiprocessing.Pool`` attach a constructed ``_RemoteTraceback`` as
+``__cause__`` to carry a worker's formatted traceback across the process
+boundary, and it renders with no header.  Appending to the message line is
+the only placement guaranteed to render for every displayed exception.
+
+There is also a reading-order argument: when scanning logs for errors,
+people typically search for the exception type, land on the
+``Type: message`` line, and read upward through the frames.  Putting the
+timestamp on that line places it where the eye lands first rather than at
+the top of a block that is often read last.
+
+More Descriptive ``timestamps`` Parameter Name
+----------------------------------------------
+
+Earlier drafts named the ``traceback`` formatting parameter ``no_timestamp``,
+a boolean which read as a double negative.  Longer alternatives such as
+``allow_timestamps`` or ``show_timestamp`` were also considered.  The short
+positive form ``timestamps`` was chosen as a tri-state defaulting to ``None``
+(follow the global configuration), with the docstring and documentation
+covering the exact behavior.
 
 Custom Timestamp Formats
--------------------------
+------------------------
 
-User-defined format strings would add significant complexity.  The three
-built-in formats (``us``, ``ns``, ``iso``) cover the common needs:
-human-readable decimal seconds, raw nanoseconds for programmatic use, and
-ISO 8601 for correlation with external systems.
+User-defined format strings would add significant complexity.  The two
+built-in formats (``ns``, ``iso``) cover the common needs: decimal seconds
+for programmatic use and ISO 8601 for correlation with external systems.
 
 Configurable Control Flow Exception Set
 -----------------------------------------
@@ -392,6 +522,72 @@ Millisecond Precision
 Nanosecond precision was chosen over millisecond to match ``time.time_ns()``
 and to provide sufficient resolution for high-frequency exception scenarios.
 
+Separate Millisecond and Microsecond Display Formats
+----------------------------------------------------
+
+Earlier drafts offered a ``us`` display format alongside ``ns``, and a
+``ms`` format was also suggested.  These differed from ``ns`` only in the
+number of fractional digits shown.  Since the decimal output is intended for
+machine consumption, truncating precision provides no real benefit, so only
+the full-precision ``ns`` format is offered.  Users wanting a
+human-readable form should use ``iso``.
+
+Returning ``None`` When Unset
+-----------------------------
+
+Returning ``None`` rather than ``0`` when no timestamp was collected would be
+slightly more Pythonic, but ``__timestamp_ns__`` is exposed as a plain
+``int64_t`` member descriptor on the C struct.  Supporting ``None`` would
+require a custom getter and boxed storage.  ``0`` is unambiguous.
+
+Using a Coarse Clock
+--------------------
+
+The reference implementation uses ``PyTime_TimeRaw``, which reads the
+standard wall clock at full resolution; benchmarking shows this cost is not
+observable in practice.  A coarse clock such as ``CLOCK_REALTIME_COARSE``
+would be low resolution, insufficient for many needs, for no measurable
+benefit.
+
+
+Open Issues
+===========
+
+Display Location
+----------------
+
+The current specification appends the timestamp to the ``Type: message``
+line.  Placing it in the ``Traceback (most recent call last):`` header
+instead, or on a separate line, has been proposed; see `Timestamp in the
+Traceback Header Line`_ for the reasoning behind the current choice.  This
+is open to revision.  Making the location configurable is also possible, but
+every knob added is more complexity to support.
+
+A concern was raised that existing code parses the ``Type: message`` line
+and would be disrupted by a suffix.  The same concern applies to the
+``Traceback`` header: doctest traceback matchers and CPython's own
+``test.support`` helpers already needed adjusting in the reference
+implementation, though such cases were rare.
+
+Benchmarking the ``sys.monitoring`` Alternative
+-----------------------------------------------
+
+See `Using sys.monitoring`_ under Rejected Ideas for the design and its
+expected costs.  If there is a strong preference for avoiding interpreter
+changes despite that analysis, a prototype and benchmark could be produced
+to settle the question.
+
+Recording Time of First Raise
+-----------------------------
+
+Recording the time of first raise, in place of or in addition to
+instantiation time, was suggested.  This is deferred rather than rejected:
+it would cover the case where an exception is constructed well in advance of
+being raised, but it requires identifying a clean hook point in the
+interpreter's raise paths (see `Instantiation Time vs. Raise Time`_) and
+defining the semantics for re-raise.  We are not aware of code commonly
+using a pattern of constructing an exception well before its first use.
+
 
 Acknowledgements
 ================
@@ -403,7 +599,29 @@ Daniel Colascione for initial 2025 review feedback on the implementation.
 Change History
 ==============
 
-the future is now
+- 18-Apr-2026
+
+  - Changed the ``ns`` display format from an integer with an ``ns`` suffix
+    to seconds with nine decimal digits, allowing direct use with
+    ``datetime.fromtimestamp()``.  Dropped the ``us`` format; ``ns`` is now
+    the default when enabled via ``1`` or with no explicit format value.
+  - Replaced the ``traceback`` module ``no_timestamp`` parameter with a
+    tri-state ``timestamps`` (default ``None``, follow the global setting).
+  - Clarified that ``__timestamp_ns__`` is UTC, that clock-read failure
+    yields ``0``, and how free-list and singleton ``MemoryError`` instances
+    are timestamped; that ``str(exc)`` and ``repr(exc)`` are unchanged; and
+    that the ``iso`` display format has microsecond resolution.
+  - Noted that ``hasattr``, three-argument ``getattr``, and the dict miss
+    paths do not instantiate exceptions in CPython's hot paths and need no
+    special handling.
+  - Added a Rationale subsection on instantiation time vs. raise time.
+  - Added Rejected Ideas entries for ``sys.excepthook``, ``sys.monitoring``,
+    placing the timestamp in the ``Traceback`` header line, returning
+    ``None`` when unset, separate ms/us display formats, and using a
+    coarse-resolution clock; reworded the Runtime API rejection.
+  - Added an Open Issues section covering display location, benchmarking the
+    ``sys.monitoring`` alternative, and recording time of first raise.
+  - Reworked the Motivation example to be self-contained.
 
 
 Copyright
