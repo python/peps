@@ -361,6 +361,123 @@ The :py:func:`compile` function rejects an AST whose ``builder`` field is
 neither ``None`` nor an expression valid in load context.
 
 
+Executing class bodies
+----------------------
+
+The :py:mod:`types` module gains a helper function
+``exec_class_body(func, ns)``.  The first argument is a class body function
+such as the one passed to a builder's ``__build_class__`` method.  The second
+argument is the namespace mapping into which the body should be executed.
+
+The helper executes the body using the function's globals and closure, and
+uses ``ns`` as the class namespace.  It performs the part of
+:py:func:`builtins.__build_class__` that runs the body, but does not select a
+metaclass or create the final class object.
+
+For example::
+
+    def exec_body(ns):
+        types.exec_class_body(func, ns)
+
+    cls = types.new_class(name, bases, kwds, exec_body)
+
+The helper is intended for builders that want to inspect or modify the class
+namespace before creating an object.  In particular, it avoids requiring
+builder authors to reconstruct a function with custom globals or to duplicate
+the details of how compiler-generated class body functions handle
+``__classcell__``, ``__classdictcell__``, and annotation-related state.
+
+``exec_class_body`` returns ``None``.  Information produced by executing the
+body is communicated by mutating the namespace mapping.
+
+
+Writing class builders
+----------------------
+
+A simple class builder that behaves exactly like an ordinary class statement
+can delegate to :py:func:`builtins.__build_class__`::
+
+    import builtins
+
+    class PlainBuilder:
+        def __build_class__(self, func, name, *bases, **kwds):
+            return builtins.__build_class__(func, name, *bases, **kwds)
+
+    plain = PlainBuilder()
+
+    plain C:
+        ...
+
+Builders that need access to the namespace should generally use
+``types.exec_class_body`` together with :py:func:`types.new_class`::
+
+    import types
+
+    class RecordingBuilder:
+        def __build_class__(self, func, name, *bases, **kwds):
+            captured = {}
+
+            def exec_body(ns):
+                types.exec_class_body(func, ns)
+                captured.update(ns)
+
+            cls = types.new_class(name, bases, kwds, exec_body)
+            cls.captured_namespace = captured
+            return cls
+
+This pattern preserves the normal metaclass protocol.  ``types.new_class``
+resolves ``__mro_entries__``, calls the appropriate ``__prepare__`` method,
+passes the prepared namespace to ``exec_body``, and then invokes the
+metaclass.
+
+Builders that return non-class objects may execute the body into an ordinary
+mapping and construct any object they choose from the resulting namespace::
+
+    class SchemaBuilder:
+        def __build_class__(self, func, name, *bases, **kwds):
+            ns = {}
+            types.exec_class_body(func, ns)
+            return Schema(name, ns.get("__annotate_func__"), ns, **kwds)
+
+    schema = SchemaBuilder()
+
+    schema Movie:
+        title: str
+        year: int
+
+Such a builder is responsible for deciding which entries in the namespace are
+meaningful.  Python does not add class-specific attributes such as
+``__type_params__`` to the returned object after the builder returns.
+
+Some builders need to mutate the namespace after the body has executed but
+before the class object is created.  For example, a dataclass builder with
+``slots=True`` can compute the field names from the executed namespace, insert
+``__slots__``, and remove field defaults before calling the metaclass::
+
+    def dataclass_build_class(func, name, *bases, **kwds):
+        dataclass_kwds, class_kwds = split_dataclass_keywords(kwds)
+        resolved_bases = types.resolve_bases(bases)
+
+        def exec_body(ns):
+            types.exec_class_body(func, ns)
+            if dataclass_kwds.get("slots"):
+                slots = compute_dataclass_slots(ns, resolved_bases)
+                save_field_defaults(ns, slots)
+                remove_field_defaults(ns, slots)
+                ns["__slots__"] = slots
+            if resolved_bases is not bases:
+                ns["__orig_bases__"] = bases
+
+        cls = types.new_class(name, resolved_bases, class_kwds, exec_body)
+        return finish_dataclass(cls, dataclass_kwds)
+
+This avoids the current implementation strategy used by
+``@dataclass(slots=True)``, which creates a class and then replaces it with a
+new slotted class.  With class builders, the slots can be present in the
+namespace seen by the metaclass and by descriptors' ``__set_name__`` methods
+from the start.
+
+
 Standard library changes
 ------------------------
 
@@ -371,6 +488,8 @@ The following class builders will be added to the standard library:
 * ``typing.protocol``: creates a protocol.
 * ``typing.namedtuple``: creates a typed named tuple.
 * ``typing.typed_dict``: creates a typed dictionary.
+
+In addition, ``types.exec_class_body`` will be added as described above.
 
 
 Type checker behavior
