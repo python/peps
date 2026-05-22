@@ -212,4 +212,4 @@ release-schedule.ics
 --------------------
 
 An iCalendar file of Python release dates is available at
-https://peps.python.org/api/release-schedule.ics.
+https://peps.python.org/release-schedule.ics.

@@ -9,6 +9,7 @@ const setColourScheme = (colourScheme = getColourScheme()) => {
     document.documentElement.dataset.colour_scheme = colourScheme
     localStorage.setItem("colour_scheme", colourScheme)
     setPygments(colourScheme)
+    setPfTheme(colourScheme)
 }
 
 // Map system theme to a cycle of steps
@@ -29,6 +30,11 @@ const setPygments = (colourScheme = getColourScheme()) => {
     pygmentsLight.disabled = colourScheme === "dark"
     pygmentsDark.media = colourScheme === "auto" ? "(prefers-color-scheme: dark)" : ""
     pygmentsLight.media = colourScheme === "auto" ? "(prefers-color-scheme: light)" : ""
+}
+
+const setPfTheme = (colourScheme = getColourScheme()) => {
+    const isDark = colourScheme === "dark" || (colourScheme === "auto" && prefersDark.matches)
+    document.documentElement.dataset.pfTheme = isDark ? "dark" : ""
 }
 
 // Update Pygments state (the page theme is initialised inline, see page.html)
