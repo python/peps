@@ -4,12 +4,11 @@
 from __future__ import annotations
 
 import datetime as dt
-import pickle
 from email.utils import format_datetime, getaddresses
 from html import escape
 from pathlib import Path
 
-from docutils import nodes
+from pep_sphinx_extensions.doctree import get_from_doctree
 
 RSS_DESCRIPTION = (
     "Newest Python Enhancement Proposals (PEPs): "
@@ -23,50 +22,12 @@ def _format_rfc_2822(datetime: dt.datetime) -> str:
     return format_datetime(datetime, usegmt=True)
 
 
-document_cache: dict[Path, dict[str, str]] = {}
-
-
-def get_from_doctree(full_path: Path, text: str) -> str:
-    # Try and retrieve from cache
-    if full_path in document_cache:
-        return document_cache[full_path].get(text, "")
-
-    # Else load doctree
-    document = pickle.loads(full_path.read_bytes())
-    # Store the headers (populated in the PEPHeaders transform)
-    document_cache[full_path] = path_cache = document.get("headers", {})
-    # Store the Abstract
-    path_cache["Abstract"] = pep_abstract(document)
-    # Return the requested key
-    return path_cache.get(text, "")
-
-
 def pep_creation(full_path: Path) -> dt.datetime:
     created_str = get_from_doctree(full_path, "Created")
     try:
         return dt.datetime.strptime(created_str, "%d-%b-%Y")
     except ValueError:
         return dt.datetime.min
-
-
-def pep_abstract(document: nodes.document) -> str:
-    """Return the first paragraph of the PEP abstract.
-    If not found, return the first paragraph of the introduction.
-    """
-    introduction = ""
-    for node in document.findall(nodes.section):
-        title_node = node.next_node(nodes.title)
-        if title_node is None:
-            continue
-
-        if title_node.astext() == "Abstract":
-            if (para_node := node.next_node(nodes.paragraph)) is not None:
-                return para_node.astext().strip().replace("\n", " ")
-            return ""
-        if title_node.astext() == "Introduction":
-            introduction = node.next_node(nodes.paragraph).astext().strip().replace("\n", " ")
-
-    return introduction
 
 
 def _generate_items(doctree_dir: Path):
