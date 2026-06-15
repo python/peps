@@ -20,6 +20,12 @@ Shortcut redirects are also available.
 For example, ``https://peps.python.org/8`` redirects to the canonical link.
 
 
+API
+===
+
+Several data files are available at https://peps.python.org/api/
+
+
 Contributing to PEPs
 ====================
 

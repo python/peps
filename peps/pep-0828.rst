@@ -1,0 +1,430 @@
+PEP: 828
+Title: Supporting 'yield from' in asynchronous generators
+Author: Peter Bierma <peter@python.org>
+PEP-Delegate: Yury Selivanov <yury@vercel.com>
+Discussions-To: https://discuss.python.org/t/106459
+Status: Draft
+Type: Standards Track
+Created: 07-Mar-2026
+Python-Version: 3.16
+Post-History: `07-Mar-2026 <https://discuss.python.org/t/106430>`__,
+              `09-Mar-2026 <https://discuss.python.org/t/106459>`__
+
+
+Abstract
+========
+
+This PEP introduces support for :keyword:`yield from <yield>` in an
+:ref:`asynchronous generator function <asynchronous-generator-functions>`
+through a new ``async yield from`` construct:
+
+.. code-block:: python
+
+    async def agenerator():
+        yield 1
+        yield 2
+        return 3
+
+    async def main():
+        result = async yield from agenerator()
+        assert result == 3
+
+
+Terminology
+===========
+
+This PEP refers to an ``async def`` function that contains a ``yield``
+as an :term:`asynchronous generator`, sometimes suffixed with "function".
+This is not to be confused with an :term:`asynchronous generator iterator`,
+which is the object *returned* by an asynchronous generator.
+
+This PEP also uses the term "subgenerator" to refer to a generator, synchronous
+or asynchronous, that is used inside of a ``yield from`` or ``async yield from``
+expression.
+
+
+Motivation
+==========
+
+
+Implementation complexity has gone down
+---------------------------------------
+
+Historically, ``yield from`` was not added to asynchronous generators due to
+concerns about the complexity of the implementation. To quote :pep:`525`:
+
+    While it is theoretically possible to implement ``yield from`` support for
+    asynchronous generators, it would require a serious redesign of the
+    generators implementation.
+
+As of March 2026, the author of this proposal does not believe this to be true
+given the current state of CPython's asynchronous generator implementation.
+This proposal comes with a reference implementation to argue this point, but
+it is acknowledged that complexity is often subjective.
+
+
+Symmetry with synchronous generators
+------------------------------------
+
+``yield from`` was added to synchronous generators in :pep:`380` because
+delegation to another generator is a useful thing to do. Due to the
+aforementioned complexity in CPython's generator implementation, PEP 525
+omitted support for ``yield from`` in asynchronous generators, but this has
+left a gap in the language.
+
+This gap has not gone unnoticed by users. There have been three separate
+requests for ``yield from`` or ``return`` behavior (which are closely related)
+in asynchronous generators:
+
+1. https://discuss.python.org/t/8897
+2. https://discuss.python.org/t/47050
+3. https://discuss.python.org/t/66886
+
+Additionally, users have `questioned <https://stackoverflow.com/questions/47376408>`__
+this design decision on Stack Overflow.
+
+
+Subgenerator delegation is useful for asynchronous generators
+-------------------------------------------------------------
+
+The current workaround for the lack of ``yield from`` support in asynchronous
+generators is to use a ``for``/``async for`` loop that manually yields each
+item. This comes with a few drawbacks:
+
+1. It obscures the intent of the code and increases the amount of effort
+   necessary to work with asynchronous generators, because each delegation
+   point becomes a loop. This damages the power of asynchronous generators.
+2. :meth:`~agen.asend`, :meth:`~agen.athrow`, and :meth:`~agen.aclose`
+   do not interact properly with the caller. This is the primary reason that
+   ``yield from`` was added in the first place.
+3. Return values are not natively supported with asynchronous generators. The
+   workaround for this is to raise an exception, which increases boilerplate.
+
+
+Specification
+=============
+
+
+Syntax
+------
+
+
+Compiler changes
+^^^^^^^^^^^^^^^^
+
+The compiler will no longer emit a :exc:`SyntaxError` for
+:keyword:`return` statements inside asynchronous generators.
+
+
+Grammar changes
+^^^^^^^^^^^^^^^
+
+The ``yield_expr`` and ``simple_stmt`` rules need to be updated for the new
+``async yield from`` syntax:
+
+.. code-block:: peg
+
+    yield_expr[expr_ty]:
+        | 'async' 'yield' 'from' a=expression
+
+    simple_stmt[stmt_ty] (memo):
+        | &('yield' | 'async') yield_stmt
+
+
+Changes to ``StopAsyncIteration``
+---------------------------------
+
+The :class:`StopAsyncIteration` exception will gain a new ``value`` attribute
+to be used as the result of ``async yield from`` expressions.
+
+This attribute can be supplied by passing a positional argument to
+``StopAsyncIteration``. For example:
+
+.. code-block:: pycon
+
+   >>> exception = StopAsyncIteration(42)
+   >>> exception.value
+   42
+
+
+If no argument is supplied, ``value`` will be ``None``.
+
+
+``return`` statements inside asynchronous generators
+----------------------------------------------------
+
+In the body of an asynchronous generator function, the statement
+``return expression`` is roughly equivalent to
+``raise StopAsyncIteration(expression)``. However, similar to implicit
+``StopIteration`` exceptions raised inside of synchronous generators,
+the exception cannot be caught in the body of the asynchronous generator.
+
+
+``async yield from`` semantics
+------------------------------
+
+The statement
+
+.. code-block:: python
+
+   RESULT = async yield from EXPR
+
+is roughly equivalent to the following:
+
+.. code-block:: python
+
+    aiterator = aiter(EXPR)
+    try:
+        item = await anext(aiterator)
+    except StopAsyncIteration as stop:
+        RESULT = stop.value
+    else:
+        while True:
+            try:
+                received = yield item
+            except GeneratorExit as gen_exit:
+                try:
+                    aclose = aiterator.aclose
+                except AttributeError:
+                    pass
+                else:
+                    await aclose()
+                raise gen_exit
+            except BaseException as exception:
+                try:
+                    athrow = aiterator.athrow
+                except AttributeError:
+                    raise exception from None
+                else:
+                    try:
+                        item = await athrow(exception)
+                    except StopAsyncIteration as stop:
+                        RESULT = stop.value
+                        break
+            else:
+                try:
+                    if received is None:
+                        item = await anext(aiterator)
+                    else:
+                        item = await aiterator.asend(received)
+                except StopAsyncIteration as stop:
+                    RESULT = stop.value
+                    break
+
+
+Rationale
+=========
+
+
+Relation to ``yield from``
+--------------------------
+
+This PEP aims to be very similar to the semantics of ``yield from``, with the
+exception that asynchronous generator methods are used instead of synchronous
+generator methods when delegating. This is a very intuitive design and furthers
+symmetry with synchronous generators.
+
+
+Choice of ``async yield from`` as the syntax
+--------------------------------------------
+
+This PEP uses ``async yield from`` as the syntax to ensure that the behavior
+of the syntax is immediately clear to the user.
+
+However, it is acknowledged that this is somewhat verbose. There is not any
+great solution to this problem; see :ref:`pep-828-rejected-ideas` for
+discussion about proposed alternatives. In short, ``async yield from`` was
+chosen as the best choice of syntax because, while verbose, it is very clear
+and readable.
+
+
+Backwards Compatibility
+=======================
+
+This PEP introduces a backwards-compatible syntax change.
+
+The addition of the ``value`` attribute to :exc:`StopAsyncIteration` is a
+minor semantic change to an existing builtin exception, but is unlikely
+to affect existing code in practice, as it mirrors the existing ``value``
+attribute on :exc:`StopIteration` and does not affect any other behavior
+on ``StopAsyncIteration`` or the asynchronous iterator protocol.
+
+
+Security Implications
+=====================
+
+This PEP has no known security implications.
+
+
+How to Teach This
+=================
+
+The details of this proposal will be located in Python's canonical
+documentation, as with all other language constructs. However, this PEP
+intends to be very intuitive; users should be able to naturally reach
+for ``async yield from`` given their own background knowledge about generators
+in Python. This can be encouraged further by suggesting
+``async yield from`` in the error message when a user attempts to use
+``yield from`` in an asynchronous generator.
+
+
+Reference Implementation
+========================
+
+A reference implementation of this PEP can be found at
+`python/cpython#145716 <https://github.com/python/cpython/pull/145716>`__.
+
+
+.. _pep-828-rejected-ideas:
+
+Rejected Ideas
+==============
+
+
+Using ``yield from`` to delegate to asynchronous generators
+-----------------------------------------------------------
+
+Due to the verbosity of ``async yield from``, it was proposed to overload
+the existing ``yield from`` syntax to perform asynchronous subgenerator
+delegation when used inside of an asynchronous generator.
+
+For example:
+
+.. code-block:: python
+
+    async def asubgenerator():
+        yield 1
+        yield 2
+
+    async def agenerator():
+        yield from asubgenerator()
+
+
+This has the benefit of being more concise than ``async yield from``, but also
+has a few downsides.
+
+Most importantly, this makes the asynchronous context switches necessary for
+delegation implicit, which has no precedent in Python; all syntax that may
+execute an ``await`` is prefixed with ``async``. It has been argued that one
+of the upsides of ``async``/``await`` over threads is the explicit switch
+points, so hiding ``await``\ s behind a ``yield from`` hurts this benefit.
+
+Second, many were uncomfortable with ``yield from`` being context-dependent.
+It felt like a potential footgun for ``yield from`` to mean something
+different based on the type of generator it was used in. In practice, this
+may come up in a scenario where one wants to convert a synchronous generator
+into an asynchronous generator.
+
+For example, imagine a developer is writing a function for streaming data
+to the caller:
+
+.. code-block:: python
+
+    def stream_data():
+        yield ...
+        yield from something_else()
+        yield ...
+
+Now, imagine that the developer wants to add an ``await`` call somewhere in
+this function; the ``yield from something_else()`` statement would suddenly
+become a runtime :class:`TypeError` (as opposed to a compile-time
+:class:`SyntaxError`). With the current proposal, the existence of
+``async yield from`` (which would ideally be included in the error message)
+would make it much clearer that ``something_else`` must also be asynchronous
+in order to delegate to it.
+
+Finally, this would preclude the introduction of support for synchronous
+subgenerator delegation inside asynchronous generators (see
+:ref:`pep-828-synchronous-delegation`), because the ``yield from``
+syntax would already be overloaded. However, the author of this proposal
+does acknowledge that the issues with synchronous subdelegation may preclude
+the introduction of this anyway -- it is not entirely clear whether the issues
+are solvable given time.
+
+
+``async from``, ``await from``, and similar spellings
+-----------------------------------------------------
+
+As an alternate solution to the verbosity of ``async yield from``, some have
+suggested using spellings such as ``async from`` in order to cut down on the
+verbosity. Unfortunately, changes in the spelling will likely hurt the
+readability of the syntax as a whole.
+
+The benefit of ``async yield from`` is that it specifies each of the three
+important parts without introducing new keywords. In particular:
+
+1. ``async`` is necessary to imply an asynchronous context switch.
+2. ``yield`` is necessary to indicate that the generator will be suspended.
+3. ``from`` is necessary to differentiate between "standard" generator
+   suspension (a ``yield`` statement) and subgenerator delegation.
+
+Given these three constraints, it seems unlikely that a more concise spelling
+exists.
+
+
+.. _pep-828-synchronous-delegation:
+
+Allowing delegation to synchronous subgenerators
+------------------------------------------------
+
+In an earlier revision of this proposal, the synchronous ``yield from``
+construct was allowed in an asynchronous generator, which would delegate to a
+synchronous generator from an asynchronous one. This had a number of hidden
+issues.
+
+In particular, the mixing of asynchronous frames with synchronous frames had a
+layer of complexity unfit for Python. In the implementation, there would have
+to be a hidden translation layer between synchronous generator methods and
+asynchronous generator methods: :meth:`~agen.asend` to :meth:`~generator.send`,
+:meth:`~agen.athrow` to :meth:`~generator.throw`, and :meth:`~agen.aclose`
+to :meth:`~generator.close`.
+
+For example, asynchronous exceptions could be injected into synchronous
+generators:
+
+.. code-block:: python
+
+    async def agen():
+        async with asyncio.timeout(3):
+            # If the timeout fails, then an asyncio.TimeoutError would be raised
+            # in a *synchronous* generator!
+            yield from subgen()
+
+
+To quote Brandt Bucher (paraphrased):
+
+    At that point, why not just allow synchronous functions to await coroutines?
+
+
+In addition, there seemed to be much less demand for this feature compared to
+support for asynchronous delegation, so solving these issues is less of a
+priority for now.
+
+
+Acknowledgements
+================
+
+Thanks to Bartosz Sławecki for aiding in the development of the reference
+implementation of this PEP. In addition, the :exc:`StopAsyncIteration`
+changes alongside the support for non-``None`` return values inside
+asynchronous generators were largely based on Alex Dixon's design from
+`python/cpython#125401 <https://github.com/python/cpython/pull/125401>`__.
+
+Special thanks to Yury Selivanov for providing extensive feedback and also
+collecting outside opinions about the design and implementation.
+
+
+Change History
+==============
+
+- 26-May-2026
+
+    - Removed support for delegating to a synchronous subgenerator (via
+      a plain ``yield from``).
+
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
