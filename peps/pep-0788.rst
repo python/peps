@@ -3,7 +3,7 @@ Title: Protecting the C API from Interpreter Finalization
 Author: Peter Bierma <peter@python.org>
 Sponsor: Victor Stinner <vstinner@python.org>
 Discussions-To: https://discuss.python.org/t/104150
-Status: Draft
+Status: Final
 Type: Standards Track
 Created: 23-Apr-2025
 Python-Version: 3.15
@@ -11,6 +11,9 @@ Post-History: `10-Mar-2025 <https://discuss.python.org/t/83959>`__,
               `27-Apr-2025 <https://discuss.python.org/t/89863>`__,
               `28-May-2025 <https://discuss.python.org/t/93653>`__,
               `03-Oct-2025 <https://discuss.python.org/t/104150>`__
+Resolution: `28-Apr-2026 <https://discuss.python.org/t/104150/44>`__
+
+.. canonical-doc:: :ref:`c-api-foreign-threads`
 
 
 Abstract
@@ -38,8 +41,8 @@ For example:
     {
         // Similar to PyGILState_Ensure(), but we can be sure that the interpreter
         // is alive and well before attaching.
-        PyThreadState *tstate = PyThreadState_EnsureFromView(view);
-        if (tstate == NULL) {
+        PyThreadStateToken *token = PyThreadState_EnsureFromView(view);
+        if (token == NULL) {
             return -1;
         }
 
@@ -50,7 +53,7 @@ For example:
         }
 
         // Destroy the thread state and allow the interpreter to finalize.
-        PyThreadState_Release(tstate);
+        PyThreadState_Release(token);
         return 0;
     }
 
@@ -273,8 +276,7 @@ Attaching and detaching thread states
 This proposal includes three new high-level threading APIs that intend to
 replace :c:func:`PyGILState_Ensure` and :c:func:`PyGILState_Release`.
 
-
-.. c:function:: PyThreadState *PyThreadState_Ensure(PyInterpreterGuard *guard)
+.. c:function:: PyThreadStateToken *PyThreadState_Ensure(PyInterpreterGuard *guard)
 
     Ensure that the thread has an attached thread state for the
     interpreter protected by *guard*, and thus can safely invoke that
@@ -303,48 +305,12 @@ replace :c:func:`PyGILState_Ensure` and :c:func:`PyGILState_Release`.
     for *guard*. It is then attached and marked as owned by ``PyThreadState_Ensure``.
 
     This function will return ``NULL`` to indicate a memory allocation failure, and
-    otherwise return a pointer to the thread state that was previously attached
+    otherwise return a token indicating the thread state that was previously attached
     (which might have been ``NULL``, in which case an non-``NULL`` sentinel value is
-    returned instead to differentiate between failure -- this means that this function
-    will sometimes return an invalid ``PyThreadState`` pointer).
-
-    To visualize, this function is roughly equivalent to the following:
-
-    .. code-block:: c
-
-        PyThreadState *
-        PyThreadState_Ensure(PyInterpreterGuard *guard)
-        {
-            assert(guard != NULL);
-            PyInterpreterState *interp = PyInterpreterGuard_GetInterpreter(guard);
-            assert(interp != NULL);
-
-            PyThreadState *current_tstate = PyThreadState_GetUnchecked();
-            if (current_tstate == NULL) {
-                PyThreadState *last_used = PyGILState_GetThisThreadState();
-                if (last_used != NULL) {
-                    ++last_used->ensure_counter;
-                    PyThreadState_Swap(last_used);
-                    return NO_TSTATE_SENTINEL;
-                }
-            } else if (current_tstate->interp == interp) {
-                ++current_tstate->ensure_counter;
-                return current_tstate;
-            }
-
-            PyThreadState *new_tstate = PyThreadState_New(interp);
-            if (new_tstate == NULL) {
-                return NULL;
-            }
-
-            ++new_tstate->ensure_counter;
-            mark_tstate_owned_by_ensure(new_tstate);
-            PyThreadState_Swap(new_tstate);
-            return current_tstate == NULL ? NO_TSTATE_SENTINEL : current_tstate;
-        }
+    returned instead to differentiate between failure).
 
 
-.. c:function:: PyThreadState *PyThreadState_EnsureFromView(PyInterpreterView *view)
+.. c:function:: PyThreadStateToken *PyThreadState_EnsureFromView(PyInterpreterView *view)
 
     Get an attached thread state for the interpreter referenced by *view*.
 
@@ -362,33 +328,15 @@ replace :c:func:`PyGILState_Ensure` and :c:func:`PyGILState_Release`.
     value. The behavior of whether this function creates a thread state is
     equivalent to that of :c:func:`PyThreadState_Ensure`.
 
-    To visualize, function is roughly equivalent to the following:
 
-    .. code-block:: c
-
-      PyThreadState *
-      PyThreadState_EnsureFromView(PyInterpreterView *view)
-      {
-          assert(view != NULL);
-          PyInterpreterGuard *guard = PyInterpreterGuard_FromView(view);
-          if (guard == NULL) {
-              return NULL;
-          }
-
-          PyThreadState *tstate = PyThreadState_Ensure(guard);
-          if (tstate == NULL) {
-              PyInterpreterGuard_Close(guard);
-              return NULL;
-          }
-          close_guard_upon_tstate_release(tstate, guard);
-          return tstate;
-      }
-
-
-.. c:function:: void PyThreadState_Release(PyThreadState *tstate)
+.. c:function:: void PyThreadState_Release(PyThreadStateToken *token)
 
     Release a :c:func:`PyThreadState_Ensure` call. This must be called exactly once
-    for each call to ``PyThreadState_Ensure``.
+    for each call to ``PyThreadState_Ensure``. The attached thread state used
+    prior to the ``PyThreadState_Ensure`` call will be restored upon returning.
+
+    *token* must be the return value from the most recent ``PyThreadState_Ensure``
+    call.
 
     This function will decrement an internal counter on the attached thread state. If
     this counter ever reaches below zero, this function emits a fatal error (via
@@ -397,47 +345,6 @@ replace :c:func:`PyGILState_Ensure` and :c:func:`PyGILState_Release`.
     If the attached thread state is owned by ``PyThreadState_Ensure``, then the
     attached thread state will be deallocated and deleted upon the internal counter
     reaching zero. Otherwise, nothing happens when the counter reaches zero.
-
-    If *tstate* is non-``NULL``, it will be attached upon returning.
-    If *tstate* indicates that no prior thread state was attached, there will be
-    no attached thread state upon returning.
-
-    To visualize, this function is roughly equivalent to the following:
-
-    .. code-block:: c
-
-      void
-      PyThreadState_Release(PyThreadState *old_tstate)
-      {
-          PyThreadState *current_tstate = PyThreadState_Get();
-          assert(old_tstate != NULL);
-          assert(current_tstate != NULL);
-          assert(current_tstate->ensure_counter > 0);
-          if (--current_tstate->ensure_counter > 0) {
-              // There are remaining PyThreadState_Ensure() calls
-              // for this thread state.
-              return;
-          }
-
-          assert(current_tstate->ensure_counter == 0);
-          if (old_tstate == NO_TSTATE_SENTINEL) {
-              // No thread state was attached prior the PyThreadState_Ensure()
-              // call. So, we can just destroy the current thread state and return.
-              assert(should_dealloc_tstate(current_tstate));
-              PyThreadState_Clear(current_tstate);
-              PyThreadState_DeleteCurrent();
-              return;
-          }
-
-          if (should_dealloc_tstate(current_tstate)) {
-              // The attached thread state was created by the initial PyThreadState_Ensure()
-              // call. It's our job to destroy it.
-              PyThreadState_Clear(current_tstate);
-              PyThreadState_DeleteCurrent();
-          }
-
-          PyThreadState_Swap(old_tstate);
-      }
 
 
 Soft deprecation of ``PyGILState`` APIs
@@ -462,7 +369,7 @@ Below is the full list of soft deprecated functions and their replacements:
 Additions to the Limited API
 ----------------------------
 
-The following APIs from this PEP are to be added to the limited C API:
+All of the APIs from this PEP are to be added to the limited C API:
 
 1. :c:func:`PyThreadState_Ensure`
 2. :c:func:`PyThreadState_EnsureFromView`
@@ -473,7 +380,8 @@ The following APIs from this PEP are to be added to the limited C API:
 7. :c:func:`PyInterpreterView_FromMain`
 8. :c:type:`PyInterpreterGuard` (as an opaque structure)
 9. :c:func:`PyInterpreterGuard_FromCurrent`
-10. :c:func:`PyInterpreterGuard_Close`
+10. :c:func:`PyInterpreterGuard_FromView`
+11. :c:func:`PyInterpreterGuard_Close`
 
 
 Rationale
@@ -593,7 +501,7 @@ With this PEP, you would implement it like this:
                           PyObject *text)
     {
         assert(view != NULL);
-        PyThreadState *tstate = PyThreadState_EnsureFromView(view);
+        PyThreadStateToken *token = PyThreadState_EnsureFromView(view);
         if (tstate == NULL) {
             fputs("Cannot call Python.\n", stderr);
             return -1;
@@ -604,8 +512,7 @@ With this PEP, you would implement it like this:
             // Since the exception may be destroyed upon calling PyThreadState_Release(),
             // print out the exception ourselves.
             PyErr_Print();
-            PyThreadState_Release(tstate);
-            PyInterpreterGuard_Close(guard);
+            PyThreadState_Release(token);
             return -1;
         }
         int res = PyFile_WriteString(to_write, file);
@@ -613,7 +520,7 @@ With this PEP, you would implement it like this:
             PyErr_Print();
         }
 
-        PyThreadState_Release(tstate);
+        PyThreadState_Release(token);
         return res < 0;
     }
 
@@ -709,8 +616,8 @@ This is the same code, rewritten to use the new functions:
     thread_func(void *arg)
     {
         PyInterpreterGuard *guard = (PyInterpreterGuard *)arg;
-        PyThreadState *tstate = PyThreadState_Ensure(guard);
-        if (tstate == NULL) {
+        PyThreadStateToken *token = PyThreadState_Ensure(guard);
+        if (token == NULL) {
             PyInterpreterGuard_Close(guard);
             return -1;
         }
@@ -719,7 +626,7 @@ This is the same code, rewritten to use the new functions:
             PyErr_Print();
         }
 
-        PyThreadState_Release(tstate);
+        PyThreadState_Release(token);
         PyInterpreterGuard_Close(guard);
         return 0;
     }
@@ -765,9 +672,8 @@ interpreter guard is owned by the thread state.
     thread_func(void *arg)
     {
         PyInterpreterGuard *guard = (PyInterpreterGuard *)arg;
-        PyThreadState *tstate = PyThreadState_Ensure(guard);
-        if (tstate == NULL) {
-            // Out of memory.
+        PyThreadStateToken *token = PyThreadState_Ensure(guard);
+        if (token == NULL) {
             PyInterpreterGuard_Close(guard);
             return -1;
         }
@@ -781,7 +687,7 @@ interpreter guard is owned by the thread state.
             PyErr_Print();
         }
 
-        PyThreadState_Release(tstate);
+        PyThreadState_Release(token);
         return 0;
     }
 
@@ -814,8 +720,8 @@ Example: An asynchronous callback
     {
         PyInterpreterView *view = (PyInterpreterView *)arg;
         // Try to create and attach a thread state based on our view.
-        PyThreadState *tstate = PyThreadState_EnsureFromView(view);
-        if (tstate == NULL) {
+        PyThreadStateToken *token = PyThreadState_EnsureFromView(view);
+        if (token == NULL) {
             PyInterpreterView_Close(view);
             return -1;
         }
@@ -825,7 +731,7 @@ Example: An asynchronous callback
             PyErr_Print();
         }
 
-        PyThreadState_Release(tstate);
+        PyThreadState_Release(token);
 
         // In this example, we'll close the view for completeness.
         // If we wanted to use this callback again, we'd have to keep it alive.
@@ -855,7 +761,7 @@ the behavior of ``PyGILState_Ensure``/``PyGILState_Release``. For example:
 
 .. code-block:: c
 
-    PyThreadState *
+    PyThreadStateToken *
     MyGILState_Ensure(void)
     {
         PyInterpreterView *view = PyInterpreterView_FromMain();
@@ -864,9 +770,13 @@ the behavior of ``PyGILState_Ensure``/``PyGILState_Release``. For example:
             PyThread_hang_thread();
         }
 
-        PyThreadState *tstate = PyThreadState_EnsureFromView(view);
+        PyThreadStateToken *token = PyThreadState_EnsureFromView(view);
         PyInterpreterView_Close(view);
-        return tstate;
+        if (token == NULL) {
+            // Main interpreter not available
+            PyThread_hang_thread();
+        }
+        return token;
     }
 
     #define MyGILState_Release PyThreadState_Release
@@ -881,6 +791,26 @@ at `python/cpython#133110 <https://github.com/python/cpython/pull/133110>`_.
 
 Rejected Ideas
 ==============
+
+Using ``PyThreadState *`` for the return value of ``PyThreadState_Ensure``
+--------------------------------------------------------------------------
+
+In an earlier revision of this PEP, :c:func:`PyThreadState_Ensure` and
+:c:func:`PyThreadState_EnsureFromView` returned a plain ``PyThreadState *``.
+This was consistent with the implementation, which, as of writing, does
+generally return a valid ``PyThreadState *``, but it was discovered that
+this would confuse users:
+
+1. It is easy to confuse the returned value with the new attached thread
+   state instead of what it actually is (an indicator to the
+   ``PyThreadState_Release`` call).
+2. It looks like the return value could be useful in any other APIs that take
+   a ``PyThreadState *``, but it actually is only useful as a token to pass to
+   :c:func:`PyThreadState_Release` (because the pointer may be invalid).
+
+As such, this PEP masks the thread state information behind the new
+:c:type:`PyThreadStateToken` type.
+
 
 Hard deprecating ``PyGILState``
 -------------------------------
