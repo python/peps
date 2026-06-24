@@ -255,8 +255,8 @@ The choice of the root endpoint is left up to the index operator.
 
 .. _authentication:
 
-Authentication for Upload 2.0 API
-----------------------------------
+Authentication and Authorization
+--------------------------------
 
 All endpoints in this specification **MUST** use standard HTTP authentication
 mechanisms as defined in :rfc:`7235`.
@@ -270,6 +270,35 @@ Authentication follows the standard HTTP pattern:
 
 The specific authentication schemes (e.g., Bearer, Basic, Digest)
 are determined by the index operator.
+
+Authentication establishes the principal making a request.  Authorization determines whether that principal
+may act on a particular session.  All session endpoints defined in this specification -- that is, the URLs
+returned under the ``links`` key when a :ref:`publishing session <publishing-session-response>` or :ref:`file
+upload session <file-upload-session-response>` is created -- **MUST** be authorized against the project's
+upload permissions.  Specifically, a server **MUST** verify, contemporaneously on each request, that the
+authenticated principal is currently authorized to upload to the project named by the session, and **MUST**
+respond with ``403 Forbidden`` if it is not.
+
+Because this check is performed independently on each request, a session is **not** tied to the exact
+credentials that created it:
+
+- A principal that is granted upload permission after a session is opened may immediately participate in that
+  session.
+- A principal whose upload permission is revoked while a session is open **MUST** be denied with a
+  ``403 Forbidden`` on any subsequent request, even if that principal created the session.
+
+This denial is evaluated per request and is not "sticky": if a principal's permission is later restored, its
+subsequent requests are authorized again.  An index **MAY** apply a stricter policy, but this specification
+does not require one.
+
+Servers **MUST** perform this authorization check on at least every request that creates, modifies, completes,
+extends, cancels, or publishes a publishing session or file upload session.  For upload mechanisms that
+transfer a file across more than one request (for example, chunked or multipart mechanisms), servers
+**SHOULD** authorize each such request.
+
+The unguessable :ref:`stage preview URL <staged-preview>` is a separate capability and is deliberately **not**
+governed by this authorization check; it grants read-only preview access to any client that holds the token,
+so that (for example) a CI job can install-test a staged release without project upload credentials.
 
 
 .. _session-errors:
@@ -374,9 +403,15 @@ the "regular" (i.e. :ref:`unstaged <staged-preview>`) access protocols,
 If this first-release stage gets canceled,
 then the index **SHOULD** delete the project record, as if it were never uploaded.
 
-The session is owned by the user that created it,
-and all subsequent requests **MUST** be performed with the same credentials,
-otherwise a ``403 Forbidden`` will be returned on those subsequent requests.
+A publishing session is **not** bound to the specific credentials that created it.  Instead, every request
+against the session **MUST** be performed by an authenticated principal that is authorized to upload to the
+project at the time of that request, as described in :ref:`authentication`.  A request from a principal that
+is not, or is no longer, so authorized **MUST** receive a ``403 Forbidden``.
+
+For a first-release session on a project that does not yet exist, there are no existing project upload
+permissions to evaluate; the index instead authorizes the request according to its own name-registration
+policy, and **SHOULD** treat the creating principal (and, where applicable, an organization it acts on behalf
+of) as authorized for the lifetime of the session.
 
 .. _index-specific-metadata:
 
@@ -483,15 +518,18 @@ Multiple Session Creation Requests
 ++++++++++++++++++++++++++++++++++
 
 If a second attempt to create a session is received for the same name-version pair while a session for that
-pair is still ``pending``, then a new session is *not* created.
-Instead, the server **MUST** respond with a ``409 Conflict`` and **MUST** include a ``Location`` header that
-points to the :ref:`session status URL <publishing-session-status>`.  Subsequent session creation requests
-**MUST** be performed with the same credentials as the pending session, otherwise a ``403 Forbidden`` is
-returned.
+pair is still ``pending``, then a new session is *not* created.  Instead, the server **MUST** respond with a
+``409 Conflict`` and **MUST** include a ``Location`` header that points to the :ref:`session status URL
+<publishing-session-status>`.  Like every other session request, such a request **MUST** be performed by a
+principal authorized to upload to the project (see :ref:`authentication`); a request from an unauthorized
+principal **MUST** receive a ``403 Forbidden`` instead, which takes precedence over the ``409 Conflict`` so
+that the existence of the pending session is not disclosed.  An authorized principal receives the ``409
+Conflict`` and ``Location`` header and may use the referenced session; this is how multiple authorized
+publishers (for example, distinct Trusted Publishing workflows) can contribute to the same session.
 
 Otherwise -- that is, when no session for that name-version pair is currently ``pending`` -- a new session is
-created with the same ``201 Created`` response and payload, except that the :ref:`publishing session status URL
-<publishing-session-status>`, ``session-token``, and ``links.stage`` values **MUST** be different.
+created with the same ``201 Created`` response and payload, except that the :ref:`publishing session status
+URL <publishing-session-status>`, ``session-token``, and ``links.stage`` values **MUST** be different.
 
 .. _publishing-session-links:
 
@@ -1275,10 +1313,20 @@ rate limiting either the legacy API or Upload 2.0 API for empty packages or sess
 which supports organizations or :pep:`752`-style implicit namespaces, could implement different rate limiting
 rules for different actors.  Such implementations are left as index-specific policy decisions.
 
-It's possible for a user with upload permissions at the start of a session to lose such permissions while a
-session is open and before the entire session is published.  Indexes should consider re-validating permissions
-at key points during the session lifecycle, such as on artifact uploads, file upload session completion,
-session extension requests, or at publish time.
+Session access is authorized contemporaneously rather than being bound to the credentials that created the
+session (see :ref:`authentication`).  Indexes **MUST** re-validate authorization on each session request --
+including artifact uploads, file upload session completion, session extension requests, and publishing -- so
+that a principal that loses upload permission while a session is open is denied on its subsequent requests,
+and a principal that gains permission may join an open session.
+
+This model has two consequences worth calling out.  First, because every mutating operation is authorized
+uniformly, any principal currently authorized to upload to the project may add to, cancel, or publish another
+principal's open session.  The blast radius is limited to the unpublished staging session, since published
+artifacts are immutable and publishing is atomic.  Second, the :ref:`stage preview URL <staged-preview>` is a
+capability that is *not* gated by upload permission, so a principal whose permission is revoked mid-session --
+but who has already obtained the stage URL -- retains read-only preview access to the staged files until the
+session is published or canceled.  This is a narrow and accepted limitation; an index that considers it a
+concern can mitigate it by canceling the affected session, or by limiting session lifetimes and extensions.
 
 Staged releases, while useful for testing and embargoes, do provide some potential for larger scale hosting of
 malware which isn't detectable by third party, external scanning tools, because staged artifacts are only
@@ -1437,6 +1485,10 @@ Change History
     for the same name-version pair is still ``pending``.  The previous wording referenced non-existent
     ``processing``/``complete`` publishing-session states.
   * Clarify the wording of the **Multiple Sessions** client recommendation example.
+  * Relax session access from the exact creating credentials to any principal authorized to upload to the
+    project, evaluated contemporaneously on each request.  Adds an **Authentication and Authorization** model,
+    handles permission changes mid-session, supports rotating Trusted Publishing tokens and multiple
+    publishers contributing to one session, and notes the related security implications.
 
 * `07-Dec-2025 <https://discuss.python.org/t/pep-694-pypi-upload-api-2-0-round-2/101483/35>`__
 
