@@ -464,7 +464,7 @@ The successful response includes the following content:
       "mechanisms": ["http-post-bytes"],
       "session-token": "<token-string>",
       "expires-at": "2025-08-01T12:00:00Z",
-      "status": "pending",
+      "status": "open",
       "files": {},
       "notices": [
         "a notice to display to the user"
@@ -500,8 +500,8 @@ the following keys:
     expiration time of the session.
 
 ``status``
-    A string that contains one of ``pending``, ``published``, ``error``, or ``canceled``,
-    representing the overall :ref:`status of the session <publishing-session-status>`.
+    A string that contains one of ``open``, ``processing``, ``published``, ``error``, or ``canceled``,
+    representing the overall :ref:`status of the session <publishing-session-states>`.
 
 ``files``
     A mapping containing the filenames that have been uploaded to this session, to a mapping
@@ -517,19 +517,22 @@ the following keys:
 Multiple Session Creation Requests
 ++++++++++++++++++++++++++++++++++
 
-If a second attempt to create a session is received for the same name-version pair while a session for that
-pair is still ``pending``, then a new session is *not* created.  Instead, the server **MUST** respond with a
-``409 Conflict`` and **MUST** include a ``Location`` header that points to the :ref:`session status URL
-<publishing-session-status>`.  Like every other session request, such a request **MUST** be performed by a
-principal authorized to upload to the project (see :ref:`authentication`); a request from an unauthorized
-principal **MUST** receive a ``403 Forbidden`` instead, which takes precedence over the ``409 Conflict`` so
-that the existence of the pending session is not disclosed.  An authorized principal receives the ``409
-Conflict`` and ``Location`` header and may use the referenced session; this is how multiple authorized
-publishers (for example, distinct Trusted Publishing workflows) can contribute to the same session.
+If a second attempt to create a session is received for the same name-version pair while an existing session
+for that pair is in a non-terminal state -- that is, ``open``, ``processing``, or ``error`` (see
+:ref:`publishing session states <publishing-session-states>`) -- then a new session is *not* created.  Instead,
+the server **MUST** respond with a ``409 Conflict`` and **MUST** include a ``Location`` header that points to
+the :ref:`session status URL <publishing-session-status>`.  Like every other session request, such a request
+**MUST** be performed by a principal authorized to upload to the project (see :ref:`authentication`); a request
+from an unauthorized principal **MUST** receive a ``403 Forbidden`` instead, which takes precedence over the
+``409 Conflict`` so that the existence of the in-progress session is not disclosed.  An authorized principal
+receives the ``409 Conflict`` and ``Location`` header and may use the referenced session; this is how multiple
+authorized publishers (for example, distinct Trusted Publishing workflows) can contribute to the same session.
 
-Otherwise -- that is, when no session for that name-version pair is currently ``pending`` -- a new session is
-created with the same ``201 Created`` response and payload, except that the :ref:`publishing session status
-URL <publishing-session-status>`, ``session-token``, and ``links.stage`` values **MUST** be different.
+Otherwise -- that is, when the name-version pair has no session in a non-terminal state, either because the
+previous session for that pair has reached a terminal ``published`` or ``canceled`` state, or because no
+session has ever been created for it -- a new session is created with the same ``201 Created`` response and
+payload, except that the :ref:`publishing session status URL <publishing-session-status>`, ``session-token``,
+and ``links.stage`` values **MUST** be different.
 
 .. _publishing-session-links:
 
@@ -592,6 +595,98 @@ sub-mapping with the following keys:
     these notices are specific to the referenced file.
 
 
+.. _publishing-session-states:
+
+Publishing Session States
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A publishing session is always in exactly one of the following states, reported by the ``status`` key of the
+:ref:`session status response <publishing-session-response>`:
+
+``open``
+    The session is accepting changes.  Files can be :ref:`uploaded <file-upload-session>`, replaced, and
+    :ref:`deleted <file-upload-session-cancellation>`; the session can be :ref:`previewed <staged-preview>` and
+    :ref:`extended <publishing-session-extension>`; and it can be :ref:`published
+    <publishing-session-completion>` or :ref:`canceled <publishing-session-cancellation>`.  A newly created
+    session starts in this state.
+
+``processing``
+    The client has requested publication and the server accepted the request for deferred processing, returning
+    a ``202 Accepted`` (see :ref:`publishing-session-completion`).  The session is no longer accepting changes
+    while the server validates and processes it.  This is a transitional state; the client polls the
+    :ref:`session status <publishing-session-status>` until it resolves to ``published`` or ``error``.
+
+``published`` (terminal)
+    The session's files have been published and are publicly available.  No further changes are possible.
+
+``error``
+    The most recent deferred publish attempt failed.  The session is **fully editable again** -- it permits
+    exactly the same operations as ``open`` -- and differs from ``open`` *only* in that it records that the last
+    publish attempt failed.  The human-readable reason **MUST** be reported in the session's ``notices`` (and,
+    where the failure is attributable to a particular file, in that file's ``notices``).  From this state the
+    client can address the problem and :ref:`publish <publishing-session-completion>` again, or :ref:`cancel
+    <publishing-session-cancellation>` the session.
+
+``canceled`` (terminal)
+    The session was canceled and its staged data discarded.  No further changes are possible.
+
+Both ``open`` and ``error`` are editable states that permit the identical set of operations; a client **MUST
+NOT** treat an ``error`` session as closed or read-only.  The only difference between them is that ``error``
+additionally records that the previous deferred publish failed.
+
+Because ``published`` and ``canceled`` are terminal, reaching either one frees the name-version pair so that a
+:ref:`subsequent session <publishing-session-multiple>` may be created for it -- for example, to add wheels for
+additional platforms to an already-published release.
+
+The transitions between these states are:
+
+.. list-table::
+   :header-rows: 1
+
+   * - From
+     - Event
+     - To
+   * - *(none)*
+     - Session created
+     - ``open``
+   * - ``open``
+     - A file is uploaded, replaced, or deleted
+     - ``open``
+   * - ``open``
+     - Publish request completed immediately (``201 Created``)
+     - ``published``
+   * - ``open``
+     - Publish request accepted for deferred processing (``202 Accepted``)
+     - ``processing``
+   * - ``open`` or ``error``
+     - Publish request fails synchronously
+     - unchanged (the error is returned to the caller)
+   * - ``open`` or ``error``
+     - Session canceled (``DELETE``)
+     - ``canceled``
+   * - ``processing``
+     - Deferred processing succeeds
+     - ``published``
+   * - ``processing``
+     - Deferred processing fails
+     - ``error``
+   * - ``processing``
+     - Cancellation requested
+     - rejected with ``409 Conflict`` (see :ref:`publishing-session-cancellation`)
+   * - ``error``
+     - A file is uploaded, replaced, or deleted
+     - ``error``
+   * - ``error``
+     - Publish retried
+     - ``processing`` or ``published``
+
+A *synchronous* publish failure -- one the server determines within the publish request itself -- is returned
+to the caller as an :ref:`error response <session-errors>` and leaves the session in its current editable state
+(``open`` stays ``open``; ``error`` stays ``error``).  The ``error`` *state* is reached only when a publish that
+was accepted for deferred processing subsequently fails, because in that case the failure cannot be returned to
+the caller directly and the client discovers it by polling.
+
+
 .. _publishing-session-completion:
 
 Complete a Publishing Session
@@ -613,13 +708,21 @@ The request looks like:
 
 
 If the server is able to immediately complete the publishing session, it may do so and return a
-``201 Created`` response. If it is unable to immediately complete the publishing session
-(for instance, if it needs to do validation that may take longer than reasonable in a single HTTP
-request), then it may return a ``202 Accepted`` response.
+``201 Created`` response, moving the session to the terminal :ref:`status <publishing-session-states>`
+``published``.  If it is unable to immediately complete the publishing session (for instance, if it needs to do
+validation that may take longer than reasonable in a single HTTP request), then it may return a
+``202 Accepted`` response and move the session to the ``processing`` state.
 
 The server **MUST** include a ``Location`` header in the response pointing back to the :ref:`Publishing
-Session status <publishing-session-status>` URL, which can be used to query the current session status.  If the server
-returned a ``202 Accepted``, polling that URL can be used to watch for session status changes.
+Session status <publishing-session-status>` URL, which can be used to query the current session status.  If the
+server returned a ``202 Accepted``, polling that URL can be used to watch for the session status to change:
+deferred processing resolves to either ``published`` on success or ``error`` on failure.  When it resolves to
+``error``, the session remains editable and the reason is reported in the session's ``notices``, as described
+in :ref:`publishing-session-states`.
+
+A publish attempt that fails *synchronously* -- within the publish request itself -- is returned to the client
+as an :ref:`error response <session-errors>` and leaves the session in its current editable state; it does
+**not** move the session to ``error``.
 
 .. _publishing-session-cancellation:
 
@@ -629,10 +732,16 @@ Publishing Session Cancellation
 To cancel a publishing session, a client issues a ``DELETE`` request to
 the ``session`` :ref:`link <publishing-session-links>`
 given in the :ref:`session creation response body <publishing-session-response>`.
-The server then marks the session as canceled, and **SHOULD** purge any data that was uploaded
+The server then marks the session as ``canceled``, and **SHOULD** purge any data that was uploaded
 as part of that session.
 Future attempts to access that session URL or any of the publishing session URLs
 **MUST** return a ``404 Not Found``.
+
+Cancellation is only permitted while the session is :ref:`open or in the error state
+<publishing-session-states>`.  If the session is in the ``processing`` state -- that is, a deferred publish is
+already underway -- the server **MUST** reject the cancellation with a ``409 Conflict``, since publication may
+already be in progress.  The client can instead wait for processing to resolve; if it resolves to ``error``,
+the session can then be canceled.
 
 To prevent dangling sessions, servers may also choose to cancel timed-out sessions on their own
 accord. It is recommended that servers expunge their sessions after no less than a week, but each
@@ -1488,9 +1597,6 @@ Change History
   * Specify that attempting to replace an in-progress file upload returns a ``409 Conflict``.
   * Specify that uploading a file matching one already published for an existing release returns a
     ``409 Conflict``, since published artifacts are immutable.
-  * Correct the **Multiple Session Creation Requests** logic: a new session is blocked only while a session
-    for the same name-version pair is still ``pending``.  The previous wording referenced non-existent
-    ``processing``/``complete`` publishing-session states.
   * Clarify the wording of the **Multiple Sessions** client recommendation example.
   * Relax session access from the exact creating credentials to any principal authorized to upload to the
     project, evaluated contemporaneously on each request.  Adds an **Authentication and Authorization** model,
@@ -1498,6 +1604,14 @@ Change History
     publishers contributing to one session, and notes the related security implications.
   * Remove the optional ``metadata`` key from the file upload session creation request.  The uploaded file is
     the authoritative source of metadata, which the index extracts from the file itself.
+  * Define an explicit publishing-session state machine.  Rename the session-level ``pending`` status to
+    ``open``, add a transitional ``processing`` status for deferred (``202 Accepted``) publishing, and document
+    the ``error`` status as a still-editable state that records a failed deferred publish (with the reason
+    reported in ``notices``).  Add a **Publishing Session States** section with state descriptions and a
+    transition table, specify that a synchronous publish failure leaves the session editable rather than
+    entering ``error``, and require the server to reject cancellation with a ``409 Conflict`` while a session is
+    ``processing``.  Key the **Multiple Session Creation Requests** rule off any non-terminal state rather than
+    ``pending``.
 
 * `07-Dec-2025 <https://discuss.python.org/t/pep-694-pypi-upload-api-2-0-round-2/101483/35>`__
 
