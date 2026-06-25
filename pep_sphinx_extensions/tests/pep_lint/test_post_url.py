@@ -61,6 +61,7 @@ def test_validate_discussions_to_invalid_list_domain(line: str):
     "body",
     [
         "",
+        "Pending",
         (
             "01-Jan-2001, 02-Feb-2002,\n              "
             "03-Mar-2003, 04-Apr-2004,\n              "
@@ -90,7 +91,7 @@ def test_validate_post_history_valid(body: str):
 def test_validate_post_history_unbalanced_link(body: str):
     warnings = [warning for (_, warning) in check_peps._validate_post_history(1, body)]
     assert warnings == [
-        "post line must be a date or both start with “`” and end with “>`__”"
+        "post line must be a date or both start with “`” and end with “>`__”, or 'Pending'"
     ], warnings
 
 

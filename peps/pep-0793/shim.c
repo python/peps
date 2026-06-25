@@ -7,7 +7,7 @@ static PyModuleDef module_def_and_token;
 PyMODINIT_FUNC
 PyInit_examplemodule(void)
 {
-    PyModuleDef_Slot *slot = PyModExport_examplemodule(NULL);
+    PyModuleDef_Slot *slot = PyModExport_examplemodule();
 
     if (module_def_and_token.m_name) {
         // Take care to only set up the static PyModuleDef once.

@@ -10,12 +10,6 @@ class PEPFooter(transforms.Transform):
     """Footer transforms for PEPs.
 
      - Remove the References/Footnotes section if it is empty when rendered.
-     - Create a link to the (GitHub) source text.
-
-    Source Link:
-        Create the link to the source file from the document source path,
-        and append the text to the end of the document.
-
     """
 
     # Uses same priority as docutils.transforms.TargetNotes
@@ -44,31 +38,21 @@ class PEPFooter(transforms.Transform):
                     section.parent.extend(to_hoist)
                     section.parent.remove(section)
 
-        # Add link to source text and last modified date
-        if pep_source_path.stem != "pep-0000":
-            if pep_source_path.stem != "pep-0210":  # 210 is entirely empty, skip
-                self.document += nodes.transition()
-            self.document += _add_source_link(pep_source_path)
-            self.document += _add_commit_history_info(pep_source_path)
 
-
-def _add_source_link(pep_source_path: Path) -> nodes.paragraph:
-    """Add link to source text on VCS (GitHub)"""
-    source_link = f"https://github.com/python/peps/blob/main/peps/{pep_source_path.name}"
-    link_node = nodes.reference("", source_link, refuri=source_link)
-    return nodes.paragraph("", "Source: ", link_node)
-
-
-def _add_commit_history_info(pep_source_path: Path) -> nodes.paragraph:
-    """Use local git history to find last modified date."""
-    try:
-        iso_time = _LAST_MODIFIED_TIMES[pep_source_path.stem]
-    except KeyError:
-        return nodes.paragraph()
-
-    commit_link = f"https://github.com/python/peps/commits/main/peps/{pep_source_path.name}"
-    link_node = nodes.reference("", f"{iso_time} GMT", refuri=commit_link)
-    return nodes.paragraph("", "Last modified: ", link_node)
+def get_page_footer_context(pep_stem: str) -> dict[str, str]:
+    """Template context for the page footer, rendered by ``page.html``."""
+    context = {
+        "source_link": (
+            f"https://github.com/python/peps/blob/main/peps/{pep_stem}.rst"
+        ),
+    }
+    iso_time = _LAST_MODIFIED_TIMES.get(pep_stem, "")
+    if iso_time:
+        context["last_modified"] = iso_time
+        context["commit_link"] = (
+            f"https://github.com/python/peps/commits/main/peps/{pep_stem}.rst"
+        )
+    return context
 
 
 def _get_last_modified_timestamps():

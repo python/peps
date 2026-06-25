@@ -23,6 +23,7 @@ from pep_sphinx_extensions.pep_processor.parsing import (
     pep_parser,
     pep_role,
 )
+from pep_sphinx_extensions.pep_processor.transforms import pep_footer
 from pep_sphinx_extensions.pep_processor.transforms import pep_references
 from pep_sphinx_extensions.pep_zero_generator.pep_index_generator import create_pep_zero
 
@@ -67,6 +68,9 @@ def set_description(
         context["description"] = html.escape(abstract)
     else:
         context["description"] = "Python Enhancement Proposals (PEPs)"
+
+    if pagename != "pep-0000":
+        context.update(pep_footer.get_page_footer_context(pagename))
 
 
 def setup(app: Sphinx) -> dict[str, bool]:

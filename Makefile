@@ -42,6 +42,11 @@ dirhtml: BUILDER = dirhtml
 dirhtml: html
 	mv $(BUILDDIR)/404/index.html $(BUILDDIR)/404.html
 
+## search         to rebuild the search index
+.PHONY: search
+search: venv
+	$(VENVDIR)/bin/python3 -m pagefind --site $(BUILDDIR) --verbose
+
 ## linkcheck      to check validity of links within PEP sources
 .PHONY: linkcheck
 linkcheck: BUILDER = linkcheck
@@ -107,6 +112,11 @@ test: venv
 .PHONY: spellcheck
 spellcheck: _ensure-pre-commit
 	$(VENVDIR)/bin/python3 -m pre_commit run --all-files --hook-stage manual codespell
+
+## regen-all      to regenerate generated source files
+.PHONY: regen-all
+regen-all:
+	$(PYTHON) -m release_management update-peps
 
 .PHONY: help
 help : Makefile

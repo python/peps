@@ -20,6 +20,12 @@ Shortcut redirects are also available.
 For example, ``https://peps.python.org/8`` redirects to the canonical link.
 
 
+API
+===
+
+Several data files are available at https://peps.python.org/api/
+
+
 Contributing to PEPs
 ====================
 
@@ -49,7 +55,7 @@ You can find it in the merge box at the bottom of the PR page:
 Render PEPs locally
 -------------------
 
-See the `build documentation <./docs/build.rst>`__ for full
+See the `build documentation <./peps/docs/build.rst>`__ for full
 instructions on how to render PEPs locally.
 In summary, run the following in a fresh, activated virtual environment:
 
