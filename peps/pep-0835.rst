@@ -228,13 +228,64 @@ origin:
 Supported Left-Hand Operands
 -----------------------------
 
-The ``@`` operator is implemented by adding ``nb_matrix_multiply`` to the
-metatype (``type``) and to several typing-related types. The operator is
-supported for any left-hand operand that currently supports the ``|``
-operator for making a union.
+The ``@`` operator is implemented by adding ``nb_matrix_multiply`` to the metatype (``type``) and to several typing-related types. The operator is supported for instances of ``type`` and other typing constructs that currently support the ``|`` operator for unions. The specific handling of ``None`` is currently unsettled (see Open Issues).
 
 For all other left-hand operands, the operator returns ``NotImplemented``,
 allowing normal ``__matmul__`` dispatch to proceed.
+
+Forward References and Deferred Evaluation
+-------------------------------------------
+
+Under :pep:`749`, annotations are lazily evaluated. The ``annotationlib``
+module provides several formats for retrieving annotations:
+
+- ``Format.VALUE``: Fully evaluates the annotation. Raises ``NameError``
+  if any name is unresolvable.
+- ``Format.FORWARDREF``: Wraps unresolvable names in ``ForwardRef`` objects.
+  However, when operators like ``@`` or ``|`` fail to evaluate because of an
+  unresolvable name, this format falls back to returning the entire expression
+  as an opaque string wrapped in a single ``ForwardRef`` object.
+- ``Format.STRING``: Returns the raw source text with no evaluation.
+
+For the ``@`` operator, ``Format.FORWARDREF`` is insufficient. Consider::
+
+    class Model:
+        ref: "NotYetDefined" @ Field(gt=0)
+
+Under ``Format.FORWARDREF``, this produces
+``ForwardRef('"NotYetDefined" @ Field(gt=0)')``. The metadata ``Field(gt=0)``
+is trapped inside the unresolved string and cannot be inspected until the
+forward reference is resolved. This is a blocking issue for libraries like
+Pydantic and FastAPI, which inspect metadata at class-definition time.
+
+This proposal introduces a new format, ``Format.FORWARDREF_STRUCTURAL``.
+This format assumes typing semantics and evaluates type expressions involving
+operators (like ``@`` and ``|``) **structurally**. It always returns an ``AnnotatedType`` for ``@``, a union
+for ``|``, and a ``GenericAlias`` for subscripting. When a name cannot be
+resolved, only that name is wrapped in ``ForwardRef``; the surrounding
+operators are still evaluated. The example above produces::
+
+    AnnotatedType(ForwardRef('NotYetDefined'), Field(gt=0))
+
+The metadata is immediately accessible. This format also resolves the
+pre-existing issue with ``|`` unions, where ``"Foo" | int`` under
+``Format.FORWARDREF`` produces ``ForwardRef('Foo | int')`` instead of the
+structural ``ForwardRef('Foo') | int``.
+
+Interaction with PEP 563
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Under :pep:`563` (``from __future__ import annotations``), all annotations
+are stored as source-code strings and evaluated via ``eval()`` on access. The
+``@`` shorthand works correctly in this context: ``eval("int @ Field(gt=0)")``
+triggers the metatype's ``nb_matrix_multiply`` and produces an
+``AnnotatedType``.
+
+However, ``FORWARDREF_STRUCTURAL`` reconstruction from PEP 563 strings is
+coarser than from :pep:`749` thunks. When a name is unresolvable, the
+``ForwardRef`` may wrap a call expression (e.g., ``ForwardRef('Field(gt=0)')``)
+rather than just a name. :pep:`749` provides a strictly better experience and
+is the recommended path forward.
 
 Parsing and Grammar
 ===================
@@ -267,59 +318,6 @@ would be unwieldy.
 
 Backwards Compatibility
 =======================
-
-Forward References and Deferred Evaluation
--------------------------------------------
-
-Under :pep:`749`, annotations are lazily evaluated. The ``annotationlib``
-module provides several formats for retrieving annotations:
-
-- ``Format.VALUE``: Fully evaluates the annotation. Raises ``NameError``
-  if any name is unresolvable.
-- ``Format.FORWARDREF``: Wraps unresolvable names in ``ForwardRef`` objects.
-  However, compound expressions using operators (``@``, ``|``) produce an
-  opaque ``ForwardRef`` string containing the entire expression.
-- ``Format.STRING``: Returns the raw source text with no evaluation.
-
-For the ``@`` operator, ``Format.FORWARDREF`` is insufficient. Consider::
-
-    class Model:
-        ref: "NotYetDefined" @ Field(gt=0)
-
-Under ``Format.FORWARDREF``, this produces
-``ForwardRef('"NotYetDefined" @ Field(gt=0)')``. The metadata ``Field(gt=0)``
-is trapped inside the unresolved string and cannot be inspected until the
-forward reference is resolved. This is a blocking issue for libraries like
-Pydantic and FastAPI, which inspect metadata at class-definition time.
-
-This proposal introduces a new format, ``Format.FORWARDREF_STRUCTURAL``.
-This format assumes typing semantics and evaluates compound type expressions
-**structurally**. It always returns an ``AnnotatedType`` for ``@``, a union
-for ``|``, and a ``GenericAlias`` for subscripting. When a name cannot be
-resolved, only that name is wrapped in ``ForwardRef``; the surrounding
-operators are still evaluated. The example above produces::
-
-    AnnotatedType(ForwardRef('NotYetDefined'), Field(gt=0))
-
-The metadata is immediately accessible. This format also resolves the
-pre-existing issue with ``|`` unions, where ``"Foo" | int`` under
-``Format.FORWARDREF`` produces ``ForwardRef('Foo | int')`` instead of the
-structural ``ForwardRef('Foo') | int``.
-
-Interaction with PEP 563
-^^^^^^^^^^^^^^^^^^^^^^^^^
-
-Under :pep:`563` (``from __future__ import annotations``), all annotations
-are stored as source-code strings and evaluated via ``eval()`` on access. The
-``@`` shorthand works correctly in this context: ``eval("int @ Field(gt=0)")``
-triggers the metatype's ``nb_matrix_multiply`` and produces an
-``AnnotatedType``.
-
-However, ``FORWARDREF_STRUCTURAL`` reconstruction from PEP 563 strings is
-coarser than from :pep:`749` thunks. When a name is unresolvable, the
-``ForwardRef`` may wrap a call expression (e.g., ``ForwardRef('Field(gt=0)')``)
-rather than just a name. :pep:`749` provides a strictly better experience and
-is the recommended path forward.
 
 Operator Overloading
 --------------------
@@ -354,7 +352,7 @@ metaclass.
 The private ``typing._AnnotatedAlias`` class is retained as a deprecated
 compatibility shim. Code using ``isinstance(x, typing._AnnotatedAlias)``
 will continue to work but emit a ``DeprecationWarning``. The shim is
-scheduled for removal in Python 3.18.
+scheduled for removal in Python 3.21.
 
 Code that should be updated:
 
@@ -480,6 +478,26 @@ References
 - :pep:`604` -- Allow writing union types as ``X | Y``
 - :pep:`727` -- Documentation metadata in typing (Withdrawn)
 - :pep:`749` -- Implementing PEP 649
+
+Open Issues
+===========
+
+Supporting ``None``
+-------------------
+
+While the ``@`` operator naturally applies to instances of ``type``, it is currently unsettled how it should handle ``None``.
+
+There are two primary options, both with notable downsides:
+
+1. **Implement ``__matmul__`` on ``NoneType``:** This provides the best ergonomics, allowing ``None @ Metadata``. However, it introduces a runtime risk. If a user accidentally uses matrix multiplication on a ``None`` value (e.g., ``a @ b`` where ``a`` is ``None`` instead of a numpy array), it will silently return an ``Annotated`` object instead of raising a ``TypeError``.
+2. **Do not support ``None @ Metadata``:** This avoids the runtime risk, but creates an ergonomic cliff. Users would be forced to write ``type(None) @ Metadata`` or fall back to ``typing.Annotated[None, Metadata]``.
+
+The authors of this PEP lean slightly in favor of implementing ``__matmul__`` on ``NoneType`` for its ergonomic benefits, but ultimately defer to the Typing Council and community discussion to decide the best path forward.
+
+Deprecation Timeline
+--------------------
+
+This PEP schedules the removal of the ``typing._AnnotatedAlias`` compatibility shim for Python 3.21, following the standard 5-year deprecation policy (:pep:`387`). However, given the widespread use of ``typing.Annotated``, the exact timeline for removal—or whether the shim should be retained indefinitely to prevent churn in legacy code—remains open for community discussion.
 
 Copyright
 =========
