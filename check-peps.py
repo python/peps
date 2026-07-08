@@ -401,7 +401,7 @@ def _validate_python_version(line_num: int, line: str) -> MessageIterator:
 def _validate_post_history(line_num: int, body: str) -> MessageIterator:
     """'Post-History' must be '`DD-mmm-YYYY <Thread URL>`__, …' or `DD-mmm-YYYY`"""
 
-    if body == "":
+    if body in ("", "Pending"):
         return
 
     for offset, line in enumerate(body.removesuffix(",").split("\n"), start=line_num):
@@ -414,7 +414,7 @@ def _validate_post_history(line_num: int, body: str) -> MessageIterator:
                 yield from _date(offset, post_date, "Post-History")
                 yield from _thread(offset, post_url, "Post-History")
             else:
-                yield offset, "post line must be a date or both start with “`” and end with “>`__”"
+                yield offset, "post line must be a date or both start with “`” and end with “>`__”, or 'Pending'"
 
 
 def _validate_resolution(line_num: int, line: str) -> MessageIterator:

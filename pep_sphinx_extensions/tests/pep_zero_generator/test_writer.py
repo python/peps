@@ -56,6 +56,23 @@ def test_verify_email_addresses(test_input, expected):
     assert out == expected
 
 
+def test_verify_email_addresses_multiple_emails():
+    # Arrange
+    peps = [
+        parser.PEP(Path("pep_sphinx_extensions/tests/peps/pep-9000.rst")),
+        parser.PEP(Path("pep_sphinx_extensions/tests/peps/pep-9003.rst")),
+    ]
+
+    # Act
+    out = writer._verify_email_addresses(peps)
+
+    # Assert: Francis has two emails combined, Javier's single email is not duplicated
+    assert out == {
+        "Francis Fussyreverend": "one@example.com, different@example.com",
+        "Javier Soulfulcommodore": "two@example.com",
+    }
+
+
 def test_sort_authors():
     # Arrange
     authors_dict = {
