@@ -1,0 +1,255 @@
+PEP: 841
+Title: Adding Frozen Syntax to Make Immutable Types Optimizable
+Author: Donghee Na <donghee.na@python.org>,
+        Nikita Sobolev <mail@sobolevn.me>
+Status: Draft
+Type: Standards Track
+Created: 16-Jul-2026
+Python-Version: 3.16
+
+
+Abstract
+========
+
+This PEP proposes *frozen display* syntax: ``f{1, 2, 3}`` evaluates to a
+:class:`frozenset`, and ``f{'a': 1}`` evaluates to a ``frozendict``.
+Because immutability is guaranteed by the syntax itself rather than
+inferred from usage, the compiler can treat frozen displays as first-class
+citizens of its optimization pipeline: constant displays are folded into a
+single ``LOAD_CONST`` with an exact result type at compile time and
+cached in ``.pyc`` files.
+
+
+Motivation
+==========
+
+Python has display syntax for its mutable containers but none for its
+immutable ones. Today an immutable set must be written as
+``frozenset({1, 2, 3})`` and an immutable mapping as
+``frozendict({'a': 1})``. Each of these:
+
+* builds a mutable set or dict, then copies it into the immutable type.
+* looks up the name ``frozenset`` or ``frozendict`` at runtime on every
+  execution.
+* cannot be optimized by the compiler, because either name may be
+  rebound and the call may have arbitrary side effects.
+
+CPython already hints at the opportunity: the peephole optimizer rewrites
+a constant set display into a frozenset, but only as the right operand
+of ``in``. Assign the same display to a variable and the optimization is
+gone. The root cause is that the compiler can never prove immutability
+of a ``set`` or ``dict`` display, so it must rebuild it on every
+execution. A display whose *semantics* guarantee immutability removes
+that barrier once and for all.
+
+Immutable container displays have been requested and discussed by the
+community several times, most recently in the `frozenset and frozendict
+comprehensions
+<https://discuss.python.org/t/frozenset-and-frozendict-comprehensions/101584>`__
+thread on Discourse.
+
+
+Rationale
+=========
+
+Syntax, not a builtin call
+--------------------------
+
+Only syntax gives the compiler a semantic guarantee. A call to
+``frozenset(...)`` can be shadowed, but a frozen display cannot. Every
+optimization described below follows from this single property.
+
+Static analysis benefits in the same way. Today, tools must assume
+that ``frozenset(...)`` refers to the builtin. A frozen display turns
+that assumption into a syntactic guarantee, so analyzers can treat the
+result as immutable with full confidence. This holds even for purely
+syntactic tools that perform no name resolution.
+
+Why ``f{...}``
+--------------
+
+The ``f`` prefix reads as *frozen*, mirroring the familiar f-string
+prefix convention. Sharing the letter with f-strings is not a problem:
+strings are immutable too, so either way an ``f`` prefixed expression
+evaluates to an immutable value. ``f{`` is a syntax error in all
+current Python versions, so the syntax is fully backward compatible. The tokenizer
+emits a single ``FBRACE`` token for ``f{``, so ``f {1}`` (with a space)
+remains an error and there is no ambiguity with the name ``f`` or with
+f-strings.
+
+
+Specification
+=============
+
+Grammar
+-------
+
+New alternatives are added to ``atom``, mirroring ``set`` and ``dict``
+displays and comprehensions::
+
+   fset:      FBRACE star_named_expressions '}'
+   fsetcomp:  FBRACE star_named_expression for_if_clauses '}'
+   fdict:     FBRACE [double_starred_kvpairs] '}'
+   fdictcomp: FBRACE kvpair for_if_clauses '}'
+
+* ``f{1, 2, 3}`` is a frozenset display.
+* ``f{'a': 1, 'b': 2}`` is a frozendict display.
+* ``f{}`` is an empty frozendict, mirroring ``{}``.
+* Star unpacking follows the existing displays: ``f{*xs}`` is a
+  frozenset display (like ``{*xs}``) and ``f{**d}`` is a frozendict
+  display (like ``{**d}``).
+* Comprehensions are supported: ``f{x for x in xs}`` is a frozenset
+  comprehension and ``f{k: v for k, v in items}`` is a frozendict
+  comprehension.
+
+AST
+---
+
+Four new expression nodes are added: ``FrozenSet(elts)``,
+``FrozenDict(keys, values)``, ``FrozenSetComp(elt, generators)``, and
+``FrozenDictComp(key, value, generators)``, structurally identical to
+their mutable counterparts. Distinct nodes (rather than a flag) let
+every downstream
+consumer (e.g. the symbol table, the AST optimizer, the code generator,
+and third-party tools) dispatch on immutability directly.
+
+Semantics
+---------
+
+A frozenset display evaluates to exactly what ``frozenset({...})``
+returns. A frozendict display evaluates to exactly what
+``frozendict({...})`` returns. Both result types are immutable and
+hashable, which is what makes the compile-time treatment below sound.
+
+Bytecode
+--------
+
+Two new instructions are added:
+
+* ``BUILD_FROZENSET (count)`` works like ``BUILD_SET``, but the freshly
+  created, uniquely referenced set is frozen in place with no copy.
+* ``BUILD_FROZENMAP (count)`` works like ``BUILD_MAP``, but creates a
+  ``frozendict``.
+
+``count`` is an ordinary oparg with the same format and meaning as in
+the existing ``BUILD_SET`` and ``BUILD_MAP`` instructions.
+
+Displays that use star-unpacking or exceed the stack-use guideline fall
+back to building the mutable container and freezing it in place. The
+result is indistinguishable. Comprehensions take the same path, so
+they need no new opcodes.
+
+
+The optimization pipeline
+=========================
+
+The central claim of this PEP is that frozen displays are not merely
+convenient syntax: they give every stage of the compiler a guarantee it
+can act on. The reference implementation already exercises the full
+pipeline:
+
+1. **AST preprocessing.** ``FrozenSet`` and ``FrozenDict`` participate
+   in AST-level constant folding of their elements.
+
+2. **Code generation.** The common case compiles to a single
+   ``BUILD_FROZENSET`` / ``BUILD_FROZENDICT`` instruction with no name
+   lookup, no temporary copy, and an exact, statically known result type
+   (used by the compiler's type inference, e.g. to reject
+   ``f{1, 2}[0]`` at compile time).
+
+3. **Control flow graph (CFG) constant folding.** A display whose
+   keys and values are all constants is folded into a single
+   ``LOAD_CONST``, serialized into the ``.pyc`` by marshal, and shared
+   across all executions: zero per-execution construction cost. Unlike
+   the existing list/set folds, this is *unconditionally* valid, since
+   immutability comes from the language semantics, not from how the
+   value is used. A display with a non-constant element, e.g.
+   ``f{'key': ['list']}``, is still built at runtime.
+
+4. **Constant deduplication.** Frozen constants participate in
+   ``co_consts`` deduplication: equal frozen displays within a code
+   object share a single object (frozendict keys are compared
+   insertion-order-independently, matching ``frozendict`` equality).
+
+.. note::
+
+   This PEP deliberately makes no claims about JIT-level optimization:
+   the JIT project is currently on hold following the `Steering
+   Council's announcement
+   <https://discuss.python.org/t/an-announcement-from-the-steering-council-regarding-the-jit-project/107638>`__.
+
+The pipeline also opens future work that mutable displays can never
+support: sharing folded frozen constants across code objects and
+immortalizing them under free threading.
+
+
+Backwards Compatibility
+=======================
+
+``f{`` is a syntax error today, so no existing code changes meaning.
+The changes visible to tooling are: a new ``FBRACE`` token, four new
+AST node types, two new opcodes, and a bytecode magic number bump.
+
+
+How to Teach This
+=================
+
+"Prefix a set or dict display with ``f`` to make it frozen". The
+mental model is the same as for f-strings. Style guidance: prefer ``f{...}`` over
+``frozenset({...})`` for literal values. Constant frozen displays are
+free after the first execution.
+
+
+Impact on the Standard Library
+==============================
+
+A quick survey of the standard library (excluding tests) finds about
+105 ``frozenset(...)`` and 65 ``frozendict(...)`` call sites, of which
+about 46 and 22 respectively pass a literal display and could be
+written as ``f{...}``. They spread across widely used modules such as
+``typing``, ``dataclasses``, ``functools``, ``copy``, and
+``traceback``.
+
+These numbers are only an estimate of the potential effect. This PEP
+does not propose a mechanical rewrite of the standard library.
+
+
+Reference Implementation
+========================
+
+A complete implementation, including the parser, AST, code generator,
+and CFG constant folding, is available in the `fset_fdict branch
+<https://github.com/corona10/cpython/tree/fset_fdict>`__ of the author's
+CPython fork.
+
+
+Rejected Ideas
+==============
+
+Alternative spellings
+---------------------
+
+Many spellings were considered. ``f`` was chosen simply because it is
+the prefix that best evokes *frozen*:
+
+* Single letter prefixes: ``i{'key': 1}`` (immutable), ``z{'key': 1}``.
+* Multi letter prefixes: ``fr{'key': 1}``, ``fz{'key': 1}``,
+  ``frz{'key': 1}``.
+* Symbol prefixes: ``${'key': 1}``, ``+{'key': 1}``.
+* Bracket variants: ``{{'key': 1}}``, ``|{'key': 1}|``, ``{|'key': 1|}``.
+* Word prefixes: ``frozen{'key': 1}``, ``fdict{'key': 1}``,
+  ``frozendict {'key': 1}``.
+
+Freezing methods
+----------------
+
+Methods such as ``{'key': 1}.freeze()`` or
+``{'key': 1}.take_frozendict()`` are not real alternatives: they can be
+added independently of this PEP.
+
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
