@@ -86,3 +86,20 @@ def test_sort_authors():
 
     # Assert
     assert out == ["Aardvark, Alfred", "lowercase, laurence", "Zebra, Zoë"]
+
+
+def test_emit_pep_row_links_python_version_to_release_pep():
+    # Arrange
+    pep0_writer = writer.PEPZeroWriter(release_peps={"3.14": 745})
+
+    # Act
+    pep0_writer.emit_pep_row(
+        shorthand="Active",
+        number=999,
+        title="Test PEP",
+        authors="Test Author",
+        python_version="3.14",
+    )
+
+    # Assert
+    assert "     - :pep:`3.14 <745>`" in pep0_writer.output

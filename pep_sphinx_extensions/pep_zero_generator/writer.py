@@ -59,8 +59,9 @@ class PEPZeroWriter:
         801: "Warsaw",
     }
 
-    def __init__(self):
+    def __init__(self, release_peps: dict[str, int] | None = None):
         self.output: list[str] = []
+        self.release_peps = release_peps or {}
 
     def emit_text(self, content: str) -> None:
         # Appends content argument to the output list
@@ -87,7 +88,14 @@ class PEPZeroWriter:
         self.emit_text(f"     - :pep:`{title.replace('`', '')} <{number}>`")
         self.emit_text(f"     - {authors}")
         if python_version is not None:
-            self.emit_text(f"     - {python_version}")
+            pep_number = self.release_peps.get(python_version)
+
+            if pep_number is not None:
+                self.emit_text(
+                    f"     - :pep:`{python_version} <{pep_number}>`"
+                )
+            else:
+                self.emit_text(f"     - {python_version}")
 
     def emit_column_headers(self, *, include_version=True) -> None:
         """Output the column headers for the PEP indices."""
