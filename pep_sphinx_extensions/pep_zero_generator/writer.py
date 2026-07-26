@@ -95,7 +95,19 @@ class PEPZeroWriter:
                     f"     - :pep:`{python_version} <{pep_number}>`"
                 )
             else:
-                self.emit_text(f"     - {python_version}")
+                versions = [version.strip() for version in python_version.split(",")]
+
+                linked_versions = []
+                for version in versions:
+                    release_pep = self.release_peps.get(version)
+                    if release_pep is not None:
+                        linked_versions.append(
+                            f":pep:`{version} <{release_pep}>`"
+                        )
+                    else:
+                        linked_versions.append(version)
+
+                self.emit_text(f"     - {', '.join(linked_versions)}")
 
     def emit_column_headers(self, *, include_version=True) -> None:
         """Output the column headers for the PEP indices."""
