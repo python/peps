@@ -81,7 +81,13 @@ def create_pep_zero(app: Sphinx, env: BuildEnvironment, docnames: list[str]) -> 
     pep0_path = subindices.update_sphinx("pep-0000", pep0_text, docnames, env)
     peps.append(parser.PEP(pep0_path))
 
-    subindices.generate_subindices(SUBINDICES_BY_TOPIC, peps, docnames, env)
+    subindices.generate_subindices(
+        SUBINDICES_BY_TOPIC,
+        peps,
+        release_peps,
+        docnames,
+        env,
+    )
 
     write_peps_json(peps, Path(app.outdir))
 

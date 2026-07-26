@@ -88,9 +88,26 @@ def test_sort_authors():
     assert out == ["Aardvark, Alfred", "lowercase, laurence", "Zebra, Zoë"]
 
 
-def test_emit_pep_row_links_python_version_to_release_pep():
+@pytest.mark.parametrize(
+    ("python_version", "release_peps", "expected"),
+    [
+        ("3.14", {"3.14": 745}, "     - :pep:`3.14 <745>`"),
+        ("2.6, 3.0", {"2.6, 3.0": 361}, "     - :pep:`2.6, 3.0 <361>`"),
+        ("2.7, 3.1", {"2.7, 3.1": 375}, "     - :pep:`2.7, 3.1 <375>`"),
+        (
+            "2.4, 2.5, 2.6",
+            {"2.4, 2.5, 2.6": 320},
+            "     - :pep:`2.4, 2.5, 2.6 <320>`",
+        ),
+    ],
+)
+def test_emit_pep_row_links_python_version_to_release_pep(
+    python_version,
+    release_peps,
+    expected,
+):
     # Arrange
-    pep0_writer = writer.PEPZeroWriter(release_peps={"3.14": 745})
+    pep0_writer = writer.PEPZeroWriter(release_peps=release_peps)
 
     # Act
     pep0_writer.emit_pep_row(
@@ -98,8 +115,8 @@ def test_emit_pep_row_links_python_version_to_release_pep():
         number=999,
         title="Test PEP",
         authors="Test Author",
-        python_version="3.14",
+        python_version=python_version,
     )
 
     # Assert
-    assert "     - :pep:`3.14 <745>`" in pep0_writer.output
+    assert expected in pep0_writer.output
