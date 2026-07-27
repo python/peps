@@ -94,9 +94,7 @@ class PEPZeroWriter:
                 release_pep = self.release_peps.get(version)
 
                 if release_pep is not None:
-                    linked_versions.append(
-                        f":pep:`{version} <{release_pep}>`"
-                    )
+                    linked_versions.append(f":pep:`{version} <{release_pep}>`")
                 else:
                     linked_versions.append(version)
 

@@ -18,5 +18,4 @@ def test_build_release_peps_links_individual_versions_from_joint_release_pep():
 
     release_peps = pep_index_generator.build_release_peps(peps)
 
-    assert release_peps["2.6"] == 361
-    assert release_peps["3.0"] == 361
+    assert release_peps == {"2.6": 361, "3.0": 361}
