@@ -60,15 +60,37 @@ def write_peps_json(peps: list[parser.PEP], path: Path) -> None:
     Path(path, "api", "peps.json").write_text(json_peps, encoding="utf-8")
 
 
+def build_release_peps(peps: list[parser.PEP]) -> dict[str, int]:
+    """Map each Python version to its release-schedule PEP number.
+
+    Handles release PEPs that cover multiple versions jointly
+    (e.g. "2.6, 3.0"), so individual versions also resolve.
+    """
+    release_peps: dict[str, int] = {}
+    release_versions = {
+        pep.python_version
+        for pep in peps
+        if pep.python_version and "release" in pep.topic
+    }
+
+    for pep in peps:
+        if not pep.python_version or "release" not in pep.topic:
+            continue
+
+        release_peps[pep.python_version] = pep.number
+
+        if "," in pep.python_version:
+            for version in map(str.strip, pep.python_version.split(",")):
+                if version not in release_versions:
+                    release_peps[version] = pep.number
+
+    return release_peps
+
+
 def create_pep_zero(app: Sphinx, env: BuildEnvironment, docnames: list[str]) -> None:
     peps = _parse_peps(Path(app.srcdir))
 
-    release_peps = {
-        pep.python_version: pep.number
-        for pep in peps
-        if pep.python_version
-        and "release" in pep.topic
-    }
+    release_peps = build_release_peps(peps)
 
     numerical_index_text = writer.PEPZeroWriter(
         release_peps
