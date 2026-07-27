@@ -67,22 +67,11 @@ def build_release_peps(peps: list[parser.PEP]) -> dict[str, int]:
     (e.g. "2.6, 3.0"), so individual versions also resolve.
     """
     release_peps: dict[str, int] = {}
-    release_versions = {
-        pep.python_version
-        for pep in peps
-        if pep.python_version and "release" in pep.topic
-    }
 
     for pep in peps:
-        if not pep.python_version or "release" not in pep.topic:
-            continue
-
-        release_peps[pep.python_version] = pep.number
-
-        if "," in pep.python_version:
+        if pep.python_version and "release" in pep.topic:
             for version in map(str.strip, pep.python_version.split(",")):
-                if version not in release_versions:
-                    release_peps[version] = pep.number
+                release_peps[version] = pep.number
 
     return release_peps
 

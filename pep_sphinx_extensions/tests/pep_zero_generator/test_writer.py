@@ -88,22 +88,29 @@ def test_sort_authors():
     assert out == ["Aardvark, Alfred", "lowercase, laurence", "Zebra, Zoë"]
 
 
+release_peps = {
+    "2.4": 320,
+    "2.5": 356,
+    "2.6": 361,
+}
+
+
 @pytest.mark.parametrize(
-    ("python_version", "release_peps", "expected"),
+    ("python_version", "expected"),
     [
-        ("3.14", {"3.14": 745}, "     - :pep:`3.14 <745>`"),
-        ("2.6, 3.0", {"2.6, 3.0": 361}, "     - :pep:`2.6, 3.0 <361>`"),
-        ("2.7, 3.1", {"2.7, 3.1": 375}, "     - :pep:`2.7, 3.1 <375>`"),
+        ("3.14", "     - 3.14"),
         (
             "2.4, 2.5, 2.6",
-            {"2.4, 2.5, 2.6": 320},
-            "     - :pep:`2.4, 2.5, 2.6 <320>`",
+            "     - :pep:`2.4 <320>`, :pep:`2.5 <356>`, :pep:`2.6 <361>`",
+        ),
+        (
+            "2.4, 2.9",
+            "     - :pep:`2.4 <320>`, 2.9",
         ),
     ],
 )
 def test_emit_pep_row_links_python_version_to_release_pep(
     python_version,
-    release_peps,
     expected,
 ):
     # Arrange
