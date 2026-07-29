@@ -561,14 +561,16 @@ The ``files`` key contains a mapping from the names of the files uploaded in thi
 sub-mapping with the following keys:
 
 ``status``
-    A string with valid values
-    ``pending``, ``processing``, ``complete``, ``error``, and ``canceled``.
-    If there was an error during upload,
-    then clients should not assume the file is in any usable state,
-    ``error`` will be returned and it's best to
-    :ref:`cancel or delete <file-upload-session-cancellation>` the file and start over.
-    This action would remove the file name from the ``files`` key of the
-    :ref:`session status response body <publishing-session-response>`.
+    A string with valid values ``pending``, ``processing``, ``completed``, and ``error``, mirroring
+    the :ref:`state of that file's upload session <file-upload-session-states>`.  If there was an
+    error during upload, then clients should not assume the file is in any usable state, ``error``
+    will be returned and it's best to :ref:`cancel or delete <file-upload-session-cancellation>` the
+    file and start over.
+
+    ``canceled`` never appears here.  Canceling or deleting a file removes its entry from the ``files``
+    mapping of the :ref:`session status response body <publishing-session-response>` entirely, since the
+    file is no longer part of the session.  The file's own :ref:`file upload session status URL
+    <file-upload-session-status>` continues to report ``canceled``.
 
 ``link``
     The *absolute* URL that the client should use to reference this specific file.  This URL is used to
@@ -662,6 +664,9 @@ The transitions between these states are:
      - Publish request accepted for deferred processing (``202 Accepted``)
      - ``processing``
    * - ``open`` or ``error``
+     - Publish requested while any file is not ``completed``
+     - rejected with ``409 Conflict`` (see :ref:`publishing-session-completion`)
+   * - ``open`` or ``error``
      - Publish request fails synchronously
      - unchanged (the error is returned to the caller)
    * - ``open`` or ``error``
@@ -710,6 +715,20 @@ The request looks like:
     }
 
 
+Every file in the session **MUST** have finished uploading before the session can be published.  If any entry
+in the session's :ref:`files mapping <publishing-session-files>` is in a state other than ``completed``, the
+server **MUST** reject the publish request with a ``409 Conflict`` :ref:`error response <session-errors>`
+identifying the offending file(s) and their current states, and leave the session in its current editable
+state.  The client resolves this by waiting for each in-flight :ref:`file upload session
+<file-upload-session-states>` to resolve, and then either publishing again or first :ref:`deleting
+<file-upload-session-cancellation>` the files it no longer intends to publish.
+
+This precondition is deliberately expressed as an allow-list -- only ``completed`` files may be published --
+so that a file in any other state blocks publication rather than being silently included or silently dropped.
+In particular this covers files in the ``error`` state, which cannot be repaired in place and **MUST** be
+deleted (see :ref:`file-upload-session-states`), as well as any additional file states that a future revision
+of this protocol might introduce.
+
 If the server is able to immediately complete the publishing session, it may do so and return a ``201
 Created`` response, moving the session to the terminal :ref:`status <publishing-session-states>`
 ``published``.  If it is unable to immediately complete the publishing session (for instance, if it needs to
@@ -745,7 +764,9 @@ is therefore performed atomically at publish time.
 
 **Filename reservation.**  When a client requests publication, the server **MUST** atomically reserve the
 filenames of all files in the session within the target release, and hold that reservation for the duration of
-the publish:
+the publish.  Because :ref:`publication requires every file in the session to have finished uploading
+<publishing-session-completion>`, this reservation covers exactly the fully uploaded files that the session
+will publish:
 
 - While the reservation is held, any other attempt to upload a file with one of those filenames to the same
   release -- whether through this API or the legacy API -- **MUST** be rejected with a ``409 Conflict``,
@@ -806,6 +827,15 @@ Cancellation is only permitted while the session is :ref:`open or in the error s
 publishing request is already being processed) the server **MUST** reject the cancellation with a ``409
 Conflict``, since publication may already be in progress.  The client can instead wait for processing to
 resolve; if it resolves to ``error``, the session can then be canceled.
+
+Cancellation is otherwise permitted regardless of the states of the session's files.  In particular, a session
+**MUST NOT** be refused cancellation because one or more of its file upload sessions is in the ``processing``
+state.  Unlike :ref:`deleting an individual file <file-upload-session-cancellation>`, which leaves the session
+live and heading toward a publish whose contents would then depend on how that file's processing resolved,
+canceling the session guarantees that nothing will be published, so no in-flight validation outcome can affect
+the result.  The server **MAY** allow such in-flight processing to run to completion and discard the result
+rather than interrupting it.  All of the session's file upload sessions are considered ``canceled``, and their
+URLs receive the same treatment as the session's other data-bearing URLs described above.
 
 To prevent dangling sessions, servers may also choose to cancel timed-out sessions on their own
 accord. It is recommended that servers expunge their sessions after no less than a week, but each
@@ -1025,7 +1055,7 @@ the following keys:
     the details of which are provided below.
 
 ``status``
-    A string with valid values ``pending``, ``processing``, ``complete``, ``error``, and ``canceled``
+    A string with valid values ``pending``, ``processing``, ``completed``, ``error``, and ``canceled``
     indicating the current :ref:`state of the file upload session <file-upload-session-states>`.
 
 ``expires-at``
@@ -1069,17 +1099,18 @@ File Upload Session States
 A file upload session is always in exactly one of the following states, reported by the ``status``
 key of the :ref:`file upload session status response <file-upload-session-response>`.  The same
 value is reflected for the file in the ``files`` mapping of the :ref:`publishing session status
-<publishing-session-files>`.
+<publishing-session-files>`, except for ``canceled``: a canceled or deleted file is removed from that
+mapping altogether, and only its own status URL continues to report ``canceled``.
 
 .. image:: pep-0694/file-upload-session-states.drawio.svg
    :align: center
    :class: invert-in-dark-mode
    :alt: State diagram for a file upload session.  From the initial state the session enters ``pending``,
          during which the negotiated upload mechanism executes.  From ``pending`` completing the upload either
-         succeeds immediately (``201``) to ``complete``, is accepted for deferred processing (``202``) into
+         succeeds immediately (``201``) to ``completed``, is accepted for deferred processing (``202``) into
          ``processing``, or fails synchronously (``4xx``/``5xx``) to ``error``; ``pending`` can also be
-         canceled (``DELETE``) to the terminal ``canceled`` state.  ``processing`` resolves to ``complete`` on
-         success or to ``error`` on failure.  Both ``complete`` and ``error`` can be deleted (``DELETE``) to
+         canceled (``DELETE``) to the terminal ``canceled`` state.  ``processing`` resolves to ``completed`` on
+         success or to ``error`` on failure.  Both ``completed`` and ``error`` can be deleted (``DELETE``) to
          ``canceled``.  Canceling during ``processing`` is rejected with ``409``.
 
 The textual description of each state and a complete transition table follow.
@@ -1095,10 +1126,11 @@ The textual description of each state and a complete transition table follow.
     The client has requested completion and the server accepted the request for deferred processing, returning
     a ``202 Accepted`` (see :ref:`file-upload-session-completion`).  This is a transitional state; the client
     polls the :ref:`file upload session status <file-upload-session-status>`, respecting the ``Retry-After``
-    header, until it resolves to ``complete`` or ``error``.
+    header, until it resolves to ``completed`` or ``error``.
 
-``complete``
-    The file has been fully uploaded, validated, and accepted into the publishing session.  The file can still
+``completed``
+    The file has been fully uploaded, validated, and accepted into the publishing session.  This is the only
+    state from which a file may be :ref:`published <publishing-session-completion>`.  The file can still
     be :ref:`deleted <file-upload-session-cancellation>`, which removes it from the publishing session and
     moves this session to ``canceled``.
 
@@ -1115,7 +1147,7 @@ The textual description of each state and a complete transition table follow.
     and its associated upload mechanisms **MUST NOT** be assumed reusable; recovering or replacing the file
     requires a new file upload session.
 
-Only ``canceled`` is terminal.  Both ``complete`` and ``error`` still permit a ``DELETE`` (which moves the
+Only ``canceled`` is terminal.  Both ``completed`` and ``error`` still permit a ``DELETE`` (which moves the
 session to ``canceled``); from ``error``, deletion is the only forward action.
 
 The transitions between these states are:
@@ -1135,7 +1167,7 @@ The transitions between these states are:
      - ``pending``
    * - ``pending``
      - Completion request completed immediately (``201 Created``)
-     - ``complete``
+     - ``completed``
    * - ``pending``
      - Completion request accepted for deferred processing (``202 Accepted``)
      - ``processing``
@@ -1147,14 +1179,14 @@ The transitions between these states are:
      - ``canceled``
    * - ``processing``
      - Deferred processing succeeds
-     - ``complete``
+     - ``completed``
    * - ``processing``
      - Deferred processing fails
      - ``error``
    * - ``processing``
      - Cancellation requested
      - rejected with ``409 Conflict`` (see :ref:`file-upload-session-cancellation`)
-   * - ``complete``
+   * - ``completed``
      - File deleted (``DELETE``)
      - ``canceled``
    * - ``error``
@@ -1188,7 +1220,7 @@ The request looks like:
     }
 
 If the server is able to immediately complete the file upload session, it may do so and return a ``201
-Created`` response and set the status of the file upload session to ``complete``.  If it is unable to
+Created`` response and set the status of the file upload session to ``completed``.  If it is unable to
 immediately complete the file upload session (for instance, if it needs to do validation that may take longer
 than reasonable in a single HTTP request), then it may return a ``202 Accepted`` response and set the status
 of the file upload session to ``processing``.
@@ -1219,7 +1251,7 @@ to delete.
 
 A successful deletion request **MUST** respond with a ``204 No Content``.
 
-A ``DELETE`` is permitted while the session is ``pending`` (canceling an in-progress upload), ``complete``
+A ``DELETE`` is permitted while the session is ``pending`` (canceling an in-progress upload), ``completed``
 (deleting an uploaded file), or ``error`` (discarding a failed upload).  If the session is in the
 ``processing`` state -- that is, a deferred completion is already underway -- the server **MUST** reject the
 ``DELETE`` with a ``409 Conflict``, since the outcome is already being decided.  The client can instead wait
@@ -1839,6 +1871,26 @@ Change History
   * Expand the "Why is the project name required" FAQ to note that single-project sessions still improve
     multi-project releases (all projects can be fully staged before a final step publishes each one) and lay a
     foundation for a possible future "publish multiple projects" endpoint.
+  * Define what happens when a publish is requested while file uploads are still in flight, which
+    was previously unspecified.  Publication now has an explicit precondition: every entry in the
+    session's ``files`` mapping **MUST** be in the ``completed`` state, otherwise the server
+    **MUST** reject the publish request with a ``409 Conflict`` identifying the offending file(s)
+    and leave the session editable.  The rule is written as an allow-list so that files in
+    ``error``, and any file states added by future revisions, block publication rather than being
+    silently included or dropped.  Add a corresponding row to the publishing session transition
+    table and scope the filename reservation to the fully uploaded files the session will publish.
+  * Rename the file upload session ``complete`` status to ``completed``.  This matches the
+    past-participle form of the other settled statuses (``canceled``, and the publishing session's
+    ``published``), and disambiguates the *state* from the ``complete`` *action* and its
+    ``links.complete`` endpoint, which keep their names.
+  * Specify that a publishing session **MUST** be cancelable regardless of the states of its files, and in
+    particular **MUST NOT** be refused cancellation because a file upload session is ``processing``.  Because
+    canceling guarantees nothing will be published, no in-flight validation outcome can affect the result, so
+    unlike an individual file deletion there is no race to protect against; the server **MAY** let in-flight
+    processing finish and discard the result rather than interrupting it.
+  * Remove ``canceled`` from the valid values of the publishing session ``files`` mapping ``status`` key,
+    resolving a contradiction with the existing rule that canceling or deleting a file removes its entry from
+    that mapping.  The file's own file upload session status URL continues to report ``canceled``.
 
 * `26-Jun-2026 <https://discuss.python.org/t/pep-694-pypi-upload-api-2-0-round-3/107923>`__
 
