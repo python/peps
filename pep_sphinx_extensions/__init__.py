@@ -105,8 +105,6 @@ def setup(app: Sphinx) -> dict[str, bool]:
     app.add_directive("superseded", pep_banner_directive.SupersededBanner)
     app.add_directive("withdrawn", pep_banner_directive.WithdrawnBanner)
 
-    app.setup_extension("pep_sphinx_extensions.pep_processor.parsing.pep_soft_keyword")
-
     # Register event callbacks
     app.connect("builder-inited", _update_config_for_builder)  # Update configuration values for builder used
     app.connect("env-before-read-docs", create_pep_zero)  # PEP 0 hook
