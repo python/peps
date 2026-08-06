@@ -40,37 +40,37 @@ Rationale
 [Describe why particular design decisions were made.]
 
 
-Backwards Compatibility
+Backwards compatibility
 =======================
 
 [Describe potential impact and severity on pre-existing code.]
 
 
-Security Implications
+Security implications
 =====================
 
 [How could a malicious user take advantage of this new feature?]
 
 
-How to Teach This
+How to teach this
 =================
 
 [How to teach users, new and experienced, how to apply the PEP to their work.]
 
 
-Reference Implementation
+Reference implementation
 ========================
 
 [Link to any existing implementation and details about its state, e.g. proof-of-concept.]
 
 
-Rejected Ideas
+Rejected ideas
 ==============
 
 [Why certain ideas that were brought while discussing this PEP were not ultimately pursued.]
 
 
-Open Issues
+Open issues
 ===========
 
 [Any points that are still being decided/discussed.]
@@ -88,7 +88,7 @@ Footnotes
 [A collection of footnotes cited in the PEP, and a place to list non-inline hyperlink targets.]
 
 
-Change History
+Change history
 ==============
 
 [A summary of major changes the PEP has undergone.  Whenever you update the
