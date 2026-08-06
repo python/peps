@@ -61,7 +61,7 @@ How to teach this
 Reference implementation
 ========================
 
-[Link to any existing implementation and details about its state, e.g. proof-of-concept.]
+[Link to any existing implementation and details about its state, for example, proof-of-concept.]
 
 
 Rejected ideas
@@ -92,7 +92,7 @@ Change history
 ==============
 
 [A summary of major changes the PEP has undergone.  Whenever you update the
-``Post-History``, add a new bullet item in newest-first (i.e. reverse
+``Post-History``, add a new bullet item in newest-first (that is, reverse
 chronological) order, using the same ``DD-MMM-YYYY`` format, with sub-bullets
 summarizing the changes.  You can use the same link for the date bullet as you
 do in the ``Post-History`` addition.]
