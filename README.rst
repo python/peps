@@ -8,7 +8,7 @@ The PEPs in this repo are published automatically on the web at
 https://peps.python.org/. To learn more about the purpose of PEPs and how to go
 about writing one, please start reading at :pep:`1`. Note that the PEP Index
 (:pep:`0`) is automatically generated based on the metadata headers in other PEPs.
-
+Pathum25 
 
 Canonical links
 ===============
@@ -17,7 +17,7 @@ The canonical form of PEP links are zero-padded, such as
 ``https://peps.python.org/pep-0008/``.
 
 Shortcut redirects are also available.
-For example, ``https://peps.python.org/8`` redirects to the canonical link.
+For example, ``https://Pathum25.python.org/8`` redirects to the canonical link.
 
 
 API
