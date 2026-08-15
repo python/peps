@@ -60,17 +60,45 @@ def write_peps_json(peps: list[parser.PEP], path: Path) -> None:
     Path(path, "api", "peps.json").write_text(json_peps, encoding="utf-8")
 
 
+def build_release_peps(peps: list[parser.PEP]) -> dict[str, int]:
+    """Map each Python version to its release-schedule PEP number.
+
+    Handles release PEPs that cover multiple versions jointly
+    (e.g. "2.6, 3.0"), so individual versions also resolve.
+    """
+    release_peps: dict[str, int] = {}
+
+    for pep in peps:
+        if pep.python_version and "release" in pep.topic:
+            for version in map(str.strip, pep.python_version.split(",")):
+                release_peps[version] = pep.number
+
+    return release_peps
+
+
 def create_pep_zero(app: Sphinx, env: BuildEnvironment, docnames: list[str]) -> None:
     peps = _parse_peps(Path(app.srcdir))
 
-    numerical_index_text = writer.PEPZeroWriter().write_numerical_index(peps)
+    release_peps = build_release_peps(peps)
+
+    numerical_index_text = writer.PEPZeroWriter(
+        release_peps
+    ).write_numerical_index(peps)
     subindices.update_sphinx("numerical", numerical_index_text, docnames, env)
 
-    pep0_text = writer.PEPZeroWriter().write_pep0(peps, builder=env.settings["builder"])
+    pep0_text = writer.PEPZeroWriter(
+        release_peps
+    ).write_pep0(peps, builder=env.settings["builder"])
     pep0_path = subindices.update_sphinx("pep-0000", pep0_text, docnames, env)
     peps.append(parser.PEP(pep0_path))
 
-    subindices.generate_subindices(SUBINDICES_BY_TOPIC, peps, docnames, env)
+    subindices.generate_subindices(
+        SUBINDICES_BY_TOPIC,
+        peps,
+        release_peps,
+        docnames,
+        env,
+    )
 
     write_peps_json(peps, Path(app.outdir))
 

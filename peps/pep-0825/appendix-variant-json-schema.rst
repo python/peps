@@ -5,7 +5,7 @@
 Appendix: JSON Schema for Variant Metadata
 ==========================================
 
-.. literalinclude:: variant-schema-0.1.0.json
+.. literalinclude:: variant-schema-0.1.1.json
    :language: json
    :linenos:
    :name: variant-json-schema
