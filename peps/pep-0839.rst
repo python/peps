@@ -1,0 +1,311 @@
+PEP: 839
+Title: PyFrozenSetWriter and PyFrozenDictWriter C API
+Author: Donghee Na <donghee.na@python.org>
+Status: Draft
+Type: Standards Track
+Created: 15-Jul-2026
+Python-Version: 3.16
+
+
+Abstract
+========
+
+Add two builder ("writer") C APIs, ``PyFrozenSetWriter`` and
+``PyFrozenDictWriter``, following the design of ``PyBytesWriter``
+(:pep:`782`).  A writer collects items internally;
+``*_Finish()`` produces the immutable object — a ``frozenset`` or a
+``frozendict`` (:pep:`814`) — in a single pass, without ever exposing
+a mutable intermediate object.
+
+In addition, calling ``PySet_Add()`` on a frozenset is soft
+deprecated (:pep:`387`) in favor of ``PyFrozenSetWriter``.
+
+
+Motivation
+==========
+
+The C API offers no way to build a ``frozenset`` or a ``frozendict``
+item by item without either an intermediate container or mutating
+the object after creation:
+
+``frozenset``
+-------------
+
+There are only two ways to build a frozenset in C today:
+
+1. ``PyFrozenSet_New(iterable)``: works well when all items already
+   sit in one iterable.  When items are produced one at a time in C,
+   or come from more than one collection, callers must first collect
+   them into an intermediate mutable container (set, list, tuple)
+   and then copy it, which costs a second allocation and a second
+   iteration.
+
+2. The documented pattern of calling ``PySet_Add()`` on a newly
+   created frozenset before it is exposed to other code.  This
+   mutates an object of an immutable type after creation and forces
+   the implementation to keep frozensets mutable internally.
+
+``frozendict``
+--------------
+
+:pep:`814` added the ``frozendict`` builtin type, which can be
+created in C with ``PyFrozenDict_New(iterable)``.  As with
+``PyFrozenSet_New()``, code that produces items one at a time, or
+merges more than one mapping, must first build an intermediate dict
+and then copy it.
+
+CPython itself does not build frozendicts this way: the
+``frozendict()`` constructor fills the new object directly, using
+private dict functions, before exposing it.  Extension modules
+cannot use this path.  The writer API makes it public.
+
+
+Rationale
+=========
+
+Applying the writer pattern of :pep:`782` to the two immutable
+containers based on hash tables gives:
+
+* **Construction in a single pass** — no intermediate container, no
+  copy.
+* **Exact sizing** — ``Finish()`` knows the final number of items and
+  can build a table of exactly the right size with no resizing.
+* **A real immutability guarantee** — the returned object was never
+  reachable while mutable, so ``Finish()`` may compute and cache the
+  hash, decide GC tracking at creation time, and the implementation
+  may trust that the object never changes after creation.
+* **A way to replace the pattern of calling ``PySet_Add()`` on a
+  frozenset**, the last documented API in the set C API that mutates
+  an immutable object.
+
+
+Specification
+=============
+
+PyFrozenSetWriter
+-----------------
+
+.. code-block:: c
+
+   typedef struct PyFrozenSetWriter PyFrozenSetWriter;
+
+   PyAPI_FUNC(PyFrozenSetWriter *) PyFrozenSetWriter_Create(
+       Py_ssize_t size_hint);
+   PyAPI_FUNC(int) PyFrozenSetWriter_Add(
+       PyFrozenSetWriter *writer,
+       PyObject *item);
+   PyAPI_FUNC(int) PyFrozenSetWriter_Update(
+       PyFrozenSetWriter *writer,
+       PyObject *iterable);
+   PyAPI_FUNC(PyObject *) PyFrozenSetWriter_Finish(
+       PyFrozenSetWriter *writer);
+   PyAPI_FUNC(void) PyFrozenSetWriter_Discard(
+       PyFrozenSetWriter *writer);
+
+``PyFrozenSetWriter_Create(size_hint)``
+   Create a writer.  *size_hint* is the expected number of items
+   (``0`` is allowed); it is a hint, not a limit.  Return ``NULL``
+   with an exception set on error.
+
+``PyFrozenSetWriter_Add(writer, item)``
+   Add *item* (hashable) to the writer.  Duplicate items are
+   ignored, as with ``set.add``.  The writer holds a strong
+   reference to *item*.  Return ``0`` on success, ``-1`` with an
+   exception set on error; on error the writer remains valid.
+
+``PyFrozenSetWriter_Update(writer, iterable)``
+   Add all items of *iterable*.  Same error handling as ``Add``.
+   ``Update`` can be called any number of times and mixed with
+   ``Add``, so a frozenset can be built from several collections in
+   one pass — something ``PyFrozenSet_New()`` cannot do without an
+   intermediate mutable set.
+
+``PyFrozenSetWriter_Finish(writer)``
+   Return a new ``frozenset`` containing the collected items and
+   destroy the writer.  ``Finish`` does not copy the items again.
+   On failure, return ``NULL`` with an exception set; the writer is
+   destroyed in all cases, matching ``PyBytesWriter_Finish``.
+
+``PyFrozenSetWriter_Discard(writer)``
+   Destroy the writer and release all references it holds, without
+   producing an object.  ``Discard(NULL)`` does nothing.
+
+PyFrozenDictWriter
+------------------
+
+.. code-block:: c
+
+   typedef struct PyFrozenDictWriter PyFrozenDictWriter;
+
+   PyAPI_FUNC(PyFrozenDictWriter *) PyFrozenDictWriter_Create(
+       Py_ssize_t size_hint);
+   PyAPI_FUNC(int) PyFrozenDictWriter_SetItem(
+       PyFrozenDictWriter *writer,
+       PyObject *key,
+       PyObject *value);
+   PyAPI_FUNC(int) PyFrozenDictWriter_Update(
+       PyFrozenDictWriter *writer,
+       PyObject *mapping);
+   PyAPI_FUNC(PyObject *) PyFrozenDictWriter_Finish(
+       PyFrozenDictWriter *writer);
+   PyAPI_FUNC(void) PyFrozenDictWriter_Discard(
+       PyFrozenDictWriter *writer);
+
+Creation, error handling, ``Finish`` and ``Discard`` behave the same
+as ``PyFrozenSetWriter``.  ``PyFrozenDictWriter_Finish()`` returns a
+new ``frozendict``.  ``SetItem`` requires a hashable key and
+overwrites an existing key, keeping the position of the first
+insertion, like ``frozendict``.  ``Update`` accepts anything
+``PyFrozenDict_New()`` accepts.
+
+Soft deprecation of ``PySet_Add()`` on frozensets
+-------------------------------------------------
+
+Calling ``PySet_Add()`` on a ``frozenset`` is *soft deprecated*
+(:pep:`387`): the documentation recommends ``PyFrozenSetWriter``
+instead; no warning is emitted and no removal is scheduled.
+``PySet_Add()`` on ``set`` objects remains fully supported.
+
+Removing frozenset support from ``PySet_Add()``, which would allow
+the implementation to assume that frozensets never change after
+creation, is left to a future PEP.
+
+Common rules
+------------
+
+* A writer is not a ``PyObject`` and must never be exposed to Python
+  code.
+* A writer must not be used from multiple threads at the same time,
+  like ``PyBytesWriter``.
+* Using a writer after ``Finish()`` or ``Discard()`` is undefined
+  behavior.
+* Every successful ``Create()`` must be paired with exactly one
+  ``Finish()`` or ``Discard()``.
+* Both APIs are excluded from the limited API at first, as
+  ``PyBytesWriter`` is.
+
+Example
+-------
+
+.. code-block:: c
+
+   PyObject *
+   build_keywords(const char *const *names, Py_ssize_t n)
+   {
+       PyFrozenSetWriter *w = PyFrozenSetWriter_Create(n);
+       if (w == NULL) {
+           return NULL;
+       }
+       for (Py_ssize_t i = 0; i < n; i++) {
+           PyObject *s = PyUnicode_FromString(names[i]);
+           if (s == NULL || PyFrozenSetWriter_Add(w, s) < 0) {
+               Py_XDECREF(s);
+               PyFrozenSetWriter_Discard(w);
+               return NULL;
+           }
+           Py_DECREF(s);
+       }
+       return PyFrozenSetWriter_Finish(w);
+   }
+
+
+Backwards Compatibility
+=======================
+
+Only new APIs are added.  The soft deprecation of ``PySet_Add()`` on
+frozensets is limited to documentation: existing extensions keep
+compiling and running unchanged.
+
+
+Security Implications
+=====================
+
+None known.
+
+
+How to Teach This
+=================
+
+Both APIs will be documented in the `C API reference
+<https://docs.python.org/3/c-api/>`_, with example code.
+
+
+Rejected Ideas
+==============
+
+Hard deprecation of ``PySet_Add()`` on frozensets
+-------------------------------------------------
+
+Emitting a ``DeprecationWarning`` would break extensions using the
+documented pattern.  This PEP limits itself to soft deprecation;
+removal is left to a future PEP.
+
+
+Appendix: Migration candidates in CPython
+=========================================
+
+CPython's own C code contains all three patterns this PEP replaces.
+These sites would be migrated as part of the reference
+implementation.
+
+Pattern 1 — ``PySet_Add()`` on a newly created frozenset
+--------------------------------------------------------
+
+* ``Python/marshal.c`` (``TYPE_FROZENSET``): also needs delayed
+  reference registration to keep the frozenset hidden while it is
+  mutated.
+* ``Modules/_hashopenssl.c`` (``openssl_md_meth_names``)
+* ``Modules/_ssl.c`` (``ssl_enum_certificates``)
+* ``Modules/_abc.c`` (``__abstractmethods__``)
+* ``Modules/_asynciomodule.c`` (``_asyncio_awaited_by`` getter)
+
+Pattern 2 — intermediate container copied by ``PyFrozenSet_New()``
+------------------------------------------------------------------
+
+* ``Python/initconfig.c`` (``PyConfig_Names``): via a list
+* ``Objects/codeobject.c``, ``Python/compile.c``,
+  ``Python/flowgraph.c`` (constant interning and folding): via a
+  tuple
+* ``Modules/_pickle.c`` (``load_frozenset``): via a list
+
+Pattern 3 — mutable dict copied by ``PyFrozenDict_New()``
+---------------------------------------------------------
+
+* ``Python/marshal.c`` (``TYPE_FROZENDICT``): fills a dict, then
+  copies the entire table with ``PyFrozenDict_New()``.
+
+``Objects/dictobject.c`` already builds frozendicts in a single pass
+internally; this PEP makes that construction path available through a
+supported API.
+
+Example migration (``Python/marshal.c``, ``TYPE_FROZENDICT``):
+
+.. code-block:: c
+
+   // Before: build a dict, then copy it into a frozendict
+   v = PyDict_New();
+   for (;;) {
+       ... PyDict_SetItem(v, key, val) ...
+   }
+   Py_SETREF(v, PyFrozenDict_New(v));
+
+   // After: build the frozendict directly, one pass, exact size
+   PyFrozenDictWriter *w = PyFrozenDictWriter_Create(n);
+   for (;;) {
+       ... PyFrozenDictWriter_SetItem(w, key, val) ...
+   }
+   v = PyFrozenDictWriter_Finish(w);
+
+
+References
+==========
+
+* :pep:`782` — Add PyBytesWriter C API
+* :pep:`814` — Add frozendict built-in type
+
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.

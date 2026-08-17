@@ -2,30 +2,27 @@ import datetime as dt
 
 from pep_sphinx_extensions.pep_processor.transforms import pep_footer
 
-from ...conftest import PEP_ROOT
 
+def test_get_page_footer_context():
+    out = pep_footer.get_page_footer_context("pep-0008")
 
-def test_add_source_link():
-    out = pep_footer._add_source_link(PEP_ROOT / "pep-0008.rst")
-
-    assert "https://github.com/python/peps/blob/main/peps/pep-0008.rst" in str(out)
-
-
-def test_add_commit_history_info():
-    out = pep_footer._add_commit_history_info(PEP_ROOT / "pep-0008.rst")
-
-    assert str(out).startswith(
-        "<paragraph>Last modified: "
-        '<reference refuri="https://github.com/python/peps/commits/main/peps/pep-0008.rst">'
+    assert out["source_link"] == (
+        "https://github.com/python/peps/blob/main/peps/pep-0008.rst"
     )
-    # A variable timestamp comes next, don't test that
-    assert str(out).endswith("</reference></paragraph>")
+    assert out["commit_link"] == (
+        "https://github.com/python/peps/commits/main/peps/pep-0008.rst"
+    )
+    # A variable timestamp, don't test the exact value
+    assert out["last_modified"]
 
 
-def test_add_commit_history_info_invalid():
-    out = pep_footer._add_commit_history_info(PEP_ROOT / "pep-not-found.rst")
+def test_get_page_footer_context_no_history():
+    out = pep_footer.get_page_footer_context("pep-not-found")
 
-    assert str(out) == "<paragraph/>"
+    # No git history -> only the static source link
+    assert out == {
+        "source_link": "https://github.com/python/peps/blob/main/peps/pep-not-found.rst",
+    }
 
 
 def test_get_last_modified_timestamps():
