@@ -48,4 +48,4 @@ class DirectoryBuilder(FileBuilder):
     # sync all overwritten things from DirectoryHTMLBuilder
     name = DirectoryHTMLBuilder.name
     get_target_uri = DirectoryHTMLBuilder.get_target_uri
-    get_outfilename = DirectoryHTMLBuilder.get_output_path
+    get_output_path = DirectoryHTMLBuilder.get_output_path
