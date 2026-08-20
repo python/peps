@@ -15,6 +15,8 @@ Constructing thread safe programs with it is left as an exercise for the reader.
 
 ::
 
+   from threading import Lock
+
    class SynchronizedTupleIter:
 
        def __init__(self, iterable):
