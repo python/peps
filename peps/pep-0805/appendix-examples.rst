@@ -151,4 +151,3 @@ implemented::
                for d in data:
                    self._file.write(d)
                self._file.write(b"\n")
-
