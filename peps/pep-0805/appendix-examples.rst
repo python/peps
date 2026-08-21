@@ -1,6 +1,6 @@
 :orphan:
 
-.. _805-examples:
+.. _pep805-examples:
 
 Appendix: Examples
 ==================
@@ -11,7 +11,7 @@ Tuple iterator
 This example shows how an object can be made to appear as a synchronized object,
 usable across multiple ThreadGroups, by using the ``protect`` mechanism.
 
-Constructing thread safe programs with it is left as an exercise for the reader.
+Constructing thread-safe programs with it is left as an exercise for the reader.
 
 ::
 
@@ -60,7 +60,7 @@ mechanisms to avoid contention.
            with self.mutex:
                return self.number.value
 
-       def increment(self, val):
+       def increment(self):
            with self.mutex:
                self.number.value += 1
 
@@ -96,7 +96,7 @@ get and the set.
            with self.mutex:
                self.number.value = val
 
-       def increment(self, val):
+       def increment(self):
            val = self.value()
            self.set_value(val+1)
 
@@ -131,7 +131,7 @@ implemented::
        def __init__(self, f: file):
            self._lock = Lock()
            with self._lock:
-               self._file = self.lock.protect(del f)
+               self._file = self._lock.protect(del f)
            self._sections: dict[Thread, list[bytes]] = dict().synchronized()
 
        def __enter__(self):
@@ -146,8 +146,9 @@ implemented::
            self._sections[me].append(data)
 
        def __exit__(self, t, v, tb):
-           data = self._sections[threading.current_thread()]
-           del self._sections[threading.current_thread()]
+           me = threading.current_thread()
+           data = self._sections[me]
+           del self._sections[me]
            with self._lock:
                self._file.write(f"Thread {me.name} says:\n".encode())
                for d in data:

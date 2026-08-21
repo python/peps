@@ -1,6 +1,6 @@
 :orphan:
 
-.. _805-implementation-details:
+.. _pep805-implementation-details:
 
 Appendix: Implementation
 ========================
@@ -13,9 +13,9 @@ mutex requires space in the object header. The state can be encoded in a single
 byte. The ID will need to handle all ThreadGroup and mutex IDs, so 16 bits
 is unlikely to be sufficient. 32 bits will be enough.
 
-With these fields, the ``PyObject`` header should be the smaller than is
-currently implemented for :pep:`703`,
-but larger than for the default (with GIL) build.
+With these fields, the ``PyObject`` header should be smaller than is
+currently implemented for :pep:`703`,  but larger than for the default
+(with GIL) build.
 
 A possible object header:
 
@@ -109,7 +109,7 @@ For example, consider a hypothetical API function:
 
 To convert ``PyObject_Foo`` to support access control, the current
 implementation would first be renamed ``PyObject_FooUnchecked``, then
-``PyObject_Foo``` would then be implemented as::
+``PyObject_Foo`` would be implemented as::
 
    PyObject *
    PyObject_Foo(PyObject *op)
@@ -124,7 +124,7 @@ the access control check. A ``_PyObject_CheckAccess`` variant would be
 provided for when the object reference was known to not be ``NULL``.
 
 This mechanical transformation is likely to leave some inefficiencies in the
-code base, so additional work will be needed to re-optimized later.
+code base, so additional work will be needed to re-optimize later.
 
 Since all API functions need to check against the current thread,
 new APIs taking a reference to the thread will be added to reduce the
@@ -138,7 +138,7 @@ Variants of ``_PyObject_CheckAccess`` that take a thread pointer will be
 added.
 
 Many API functions will need no modification. For example, ``PyObject_Str``
-always returns a ``str``, which are immutable, so no additional access check
+always returns a ``str``, which is immutable, so no additional access check
 is needed. ``PyObject_SetItem`` does not return an object, so will need no
 additional check.
 
@@ -166,7 +166,7 @@ micro-ops this can be as simple as adding the extra micro-op, eg::
        unused/5 +
        _PUSH_NULL_CONDITIONAL;
 
-becomes:
+becomes::
 
    macro(LOAD_ATTR_MODULE) =
        unused/1 +
@@ -189,7 +189,7 @@ variable in a ``with`` statement, it might be unprotected outside of the
 We don't want to slow down all local variable reads, so we have to do some
 static analysis to insert additional checks where needed.
 We already do these checks to use ``LOAD_FAST_CHECK`` only where necessary,
-the apporach here is very similar.
+the approach here is very similar.
 
 The algorithm works as follows:
 
@@ -221,7 +221,7 @@ We need to add access controls to existing methods, and add a new class:
    with no synchronization, but with access control added.
 
   a. ``frozenset`` can use that implementation directly
-  b. ``SyncronizedSet`` will need to acquire an internal mutex before
+  b. ``SynchronizedSet`` will need to acquire an internal mutex before
      calling the function, and release it afterwards
   c. ``set``, as it is local, can also use the base implementation directly
 
@@ -229,11 +229,11 @@ We need to add access controls to existing methods, and add a new class:
    with no synchronization, but with access control added.
 
   a. ``frozenset`` will have no implementation of mutating methods
-  b. ``SyncronizedSet`` will need to acquire a mutex before
+  b. ``SynchronizedSet`` will need to acquire a mutex before
      calling the function, and release it afterwards
   c. ``set``, as it is local, can use the base implementation directly
 
-4. ``SyncronizedSet`` methods that take another synchronized object as
+4. ``SynchronizedSet`` methods that take another synchronized object as
    an argument will need to ensure that the internal mutexes are taken in the
    correct order to avoid deadlock.
 
@@ -262,7 +262,7 @@ so will be guarded against the change.
 Guard-free optimizations for immutable objects
 ''''''''''''''''''''''''''''''''''''''''''''''
 
-We already take advantage of immutabilty for some optimizations,
+We already take advantage of immutability for some optimizations,
 but this is done in an ad-hoc fashion. With immutability becoming a
 VM enforced property, we can use known immutability to perform
 more guard removal in the JIT.
