@@ -1,0 +1,1084 @@
+PEP: 805
+Title: Safe Parallel Python
+Author: Mark Shannon <Mark.Shannon@arm.com>, Daniele Parmeggiani <Daniele.Parmeggiani@arm.com>
+Discussions-To: https://discuss.python.org/t/pep-805-safe-parallel-python/108670
+Status: Draft
+Type: Standards Track
+Created: 08-Sep-2025
+Python-Version: 3.16
+
+Abstract
+========
+
+This PEP proposes internal changes to CPython and a new API to support safe,
+parallel execution of Python.
+With this PEP, parallel execution of code is race free by default:
+objects must be explicitly declared to be safe to be shared between
+parallel threads, or such sharing is prohibited.
+
+This PEP builds on both :pep:`703` and :pep:`734` to provide a unified
+execution model that offers better safety than :pep:`703`, better sharing than
+:pep:`734`, and better performance than either of them.
+
+This PEP adds some additional state to each object,
+so that it is possible to check, at runtime and at low cost,
+whether an operation is safe and raise an exception when it is not.
+
+Motivation
+==========
+
+Traditionally, CPython has executed in only one thread at a time.
+This has always been seen as a limitation of Python and there has been a desire
+for Python to support parallel execution for many years.
+
+:pep:`703`, Making the Global Interpreter Lock Optional in CPython, and
+:pep:`554`, Multiple Interpreters in the Stdlib,
+offer ways to support parallelism.
+Multiple interpreters are both safe and support parallelism,
+but they are difficult to use and sharing objects
+between multiple interpreters without copying is impossible.
+PEP 703 supports parallel execution and sharing,
+but is unsafe as it allows race conditions.
+Race conditions allow dangerous and hard-to-find bugs.
+In the most extreme example,
+`Therac-25 <https://en.wikipedia.org/wiki/Therac-25>`__,
+a race condition bug resulted in several fatalities.
+The trouble with race conditions is not that the bugs they introduce
+are necessarily worse than other bugs, but that they can be very hard to
+detect and may easily slip through testing.
+
+Parallelism, without strong support from the language and runtime,
+is extremely difficult to get right:
+
+.. epigraph::
+
+   A large fraction of the flaws in software development are due to
+   programmers not fully understanding all the possible states their
+   code may execute in. In a multithreaded environment, the lack of
+   understanding and the resulting problems are greatly amplified,
+   almost to the point of panic if you are paying attention
+
+   -- John Carmack (Functional Programming in C++)
+
+Python is used by many technologists and widely in education,
+not just by professional software engineers.
+We cannot expect those users to handle the subtleties of parallel programming
+using a race-prone model like that of Java or PEP 703.
+
+One CPython, not two
+--------------------
+
+CPython is currently split into two:
+the default build and the free-threading build.
+Proponents of free-threading expect that free-threading will become the only
+version of CPython in a few years. The authors feel that this will be very
+challenging to achieve, and may be impossible. Removing the default build would
+involve breaking vast numbers of applications and libraries that are not safe
+to use with a free-threading build. Even though many libraries are marked as
+supporting free-threading, it is unlikely that they are all completely safe
+to use in a free-threading environment given the difficulty of eliminating
+race conditions.
+
+The authors fear that without this PEP, or something like it, we will be stuck
+with two builds of Python forever: Users of free-threading will be unwilling to
+give up parallelism, and users of the default build will be unable to risk
+using the free-threading build.
+
+.. note::
+
+  Any program that does not use threads, either by importing the ``threading``
+  module or by embedding a C/C++ application that uses threads, is trivially
+  safe for free-threading or this PEP, as it cannot create new threads.
+  For those applications, this PEP should offer better performance than the
+  free-threading build, but offers no advantages over the current default build.
+
+Rationale
+=========
+
+We want to allow a familiar model of parallel execution while retaining safety.
+Threads, locks, queues and immutability are familiar concepts and provide the
+building blocks for a safe model of execution. Objects should either be safe
+for sharing between threads, or the VM should prevent them from being shared;
+the C++/Java model, where programs can behave in undefined ways,
+is not suitable for Python.
+
+This PEP has two main goals:
+
+* to provide mechanisms to allow parallel execution in a way that is safe.
+* to provide means to move applications gradually from using a single thread
+  to using multiple parallel threads, without sudden breaking changes.
+
+The synchronization quadrant diagram
+------------------------------------
+
++-------------------+------------+------------+
+|                   |  Unshared  |   Shared   |
++===================+============+============+
+|  Mutable objects  |     😊     | 🔥  😨  🔥 |
++-------------------+------------+------------+
+| Immutable objects |     😊     |    😊      |
++-------------------+------------+------------+
+
+The table above shows the four synchronization quadrants. It is only when
+objects can be mutated *and* accessed from parallel threads, that race
+conditions can occur. This PEP aims to provide safety by minimizing the
+amount of code executing in the top-right quadrant, by:
+
+* providing mechanisms to move execution from the dangerous quadrant
+  into either of the adjacent quadrants, and
+* guaranteeing that execution in the dangerous quadrant is
+  properly synchronized.
+
+Immutability allows safe execution without synchronization, so this PEP
+provides mechanisms for making objects immutable. Where immutability is not
+possible, this PEP offers mechanisms for safe execution by ensuring that the
+object is visible only to one thread of execution (the top-left quadrant),
+or that it is protected by a mutual exclusion lock (mutex).
+The PEP also proposes changes to CPython to prevent unsafe execution when
+mutable objects are shared. Finally, the PEP provides a generalization of the
+GIL to allow incrementally moving to parallel execution.
+
+This PEP is inspired by ideas from OCaml, specifically
+`Data Freedom à la Mode <https://dl.acm.org/doi/10.1145/3704859>`__,
+and the `Pyrona project <https://microsoft.github.io/verona/pyrona.html>`__.
+Many of the necessary technologies, such as biased and
+deferred reference counting, have been developed for :pep:`703`.
+
+Specification
+=============
+
+This PEP proposes that the VM control access to objects based on whether it is
+safe to access that object from the current thread of execution.
+
+The core concept is that it is access to objects, rather than operations on
+those objects, that is controlled. If an object cannot be accessed by a thread,
+then that thread cannot perform any unsafe operation on that object, since
+it cannot perform *any* operation on it.
+
+The motivation for this is both correctness and performance. Protecting
+operations would require a detailed model of exactly which operations were
+race-free and which were not. While that might be possible for some standard
+library classes, it is impossible in general and highly error prone.
+Checking every operation on every object would also be prohibitively expensive.
+By controlling access on a per-object basis, the cost can be kept low.
+It is only when a thread reference is created from a heap reference, that
+the operation needs to be checked, with a few rare exceptions.
+
+.. note::
+
+    Correctness is enforced primarily by limiting access to objects, not by
+    checking operations on those objects. This differs from the synchronization
+    techniques used in languages like Java and C#.
+
+Object states
+-------------
+
+All objects will gain a ``__shareable__`` state, which will be used by the
+Python VM to ensure that objects are used safely. The state can be queried by
+looking at the ``__shareable__`` attribute of an object.
+
+An object's ``__shareable__`` state can be one of the following:
+
+* Immutable: Cannot be modified, and can be safely shared between
+  :ref:`ThreadGroup <pep805-ThreadGroup>`\ s.
+* Local: Only visible to a single ThreadGroup, and can be freely
+  mutated by threads belonging to that ThreadGroup.
+* Protected: Object is mutable, and is protected by a mutex.
+* Synchronized: A special state for some builtin objects.
+  All operations on the object are protected internally,
+  so no external synchronization is needed.
+
+The ``__shareable__`` attribute is read-only:
+
+.. code-block:: pycon
+
+   >>> o = object()
+   >>> o.__shareable__
+   Shareable.LOCAL
+   >>> o.__shareable__ = True
+   TypeError: cannot assign to __shareable__
+
+Classes, functions and modules
+------------------------------
+
+All classes will be created *local*, but can be made *synchronized*, or
+*immutable*. For the best safety and performance
+in parallel programs, classes should be made *immutable*
+where possible.
+
+Functions with modifiable free variables, and functions with variables that can
+be modified by inner functions will be *local*. All other functions will be
+*synchronized*.
+The ``__kwdefaults__`` attribute becomes a ``frozendict``.
+The ``__kwdefaults__`` attribute can still be changed, but only by re-assigning
+the whole object, not mutating it. Modifying the ``__code__``, ``__closure__``,
+``__defaults__``, or ``__kwdefaults__``
+attributes of a function will be deprecated.
+
+Most functions are *synchronized*, for example::
+
+   def egg():
+       print("egg")
+
+   >>> t = Thread(target=egg, group=ThreadGroup("other"))
+   >>> t.start()
+   egg
+
+But inner functions that mutate closures are *local*, for example::
+
+   def spam():  # this is local
+       x = 0
+
+       def inner():  # this is also local
+           nonlocal x
+           x += 1
+
+       return inner
+
+   >>> func = spam()
+   >>> t = Thread(target=func, group=ThreadGroup("other"))
+   >>> t.start()
+   IllegalThreadAccessException:
+       <function spam.<locals>.inner...> cannot be accessed by ThreadGroup 'other'
+
+
+Modules will be created *local*, and, like classes, can be explicitly frozen
+or made synchronized. To assist making modules *synchronized*, or
+*immutable* in a principled way, all modules gain a global variable
+``__module__``.  ``__module__`` refers to the module object and is initialized
+when the module is created.
+
+To freeze a Python module, add this to the end of the code for that module::
+
+    freeze(__module__)
+
+To synchronize a Python module, add this code::
+
+    __module__.synchronize()
+
+Extension modules can declare themselves *immutable* or *synchronized*
+using the :ref:`C API <pep805-capi>`.
+
+Where possible, modules should be frozen.
+
+Other objects
+-------------
+
+Views, iterators and other objects that depend on the internal state of other
+mutable objects will inherit the state of those objects. For example,
+a ``listiterator`` of a *local* ``list`` will be *local*,
+but a ``listiterator`` of a *protected* ``list`` will be *protected*.
+Views and iterators of *immutable* objects will be *local* when created.
+
+All other objects that are not inherently immutable (like tuples or strings)
+will be created as *local*. These *local* objects can later be made
+*immutable* or can be *protected*.
+
+Three new classes will be added, ``SynchronizedList``, ``SynchronizedDict``
+and ``SynchronizedSet``. These are *synchronized* versions of ``list``, ``dict``
+and ``set`` respectively. They will have the same API, both in Python and in C,
+as the original classes. The ``__dict__`` of a *synchronized* module will be
+a ``SynchronizedDict``, as will ``sys.modules``. ``sys.path`` will be a
+``SynchronizedList``.
+
+While these *synchronized* classes prevent race conditions in the narrow
+sense that the object itself will not be corrupted, they are not
+generally thread safe. *Immutable* or *local* collections should be
+used where possible.
+
+Object dictionaries
+-------------------
+
+Almost all objects in Python have a ``__dict__`` attribute.
+Freezing an object will convert its ``__dict__`` into a ``frozendict``.
+Synchronizing a module (or any object that both supports synchronization and
+has a ``__dict__``) will convert the ``__dict__`` into a ``SynchronizedDict``.
+
+
+.. _pep805-ThreadGroup:
+
+ThreadGroup objects
+-------------------
+
+A new class, ``threading.ThreadGroup``, will be added to help port applications
+that are currently relying on the GIL (accidentally or by design), using
+multi-processing, or using the ``_interpreters`` module,
+to parallel execution using threads.
+
+All threads sharing a ``ThreadGroup`` object will be serialized,
+in the same way as all threads are currently serialized by the GIL.
+Using multiple ``ThreadGroup``\ s offers much the same capabilities as
+multi-processing, or multiple interpreters, but with lower overhead and with
+the ability to share objects without copying.
+
+There is a many-to-one relationship between threads and ``ThreadGroup``\ s.
+
+The previously unused ``group`` parameter of the ``Thread`` class
+will be used to specify the ``ThreadGroup`` that the ``Thread`` belongs to.
+To create a thread that can run in parallel with other threads,
+use ``Thread(group = ThreadGroup(), ...)``.
+See :ref:`GIL <pep805-GIL>` below for the behavior when ``group`` is not set
+or is ``None``.
+
+While all threads in a ``ThreadGroup`` can access the same *local* objects,
+each thread is treated as distinct for all locks, and thus for *protected*
+objects.
+
+The current thread group can be found with ``threading.current_thread().group``.
+
+Using ThreadGroups for parallelism
+''''''''''''''''''''''''''''''''''
+
+Starting with a program developed for Python "with GIL", parallelism can be
+added by adding additional ThreadGroups. If a program already uses multiple
+threads, these threads can be moved to new ThreadGroups, allowing code
+to execute safely and in parallel.
+
+.. _pep805-locks-and-protection:
+
+Locks and protection
+--------------------
+
+Mutable Python objects can be either *local* or *protected*. To be shareable
+between ThreadGroups, a mutable Python object must be *protected*.
+A *protected* object can be made from any *local* object, by calling the
+``protect`` method of a ``Lock`` or ``RLock``::
+
+   def protect(self: Lock | RLock, obj: T) -> Protected[T]
+
+*Protected* objects cannot be accessed outside of a ``with`` statement, or
+function called from within a ``with`` statement, where the context manager
+is the protecting mutex.
+
+``Lock`` and ``RLock`` classes
+''''''''''''''''''''''''''''''
+
+The ``threading.Lock`` and ``threading.RLock`` classes gain a ``protect``
+method for protecting objects. Once ``protect`` has been called, the lock
+becomes *protective*.
+
+Used as context managers, locks provide race-free, serialized, access to
+*protected* objects::
+
+   m = Lock()
+   with m:
+       l = m.protect([])
+
+   with m:
+       l.append(0)
+   l.append(1) # Raises an exception as mutex is not held.
+
+In addition, locks can be added to form compound locks. Addition is
+commutative, so that::
+
+    def func1(a, b):
+        with locka + lockb:
+            ...
+
+    def func2(a, b):
+        with lockb + locka:
+            ...
+
+will not deadlock should ``func1`` and ``func2`` be called concurrently.
+
+It is an error to call ``acquire`` or ``release``  on a *protective* lock.
+Such a lock can only get acquired by using a ``with`` statement with that
+lock, or a compound lock formed from it, as the context manager.
+
+.. _pep805-new-api:
+
+New API
+-------
+
+This PEP proposes adding the following:
+
+* A ``__freeze__()`` method, added to all Python classes, which freezes the
+  object making it immutable (extension classes may implement ``__freeze__()``,
+  but are not obliged to)
+* A builtin ``freeze(obj)`` function, which calls ``obj.__freeze__()``
+* A ``protect(obj)`` method, added to ``Lock`` and ``RLock``, which
+  returns a *protected* copy of ``obj``.
+* The ``SynchronizedList``, ``SynchronizedDict`` and ``SynchronizedSet`` classes
+* A ``synchronize()`` method, added to ``list``, ``set`` and ``dict``, which
+  returns the *synchronized* version of that object and clears the original
+  object.
+* A ``__shareable__`` read-only attribute for all objects
+* The ``Channel`` and ``TransferBox`` classes for passing objects from one
+  ``ThreadGroup`` to another
+* The ``ThreadGroup`` class
+* The ``group`` parameter used when creating ``Thread``\s now has meaning and
+  can be set to a ``ThreadGroup``
+* A read-only ``group`` attribute for threads
+* A ``__module__`` global variable set to refer to the module at module creation
+* A ``sys.monitoring.StopTheWorld`` context manager object for debuggers
+  and similar tools
+
+The ``freeze()`` function can be used as a decorator.
+
+Freezing
+''''''''
+
+The ``__freeze__()`` method will have the signature
+``__freeze__(self: Self) -> Frozen[Self]`` where
+``Frozen[T]`` is the frozen class for ``T``. The value returned by
+``__freeze__`` is the original object:
+``obj.__freeze__() is obj``. Having a return value of a different type can
+assist type checkers in tracking which variables refer to frozen objects.
+
+The ``__freeze__()`` will be added to all pure Python classes as well as some
+standard library builtin collections. ``set`` and ``dict`` classes
+will gain a ``__freeze__()`` method, converting the object into a
+``frozenset`` or ``frozendict``, respectively.
+
+Note that freezing an object is a shallow operation; ``x.__freeze__()`` only
+freezes ``x`` and not any of the objects that ``x`` refers to.
+
+Freezing an object also freezes its dictionary:
+
+.. code-block:: pycon
+
+   >>> type(x.__dict__)
+   <class 'dict'>
+   >>> freeze(x)
+   >>> type(x.__dict__)
+   <class 'frozendict'>
+
+Freezing objects in ad-hoc fashion is likely to confuse both type checkers and
+other developers. It is therefore recommended that freezing is done in a
+principled fashion, typically freezing all instances of a class, or none.
+For example::
+
+   class ImmutablePoint:
+
+       def __init__(self, x, y):
+           self.x = x
+           self.y = y
+           self.__freeze__()
+
+Freezing can create some difficulties with subclassing, as the superclass's
+``__init__`` cannot freeze instances before the subclass's ``__init__`` method
+has completed initializing instances.
+
+To support subclassing, ``__init__`` methods should have a ``freeze``
+parameter, so that subclasses can delay freezing until initialization is
+finished::
+
+    def __init__(self, args, freeze=True):
+        # initialize
+        if freeze:
+            self.__freeze__()
+
+    # subclass __init__
+    def __init__(self, args, freeze=True):
+        super().__init__(args, freeze=False)
+        # initialize
+        if freeze:
+            self.__freeze__()
+
+
+.. note::
+
+   The various ``freeze`` methods have full VM support. Immutability is not
+   merely a convention, it will be enforced by the VM. Once an object is frozen
+   it cannot be unfrozen.
+
+A ``__deep_freeze__`` method may be added as a
+:ref:`future enhancement<pep805-future-enhancements>`.
+
+The ``freeze`` function can be used as a decorator to freeze classes::
+
+    @freeze
+    class C:
+        """This class cannot be modified once constructed.
+           Instances of this class can still be mutated unless
+           explicitly frozen
+        """
+
+
+Synchronization
+'''''''''''''''
+
+The ``synchronized`` state protects the internal state of an object,
+but is only available for some builtin and extension objects.
+
+Passing mutable values between parallel threads
+'''''''''''''''''''''''''''''''''''''''''''''''
+
+Two classes are provided to pass *local* objects between ThreadGroups.
+
+The ``TransferBox`` class provides a *synchronized* container
+for moving objects from one ThreadGroup to another.
+
+When creating a ``TransferBox`` from a *local* object, the object is
+copied before boxing. The new *local* object is not attached to any
+ThreadGroup.
+
+When claiming the object from the box, the current ThreadGroup becomes
+the owner of the object, if the box's ``sink`` is ``None`` or the current
+ThreadGroup.
+
+*Immutable*, *protected* and *synchronized* objects are passed uncopied::
+
+   EMPTY = sentinel('EMPTY')
+
+   class TransferBox[T]:
+
+       def __new__(cls, obj: T, sink: ThreadGroup | None=None):
+           self.sink = sink
+           self._obj = copy(obj) if obj.__state__ == LOCAL else obj
+
+       def claim(self) -> T:
+           if self._obj is EMPTY:
+               raise ValueError(...)
+           if self.sink is not None and self.sink != current_ThreadGroup:
+               raise ValueError(...)
+           result = self._obj
+           self._obj = EMPTY
+           return result
+
+
+The ``Channel`` class provides a higher level API for passing objects from one
+ThreadGroup to another. Channel is equivalent to this Python class::
+
+   class Channel:
+
+       def __init__(self):
+           self.mutex = Lock()
+           with self.mutex:
+               self.queue = self.mutex.protect(deque())
+           self.__freeze__()
+
+       def put(self, obj):
+           box = TransferBox(del obj)
+           with self.mutex:
+               self.queue.append(box)
+
+       def get(self):
+           with self.mutex:
+               return self.queue.popleft().claim()
+
+
+Adding a "deep" ``put`` method might be added as a
+:ref:`future enhancement<pep805-future-enhancements>`, if there is
+sufficient demand for it.
+
+.. _pep805-GIL:
+
+The Main ThreadGroup
+''''''''''''''''''''
+
+At interpreter startup a ``ThreadGroup`` named "Main" will be created and
+stored in ``sys.main_thread_group``. ``sys.main_thread_group`` is read-only
+and the "Main" ``ThreadGroup`` will outlive all mortal objects even if the
+``sys`` module is deleted.
+The main thread's ``group`` will be ``sys.main_thread_group``:
+
+.. code-block:: pycon
+
+    >>> threading.current_thread()
+    <_MainThread(MainThread, started ...)>
+    >>> threading.current_thread().group
+    <ThreadGroup 'Main'>
+
+The Main ``ThreadGroup`` is analogous to the GIL, in that it serializes
+execution of all threads. It is only when threads are explicitly marked as
+belonging to another ThreadGroup, that there is parallelism.
+
+For threads created with ``group=None``, either explicitly or as the default,
+then the choice of group is determined by the ``PYTHON_PARALLEL`` environment
+variable:
+
+* If ``PYTHON_PARALLEL`` is set to any non-zero value, then a new
+  ``ThreadGroup`` is created for the thread.
+* Otherwise, the thread's group is ``sys.main_thread_group``.
+
+Object states and legal operations
+----------------------------------
+
+Allowed operations
+''''''''''''''''''
+
++------------------------+-----------+-----------------+-----------------+---------------+----------------+
+|    Object state        | Immutable |  Local = thread | Local ≠ thread  |  Protected    |  Synchronized  |
++========================+===========+=================+=================+===============+================+
+|   Acquire reference    |    Yes    |      Yes        |        No       | Yes\ :sup:`1` |       Yes      |
++------------------------+-----------+-----------------+-----------------+---------------+----------------+
+|     ``freeze()``       | No effect |  Yes\ :sup:`2`  |       N/A       |     No        |  Yes\ :sup:`2` |
++------------------------+-----------+-----------------+-----------------+---------------+----------------+
+|     ``protect()``      |    No     | Yes\ :sup:`2,3` |       N/A       |     No        |       No       |
++------------------------+-----------+-----------------+-----------------+---------------+----------------+
+|   ``synchronize()``    |    No     |  Yes\ :sup:`2`  |       N/A       |     No        |       No       |
++------------------------+-----------+-----------------+-----------------+---------------+----------------+
+| All other operations   |    Yes    |      Yes        |       N/A       |     Yes       |       Yes      |
++------------------------+-----------+-----------------+-----------------+---------------+----------------+
+
+1. If the mutex that protects the object is in the set of mutexes held by the
+   thread.
+2. If supported for that class.
+3. The argument must be the sole reference to the object.
+
+ABI breakage
+------------
+
+This PEP will require a one time ABI breakage, much like :pep:`703`,
+as the ``PyObject`` struct will need to be changed.
+
+Deferred reclamation
+--------------------
+
+Immutable and synchronized objects may have their reclamation deferred.
+Objects that have references stored in synchronized lists or dicts may also
+have their reclamation deferred. In other words, they may not be reclaimed
+immediately if there are no more references to them.
+
+This is because these objects may be referred to from several threads
+simultaneously, and the overhead of serializing the reference count
+operations would be too high.
+The implementation of :pep:`703` behaves the same way.
+
+Local objects, visible to only one ThreadGroup, will still be reclaimed
+immediately once they are no longer referenced.
+
+New Exceptions
+--------------
+
+Two new exception classes will be added:
+
+* ``IllegalThreadAccessException`` for when a thread attempts to acquire a
+  reference to a *local* object belonging to another ThreadGroup.
+* ``UnprotectedAccessException`` for when a thread attempts to acquire a
+  reference to a *protected* object without holding the necessary lock.
+
+.. _pep805-ContextSwitch:
+
+Parallelism and Context Switching
+---------------------------------
+
+Each ThreadGroup is independent and any or all of them can run in parallel
+with each other.
+Only one thread can be running at any time within a ThreadGroup.
+
+Switching between threads within a ThreadGroup can occur at any of the
+following locations:
+
+* at a call site
+* at the end of any loop body (the back edge)
+* on entry to a function
+* during a call where any of the above happen
+* during a call to an extension function
+* at the end of any exception handler, including finally blocks
+
+Many operators in Python make calls. So, unless operating on `primitive types`_,
+it is safest to assume that any mathematical operator or
+indexing can allow a context switch.
+
+The following operators will not allow a context switch:
+
+* math operations on `primitive types`_
+* indexing on ``list`` or ``tuple`` with an ``int`` subscript
+* indexing a ``dict`` using a ``str`` key if all the ``dict``\'s keys are
+  ``str``\ s
+
+Introspection and Debuggers
+---------------------------
+
+In general, *local* objects cannot be accessed by threads belonging to a
+different ThreadGroup, nor can *protected* objects be accessed without
+holding the relevant lock. However, this would prevent debuggers and similar
+tools from being able to introspect multiple threads of execution.
+
+To allow this special case, a special context manager
+``sys.monitoring.StopTheWorld`` is provided. Within a ``with`` statement using
+this context manager, all threads (other than the one entering the context
+manager) will be stopped at a :ref:`ContextSwitch <pep805-ContextSwitch>` point,
+and the thread within the context manager will be allowed to access,
+and modify, all objects.
+
+.. _pep805-primitive-types:
+
+Primitive Types
+---------------
+
+The following types are defined as primitive:
+
+* ``bool``
+* ``int``
+* ``float``
+* ``NoneType``
+* ``str``
+* ``bytes``
+
+Primitive types have the following properties:
+
+* They are immutable, so can always be shared between ``ThreadGroup``\s
+* A context switch will not occur during operations on them
+* Their reclamation may be deferred once they are no longer referenced
+
+.. _pep805-capi:
+
+C Extensions and the C API
+--------------------------
+
+.. note::
+
+   In the following section the term "C extension" also applies to extensions
+   written in Rust, C++, Fortran or any other natively compiled language
+
+By default all C extension modules, classes, and their instances will be
+*local*. Objects can be declared to be *synchronized* or *immutable* by
+calling ``PyObject_DeclareSynchronized()`` or ``PyObject_DeclareImmutable()``,
+respectively.
+
+Take care when declaring an object to be *synchronized*. Getting it wrong will
+introduce race conditions, possibly causing crashes and lost data.
+Immutability is **much** easier to get right than synchronization, is safer,
+and often provides better performance.
+
+C extensions that have been hardened to work with free-threading should mark
+objects as *synchronized* or *immutable* as appropriate.
+
+If it is not certain that an object is race-free, then it should be left
+as *local*.
+
+Deliberately choosing to keep certain extension objects as local is an entirely
+acceptable design choice, which will be enforced by the VM. For instance, when
+concurrent access to an object may inevitably produce non-deterministic behavior
+because of the semantics of the object itself, even after all C-level data races
+are resolved.
+
+
+C API functions
+'''''''''''''''
+
+All C API functions will be modified to check that the reference being
+returned, if any, is safe to be accessed from the current thread.
+
+Extension API
+'''''''''''''
+
+It is the responsibility of the VM to check for accessibility, so C functions
+implemented by C extensions as part of the extension API will not need to
+be modified. The VM will perform necessary checks on any returned values.
+
+Backwards Compatibility
+=======================
+
+Default build
+-------------
+
+Compared to the default build, the only incompatible change is that the
+lifetimes of some objects (those of
+:ref:`primitive types<pep805-primitive-types>`) may be extended,
+possibly increasing memory use.
+
+Free-threading build
+--------------------
+
+The most obvious change is that sharing of mutable objects will raise an
+``IllegalThreadAccessException`` instead of allowing data races.
+
+This can be resolved on a case-by-case basis. If mutable shared objects are
+already protected by locks, then make them *protected*. See
+:ref:`pep805-locks-and-protection`. (This will also help ensure the
+thread-safety of such applications.) Turn mutable shared lists and dictionaries
+into their synchronized versions, by using the new ``synchronize()`` method.
+See :ref:`pep805-new-api`.
+(Note that synchronized dicts and lists allow certain race conditions, as they
+also do in free-threading builds; if these were already acceptable then no
+other changes are needed.)
+Otherwise, if mutable shared objects already fall into the category of
+synchronized objects, no changes are needed.
+
+Moreover, note that this PEP does not prevent a thread from storing a
+reference to a *local* mutable object to the heap, where it can be seen by
+multiple threads (e.g. by appending it to a shared list), but an exception
+will be raised when a non-owning thread attempts to acquire a reference
+to it (e.g. by popping it from a shared list). Therefore, care must be exercised
+when transitioning dicts or lists into the synchronized state.
+
+To have threads running in parallel, without needing to explicitly set the
+``ThreadGroup`` for each new thread, the environment variable
+``PYTHON_PARALLEL`` should be set to 1.
+
+Safety
+======
+
+*Local* and *immutable* objects are always safe against race conditions, as
+there can be no concurrent modifications.
+
+However, care must be taken with ``protected`` and ``synchronized`` objects.
+
+See `Examples`_ below for ways to create a Counter class that is race-free and
+one that is not.
+
+Performance
+===========
+
+The key to getting good performance out of any dynamic language, including
+Python, is to specialize code according to the most likely types or values.
+Rather than perform an expensive, general operation, a cheap check is done
+to see that the expectations are met, then an efficient tailored operation is
+performed.
+
+Take the example of indexing into a list: ``l[x]``
+With the GIL, this can be done by first checking that ``l`` is a list, ``x``
+is an int, and that ``x`` is in-bounds. Then the value can be read out of
+the list's array directly. However, in the free-threading build this approach
+doesn't work as another thread may have mutated the list at the same time as it
+was being indexed, meaning that additional synchronization is required.
+The additional synchronization impairs performance but does not provide any
+useful protection against race conditions at the application level.
+
+This PEP allows good performance for parallel code by adding an additional
+check to the guard: that the list is *local*. Since the ``l`` is likely stored
+in a local variable, it must already be *local* and no additional check is
+needed.
+
+However, additional checks will still be needed. Whenever a reference owned by
+a thread is created, then a check will be needed that it is legal.
+Since it is necessary to check that an object is *local* to the ThreadGroup,
+or that it is *immutable*, or that it is *synchronized*
+or that it is *protected* and the correct lock is held, these checks could
+be relatively expensive. However, the specializing adaptive interpreter or JIT
+can specialize or eliminate these operations.
+
+The general check::
+
+    if obj.__state__ == LOCAL and obj.__owner__ == current_threadgroup_id:
+        pass # Good
+    elif obj.__state__ == IMMUTABLE or obj.__state__ == SYNCHRONIZED:
+        pass # Good
+    elif obj.__state__ == PROTECTED and obj.__owner__ in thread.held_mutexes():
+        pass # Good
+    elif sys.monitoring.StopTheWorld.within:
+        pass # Good
+    else:
+        raise ... # Bad
+
+is expensive, but by specializing for the expected case, the check can be made
+cheap.
+For example, if we expect a *local* object, we can do a much cheaper check::
+
+    if obj.__owner__ == current_threadgroup_id:
+        pass # Good
+    else:
+        do_general_check(obj)
+
+Provided we make sure that ThreadGroup IDs and lock IDs are distinct.
+
+
+The impact of parallelism on performance
+----------------------------------------
+
+If all threads belong to a single ``ThreadGroup`` then the JIT can eliminate
+checks for *local* objects (as these checks will always pass),
+resulting in performance very close to the current with-gil build.
+
+Depending on the amount of locking required, the performance impact of adding
+parallelism could range from close to zero, where only immutable objects are
+shared, and all other objects are local, to several percent
+due to locking, but still better than the free-threading build.
+
+Many optimizations that the JIT could perform require that the state of
+objects does not change in a way that is not visible to the optimizer.
+The semantics of :pep:`703` are either unclear, or explicitly prevent these
+kinds of optimizations. Adding *local* and *immutable* objects re-enables a
+large group of optimizations.
+
+Security Implications
+=====================
+
+This PEP provides stronger security for parallel code by reducing or
+eliminating race conditions.
+
+How to Teach This
+=================
+
+While this PEP allows complex approaches to parallelism using *protected* and
+*synchronized* objects, it encourages a simpler approach like the
+Sharing Xor Mutability (SXM) model, or the Actor model. Using these simpler
+models will assist in adding parallelism without undue complexity.
+
+The Sharing Xor Mutability model
+----------------------------------
+
+In the SXM model all data is either mutable or shared. Only immutable data can
+be shared. This model is safe and easy to understand.
+Any application using multiple interpreters, or multi-processing is already
+using a more restricted form of this model.
+
+If an application can be implemented using this model, then it should be.
+It is safe, it is easy to reason about, and it can provide good performance.
+
+The SXM model can be implemented by making all objects *immutable*
+(shareable) or *local* (mutable).
+
+The SXM model is also known as the AXM for Aliasing Xor Mutability in the
+academic literature, as aliasing implies shareability in statically compiled
+languages.
+
+Communicating Sequential Processes
+----------------------------------
+
+In
+`this model <https://en.wikipedia.org/wiki/Communicating_sequential_processes>`__
+parallel "processes" (or Actors) only interact through message passing. This
+can be implemented using ``ThreadGroup``\s and ``Channel``\s.
+
+Other approaches to parallelism
+-------------------------------
+
+In order to implement more sophisticated models of parallelism, a clear
+understanding of the model of execution will be needed.
+Writing unsafe code is much harder than under :pep:`703`, but the new
+exceptions may surprise users. Extensive documentation will be provided.
+
+Examples
+========
+
+A range of examples, illustrating how to use the new features in this
+PEP are in  the :ref:`examples appendix <pep805-examples>`.
+
+
+Relationship to PEP 703 (Making the Global Interpreter Lock Optional in CPython)
+================================================================================
+
+This PEP should be thought of as building on :pep:`703`, rather than competing
+with it. Many of the mechanisms needed to implement this PEP have been developed
+for PEP 703.
+
+Safety
+------
+
+:pep:`703` lacks well defined semantics, although a sequential consistency model
+seems to be the assumed semantics in most cases. Unfortunately, sequential
+consistency is too fine grained to prevent many race conditions.
+
+PEP 703 attempts to provide good single-threaded performance for lists,
+dictionaries, and other mutable objects while providing locally race-free
+behaviour.
+
+Unfortunately, no formal definition of the exact behavior is provided,
+which leads to issues like these:
+
+* `python/cpython#129619 <https://github.com/python/cpython/issues/129619>`__
+* `python/cpython#129139 <https://github.com/python/cpython/issues/129139>`__
+* `python/cpython#126559 <https://github.com/python/cpython/issues/126559>`__
+* `python/cpython#130744 <https://github.com/python/cpython/issues/130744>`__
+
+Performance
+-----------
+
+Synchronization is expensive. The large physical size of CPUs and memory
+relative to the high clock speeds of CPUs make synchronization between CPU
+cores,  and between CPUs and memory, expensive. Requiring synchronization on
+all accesses to object attributes and collections has a significant performance
+impact. The implementors of :pep:`703` have done an excellent job of
+keeping that impact as low as they can, but you can't exceed physical limits.
+
+By breaking down accesses into *local* and *immutable* object accesses,
+which need no synchronization, and *synchronized* and *protected* accesses,
+which do need synchronization, the cost of synchronization is only paid
+when it is needed. Whereas :pep:`703` must pay the cost of synchronization
+everywhere, just in case it is needed.
+
+Implementation
+==============
+
+This is a big change, and there is no implementation as yet.
+A plan of implementation and discussion of some of the more complex details
+is in the :ref:`implementation appendix <pep805-implementation-details>`.
+
+.. _pep805-future-enhancements:
+
+Possible future enhancements
+============================
+
+Support for third party locks
+-----------------------------
+
+Currently only ``Lock`` and ``RLock`` support protecting objects.
+It would be valuable to provide APIs to allow third party implementations
+of locks, such as reader-writer locks. However, ensuring their correctness
+and maintaining the VM in a valid state is complex, so this is left for
+a future enhancement.
+
+Deep freezing and deep transfers
+--------------------------------
+
+Freezing a single object could leave a frozen object with references to
+mutable objects, and transferring of single objects could leave an object local
+to one thread, while other objects that it refers to are local to a different
+thread. Either of these scenarios are likely to lead to runtime errors.
+To avoid that problem we need "deep" freezing.
+
+Deep freezing an object would freeze that object and the transitive closure of
+other mutable objects referred to by that object. Deep transferring an object
+would transfer that object and the transitive closure of other local objects
+referred to by that object, but would raise an exception if one of those
+objects belonged to a different thread.
+
+Similar to freezing, a "deep" put mechanism could be added to ``Channel``\ s
+to move a whole graph of objects from one thread to another.
+
+See also PEP 795, which proposes a deep freezing mechanism, although it is
+referred to as just "freezing" in that PEP.
+
+Rejected Ideas
+==============
+
+`The name "trust me bro" was suggested for internally synchronized objects.
+<https://discuss.python.org/t/pre-pep-safe-parallel-python/103636/4>`__
+The lead author feels that "synchronized" is a better term 😊
+
+
+Open Issues
+===========
+
+Make ``del`` an expression
+--------------------------
+
+The functions ``protect``, ``Channel.put`` and creating a ``TransferBox``
+create a copy of the object passed as an argument.
+
+By making ``del`` an expression, it can be made clearer that the
+current thread has done with the object.
+
+Using ``del x`` as the argument clears ``x`` making it clear that the
+current thread has done with the object. For example::
+
+   channel.put(del x)
+
+Doing this will also boost performance, as the copy can be avoided if the
+VM can determine, either by static analysis or reference counting, that
+the reference passed is unique.
+
+The current way to do this is rather clunky::
+
+   channel.put((x, x:=None)[0])
+
+Case of names for ``SynchronizedList``, etc.
+--------------------------------------------
+
+Given that ``frozendict``, ``frozenset`` are lower case, should
+``SynchronizedList``, ``SynchronizedDict`` and ``SynchronizedSet``
+have lowercase names?
+
+Additional helper classes
+-------------------------
+
+There are a number of helper classes that might be useful when adding
+parallelism, that could be added. But overwhelming developers with new
+additions to the standard library is not desirable.
+It is not clear yet which, if any, of these classes should be added:
+
+* ``frozenlist``
+* `AtomicRef <https://dpdani.github.io/cereggii/api/AtomicRef/#cereggii._cereggii.AtomicRef>`__
+* ``SynchronizedProxy``, to proxy a *local* object (making it *protected*)
+
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
