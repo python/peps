@@ -5,16 +5,16 @@
 Appendix: Rationale for the Metadata Consistency Requirements
 =============================================================
 
-This appendix supplements the `Metadata consistency
-<https://peps.python.org/pep-0825/#metadata-consistency>`__ section of
-:pep:`825`. That section states what is required; this one argues that
-the requirement is justified, sets out what it costs, and is explicit
-about the motivation behind it and the trade-offs involved.
+This appendix supplements the :ref:`Metadata consistency
+<pep825-metadata-consistency-requirements>` section of :pep:`825`. That
+section states what is required; this one argues that the requirement is
+justified, sets out what it costs, and is explicit about the motivation
+behind it and the trade-offs involved.
 
-It also sets out the reasoning behind the `variant environment markers
-<https://peps.python.org/pep-0825/#variant-environment-markers>`__,
-since the case for markers and the case for consistent metadata are
-substantially the same argument.
+It also sets out the reasoning behind the :ref:`variant environment
+markers <pep825-variant-environment-markers>`, since the case for
+markers and the case for consistent metadata are substantially the same
+argument.
 
 
 What is actually being required
