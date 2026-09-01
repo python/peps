@@ -11,7 +11,7 @@ from pep_sphinx_extensions.pep_processor.transforms import pep_zero
             nodes.reference(
                 "", text="user@example.com", refuri="mailto:user@example.com"
             ),
-            '<raw format="html" xml:space="preserve">user&#32;&#97;t&#32;example.com</raw>',
+            "user at example.com",
         ),
         (
             nodes.reference("", text="Introduction", refid="introduction"),
