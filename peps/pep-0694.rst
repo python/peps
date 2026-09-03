@@ -1,6 +1,6 @@
 PEP: 694
 Title: Upload 2.0 API for Python Package Indexes
-Author: Barry Warsaw <barry@python.org>, Donald Stufft <donald@stufft.io>, Ee Durbin <ee@python.org>
+Author: Barry Warsaw <barry@python.org>, Donald Stufft <donald@stufft.io>, Ee Durbin <ee@python.org>, Cary Hawkins <hawkinscary23@gmail.com>
 PEP-Delegate: Dustin Ingram <di@python.org>
 Discussions-To: https://discuss.python.org/t/pep-694-pypi-upload-api-2-0-round-2/101483
 Status: Draft
@@ -28,6 +28,9 @@ Along with standardization, the upload API provides additional useful features s
 
 * "staging" a release, which can be used to test uploads before publicly publishing them,
   without the need for `test.pypi.org <https://test.pypi.org/>`__;
+
+* entering the publishing session workflow from the existing legacy upload API, so that staging is
+  available to publishers before their tooling adopts this API;
 
 * artifacts which can be overwritten and replaced, until a session is published;
 
@@ -285,6 +288,21 @@ The unguessable :ref:`stage preview URL <staged-preview>` is a separate capabili
 governed by this authorization check; it grants read-only preview access to any client that holds the token,
 so that (for example) a CI job can install-test a staged release without project upload credentials.
 
+As one such stricter policy, an index **MAY** require *additional* authorization, beyond upload permission, for
+the actions that decide a session's terminal outcome, namely :ref:`publishing <publishing-session-completion>`
+it and :ref:`canceling <publishing-session-cancellation>` it, while still allowing session creation and file
+upload with upload permission alone.  This separates the authority to assemble a release from the authority to
+publish or discard it: an automated system can hold a credential that creates a session and uploads files to it
+but can neither publish nor cancel it, with that authority held elsewhere, so that compromise of the automated
+system alone can neither publish a release nor discard a pending one.
+
+Cancellation is protected because it is destructive: it discards the staged files and frees the name-version
+pair.  An index that left it at the upload-permission level would let a compromised upload credential delete a
+release a maintainer has staged and is waiting to publish (a denial-of-release), or discard a session that
+has been flagged and is awaiting review.  An index that instead wants an automated uploader to be able to
+abort its *own* in-progress uploads **MAY** leave cancellation at the upload-permission level.  How any
+additional authorization is expressed, and whether it is offered at all, is determined by the index operator.
+
 
 .. _session-errors:
 
@@ -336,9 +354,14 @@ interpretation to aid in diagnosing underlying issue.
 Some responses may return more specific HTTP status codes as described in the text below.
 
 .. _publishing-session:
+.. _session-creation:
 
-Publishing Session
-------------------
+Session Creation
+----------------
+
+A publishing session can be created in two ways: directly through this API, described below, or from a
+:ref:`legacy upload <legacy-interop>`.  However it is created, the session is then managed through the same
+endpoints, described in :ref:`Managing a Publishing Session <managing-session>`.
 
 .. _publishing-session-create:
 
@@ -585,6 +608,54 @@ sub-mapping with the following keys:
     these notices are specific to the referenced file.
 
 
+.. _legacy-interop:
+
+Create a Publishing Session from a Legacy Upload
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Publishers cannot use the features of this API until their upload tooling adopts it, and the legacy API is
+expected to remain available as this pep does not propose a deprecatioin schedule.  To make staging available to those publishers sooner, an index
+**MAY** allow a legacy upload to create a publishing session, so that from creation onward the session is the
+same as one created directly.
+
+An index that supports this **MUST** document it, and **SHOULD** accept a ``staged`` field with the value
+``true`` in the legacy ``multipart/form-data`` upload request.  When that field is present, the index creates a
+publishing session in the ``open`` state for the uploaded file's project and version, adds the file to it as a
+:ref:`completed <file-upload-session-states>` file upload, and does not publish it.  The index **SHOULD**
+return the :ref:`publishing session creation response body <publishing-session-response>` from that upload,
+including the ``links`` and ``session-token`` keys, so that the publisher can then use the endpoints in this
+PEP to :ref:`preview <staged-preview>`, :ref:`publish <publishing-session-completion>`, or :ref:`cancel
+<publishing-session-cancellation>` the session.  An index **MAY** also create a session for an upload based on
+its own policy or the project's configuration, without the field being present; this allows a project to
+require that its releases are staged in a way that an upload client cannot bypass.
+
+Because the legacy API uploads a single file per request, subsequent legacy uploads for the same project and
+version **SHOULD** be added to the same open session when that session was itself created through a legacy
+upload, so that the release is still published as a unit.
+
+A session's creation path is fixed when it is created, and the two paths are not mixed.  If a non-terminal
+session already exists for a name-version pair (see :ref:`publishing-session-multiple`), a request to
+contribute to it through the *other* path **MUST** be rejected with a ``409 Conflict``: a legacy
+``staged=true`` upload for a pair that already has an open session created through the Upload 2.0 API is
+rejected, and an Upload 2.0 request that would add to a session created through a legacy upload is likewise
+rejected.
+
+A legacy client that is unaware of this PEP cannot issue a :ref:`publish request
+<publishing-session-completion>`.  Where an index has created a session on such a client's behalf, and the
+session is subject only to automated processing, the index **MAY** publish the session itself once that
+processing resolves without an adverse result, or once the period allowed for it elapses (see
+:ref:`publishing-session-completion`).  An index **MUST NOT** publish a session this way if the publisher has
+configured the project to require a separate publishing authorization (see :ref:`authentication`).
+
+
+.. _managing-session:
+
+Managing a Publishing Session
+-----------------------------
+
+The endpoints in this section apply to a publishing session regardless of how it was created (see
+:ref:`session-creation`).
+
 .. _publishing-session-states:
 
 Publishing Session States
@@ -742,6 +813,31 @@ the server returned a ``202 Accepted``, polling that URL can be used to watch fo
 change: deferred processing resolves to either ``published`` on success or ``error`` on failure.  When it
 resolves to ``error``, the session remains editable and the reason is reported in the session's ``notices``,
 as described in :ref:`publishing-session-states`.
+
+The ``processing`` state **MAY** be used to run asynchronous review of a session's files before it is
+published, such as malware scanning.  If the review completes without an adverse result, the session resolves
+to ``published`` as normal.  If the review does not complete within a period chosen by the index, the server
+**MAY** treat it as though it had completed without an adverse result and publish the session, so that a
+backlogged or unavailable review system does not indefinitely prevent publication.  If the review produces an
+adverse result, the session resolves to ``error`` with the reason reported in the session's ``notices``; the
+server **MAY** decline to publish such a session on any subsequent retry, in which case it is eventually
+:ref:`canceled <publishing-session-cancellation>` and its data discarded.  Where a session has resolved to
+``error`` because of an adverse result, an index **MAY** provide a way for the publisher to request that the
+result be re-examined.  Such a re-examination **SHOULD** be performed by a human, to confirm whether the
+adverse result was a false positive; if it was, the index **SHOULD** allow the session to be published.  The
+review itself, including which checks run, how long they are allowed to take, and how such requests are
+handled, is determined by the index operator and is out of scope for this specification.
+
+Because a session remains editable in the ``open`` and ``error`` states, its files can change after a review
+has run.  A server **MUST NOT** publish a session on the strength of a review of content the session no longer
+contains: if any file is added, replaced, or deleted after a review, the prior result is invalidated and the
+session **MUST** be reviewed again before it can be published.  How an in-progress review reacts to such a
+change is left to the index: it might run to completion, rescan only the changed files, or restart.
+
+Because editing a session can trigger re-review, an index **SHOULD** guard against abuse of the review system.
+For example, a client might repeatedly upload a file it knows will be flagged, delete it, and re-upload it to
+force repeated scans.  Mitigations such as rate-limiting reviews, capping the number of review attempts for a
+session, or moving a persistently adverse session to a terminal state are left to the index.
 
 A publish attempt that fails *synchronously* (i.e. within the publish request itself) is returned to the
 client as an :ref:`error response <session-errors>` and leaves the session in its current editable state; it
@@ -1846,6 +1942,17 @@ as experience is gained operating Upload 2.0.
 
 Change History
 ==============
+
+* `01-Aug-2026 <https://discuss.python.org/t/pre-pep-staged-releases-separated-from-pep-694/107804/58>`__
+
+  * Add :ref:`Legacy Upload API Interoperability <legacy-interop>`, allowing a legacy upload to create a
+    publishing session (via a ``staged`` field, or by index or project configuration that an upload client
+    cannot bypass) so that staging is usable before upload tooling adopts this API, and allowing an index to
+    publish such a session itself once automated processing resolves or its window elapses.
+  * Note that the ``processing`` state **MAY** be used for asynchronous review such as malware scanning, with
+    an index-chosen window after which the review is treated as having produced no adverse result.
+  * Allow an index to require additional authorization, beyond upload permission, to publish or cancel a
+    session, so that duties can be separated.
 
 * `29-Jul-2026 <https://discuss.python.org/t/pep-694-pypi-upload-api-2-0-round-4/108320>`__
 
