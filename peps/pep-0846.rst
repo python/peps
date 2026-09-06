@@ -1,0 +1,375 @@
+PEP: 846
+Title: Docstrings for Type Aliases
+Author: Bartosz Sławecki <bartosz@ilikepython.com>
+Sponsor: Jelle Zijlstra <jelle.zijlstra@gmail.com>
+Discussions-To: Pending
+Status: Draft
+Type: Standards Track
+Topic: Typing
+Created: 06-Sep-2026
+Python-Version: 3.16
+Post-History: `06-Sep-2026 <https://discuss.python.org/t/docstrings-for-type-aliases/108901>`__
+
+
+Abstract
+========
+
+This PEP proposes preserving a string literal immediately following a
+:py:keyword:`type` statement as the resulting type alias object's ``__doc__``
+attribute. The documentation would be available through runtime introspection
+and displayed by :py:func:`help`.
+
+The proposal follows the placement already supported by source-based
+documentation tools. It also adds support for type aliases to
+:py:func:`ast.get_docstring`. The draft proposes an optional ``doc`` field on
+:py:class:`ast.TypeAlias`, while retaining the original string statement in
+the AST. The representation and its behavior under AST transformations remain
+open for discussion.
+
+
+Motivation
+==========
+
+A type alias can describe an API convention that needs documentation:
+
+.. code-block:: python
+
+    type Timeout = float | None
+    """
+    Maximum wait in seconds.
+
+    Use None to wait indefinitely, or zero to return immediately.
+    """
+
+Several tools already recognize documentation written this way.
+`Pyright supports docstrings following type statements <Pyright_>`_
+(since 2023), `Sphinx's autotype directive <Sphinx_>`_ documents aliases
+and their docstrings (since 2025), and `Pylint recognizes these strings
+as documentation <Pylint_>`_ (since 2023).
+
+Python currently discards this documentation during compilation. Calling
+:py:func:`help(Timeout) <help>` displays generic information about
+:py:class:`~typing.TypeAliasType`, as illustrated in
+`the original CPython issue <Issue_>`_. A tool that needs the alias's
+documentation must find and parse its source, which may be unavailable after
+installation or when the alias is passed in from another component.
+
+The :py:keyword:`type` statement introduced by :pep:`695` creates a dedicated
+runtime object. That object can carry its own documentation, as functions and
+classes do. Preserving the docstring would make it available from the imported
+alias alone, including when the alias is re-exported.
+
+Runtime documentation could also be consumed by third-party frameworks.
+Frameworks that already recognize :py:class:`~typing.TypeAliasType` (such as
+Pydantic) could choose to use ``__doc__`` as descriptive metadata. Such
+integrations would be up to those projects.
+
+
+Specification
+=============
+
+Docstring Placement
+-------------------
+
+If the next statement after a :py:keyword:`type` statement in the same suite is
+an expression statement consisting of a string literal, that string is the
+alias's docstring.
+
+.. code-block:: python
+
+    type Timeout = float | None
+    """Maximum wait in seconds."""
+
+    type OtherTimeout = float | None
+    default_timeout = 30
+    """This is not OtherTimeout's docstring."""
+
+The rule applies wherever a :py:keyword:`type` statement is allowed, including
+inside functions, classes, and control-flow suites. The string must be in the
+same suite as the alias; a string in a nested or enclosing suite does not
+qualify. Generic aliases follow the same rule:
+
+.. code-block:: python
+
+    type ListOrSet[T] = list[T] | set[T]
+    """A collection whose order and duplicate handling depend on its type."""
+
+The literal forms accepted as docstrings are the same as for functions
+and classes. Adjacent string literals combined by the parser qualify.
+Bytes literals, f-strings, t-strings, and expressions such as
+``"first" + "second"`` do not qualify, even if compilation could reduce
+an expression to a constant string.
+
+Only the first following string statement supplies ``__doc__``.
+Additional docstrings, as described in :pep:`257`, are not concatenated
+or assigned to the alias.
+
+
+Runtime Behavior
+----------------
+
+The alias stores its docstring in ``__doc__``. An undocumented alias has
+``__doc__`` equal to ``None``. Accessing this attribute does not evaluate
+the alias's value.
+
+Compilation applies the same docstring whitespace processing as it does for
+function and class docstrings. In CPython, this uses ``_PyCompile_CleanDoc``,
+which expands tabs and cleans indentation while retaining surrounding blank
+lines. :py:func:`inspect.cleandoc` also removes surrounding blank lines and is
+used by inspection tools rather than compilation.
+
+The attribute can be assigned to after creation. Deleting it resets it to
+``None``. The :py:class:`~typing.TypeAliasType` constructor does not gain a
+docstring parameter; programmatically created aliases can be documented by
+assignment:
+
+.. code-block:: python
+
+    from typing import TypeAliasType
+
+    Timeout = TypeAliasType("Timeout", float | None)
+    Timeout.__doc__ = "Maximum wait in seconds."
+
+This proposal does not change the meaning of an alias to a type checker,
+or how its value is evaluated.
+
+
+Optimization
+------------
+
+Optimization level 2, selected by :option:`-OO` or
+:py:func:`compile(..., optimize=2) <compile>`, strips alias docstrings as it
+strips function and class docstrings. The resulting alias has ``__doc__`` equal
+to ``None``. Optimization levels 0 and 1 retain the docstring.
+
+Removing the primary docstring must not cause an additional string to become
+the alias's docstring. This also applies when an AST returned with docstrings
+stripped is compiled again at a lower optimization level. Assignments to
+``__doc__`` remain ordinary runtime assignments and are not stripped by
+:option:`-OO`.
+
+
+AST Support
+-----------
+
+The draft adds an optional string field, ``doc``, at the end of
+:py:class:`ast.TypeAlias`. Its fields are therefore ``name``, ``type_params``,
+``value``, and ``doc``. An omitted ``doc`` defaults to ``None``.
+
+When docstrings are retained, :py:func:`ast.parse` populates this field with
+the original string, before compilation's whitespace processing. The following
+``Expr(Constant(...))`` statement remains in its original position:
+
+.. code-block:: pycon
+
+    >>> import ast
+    >>> tree = ast.parse(
+    ...     'type Timeout = float | None\n"Maximum wait in seconds."'
+    ... )
+    >>> tree.body[0].doc
+    'Maximum wait in seconds.'
+    >>> tree.body[1].value.value
+    'Maximum wait in seconds.'
+
+:py:func:`ast.get_docstring` accepts :py:class:`~ast.TypeAlias` nodes. As with
+the node kinds it already supports, its default behavior cleans the docstring
+using :py:func:`inspect.cleandoc`. Passing ``clean=False`` returns the
+original string. An undocumented alias returns ``None``.
+
+Both :py:func:`ast.dump` and AST :py:func:`repr` display the documentation in
+the ``doc`` field and in the original string statement. The field receives no
+special redaction. The default :py:func:`ast.dump` omits ``doc`` when its value
+is ``None``, following the existing treatment of optional fields.
+
+Under optimization level 2, preprocessing clears the field and removes
+the primary string statement. It also prevents an additional string
+from being treated as a new docstring during subsequent compilation.
+
+In the reference implementation, a non-``None`` ``doc`` field takes precedence
+during compilation. If it is ``None``, preprocessing looks for a following
+string statement. :py:func:`ast.unparse` continues to emit the original
+statement and ignores ``doc``; it does not insert or rewrite statements to
+match that field. Consequently, editing only one copy can change the result of
+compiling the AST compared with compiling its unparsed source. The choice of
+representation and the policy for such edits are discussed under `Open Issues`_.
+
+
+Standard Library Support
+------------------------
+
+:py:mod:`pydoc`, including :py:func:`help`, will recognize type aliases and
+display their own documentation. Aliases will also be distinguished from other
+data members in module documentation. This applies to both text and HTML
+output.
+
+The reference implementation displays a declaration followed by the
+docstring. For the opening example, the documentation begins with:
+
+.. code-block:: text
+
+    Help on type alias Timeout in module mymodule:
+
+    type Timeout = float | None
+        Maximum wait in seconds.
+
+        Use None to wait indefinitely, or zero to return immediately.
+
+It follows this with a short "Lazy value access" section describing
+:py:attr:`~typing.TypeAliasType.__value__` and
+:py:meth:`~typing.TypeAliasType.evaluate_value`, and a pointer to
+:py:func:`help(typing.TypeAliasType) <help>` for the full interface.
+
+This PEP does not add automatic discovery of type alias docstrings to
+:py:mod:`doctest`. As noted in
+`the discussion of doctest support <ScopeDiscussion_>`_, that would require a
+separate change to its discovery rules.
+
+
+Rationale
+=========
+
+Placing the string after the declaration follows the convention already used by
+tools for type aliases and described for attribute docstrings in :pep:`257`.
+Applying this convention to :py:keyword:`type` statements was
+`recommended in the earlier discussion <PlacementDiscussion_>`_. Existing
+documented aliases would gain runtime documentation without requiring their
+authors to rewrite them.
+
+Unlike a function or class docstring, an alias docstring is a separate
+statement following the declaration. This requires readers to recognize
+an association between neighboring statements. The existing convention
+is the reason for choosing that placement; the dedicated alias object
+provides somewhere to store the documentation. These address different
+parts of the design.
+
+A new AST field lets :py:func:`ast.get_docstring` retrieve documentation from
+an alias node without requiring access to its containing suite. Retaining the
+original statement preserves the structure used by existing tools that already
+find docstrings there. The cost is duplicated information, which AST
+transformations may need to keep consistent.
+
+Preserving the documentation and rendering an alias declaration are separate
+operations. Documentation remains useful to callers that only read ``__doc__``
+or :py:func:`ast.get_docstring`, regardless of the final rendering policy
+chosen for :py:mod:`pydoc`.
+
+
+Backwards Compatibility
+=======================
+
+This PEP has no known backwards compatibility issues.
+
+
+Security Implications
+=====================
+
+This PEP has no known security implications.
+
+
+How to Teach This
+=================
+
+The reference documentation for the :py:keyword:`type` statement should show a
+docstring immediately after the declaration, then demonstrate ``Alias.__doc__``
+and :py:func:`help(Alias) <help>`. The :py:class:`typing.TypeAliasType`
+documentation should describe the new attribute and how to assign it for
+aliases created with the constructor.
+
+Users already familiar with source-based alias documentation can keep writing
+the same strings. The relevant boundary is that this runtime behavior applies
+to :py:keyword:`type` statements. Ordinary assignments, including older
+:py:data:`~typing.TypeAlias` annotations, do not gain it.
+
+Documentation for :py:class:`ast.TypeAlias` and :py:func:`ast.get_docstring`
+should explain the field, cleaning behavior, and the retained string statement.
+Guidance for authors of AST transformations depends on the resolution of the
+representation question below.
+
+
+Reference Implementation
+========================
+
+A CPython prototype is available in two commits:
+
+* `Compiler, runtime, and AST support <Compiler_>`_.
+* `pydoc support <Pydoc_>`_.
+
+AST preprocessing associates the string with the alias before code
+generation and before an AST is returned to Python code. It handles
+both ordinary bodies and nested statement sequences. Code generation
+consumes the populated field and passes the processed string to the
+runtime object; it does not modify the AST to find documentation.
+
+The :py:mod:`pydoc` implementation requests the alias expression in string
+format. This evaluation can trigger lazy imports. If it raises an
+:py:exc:`Exception`, it tries to recover the
+original expression from the source without evaluating it. If source recovery
+also fails, the declaration contains a placeholder with :py:func:`repr` of the
+original exception, and rendering continues with the docstring. A full
+traceback is not included. Failures to render type parameter bounds,
+constraints, or defaults cause that part of the declaration to be omitted.
+
+The prototype includes tests for docstrings in nested suites, generic
+aliases, additional strings, optimization, AST access and round trips,
+assignment and deletion of ``__doc__``, and text and HTML rendering,
+including rendering failures.
+
+
+Open Issues
+===========
+
+AST Representation and Transformations
+--------------------------------------
+
+The optional string field makes alias documentation directly accessible,
+but the field and following statement can disagree. The reference
+implementation's precedence rules are described under `AST Support`_.
+Before acceptance, this PEP needs to settle whether those rules should
+become part of the specification or whether a different representation
+would better support AST transformations.
+
+One alternative is for ``doc`` to refer to the original
+:py:class:`~ast.Constant` node. In-place edits would then be shared, but
+visitors would reach that node through two references, and replacing one
+reference could still make them diverge. Sharing a node would also require care
+when converting between Python AST objects and the compiler's internal
+representation.
+
+Another alternative is a private attribute exposed through
+:py:func:`ast.get_docstring`. This would avoid adding a public field, but
+would still need rules for updating or invalidating the stored documentation
+when the surrounding statements change.
+
+
+Acknowledgements
+================
+
+Thanks to Jelle Zijlstra for reviewing the proposal and agreeing to sponsor the PEP,
+and to the participants in `the initial discussion on Discourse <Discussion_>`_.
+
+Thanks to Peter Bierma and Jakub Romańczuk for convincing me to pursue the idea.
+
+Change History
+==============
+
+* `06-Sep-2026 <https://discuss.python.org/t/docstrings-for-type-aliases/108901>`__:
+  Initial proposal and first PEP draft.
+
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
+
+
+.. _Pyright: https://discuss.python.org/t/docstrings-for-new-type-aliases-as-defined-in-pep-695/39816/5
+.. _PlacementDiscussion: https://discuss.python.org/t/docstrings-for-new-type-aliases-as-defined-in-pep-695/39816/3
+.. _Discussion: https://discuss.python.org/t/runtime-docstrings-for-type-aliases/108901
+.. _ScopeDiscussion: https://discuss.python.org/t/runtime-docstrings-for-type-aliases/108901/9
+.. _MetadataDiscussion: https://discuss.python.org/t/runtime-docstrings-for-type-aliases/108901/10
+.. _Sphinx: https://www.sphinx-doc.org/en/master/usage/extensions/autodoc.html#automatically-document-type-aliases
+.. _Pylint: https://pylint.readthedocs.io/en/latest/whatsnew/3/3.0/index.html#what-s-new-in-pylint-3-0-3
+.. _Issue: https://github.com/python/cpython/issues/156925
+.. _Compiler: https://github.com/johnslavik/cpython/commit/38779c761d9eaf19f195ed972e5986c0df384953
+.. _Pydoc: https://github.com/johnslavik/cpython/commit/e4910eeb0ca147f92e3b20262de13d0fb1bf3d97
