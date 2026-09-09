@@ -11,7 +11,9 @@ class PEPRole(roles.ReferenceRole):
         try:
             pep_num = int(pep_str)
         except ValueError:
-            msg = self.inliner.reporter.error(f'invalid PEP number {self.target}', line=self.lineno)
+            msg = self.inliner.reporter.error(
+                f"invalid PEP number {self.target}", line=self.lineno
+            )
             prb = self.inliner.problematic(self.rawtext, self.rawtext, msg)
             return [prb], [msg]
         pep_base = self.inliner.document.settings.pep_url.format(pep_num)
@@ -30,10 +32,11 @@ class PEPRole(roles.ReferenceRole):
 
         return [
             nodes.reference(
-                "", title,
+                "",
+                title,
                 internal=True,
                 refuri=ref_uri,
                 classes=["pep"],
-                _title_tuple=(pep_num, fragment)
+                _title_tuple=(pep_num, fragment),
             )
         ], []
