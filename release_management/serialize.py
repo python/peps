@@ -83,7 +83,7 @@ def create_release_schedule_calendar() -> str:
 def release_schedule_calendar_lines(
     releases: list[tuple[int, ReleaseInfo]], /
 ) -> list[str]:
-    dtstamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    dtstamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
 
     lines = [
         "BEGIN:VCALENDAR",
