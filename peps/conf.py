@@ -4,8 +4,8 @@
 """Configuration for building PEPs using Sphinx."""
 
 import os
-from pathlib import Path
 import sys
+from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(os.fspath(_ROOT))

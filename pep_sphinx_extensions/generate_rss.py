@@ -19,7 +19,7 @@ RSS_DESCRIPTION = (
 
 
 def _format_rfc_2822(datetime: dt.datetime) -> str:
-    datetime = datetime.replace(tzinfo=dt.timezone.utc)
+    datetime = datetime.replace(tzinfo=dt.UTC)
     return format_datetime(datetime, usegmt=True)
 
 
@@ -64,14 +64,18 @@ def pep_abstract(document: nodes.document) -> str:
                 return para_node.astext().strip().replace("\n", " ")
             return ""
         if title_node.astext() == "Introduction":
-            introduction = node.next_node(nodes.paragraph).astext().strip().replace("\n", " ")
+            introduction = (
+                node.next_node(nodes.paragraph).astext().strip().replace("\n", " ")
+            )
 
     return introduction
 
 
 def _generate_items(doctree_dir: Path):
     # get list of peps with creation time (from "Created:" string in pep source)
-    peps_with_dt = sorted((pep_creation(path), path) for path in doctree_dir.glob("pep-????.doctree"))
+    peps_with_dt = sorted(
+        (pep_creation(path), path) for path in doctree_dir.glob("pep-????.doctree")
+    )
 
     # generate rss items for 10 most recent peps (in reverse order)
     for datetime, full_path in reversed(peps_with_dt[-10:]):
@@ -86,7 +90,9 @@ def _generate_items(doctree_dir: Path):
         author = get_from_doctree(full_path, "Author")
         if "@" in author or " at " in author:
             parsed_authors = getaddresses([author])
-            joined_authors = ", ".join(f"{name} ({email_address})" for name, email_address in parsed_authors)
+            joined_authors = ", ".join(
+                f"{name} ({email_address})" for name, email_address in parsed_authors
+            )
         else:
             joined_authors = author
 
@@ -104,7 +110,7 @@ def _generate_items(doctree_dir: Path):
 
 def create_rss_feed(doctree_dir: Path, output_dir: Path):
     # The rss envelope
-    last_build_date = _format_rfc_2822(dt.datetime.now(dt.timezone.utc))
+    last_build_date = _format_rfc_2822(dt.datetime.now(dt.UTC))
     items = "\n".join(_generate_items(Path(doctree_dir)))
     output = f"""\
 <?xml version='1.0' encoding='UTF-8'?>
