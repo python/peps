@@ -14,6 +14,7 @@ from pep_sphinx_extensions.generate_rss import (
     get_from_doctree,
     pep_abstract,
 )
+from pep_sphinx_extensions.lexers import pep_lexers
 from pep_sphinx_extensions.pep_processor.html import (
     pep_html_builder,
     pep_html_translator,
@@ -104,6 +105,10 @@ def setup(app: Sphinx) -> dict[str, bool]:
     app.add_directive("rejected", pep_banner_directive.RejectedBanner)
     app.add_directive("superseded", pep_banner_directive.SupersededBanner)
     app.add_directive("withdrawn", pep_banner_directive.WithdrawnBanner)
+
+    # Register custom lexers
+    for lexer in pep_lexers:
+        app.add_lexer(lexer.name, lexer)
 
     # Register event callbacks
     app.connect("builder-inited", _update_config_for_builder)  # Update configuration values for builder used
