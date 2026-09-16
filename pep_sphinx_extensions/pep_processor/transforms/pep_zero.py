@@ -18,7 +18,7 @@ class PEPZero(transforms.Transform):
         self.startnode.parent.remove(self.startnode)
 
 
-def _mask_email(ref: nodes.reference) -> nodes.reference:
+def _mask_email(ref: nodes.reference) -> nodes.reference | nodes.Text:
     """Mask the email address in `ref` and return a replacement node.
 
     `ref` is returned unchanged if it contains no email address.
@@ -31,4 +31,4 @@ def _mask_email(ref: nodes.reference) -> nodes.reference:
     """
     if not ref.get("refuri", "").startswith("mailto:"):
         return ref
-    return nodes.raw("", ref[0].replace("@", "&#32;&#97;t&#32;"), format="html")
+    return nodes.Text(ref[0].replace("@", " at "))
