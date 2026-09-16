@@ -19,3 +19,7 @@ class Py824Lexer(PythonLexer):
             inherit,
         ],
     }
+
+
+def register():
+    return [Py824Lexer]

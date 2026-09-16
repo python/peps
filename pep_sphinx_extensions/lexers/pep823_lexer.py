@@ -38,3 +38,7 @@ class Py823ConsoleLexer(DelegatingLexer):
                 )
 
         super().__init__(tblexer, _ReplaceInnerCode, Other.Traceback, **options)
+
+
+def register():
+    return [Py823Lexer, Py823ConsoleLexer]

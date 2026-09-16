@@ -14,7 +14,7 @@ from pep_sphinx_extensions.generate_rss import (
     get_from_doctree,
     pep_abstract,
 )
-from pep_sphinx_extensions.lexers import pep_lexers
+from pep_sphinx_extensions.lexers import get_custom_lexers
 from pep_sphinx_extensions.pep_processor.html import (
     pep_html_builder,
     pep_html_translator,
@@ -107,7 +107,7 @@ def setup(app: Sphinx) -> dict[str, bool]:
     app.add_directive("withdrawn", pep_banner_directive.WithdrawnBanner)
 
     # Register custom lexers
-    for lexer in pep_lexers:
+    for lexer in get_custom_lexers():
         app.add_lexer(lexer.name, lexer)
 
     # Register event callbacks
