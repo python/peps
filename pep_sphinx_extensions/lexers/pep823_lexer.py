@@ -5,9 +5,9 @@
 
 from pygments.lexer import DelegatingLexer, inherit
 from pygments.lexers.python import (
-    _PythonConsoleLexerBase,
     PythonLexer,
     PythonTracebackLexer,
+    _PythonConsoleLexerBase,
 )
 from pygments.token import Operator, Other
 
