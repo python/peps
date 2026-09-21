@@ -35,7 +35,13 @@ typedef struct {
     int value;
 } examplemodule_state;
 
-static PyModuleDef_Slot examplemodule_slots[];
+static PySlot examplemodule_slots[];
+
+#ifndef MOD_TOKEN
+// Module token: normally set to the slots array,
+// but a backwards-compatibility shim will redefine it.
+#define MOD_TOKEN (&examplemodule_slots)
+#endif
 
 // increment_value function
 
@@ -59,20 +65,21 @@ exampletype_repr(PyObject *self)
 {
     /* To get module state, we cannot use PyModule_GetState(Py_TYPE(self)),
      * since Py_TYPE(self) might be a subclass defined in an unrelated module.
-     * So, use PyType_GetModuleByToken.
+     * So, we should use use PyType_GetModuleByToken.
+     * For pre-3.15 compatibility, we use PyType_GetModuleByDef instead:
+     * this needs a cast and returns a borrowed reference.
      */
-    PyObject *module = PyType_GetModuleByToken(
-        Py_TYPE(self), examplemodule_slots);
+    PyObject *module = PyType_GetModuleByDef(
+        Py_TYPE(self), (PyModuleDef*)MOD_TOKEN);
     if (!module) {
         return NULL;
     }
     examplemodule_state *state = PyModule_GetState(module);
-    Py_DECREF(module);
     if (!state) {
         return NULL;
     }
-    return PyUnicode_FromFormat("<%T object; module value = %d>",
-                                self, state->value);
+    return PyUnicode_FromFormat("<ExampleType object; module value = %d>",
+                                state->value);
 }
 
 static PyType_Spec exampletype_spec = {
@@ -105,13 +112,17 @@ examplemodule_exec(PyObject *module) {
 
 PyDoc_STRVAR(examplemodule_doc, "Example extension.");
 
-static PyModuleDef_Slot examplemodule_slots[] = {
-    {Py_mod_name, "examplemodule"},
-    {Py_mod_doc, (char*)examplemodule_doc},
-    {Py_mod_methods, examplemodule_methods},
-    {Py_mod_state_size, (void*)sizeof(examplemodule_state)},
-    {Py_mod_exec, (void*)examplemodule_exec},
-    {0}
+PyABIInfo_VAR(abi_info);
+
+static PySlot examplemodule_slots[] = {
+    PySlot_STATIC_DATA(Py_mod_abi, &abi_info),
+    PySlot_STATIC_DATA(Py_mod_name, "examplemodule"),
+    PySlot_STATIC_DATA(Py_mod_doc, (char*)examplemodule_doc),
+    PySlot_STATIC_DATA(Py_mod_methods, examplemodule_methods),
+    PySlot_SIZE(Py_mod_state_size, sizeof(examplemodule_state)),
+    PySlot_FUNC(Py_mod_exec, examplemodule_exec),
+    PySlot_STATIC_DATA(Py_mod_token, MOD_TOKEN),
+    PySlot_END
 };
 
 // Avoid "implicit declaration of function" warning:

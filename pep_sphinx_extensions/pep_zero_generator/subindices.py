@@ -14,7 +14,9 @@ if TYPE_CHECKING:
     from pep_sphinx_extensions.pep_zero_generator.parser import PEP
 
 
-def update_sphinx(filename: str, text: str, docnames: list[str], env: BuildEnvironment) -> Path:
+def update_sphinx(
+    filename: str, text: str, docnames: list[str], env: BuildEnvironment
+) -> Path:
     file_path = Path(env.srcdir, f"{filename}.rst")
     # Only write and schedule for rebuild if content actually changed
     try:
@@ -35,6 +37,7 @@ def update_sphinx(filename: str, text: str, docnames: list[str], env: BuildEnvir
 def generate_subindices(
     subindices: dict[str, str],
     peps: list[PEP],
+    release_peps: dict[str, int],
     docnames: list[str],
     env: BuildEnvironment,
 ) -> None:
@@ -58,14 +61,19 @@ the PEP index.
 
 {additional_description}
 """
-        subindex_text = writer.PEPZeroWriter().write_pep0(
-            filtered_peps, header, subindex_intro, is_pep0=False,
+        subindex_text = writer.PEPZeroWriter(release_peps).write_pep0(
+            filtered_peps,
+            header,
+            subindex_intro,
+            is_pep0=False,
         )
         update_sphinx(f"topic/{subindex}", subindex_text, docnames, env)
 
 
 def generate_topic_contents(docnames: list[str], env: BuildEnvironment):
-    update_sphinx("topic/index", """\
+    update_sphinx(
+        "topic/index",
+        """\
 .. _topic-index:
 
 Topic Index
@@ -79,4 +87,7 @@ PEPs are indexed by topic on the pages below:
    :glob:
 
    *
-""", docnames, env)
+""",
+        docnames,
+        env,
+    )

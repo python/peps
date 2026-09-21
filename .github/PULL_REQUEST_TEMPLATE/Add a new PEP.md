@@ -12,6 +12,7 @@ If your PEP is not Standards Track, remove the corresponding section.
 * [ ] Read and followed [PEP 1](https://peps.python.org/1) & [PEP 12](https://peps.python.org/12)
 * [ ] File created from the [latest PEP template](https://github.com/python/peps/blob/main/peps/pep-0012/pep-NNNN.rst?plain=1)
 * [ ] PEP has next available number, & set in filename (``pep-NNNN.rst``), PR title (``PEP 123: <Title of PEP>``) and ``PEP`` header
+    * Tip: find the next available number with [pepotron](https://github.com/hugovk/pepotron) — run ``uvx pepotron next`` (or ``pipx install pepotron`` then ``pep next``)
 * [ ] Title clearly, accurately and concisely describes the content in 79 characters or less
 * [ ] Core dev/PEP editor listed as ``Author`` or ``Sponsor``, and formally confirmed their approval
 * [ ] ``Author``, ``Status`` (``Draft``), ``Type`` and ``Created`` headers filled out correctly
