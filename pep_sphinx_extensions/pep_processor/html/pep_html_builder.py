@@ -1,9 +1,8 @@
 from docutils import nodes
 from docutils.frontend import OptionParser
+from sphinx.builders.dirhtml import DirectoryHTMLBuilder
 from sphinx.builders.html import StandaloneHTMLBuilder
 from sphinx.writers.html import HTMLWriter
-
-from sphinx.builders.dirhtml import DirectoryHTMLBuilder
 
 
 class FileBuilder(StandaloneHTMLBuilder):
@@ -18,7 +17,9 @@ class FileBuilder(StandaloneHTMLBuilder):
 
     def prepare_writing(self, _doc_names: set[str]) -> None:
         self.docwriter = HTMLWriter(self)
-        _opt_parser = OptionParser([self.docwriter], defaults=self.env.settings, read_config_files=True)
+        _opt_parser = OptionParser(
+            [self.docwriter], defaults=self.env.settings, read_config_files=True
+        )
         self.docsettings = _opt_parser.get_default_values()
         self._orig_css_files = self._orig_js_files = []
 
@@ -36,7 +37,7 @@ class FileBuilder(StandaloneHTMLBuilder):
             if docname.startswith("pep-"):
                 del toc_tree[0]  # remove contents node from PEPs
             for node in toc_tree.findall(nodes.reference):
-                node["refuri"] = node["anchorname"] or '#'  # fix targets
+                node["refuri"] = node["anchorname"] or "#"  # fix targets
             toc = self.render_partial(toc_tree)["fragment"]
         else:
             toc = ""  # PEPs with no sections -- 9, 210
