@@ -95,6 +95,7 @@ def setup(app: Sphinx) -> dict[str, bool]:
     )  # Transform PEP references to links
 
     app.add_post_transform(pep_references.PEPReferenceRoleTitleText)
+    app.add_post_transform(pep_references.PEPIntersphinxTitleText)
 
     # Register custom directives
     app.add_directive("pep-banner", pep_banner_directive.PEPBanner)

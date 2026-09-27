@@ -70,7 +70,7 @@ del role, name
 # Intersphinx configuration (keep this in alphabetical order)
 intersphinx_mapping = {
     "devguide": ("https://devguide.python.org", None),
-    "mypy": ("https://mypy.readthedocs.io/en/latest", None),
+    "mypy": ("https://mypy.readthedocs.io/en/stable", None),
     "packaging": ("https://packaging.python.org/en/latest", None),
     "py3.11": ("https://docs.python.org/3.11", None),
     "py3.12": ("https://docs.python.org/3.12", None),
