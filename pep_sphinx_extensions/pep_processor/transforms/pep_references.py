@@ -55,4 +55,5 @@ class PEPIntersphinxTitleText(transforms.Transform):
             if node.get("internal", True):
                 continue
             reftitle = node.get("reftitle", "")
-            node["reftitle"] = self.version_pattern.sub(r"(in \1)", reftitle)
+            if reftitle:
+                node["reftitle"] = self.version_pattern.sub(r"(in \1)", reftitle)
