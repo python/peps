@@ -3,6 +3,10 @@
 
 """Custom lexer for PEP 824."""
 
+# This lexer is most useful while PEP 824 is being discussed.
+# If it breaks in the future, it can be safely replaced by plain
+# Python or text lexers.
+
 from pygments.lexer import inherit
 from pygments.lexers.python import PythonLexer
 from pygments.token import Operator

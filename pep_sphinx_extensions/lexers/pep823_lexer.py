@@ -3,6 +3,10 @@
 
 """Custom lexer for PEP 823."""
 
+# This lexer is most useful while PEP 823 is being discussed.
+# If it breaks in the future, it can be safely replaced by plain
+# Python or text lexers.
+
 from pygments.lexer import DelegatingLexer, inherit
 from pygments.lexers.python import (
     PythonLexer,
