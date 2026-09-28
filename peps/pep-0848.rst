@@ -1,0 +1,452 @@
+PEP: 848
+Title: Generational Incremental Garbage Collection
+Author: Mark Shannon <Mark.Shannon@arm.com>
+Discussions-To: https://discuss.python.org/t/109214
+Status: Draft
+Type: Standards Track
+Created: 16-Sep-2026
+Python-Version: 3.16
+
+
+Abstract
+========
+
+This PEP proposes adding a new cyclic garbage collector to CPython.
+The new collector will be both generational and incremental.
+Collections will alternate: a young collection, then an (incremental) old
+collection, then a young collection, and so on.
+
+Each collection will collect only part of the heap, targeting areas where
+garbage is more likely to be concentrated.
+
+The purpose of the new garbage collector is to reduce GC pause times,
+and to decrease the overall time spent in the GC:
+
+* Pause times can be reduced by a large amount in programs with large heaps,
+  up to a factor of 100 in some cases, although for some programs pause times
+  may not decrease at all.
+* Overall performance is improved by 3-5% on the pyperformance benchmark suite.
+* Peak memory use should be reduced for larger heaps, but may increase for
+  smaller, shorter-lived programs.
+
+The existing generational collector will remain available as an option.
+Reference counting is unchanged and will continue to reclaim most objects.
+
+
+Motivation
+==========
+
+CPython's cycle collector mostly examines live objects: objects which are not
+in cycles are normally reclaimed immediately by reference counting. So scanning
+too often, or too early, is most likely going to be wasted effort, as cycles
+will not have had time to be formed and detached from the rest of the object
+graph.
+
+The current generational collector scans each surviving object twice before
+it is moved to the old generation. This is wasteful, as there are no cycles
+that would be collected by the first scan, but not by the second.
+
+The current collector also groups younger and older objects together,
+meaning some objects are scanned shortly after their allocation, which
+is unlikely to be effective. By only scanning objects that are older,
+the proportion of dead cycles will increase, and the GC will be more effective.
+
+The current GC also performs scans of the entire heap at once, resulting in
+long pause times for large heaps. By scanning the heap in smaller increments,
+pause times can be reduced substantially.
+
+Rationale
+=========
+
+The current collector
+---------------------
+
+The current collector has three generations.
+New objects are created in the nursery (generation 0).
+When the number of net new allocations
+(``objects allocated - objects reclaimed``) reaches a threshold
+(currently 2000), the nursery is collected and all survivors moved to the aging
+generation (generation 1). When the 10th nursery collection would happen,
+the nursery is merged into the aging generation and the aging generation is
+collected instead. The survivors are then moved to the old generation
+(generation 2).
+
+After 100 collections, the aging generation is added to the old generation,
+and the old generation (at this point the full heap) is potentially collected.
+To avoid quadratic execution time, the oldest generation is only
+collected when the number of new objects added to it exceeds one quarter of its
+size after the last full collection.
+
+The infrequent collection of the oldest generation means that large amounts
+of cyclic garbage can collect and that pause times can be very long.
+
+Design of the collector
+-----------------------
+
+There are three metrics we need to consider when implementing a cycle GC:
+
+1. total program run time
+2. maximum GC pause time
+3. peak memory use
+
+Making the collector more effective can improve 1. Making it incremental
+can improve 2, and sometimes 3.
+
+We can make the collector more effective by collecting only the part of the
+heap that has the highest concentration of garbage. We cannot know where the
+garbage is, but the older the objects, the more likely they are to have died.
+
+The *non-generational* incremental collector reverted in 3.14 was more
+effective than the current GC, but by leaving objects uncollected for longer,
+a lot of garbage could accumulate, resulting in excessive peak memory use.
+
+Making a collector more effective means that there will be more garbage and
+thus more memory use. Using generations can help fix that.
+
+By collecting the old generation incrementally, we reduce maximum pause times,
+in some cases 100 fold, *and* reduce peak memory by repeatedly doing
+small collections, instead of waiting to do one very large one.
+
+Specification
+=============
+
+A new generational, incremental cyclic garbage collector will be added to
+CPython. The old non-incremental collector will be preserved as an option.
+
+The heap will be divided into three generations, which both the incremental
+and legacy collectors will use:
+
+* Nursery
+* Aging
+* Old
+
+Additionally, the generations will be split into spaces.
+The nursery will consist of a single space.
+The aging generation will be composed of a configurable number of
+spaces (defaulting to 5 in the prototype) for the incremental collector
+and a single space for the legacy collector.
+The old generation is split into two spaces, pending and visited, in
+the incremental collector. It is just a single space in the legacy collector.
+The old generation spaces have no size limit.
+
+The generations
+---------------
+
+::
+
+       Legacy GC                Incremental GC
+
+                                ┌------------┐
+    ┌------------┐    Nursery   |            |
+    ├============┤              ├============┤
+    |            |              |     1      |
+    |            |              ├------------┤
+    |            |              |     2      |
+    |            |              ├------------┤
+    |            |    Aging     |     3      |
+    |            |  generation  ├------------┤
+    |            |              |     4      |
+    |            |              ├------------┤
+    |            |              |     5      |
+    ├============┤              ├============┤
+    |            |              |            |
+    |            |              |            |
+    |            |     Old      |            |
+    |            |  generation  |            |
+    |            |              |            |
+    └~~~~~~~~~~~~┘              └~~~~~~~~~~~~┘
+
+The algorithm
+-------------
+
+The new GC alternates between collecting the least recently scanned part
+of the old generation and the oldest space in the young generation.
+
+When the nursery is half full, the unreachable cycles in increments of the
+old generation are collected. Each increment is chosen by forming a transitive
+closure of objects reachable from the least recently scanned object in the
+old generation. Increments are collected until sufficient objects have been
+scanned to keep up with the rate of objects being added to the old generation
+by the young collections.
+
+When the nursery is full, the unreachable cycles in the oldest aging space
+(space 5 in the diagram above) are collected.
+
+::
+
+    nursery: list = []
+    aging: list[list] = [[]]
+    pending_space: list = []
+    visited_space: list = []
+    reachable: list = [ sys ]
+    work_to_do: int = -100_000
+    young_next: bool = False
+
+    def collect():
+        global young_next
+        young_collection() if young_next else old_collection()
+        young_next = not young_next
+
+    def young_collection():
+        global work_to_do, nursery
+        oldest = aging.pop()
+        survivors = collect_cycles(oldest)
+        work_to_do += len(survivors)
+        visited_space.extend(survivors)
+        aging.insert(0, nursery)
+        nursery = []
+
+    def scan_reachable(limit):
+        """Move some reachable objects from pending to reachable and from
+           reachable to visited. They are reachable and cannot be garbage.
+        """
+        moved_to_visited = 0
+        while reachable:
+            root = reachable.pop()
+            visited.append(root)
+            moved_to_visited += 1
+            for obj in gc.get_referents(root):
+                if obj in pending:
+                    pending.remove(obj)
+                    reachable.append(obj)
+        if moved_to_visited >= limit:
+            return moved_to_visited
+        return moved_to_visited
+
+    def old_collection():
+        "Collect an increment of the old generation"
+        global work_to_do, pending_space, visited_space
+        while work_to_do > 0:
+            if reachable:
+                work_to_do -= scan_reachable(work_to_do)
+                continue
+            if not pending_space:
+                pending_space, visited_space = visited_space, pending_space
+                visited.remove(sys)
+                reachable.append(sys)
+                work_to_do = 0
+                return
+            obj = pending_space.pop(0)
+            # form transitive closure starting at obj, taking objects from pending
+            increment = form_transitive_closure(obj, pending)
+            candidates = len(increment)
+            survivors = collect_cycles(increment)
+            work_to_do -= survivors
+            collected = candidates - survivors
+            # If we are collecting lots of objects, that means
+            # there is a lot of cycle garbage and we need to
+            # sweep the heap faster.
+            work_to_do += 2 * collected
+            visited_space.extend(survivors)
+
+The legacy collector
+--------------------
+
+The legacy collector will continue to work in the same way as before:
+
+============== ====================== ================
+  Collection        Collects            Survivors to
+============== ====================== ================
+     0                Nursery                Aging
+     1            Nursery and Aging          Old
+     2                  All                  Old
+============== ====================== ================
+
+Configuration
+-------------
+
+The GC is currently configured by ``gc.set_threshold()``.
+This will not change.
+
+The general intent of each threshold is kept broadly the same, for thresholds
+0 and 1, but the exact meaning differs. Threshold 2 is ignored.
+
+=========== ====================== =========================== ============
+ Threshold    General intent                 Details             Default
+=========== ====================== =========================== ============
+     0        Inverse frequency     Size of the nursery and       2000
+              of collections        aging half spaces in kB
+     1        Time to age before    Number of half spaces         10\*
+              next collection       in the aging generation
+     2        Frequency of          Ignored                       10
+              checks for full
+              heap collection
+=========== ====================== =========================== ============
+
+The total size of the young generations (nursery + aging)
+is ``threshold0 * (threshold1 + 2)`` kB.
+
+\* Because the young and old collections alternate, the aging spaces are
+collected in pairs of half spaces. For that reason the number
+of half spaces is always rounded up to an even number.
+
+Performance
+-----------
+
+Performance is improved relative to the current collector.
+The performance improvements come from doing less work in the young
+generations (one collection per object, not two) and doing less work
+in the old generation due to the lower survivor rate from the young
+generations.
+
+Peak Memory Consumption
+-----------------------
+
+Overall, peak memory consumption should be about the same, but it will depend
+on the workload.
+
+For small and short-lived applications, memory consumption
+is likely to increase due to the larger young generations, but the extra space
+is bounded at 24MB by default. In most cases the increase in memory use will be
+much less than 24MB as that limit includes live and reclaimed objects.
+Unreachable cycles are typically only a small fraction of the space.
+
+For larger, longer-lived applications, peak memory use might be reduced as the
+incremental collector prevents the old generation growing as large as it does
+in the current generational collector, but the difference is likely to be small.
+
+Explicit collections
+--------------------
+
+Normally the GC is run at intervals by the virtual machine. However,
+GCs can be triggered explicitly by calling ``gc.collect()``.
+Calling ``gc.collect()`` with an explicit argument is deprecated as it
+interferes with the smooth operation of the garbage collector. ``gc.collect()``
+without an argument continues to be supported.
+
+Calling ``gc.collect()``
+''''''''''''''''''''''''
+
+Calling ``gc.collect()`` is equivalent to calling ``gc.collect(2)``.
+
+================== ==============================================
+ Argument                   Effect
+================== ==============================================
+    0               Perform a young collection,
+                    collecting the oldest aging space
+    1               Collect an increment of the old generation
+ 2 or no argument   Collect the whole heap
+================== ==============================================
+
+Choosing the legacy generational collector
+------------------------------------------
+
+The GC algorithm can be selected at startup with the ``-X gc`` option.
+The choices are "incremental" for the incremental GC or "legacy" for the
+legacy generational GC. The default is "incremental".
+
+Correctness
+===========
+
+The cyclic garbage collector must be able to collect all unreachable cycles.
+
+Proof
+-----
+
+All unreachable cycles in the old generation will be collected
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+* Take it as given that collecting a region of the heap will collect all
+  cycles wholly within that region. If this weren't the case, the current
+  GC would be broken.
+* If an object is part of a cycle and is part of a transitive closure of
+  objects reachable from any object, then the whole of that cycle must be
+  within the transitive closure:
+
+  * This follows from the fact that *any* object in a cycle is transitively
+    reachable from any other object in that cycle, and that *all* transitively
+    reachable objects are included in the transitive closure.
+
+
+From this we can deduce that if an object is part of a cycle in the pending
+space at the point when the pending space is the whole old generation, then
+that cycle cannot be moved to the visited space. To be moved to the visited
+space it would need to be moved as part of an increment, but increments
+are transitive closures and thus must contain the whole cycle, and all
+cycles wholly within a region are collected.
+Therefore, when the pending space becomes empty, the cycle can neither be in
+the visited space nor the pending space, so it must have been collected.
+
+
+All unreachable cycles will be collected
+''''''''''''''''''''''''''''''''''''''''
+
+All objects in the young generation will be promoted to the old generation
+if they are not collected by reference counting.
+Therefore, for any cycle that spans both young and old generations, the young
+objects will be promoted to be in the old generation, at which point the
+cycle is wholly within the old generation and the above proof applies.
+
+Backwards Compatibility
+=======================
+
+Even if the legacy collector is used, there will be some small changes to
+behavior as the trigger for collections changes from net objects allocated
+to gross memory allocated since the last collection.
+
+For most applications, there should be no significant changes, but the
+following differences might be observed:
+
+* Fewer GCs during startup, as the heap grows.
+* More gen 0 and 1 GCs during steady state operation of long-lived programs
+* Programs that create lots of large objects may see more frequent GCs
+
+The overall time spent in GC should be largely unchanged, as more frequent
+collections will usually mean shorter pauses per collection.
+
+
+Future work
+===========
+
+Further reducing pause times
+----------------------------
+
+While the reference implementation is 1-2% faster than main (with the
+generational GC), it can still have long pause times on large object graphs.
+Many of the benchmarks have a single large tree as their object graph, and this
+can result in long pauses, as an increment starting at the root of the tree
+will contain almost the whole heap.
+
+This could be improved in a few ways:
+
+* Sorting the increments as they are either created or sent to the old
+  generation, so that the objects farthest from the root are picked first in
+  the next collection.
+* Traversing the stack prior to increment formation to skip reachable objects.
+  This will complicate the algorithm, but could save significant amounts of
+  work in some cases.
+
+Porting to the free-threaded build
+----------------------------------
+
+Porting the incremental GC to the free-threaded build will need a few changes:
+
+* Each thread would get its own nursery.
+* Nurseries would be considerably smaller and aggregated into the aging spaces
+  when full.
+* Traversing the old space would require the whole heap to be scanned,
+  regardless of which space the object is in. Objects not in the pending space
+  would be skipped over, but this adds some overhead.
+* The doubly linked lists used to manage spaces would need to be replaced with
+  external arrays for the young generation and the increments. The
+  free-threaded GC already needs to do this to partition garbage and survivors.
+
+
+Reference Implementation
+========================
+
+* `Reference implementation <https://github.com/markshannon/cpython/tree/incremental-gc>`__
+* `Performance analysis <https://gist.github.com/sergey-miryanov/4c2f3f20f43e19ca18f1046fc825853b>`__
+
+
+Acknowledgements
+================
+
+Thanks to Sergey Miryanov for doing the performance analysis.
+
+
+Copyright
+=========
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.

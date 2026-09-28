@@ -154,3 +154,60 @@ implemented::
                for d in data:
                    self._file.write(d)
                self._file.write(b"\n")
+
+
+.. _pep805-examples-channel:
+
+Channel
+-------
+
+A channel for passing mutable objects from one ``ThreadGroup`` to another::
+
+   class Channel:
+
+       def __init__(self):
+           self.mutex = Lock()
+           with self.mutex:
+               self.queue = self.mutex.protect(deque())
+           self.__freeze__()
+
+       def put(self, obj):
+           with self.mutex:
+               if obj.__state__ == LOCAL:
+                   obj = protect(del obj)
+               self.queue.append(obj)
+
+       def get(self):
+           with self.mutex:
+               obj = self.queue.popleft()
+               if protected.__state__ == PROTECTED:
+                   obj = unprotect(obj)
+               return obj
+
+.. _pep805-examples-transfer-box:
+
+TransferBox
+-----------
+
+A box for passing a single mutable object from one ``ThreadGroup`` to another::
+
+
+   class TransferBox[T]:
+
+       def __new__(cls, obj: T):
+           self.mutex = Lock()
+           with self.mutex:
+               if obj.__state__ == LOCAL:
+                   obj = protect(del obj)
+               self._obj = protect([obj])
+           self.__freeze__()
+
+       def claim(self) -> T:
+           with self.mutex:
+               obj =  self._obj[0]
+               if obj is EMPTY:
+                   raise ValueError(...)
+               self._obj[0] = EMPTY
+               if obj.__state__ == PROTECTED:
+                   obj = unprotect(obj)
+           return obj

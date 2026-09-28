@@ -32,9 +32,9 @@ A possible object header:
 Reference counting
 ------------------
 
-The author expects that the biased reference counting mechanism from :pep:`703`
-will be used. Like :pep:`703`, per-thread reference counting and deferred
-reference counting will also be used where necessary to minimize contention.
+Objects will have two reference counts, a local reference count and a shared
+reference count. This is similar to the the implementation of biased
+reference counting from :pep:`703`.
 
 Checking object states
 ----------------------
@@ -62,19 +62,23 @@ we can just check that the object is immutable.
 
 The JIT compiler can potentially remove redundant checks on the same object.
 
+Some information about the object state can be folded into the ``owner_id``
+field. By making all thread group IDs positive and all lock IDs negative, the
+state can be determined from the ``owner_id``.
+
 Access control function
 '''''''''''''''''''''''
 
 It is assumed that *local* objects will be the most likely, so if the
 thread state is available, that will be checked first::
 
-   PyObject *PyObject_CheckAccessThread(PyObject *op, PyThread t)
+   PyObject *PyObject_CheckAccessThread(PyObject *op, PyThreadState *tstate)
    {
-       PyThreadState *tstate = PyThreadStateFromThread(t);
        if (op->owner_id == tstate->threadgroup_id) {
            return op;
        }
-       if (op->state >= SYNCHRONIZED) {
+       if (op->owner_id == 0) {
+           // Immutable or synchronized
            return op;
        }
        // Check for protected and stop the world cases...
@@ -85,7 +89,8 @@ will be checked first::
 
    PyObject *PyObject_CheckAccess(PyObject *op)
    {
-       if (op->state >= SYNCHRONIZED) {
+       if (op->owner_id == 0) {
+           // Immutable or synchronized
            return op;
        }
        PyThreadState *tstate = PyThreadState_GET();
@@ -100,6 +105,128 @@ held, as it is too easy to deadlock, so the set of held mutexes will be small
 and can be implemented as a LIFO array (stack). Typically the matching mutex
 for the object will be the first or second entry, so the check should be cheap.
 
+In addition to the object states, *local*, *immutable*, *shared*,
+and *protected*, the VM will also maintain two internal states,
+*local-immutable* and *local-synchronized*, that are semantically equivalent to
+*immutable* and *synchronized*, but will allow the performance advantages of
+*local* reference counting.
+
+As far as the VM is concerned, *immutable* and *synchronized* are the same, as
+both can be shared.
+
++--------------------+------------+----------------+
+|        State       |  owner_id  |     state      |
++====================+============+================+
+|      Local         |     > 0    |    LOCAL       |
++--------------------+------------+----------------+
+|     Protected      |     < 0    |   PROTECTED    |
++--------------------+------------+----------------+
+|    Synchronized    |    == 0    |  SYNCHRONIZED  |
++--------------------+------------+----------------+
+|     Immutable      |    == 0    |   IMMUTABLE    |
++--------------------+------------+----------------+
+| Local-synchronized |     > 0    |  SYNCHRONIZED  |
++--------------------+------------+----------------+
+| Local-immutable    |     > 0    |   IMMUTABLE    |
++--------------------+------------+----------------+
+|    Inaccessible    |   INT_MAX  | INACCESSIBLE   |
++--------------------+------------+----------------+
+
+Inaccessible objects can be used for testing and possibly as sentinels
+internally.
+
+
+Combining reference counting and access control
+'''''''''''''''''''''''''''''''''''''''''''''''
+
+Like biased reference counting, each object will have two reference counts:
+a local reference count, that will not need synchronization, and a shared
+reference count that will need synchronization.
+
+In general, anywhere that an access control is needed a reference count
+increment also necessary. By combining the two, no more tests are needed
+and the lowest overhead increment can be performed.
+
+::
+
+
+    static inline int
+    do_shared_incref(PyObject *op, uint32_t increment) {
+        int refcount = _Py_atomic_load_relaxed(op->ref_count_shared);
+        if (refcount >= IMMORTALITY_INCREMENT_THRESHOLD) {
+            return 0;
+        }
+        _Py_atomic_increment(&op->ref_count_shared, increment);
+    }
+
+    static inline void
+    do_local_incref(PyObject *op) {
+        op->ref_count_local++;
+        if (op->ref_count_local != 0) {
+            return 0;
+        }
+        // Overflowed, so move 128 from local to shared.
+        op->ref_count_local = 128;
+        return do_shared_incref(op, 128);
+    }
+
+    int
+    _PyObject_CheckAccessIncref(PyObject *op, PyThreadState *tstate)
+    {
+        uint32_t owner_id = op->owner_id;
+        if (owner_id == tstate->threadgroup_id) {
+            // This includes local-immutable objects.
+            return do_local_incref(op);
+        }
+        else if (owner_id == 0) {
+            // immutable or synchronized
+            return do_shared_incref(op, 1);
+        }
+        else if (owner_id < 0) {
+            // Protected
+            if (protected_check(op)) {
+                // unsynchronized refcount is allowed
+                return do_local_incref(op);
+            }
+        }
+        if (in_stop_the_world()) {
+            return do_local_incref(op);
+        }
+        PyErr_SetException(IllegalAccessException, op);
+        return -1;
+    }
+
+
+Exploiting the state of the container object
+''''''''''''''''''''''''''''''''''''''''''''
+
+In practically all cases where a thread is getting a reference to an object
+from the heap that reference is in a container object that we know to be
+accessible. In many cases both objects will have the same accessibility,
+so we can avoid expensive checks by comparing the ``owner_id`` fields.
+If they are the same then the new reference is legal::
+
+    int
+    _PyObject_CheckAccessIncrefWithContainer(PyObject *op, PyObject *container) {
+        assert(PyObject_IsAccessible((container));
+        if (op->owner_id != container->owner_id) {
+            return PyObject_CheckAccessIncref(op);
+        }
+        // Object could be in any state, but it is a legal one
+        int increment;
+        if (op->owner_id != 0) {
+            do_local_incref(op);
+        } else {
+
+        }
+        int refcount = _Py_atomic_load_relaxed(op->ref_count_shared);
+        if (refcount >= IMMORTALITY_INCREMENT_THRESHOLD) {
+            return 0;
+        }
+        _Py_atomic_increment(&op->ref_count_shared, increment);
+        return 0;
+        }
+    }
 
 C API
 -----
@@ -118,7 +245,6 @@ implementation would first be renamed ``PyObject_FooUnchecked``, then
        return _PyObject_CheckAccessNullable(result);
    }
 
-
 where ``_PyObject_CheckAccessNullable`` is an internal function providing
 the access control check. A ``_PyObject_CheckAccess`` variant would be
 provided for when the object reference was known to not be ``NULL``.
@@ -126,13 +252,23 @@ provided for when the object reference was known to not be ``NULL``.
 This mechanical transformation is likely to leave some inefficiencies in the
 code base, so additional work will be needed to re-optimize later.
 
+To take advantage of the combined access and incref function above, some
+modification will be needed, for example::
+
+   PyObject *
+   PyObject_Foo(PyObject *op)
+   {
+       PyObject *result = PyObject_FooBorrowed(op);
+       return _PyObject_CheckAccessXIncref(result);
+   }
+
 Since all API functions need to check against the current thread,
 new APIs taking a reference to the thread will be added to reduce the
 overhead of fetching the thread reference on every call.
 For example ``PyObject_GetAttr`` would gain a ``PyObject_GetAttrThread``
 variant::
 
-    PyObject *PyObject_GetAttrThread(PyObject *v, PyObject *name, PyThread t);
+    PyObject *PyObject_GetAttrThread(PyObject *v, PyObject *name, PyThreadState *t);
 
 Variants of ``_PyObject_CheckAccess`` that take a thread pointer will be
 added.
@@ -141,6 +277,11 @@ Many API functions will need no modification. For example, ``PyObject_Str``
 always returns a ``str``, which is immutable, so no additional access check
 is needed. ``PyObject_SetItem`` does not return an object, so will need no
 additional check.
+
+.. Note::
+    Given we are adding new functions to the C API, the exact interface will
+    need further discussion. Particularly whether a new opaque value should
+    be used instead of ``PyThreadState *`` and what it should be called.
 
 
 Interpreter
@@ -278,15 +419,15 @@ Implementing ownership will require the ABI breakage discussed above.
 
 With that in mind, here is a possible order of implementation:
 
-* ThreadGroups
 * One-time ABI breakage
+* ThreadGroups for testing and development only
+* Support parallel allocation and cyclic garbage collection
 * Port biased and deferred reference counting from the free-threading build
 * Simple ownership. Local and immutable only
-* Support parallel allocation and cyclic garbage collection
+* ThreadGroups API
 * ``__freeze__``
 * Synchronized objects
 * Protected object state, including bytecode compiler support
-* ``TransferBox`` and ``Channel``
 * ``sys.monitoring.StopTheWorld``
 * Performance work
 

@@ -1,15 +1,14 @@
+import subprocess
 import time
 from pathlib import Path
-import subprocess
 
-from docutils import nodes
-from docutils import transforms
+from docutils import nodes, transforms
 
 
 class PEPFooter(transforms.Transform):
     """Footer transforms for PEPs.
 
-     - Remove the References/Footnotes section if it is empty when rendered.
+    - Remove the References/Footnotes section if it is empty when rendered.
     """
 
     # Uses same priority as docutils.transforms.TargetNotes

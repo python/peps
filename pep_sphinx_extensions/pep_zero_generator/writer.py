@@ -2,25 +2,29 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
 import unicodedata
+from typing import TYPE_CHECKING
 
-from pep_sphinx_extensions.pep_processor.transforms.pep_headers import ABBREVIATED_STATUSES
-from pep_sphinx_extensions.pep_processor.transforms.pep_headers import ABBREVIATED_TYPES
-from pep_sphinx_extensions.pep_zero_generator.constants import DEAD_STATUSES
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_ACCEPTED
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_ACTIVE
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_DEFERRED
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_DRAFT
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_FINAL
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_PROVISIONAL
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_REJECTED
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_VALUES
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_WITHDRAWN
-from pep_sphinx_extensions.pep_zero_generator.constants import SUBINDICES_BY_TOPIC
-from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_INFO
-from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_PROCESS
-from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_VALUES
+from pep_sphinx_extensions.pep_processor.transforms.pep_headers import (
+    ABBREVIATED_STATUSES,
+    ABBREVIATED_TYPES,
+)
+from pep_sphinx_extensions.pep_zero_generator.constants import (
+    DEAD_STATUSES,
+    STATUS_ACCEPTED,
+    STATUS_ACTIVE,
+    STATUS_DEFERRED,
+    STATUS_DRAFT,
+    STATUS_FINAL,
+    STATUS_PROVISIONAL,
+    STATUS_REJECTED,
+    STATUS_VALUES,
+    STATUS_WITHDRAWN,
+    SUBINDICES_BY_TOPIC,
+    TYPE_INFO,
+    TYPE_PROCESS,
+    TYPE_VALUES,
+)
 from pep_sphinx_extensions.pep_zero_generator.errors import PEPError
 
 if TYPE_CHECKING:
@@ -210,11 +214,24 @@ class PEPZeroWriter:
 
         # PEPs by category
         self.emit_title("Index by Category")
-        meta, info, provisional, accepted, open_, finished, historical, deferred, dead = _classify_peps(peps)
+        (
+            meta,
+            info,
+            provisional,
+            accepted,
+            open_,
+            finished,
+            historical,
+            deferred,
+            dead,
+        ) = _classify_peps(peps)
         pep_categories = [
             ("Process and Meta-PEPs", meta),
             ("Other Informational PEPs", info),
-            ("Provisional PEPs (provisionally accepted; interface may still change)", provisional),
+            (
+                "Provisional PEPs (provisionally accepted; interface may still change)",
+                provisional,
+            ),
             ("Accepted PEPs (accepted; may not be implemented yet)", accepted),
             ("Open PEPs (under consideration)", open_),
             ("Finished PEPs (done, with a stable interface)", finished),
@@ -222,7 +239,7 @@ class PEPZeroWriter:
             ("Deferred PEPs (postponed pending further research or updates)", deferred),
             ("Rejected, Superseded, and Withdrawn PEPs", dead),
         ]
-        for (category, peps_in_category) in pep_categories:
+        for category, peps_in_category in pep_categories:
             # For sub-indices, only emit categories with entries.
             # For PEP 0, emit every category, but only with a table when it has entries.
             if len(peps_in_category) > 0:
@@ -285,7 +302,9 @@ class PEPZeroWriter:
             for author_name in _sort_authors(authors_dict):
                 # Use the email from authors_dict instead of the one from "author" as
                 # the author instance may have an empty email.
-                self.emit_text(f"{author_name:{max_name_len}}  {authors_dict[author_name]}")
+                self.emit_text(
+                    f"{author_name:{max_name_len}}  {authors_dict[author_name]}"
+                )
             self.emit_author_table_separator(max_name_len)
             self.emit_newline()
             self.emit_newline()
@@ -326,7 +345,10 @@ def _classify_peps(peps: list[PEP]) -> tuple[list[PEP], ...]:
             # Hack until the conflict between the use of "Final"
             # for both API definition PEPs and other (actually
             # obsolete) PEPs is addressed
-            if pep.status == STATUS_ACTIVE or "release schedule" not in pep.title.lower():
+            if (
+                pep.status == STATUS_ACTIVE
+                or "release schedule" not in pep.title.lower()
+            ):
                 info.append(pep)
             else:
                 historical.append(pep)
@@ -337,8 +359,20 @@ def _classify_peps(peps: list[PEP]) -> tuple[list[PEP], ...]:
         elif pep.status == STATUS_FINAL:
             finished.append(pep)
         else:
-            raise PEPError(f"Unsorted ({pep.pep_type}/{pep.status})", pep.filename, pep.number)
-    return meta, info, provisional, accepted, open_, finished, historical, deferred, dead
+            raise PEPError(
+                f"Unsorted ({pep.pep_type}/{pep.status})", pep.filename, pep.number
+            )
+    return (
+        meta,
+        info,
+        provisional,
+        accepted,
+        open_,
+        finished,
+        historical,
+        deferred,
+        dead,
+    )
 
 
 def _verify_email_addresses(peps: list[PEP]) -> dict[str, str]:
@@ -360,7 +394,7 @@ def _verify_email_addresses(peps: list[PEP]) -> dict[str, str]:
     # Combine multiple email addresses with commas. Since peps is
     # sorted by PEP number, this should produce a deterministic
     # output.
-    return {name: ', '.join(emails) for name, emails in authors_dict.items()}
+    return {name: ", ".join(emails) for name, emails in authors_dict.items()}
 
 
 def _sort_authors(authors_dict: dict[str, str]) -> list[str]:
