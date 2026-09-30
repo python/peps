@@ -1,8 +1,7 @@
-from pathlib import Path
 import re
+from pathlib import Path
 
-from docutils import nodes
-from docutils import transforms
+from docutils import nodes, transforms
 from sphinx import errors
 
 from pep_sphinx_extensions.pep_processor.transforms import pep_zero
@@ -44,6 +43,7 @@ ABBREVIATED_TYPES = {
     "community process, workflow or governance",
 }
 
+
 class PEPParsingError(errors.SphinxError):
     pass
 
@@ -63,8 +63,13 @@ class PEPHeaders(transforms.Transform):
             raise PEPParsingError("Document tree is empty.")
 
         header = self.document[0]
-        if not isinstance(header, nodes.field_list) or "rfc2822" not in header["classes"]:
-            raise PEPParsingError("Document does not begin with an RFC-2822 header; it is not a PEP.")
+        if (
+            not isinstance(header, nodes.field_list)
+            or "rfc2822" not in header["classes"]
+        ):
+            raise PEPParsingError(
+                "Document does not begin with an RFC-2822 header; it is not a PEP."
+            )
 
         # PEP number should be the first field
         pep_field = header[0]
@@ -76,7 +81,9 @@ class PEPHeaders(transforms.Transform):
         try:
             pep_num = int(pep_num_str)
         except ValueError:
-            raise PEPParsingError(f"PEP header must contain an integer. '{pep_num_str}' is invalid!")
+            raise PEPParsingError(
+                f"PEP header must contain an integer. '{pep_num_str}' is invalid!"
+            )
 
         # Special processing for PEP 0.
         if pep_num == 0:
@@ -116,8 +123,7 @@ class PEPHeaders(transforms.Transform):
             elif name in {"discussions-to", "resolution", "post-history"}:
                 # Prettify mailing list and Discourse links
                 for node in para:
-                    if (not isinstance(node, nodes.reference)
-                            or not node["refuri"]):
+                    if not isinstance(node, nodes.reference) or not node["refuri"]:
                         continue
                     # If the Resolution header is already a link, don't prettify it
                     if name == "resolution" and node["refuri"] != node[0]:
@@ -140,7 +146,10 @@ class PEPHeaders(transforms.Transform):
                     target = self.document.settings.pep_url.format(int(pep_str))
                     if self.document.settings.builder == "dirhtml":
                         target = f"../{target}"
-                    new_body += [nodes.reference("", pep_str, refuri=target), nodes.Text(", ")]
+                    new_body += [
+                        nodes.reference("", pep_str, refuri=target),
+                        nodes.Text(", "),
+                    ]
                 para[:] = new_body[:-1]  # drop trailing space
             elif name == "topic":
                 new_body = []
@@ -216,16 +225,14 @@ def _process_list_url(parts: list[str]) -> tuple[str, str]:
     # HyperKitty (Mailman3) archive structure is
     # https://mail.python.org/archives/list/<list_name>/thread/<id>
     if "archives" in parts:
-        list_name = (
-            parts[parts.index("archives") + 2].removesuffix("@python.org"))
+        list_name = parts[parts.index("archives") + 2].removesuffix("@python.org")
         if len(parts) > 6 and parts[6] in {"message", "thread"}:
             item_type = parts[6]
 
     # Mailman3 list info structure is
     # https://mail.python.org/mailman3/lists/<list_name>.python.org/
     elif "mailman3" in parts:
-        list_name = (
-            parts[parts.index("mailman3") + 2].removesuffix(".python.org"))
+        list_name = parts[parts.index("mailman3") + 2].removesuffix(".python.org")
 
     # Pipermail (Mailman) archive structure is
     # https://mail.python.org/pipermail/<list_name>/<month>-<year>/<id>
@@ -240,8 +247,7 @@ def _process_list_url(parts: list[str]) -> tuple[str, str]:
 
     # Not a link to a mailing list, message or thread
     else:
-        raise ValueError(
-            f"{'/'.join(parts)} not a link to a list, message or thread")
+        raise ValueError(f"{'/'.join(parts)} not a link to a list, message or thread")
 
     return list_name, item_type
 
@@ -251,7 +257,8 @@ def _process_discourse_url(parts: list[str]) -> tuple[str, str]:
 
     if len(parts) < 5 or ("t" not in parts and "c" not in parts):
         raise ValueError(
-            f"{'/'.join(parts)} not a link to a Discourse thread or category")
+            f"{'/'.join(parts)} not a link to a Discourse thread or category"
+        )
 
     first_subpart = parts[4]
     has_title = not first_subpart.isnumeric()
@@ -279,7 +286,8 @@ def _process_pretty_url(url: str) -> tuple[str, str]:
         item_name, item_type = LINK_PRETTIFIERS[parts[2]](parts)
     except KeyError as error:
         raise ValueError(
-            f"{url} not a link to a recognized domain to prettify") from error
+            f"{url} not a link to a recognized domain to prettify"
+        ) from error
     item_name = item_name.title().replace("Sig", "SIG").replace("Pep", "PEP")
     return item_name, item_type
 
