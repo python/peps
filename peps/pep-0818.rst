@@ -175,17 +175,6 @@ JavaScript also has ``Reflect.construct`` (the ``new`` keyword). Callable
 JSProxies have a method called ``new()`` which corresponds to
 ``Reflect.construct``.
 
-The following additional mappings are defined in Pyodide. It is our intention to
-eventually add them to Python itself, but they are deferred to a future PEP:
-
-* ``__await__`` <==> ``then``
-* ``__aiter__`` <==> ``[Symbol.asyncIterator]``
-* ``__anext__`` <==> ``next`` (same as ``__next__``; check for presence of
-  ``[Symbol.asyncIterator]`` to distinguish)
-* ``AsyncGenerator`` <==> ``AsyncGenerator``
-* Async context managers are implemented on JSProxies that implement
-  ``[Symbol.asyncDispose]``.
-
 Garbage Collection and Destruction of Proxies
 ---------------------------------------------
 
@@ -250,6 +239,8 @@ doesn't hold a strong reference the Python exception because JavaScript errors
 are often leaked and Python error objects hold a reference to frame objects
 which may hold a significant amount of memory.
 
+.. _calling-js-from-python:
+
 Calling a JavaScript Function from Python
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -274,14 +265,18 @@ To call a callable ``JSProxy`` we do the following steps:
        result. Note that the ``JSException`` object holds a reference to the
        original JavaScript error.
 
-6. If ``jsresult`` is a JavaScript generator, iterate over ``pyproxies`` and
-   register a JavaScript finalizer for each. Wrap the generator with a new
-   generator that destroys ``pyproxies`` when they are exhausted. Translate the
-   wrapped generator to Python and return it.
-7. Otherwise, translate ``jsresult`` to Python and store it in ``pyresult``.
-8. Iterate over ``pyproxies`` and destroy them. If ``jsresult`` is a
+6. If ``jsresult`` is a JavaScript generator or async generator, iterate over
+   ``pyproxies`` and register a JavaScript finalizer for each. Wrap the
+   generator with a new generator that destroys ``pyproxies`` when they are
+   exhausted. Translate the wrapped generator to Python and return it.
+7. If ``jsresult`` is a JavaScript promise, let ``done_callback()`` be a
+   function that iterates over ``pyproxies`` and destroys them. Call
+   ``jsawaitable_to_pyawaitable(jsresult, done_callback)`` and return the
+   result. (See :ref:`js-awaitable-to-py-awaitable`.)
+8. Otherwise, translate ``jsresult`` to Python and store it in ``pyresult``.
+9. Iterate over ``pyproxies`` and destroy them. If ``jsresult`` is a
    ``PyProxy``, destroy it too.
-9.  Return ``pyresult``.
+10.  Return ``pyresult``.
 
 This is modeled on the calling convention for C Python APIs.
 
@@ -405,6 +400,11 @@ import Buffer`` will succeed in Node but fail in a browser.
 ``create_proxy``
     Creates a ``PyProxy`` from Python. Used to control the lifetime of the
     ``PyProxy`` from Python.
+
+``create_once_callable``
+    Create a ``PyProxy`` from a Python callable which can only be called once.
+    Decrements the reference count on the Python callable if called or garbage
+    collected.
 
 ``jsnull``
     Special value that converts to/from the JavaScript ``null`` value.
@@ -779,6 +779,10 @@ JavaScript object.
     Signals whether or not the JavaScript object has a ``[Symbol.dispose]()``
     method. If present, used to implement ``__enter__`` and ``__exit__``.
 
+``HAS_ASYNC_DISPOSE``
+    Signals whether or not the JavaScript object has a ``[Symbol.asyncDispose]()``
+    method. If present, used to implement ``__aenter__`` and ``__aexit__``.
+
 ``IS_ARRAY``
     Signals whether ``Array.isArray()`` applied to the JavaScript object returns
     ``true``. If present,  the ``JSProxy`` will be an instance of
@@ -803,14 +807,26 @@ JavaScript object.
     Signals whether the JavaScript object is an ``Error``. If so, the
     ``JSProxy`` it will subclass ``Exception`` so it can be raised.
 
+``IS_AWAITABLE``
+    Signals whether the JavaScript object has a ``then()`` method. If present,
+    used to implement ``__await__``. See :ref:`asyncio-integration` for details.
+
 ``IS_GENERATOR``
     Signals whether the JavaScript object is a generator. If so, the ``JSProxy``
     will be an instance of ``collections.abc.Generator``.
+
+``IS_ASYNC_GENERATOR``
+    Signals whether the JavaScript object is an async generator. If so, we
+    implement ``asend()``, ``athrow()`` and ``aclose()`` methods.
 
 ``IS_ITERABLE``
     Signals whether the JavaScript object has a ``[Symbol.iterator]`` method or
     the ``IS_PY_JSON_DICT`` flag is set. If so, we use it to implement
     ``__iter__`` on the ``JSProxy``.
+
+``IS_ASYNC_ITERABLE``
+    Signals whether the JavaScript object has a ``[Symbol.asyncIterator]()``
+    method. If present, is used to implement ``__aiter__``.
 
 ``IS_ITERATOR``
     Signals whether the JavaScript object has a ``next()`` method and no
@@ -818,6 +834,12 @@ JavaScript object.
     ``__next__`` on the ``JSProxy``. (If there is a ``[Symbol.asyncIterator]``
     method, we assume that the ``next()`` method should be used to implement
     ``__anext__``.)
+
+``IS_ASYNC_ITERATOR``
+    Signals whether the JavaScript object has a ``next()`` method and a
+    ``[Symbol.asyncIterator]()`` method. (If it only has a ``next()`` method, we
+    assume it's a synchronous iterator.) If present, is used to implement
+    ``__anext__``.
 
 ``IS_PY_JSON_DICT``
     This is set on a ``JSProxy`` by the ``as_py_json()`` method if it is not an
@@ -852,7 +874,6 @@ JavaScript object.
     ``jsbuffer`` into ``file`` and conversion methods ``to_bytes()``,
     ``to_memoryview()``, and ``to_string()`` which convert the buffer to various
     Python types.
-
 
 Creating a ``JSProxy``
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -1045,20 +1066,41 @@ PyProxy we make from it.
     ``pyobj.__getitem__("some_property")`` if ``getattr(pyobj, "some_property")``
     raises an ``AttributeError``.
 
+``IS_AWAITABLE``
+    We set this flag if the Python object has a ``__await__`` method. If this
+    flag is set, we use it to implement ``then()``, ``catch()``, and
+    ``finally()`` methods on the PyProxy. See :ref:`asyncio-integration` for
+    more details.
+
 ``IS_GENERATOR``
     We set this flag if the Python object is an instance of
     ``collections.abc.Generator``. If present, we make the ``PyProxy`` implement
     the methods of a JavaScript generator.
 
+``IS_ASYNC_GENERATOR``
+    We set this flag if the Python object is an instance of
+    ``collections.abc.AsyncGenerator``. If present, we make the ``PyProxy``
+    implement the methods of a JavaScript async generator.
+
 ``IS_ITERABLE``
     We set this flag if the Python object has a ``__iter__`` method. If present,
     we use it to implement a ``[Symbol.iterator]()`` method on the ``PyProxy``.
+
+``IS_ASYNC_ITERABLE``
+    We set this flag if the Python object has an ``__aiter__`` method. If
+    present, we use it to implement a ``[Symbol.asyncIterator]()`` method on the
+    ``PyProxy``.
 
 ``IS_ITERATOR``
     We set this flag if the Python object has a ``__next__`` method. If present,
     we use it to implement a ``next()`` method on the ``PyProxy``. We also
     include a ``[Symbol.iterator]()`` implementation that returns the PyProxy
     itself.
+
+``IS_ASYNC_ITERATOR``
+    We set this flag if the Python object has an ``__anext__`` method. If
+    present we use it to implement a ``next()`` method. We also include
+    ``[Symbol.asyncIterator]()`` that returns the PyProxy itself.
 
 ``IS_SEQUENCE``
     We set this flag if the Python object is an instance of
@@ -1248,6 +1290,158 @@ The ``default_converter`` and ``eager_converter`` functions take three arguments
 ``cache``
     Cache the conversion of an object to allow converting self-referential data.
 
+.. _asyncio-integration:
+
+Asyncio Integration
+-------------------
+
+To make asyncio work, we need an implementation of an event loop and a way to
+adapt between JavaScript awaitables and Python awaitables.
+
+JavaScript runtimes contain a single global JavaScript event loop which is
+always running and has no lifecycle that can be accessed from user code. All IO
+in JavaScript runtimes goes through JavaScript and so any asynchronous Python
+code that actually waits on IO is ultimately waiting on some JavaScript promise.
+Thus, there is essentially only one useful design for an event loop.
+
+JavaScript awaitables and Python awaitables have similar APIs. The key
+subtleties that come up are around lifetimes and around the fact that Python
+coroutines are lazy (they need to be scheduled before they will do any real
+work). It is easy to make a lazy JavaScript awaitable, and Pyodide once produced
+them but we found in real world testing that it broke compatibility with a lot
+of JavaScript code. For this reason, if we ever convert a Python coroutine into
+a ``PyProxy`` we always schedule it at the same time.
+
+The ``WebLoop``
+~~~~~~~~~~~~~~~
+
+We make a Python event loop called the ``WebLoop`` that does this. The key logic
+is the following implementation of ``call_later()`` which uses the JavaScript
+``setTimeout()`` function:
+
+.. code:: python
+
+    def call_later(self, delay, callback, *args, context) -> asyncio.Handle:
+        if delay < 0:
+            raise ValueError("Can't schedule in the past")
+        h = asyncio.Handle(callback, args, self, context=context)
+        def run_handle():
+            if h.cancelled():
+                return
+            h._run()
+
+        from jstypes.global_this import setTimeout
+        setTimeout(
+            create_once_callable(run_handle),
+            min(delay * 1000, _MAX_TIMEOUT_MS),
+        )
+
+        return h
+
+The event loop also creates custom futures ``WebFuture`` and ``WebTask``. These
+are like normal futures and tasks except that they also implement the JavaScript
+Promise methods ``then()``, ``catch()`` and ``finally_()``. This is so that code
+can work consistently regardless of whether they have a ``Promise`` a
+``WebFuture`` or a ``WebTask``.
+
+Adapting from a Python awaitable to a JavaScript awaitable
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+We use the following pseudocode to adapt:
+
+.. code:: python
+
+    def pyawaitable_to_promise(pyawaitable):
+        # Make sure pyawaitable is scheduled.
+        pyawaitable = ensure_future(pyawaitable)
+        jspromise = run_js("Promise.withResolvers()")
+        def callback(fut):
+            try:
+                jspromise.resolve(fut.result())
+            except BaseException as e:
+                jspromise.reject(e)
+        pyawaitable.add_done_callback(callback)
+        return jspromise.promise
+
+The methods ``then()``, ``catch()``, and ``finally_()`` on the ``PyProxy`` are
+then all connected to the corresponding methods on the promise we get from
+calling ``pyawaitable_to_promise()``.
+
+.. _js-awaitable-to-py-awaitable:
+
+Adapting from a JavaScript awaitable to a Python awaitable
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The key function here is ``jsawaitable_to_pyawaitable``. Most of the logic in
+``jsawaitable_to_pyawaitable`` revolves around the fact that we need to take
+care that when when the promise is resolved or rejected, we release both
+``future.set_result()`` and ``future.set_exception()``. When a ``Promise`` is
+returned from a JavaScript function, we use the ``done_callback`` optional
+argument to release the Python arguments to the JavaScript function after the
+promise resolves. See :ref:`calling-js-from-python`.
+
+The implementation of ``__await__`` on a JsProxy is as follows:
+
+.. code:: python
+    def __await__(self):
+        return jsawaitable_to_pyawaitable(self).__await__()
+
+
+
+.. code:: python
+
+    def jsawaitable_to_pyawaitable(jsawaitable, done_callback=None):
+        from jstypes.global_this import Promise
+
+        future = asyncio.get_event_loop().create_future()
+        jsawaitable_to_pyawaitable_js(jsawaitable, future.set_result, future.set_exception, done_callback)
+        return future
+
+
+.. code:: javascript
+
+    function jsawaitable_to_pyawaitable_js(jsawaitable, set_result, set_exception, done_callback) {
+        // normalize any exotic awaitable into a Promise
+        jsawaitable = Promise.resolve(jsawaitable);
+
+        // Take ownership of both handle_result and handle_exception
+        _Py_IncRef(handle_result);
+        _Py_IncRef(handle_exception);
+        let used = false;
+        function checkUsed() {
+            if (used) {
+                throw new Error("One of the promise handles has already been called.");
+            }
+        }
+        // We release both handle_result and handle_exception when either is called.
+        function destroy() {
+            checkUsed();
+            used = true;
+            _Py_DecRef(handle_result);
+            _Py_DecRef(handle_exception);
+            if (done_callback) {
+                done_callback();
+            }
+        }
+        function onFulfilled(res) {
+            checkUsed();
+            try {
+                return handle_result(res);
+            } finally {
+                destroy();
+            }
+        }
+        function onRejected(err) {
+            checkUsed();
+            try {
+                return handle_exception(err);
+            } finally {
+                destroy();
+            }
+        }
+        jsawaitable.then(set_result, set_exception);
+    }
+
 
 The ``jstypes.global_this`` Module
 ----------------------------------
@@ -1269,6 +1463,9 @@ The ``jstypes.ffi`` Module
 This has the following properties:
 
 ``create_proxy(x)``: This returns ``create_jsproxy(createPyProxy(x))``.
+
+``create_once_callable(func)``: This returns a JavaScript callable that can only
+    be called once, and then the reference count on ``func`` is released.
 
 ``jsnull``: Special value that converts to/from the JavaScript ``null`` value.
 
