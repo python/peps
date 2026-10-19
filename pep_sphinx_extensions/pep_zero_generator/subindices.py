@@ -14,7 +14,9 @@ if TYPE_CHECKING:
     from pep_sphinx_extensions.pep_zero_generator.parser import PEP
 
 
-def update_sphinx(filename: str, text: str, docnames: list[str], env: BuildEnvironment) -> Path:
+def update_sphinx(
+    filename: str, text: str, docnames: list[str], env: BuildEnvironment
+) -> Path:
     file_path = Path(env.srcdir, f"{filename}.rst")
     # Only write and schedule for rebuild if content actually changed
     try:
@@ -69,7 +71,9 @@ the PEP index.
 
 
 def generate_topic_contents(docnames: list[str], env: BuildEnvironment):
-    update_sphinx("topic/index", """\
+    update_sphinx(
+        "topic/index",
+        """\
 .. _topic-index:
 
 Topic Index
@@ -83,4 +87,7 @@ PEPs are indexed by topic on the pages below:
    :glob:
 
    *
-""", docnames, env)
+""",
+        docnames,
+        env,
+    )
