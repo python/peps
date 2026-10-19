@@ -13,6 +13,7 @@ from pep_sphinx_extensions.generate_rss import (
     create_rss_feed,
     get_from_doctree,
 )
+from pep_sphinx_extensions.lexers import get_custom_lexers
 from pep_sphinx_extensions.pep_processor.html import (
     pep_html_builder,
     pep_html_translator,
@@ -95,6 +96,7 @@ def setup(app: Sphinx) -> dict[str, bool]:
     )  # Transform PEP references to links
 
     app.add_post_transform(pep_references.PEPReferenceRoleTitleText)
+    app.add_post_transform(pep_references.PEPIntersphinxTitleText)
 
     # Register custom directives
     app.add_directive("pep-banner", pep_banner_directive.PEPBanner)
@@ -108,6 +110,10 @@ def setup(app: Sphinx) -> dict[str, bool]:
     app.add_directive("rejected", pep_banner_directive.RejectedBanner)
     app.add_directive("superseded", pep_banner_directive.SupersededBanner)
     app.add_directive("withdrawn", pep_banner_directive.WithdrawnBanner)
+
+    # Register custom lexers
+    for lexer in get_custom_lexers():
+        app.add_lexer(lexer.name, lexer)
 
     # Register event callbacks
     app.connect(
