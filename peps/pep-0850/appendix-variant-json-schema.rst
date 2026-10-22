@@ -1,11 +1,11 @@
 :orphan:
 
-.. _0817-variant-json-schema:
+.. _pep850-variant-json-schema:
 
 Appendix: JSON Schema for Variant Metadata
 ==========================================
 
-.. literalinclude:: variant_schema.json
+.. literalinclude:: variant-schema-0.2.0.json
    :language: json
    :linenos:
    :name: variant-json-schema
