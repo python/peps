@@ -28,16 +28,16 @@ Motivation
 [Clearly explain why the existing language specification is inadequate to address the problem that the PEP solves.]
 
 
-Rationale
-=========
-
-[Describe why particular design decisions were made.]
-
-
 Specification
 =============
 
 [Describe the syntax and semantics of any new language feature.]
+
+
+Rationale
+=========
+
+[Describe why particular design decisions were made.]
 
 
 Backwards Compatibility
@@ -86,6 +86,16 @@ Footnotes
 =========
 
 [A collection of footnotes cited in the PEP, and a place to list non-inline hyperlink targets.]
+
+
+Change History
+==============
+
+[A summary of major changes the PEP has undergone.  Whenever you update the
+``Post-History``, add a new bullet item in newest-first (i.e. reverse
+chronological) order, using the same ``DD-MMM-YYYY`` format, with sub-bullets
+summarizing the changes.  You can use the same link for the date bullet as you
+do in the ``Post-History`` addition.]
 
 
 Copyright
