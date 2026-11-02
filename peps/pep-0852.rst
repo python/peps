@@ -381,7 +381,187 @@ This PEP has no known security concerns.
 How to Teach This
 =================
 
-[How to teach users, new and experienced, how to apply the PEP to their work.]
+The new APIs will be documented in the C API documentation.
+A tutorial can also be added based on the tutorial present in PyAwaitable's
+documentation.
+
+Examples
+--------
+
+The first three examples adapt patterns from PyAwaitable's documentation.
+Callbacks return ``1`` on success, while functions such as
+:c:func:`PyAsync_AddExpr` return ``0`` on success.
+
+
+Example: Forwarding an asynchronous result
+******************************************
+
+An extension method can call an asynchronous function and forward the
+result of awaiting it. :c:type:`PyAsync` handles suspension and resumption
+for the extension.
+
+.. code-block:: c
+
+    static int
+    return_result(PyObject *asyncobj, PyObject *result)
+    {
+        PyAsync_SetResult(asyncobj, result);
+        return 1;
+    }
+
+    // Equivalent to def call_async(func): return await func()
+    static PyObject *
+    call_async(PyObject *self, PyObject *func)  /* METH_O */
+    {
+        PyObject *asyncobj = PyAsync_New();
+        if (asyncobj == NULL) {
+            return NULL;
+        }
+        if (PyAsync_AddExpr(asyncobj, PyObject_CallNoArgs(func),
+                            return_result, NULL) < 0) {
+            PyAsync_Cancel(asyncobj);
+            Py_DECREF(asyncobj);
+            return NULL;
+        }
+        return asyncobj;
+    }
+
+
+Example: Keeping state across an await
+**************************************
+
+To implement ``return (await get_number()) * factor``, store *factor* with
+:c:func:`PyAsync_SetValue` before queuing ``get_number()`` with this callback.
+The :c:type:`PyAsync` object keeps the factor alive while execution is
+suspended. The callback releases the strong reference returned by
+:c:func:`PyAsync_GetValue` after using it.
+
+.. code-block:: c
+
+    static int
+    multiply_result(PyObject *asyncobj, PyObject *value)
+    {
+        PyObject *factor = PyAsync_GetValue(asyncobj);
+        PyObject *result = PyNumber_Multiply(value, factor);
+        Py_DECREF(factor);
+        if (result == NULL) {
+            return 0;
+        }
+        PyAsync_SetResult(asyncobj, result);
+        Py_DECREF(result);
+        return 1;
+    }
+
+
+Example: Handling a timeout
+***************************
+
+In ``call_async`` above, replace the final ``NULL`` argument to
+:c:func:`PyAsync_AddExpr` with ``timeout_to_none``. Awaiting the result
+then returns ``None`` on :exc:`TimeoutError`. Returning ``0`` from the
+callback lets other exceptions propagate.
+
+.. code-block:: c
+
+    static int
+    timeout_to_none(PyObject *asyncobj, PyObject *exception)
+    {
+        if (!PyErr_GivenExceptionMatches(exception, PyExc_TimeoutError)) {
+            return 0;
+        }
+        PyAsync_SetResult(asyncobj, Py_None);
+        return 1;
+    }
+
+For example, :func:`asyncio.timeout` can impose a deadline on an operation:
+
+.. code-block:: python
+
+    import asyncio
+
+    async def slow_operation():
+        async with asyncio.timeout(0.01):
+            return await asyncio.sleep(1, result=42)
+
+    assert asyncio.run(call_async(slow_operation)) is None
+
+
+Example: Scheduling a dependent read
+************************************
+
+Suppose a protocol reader exposes asynchronous ``read_size()`` and
+``readexactly(size)`` methods. Store the reader with
+:c:func:`PyAsync_SetValue`, then queue ``reader.read_size()`` with this
+callback. The first read's result determines the next asynchronous call,
+which reuses ``return_result`` to return the completed packet.
+
+.. code-block:: c
+
+    static int
+    read_body(PyObject *asyncobj, PyObject *size)
+    {
+        PyObject *reader = PyAsync_GetValue(asyncobj);
+        PyObject *coro = PyObject_CallMethod(reader, "readexactly", "O", size);
+        Py_DECREF(reader);
+        return PyAsync_AddExpr(asyncobj, coro, return_result, NULL) == 0;
+    }
+
+
+Example: Acquiring an async lock for native work
+************************************************
+
+An asynchronous context manager can acquire a lock and return the protected
+dictionary to the result callback:
+
+.. code-block:: python
+
+    import asyncio
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def locked_cache(lock, cache):
+        async with lock:
+            yield cache
+
+The C callback updates that dictionary while the lock is held:
+
+.. code-block:: c
+
+    static int
+    mark_ready(PyObject *asyncobj, PyObject *cache)
+    {
+        return PyDict_SetItemString(cache, "ready", Py_True) == 0;
+    }
+
+    static PyObject *
+    update_locked(PyObject *self, PyObject *guard)  /* METH_O */
+    {
+        PyObject *asyncobj = PyAsync_New();
+        if (asyncobj == NULL) {
+            return NULL;
+        }
+        if (PyAsync_AsyncWith(asyncobj, guard, mark_ready, NULL) < 0) {
+            PyAsync_Cancel(asyncobj);
+            Py_DECREF(asyncobj);
+            return NULL;
+        }
+        return asyncobj;
+    }
+
+Python code passes the lock and dictionary through the context manager:
+
+.. code-block:: python
+
+    async def main():
+        lock, cache = asyncio.Lock(), {}
+        await update_locked(locked_cache(lock, cache))
+        assert cache["ready"] is True
+        assert not lock.locked()
+
+    asyncio.run(main())
+
+:c:func:`PyAsync_AsyncWith` invokes the result callback after acquiring the
+lock, and releases the lock even if the dictionary update raises an exception.
 
 
 Reference Implementation
