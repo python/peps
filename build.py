@@ -15,18 +15,33 @@ def create_parser():
     parser = argparse.ArgumentParser(description="Build PEP documents")
     # alternative builders:
     builders = parser.add_mutually_exclusive_group()
-    builders.add_argument("-l", "--check-links", action="store_const",
-                          dest="builder", const="linkcheck",
-                          help='Check validity of links within PEP sources. '
-                               'Cannot be used with "-f" or "-d".')
-    builders.add_argument("-f", "--build-files", action="store_const",
-                          dest="builder", const="html",
-                          help='Render PEPs to "pep-NNNN.html" files (default). '
-                               'Cannot be used with "-d" or "-l".')
-    builders.add_argument("-d", "--build-dirs", action="store_const",
-                          dest="builder", const="dirhtml",
-                          help='Render PEPs to "index.html" files within "pep-NNNN" directories. '
-                               'Cannot be used with "-f" or "-l".')
+    builders.add_argument(
+        "-l",
+        "--check-links",
+        action="store_const",
+        dest="builder",
+        const="linkcheck",
+        help="Check validity of links within PEP sources. "
+        'Cannot be used with "-f" or "-d".',
+    )
+    builders.add_argument(
+        "-f",
+        "--build-files",
+        action="store_const",
+        dest="builder",
+        const="html",
+        help='Render PEPs to "pep-NNNN.html" files (default). '
+        'Cannot be used with "-d" or "-l".',
+    )
+    builders.add_argument(
+        "-d",
+        "--build-dirs",
+        action="store_const",
+        dest="builder",
+        const="dirhtml",
+        help='Render PEPs to "index.html" files within "pep-NNNN" directories. '
+        'Cannot be used with "-f" or "-l".',
+    )
 
     parser.add_argument(
         "-o",
@@ -46,7 +61,8 @@ def create_index_file(html_root: Path, builder: str) -> None:
     except FileNotFoundError:
         return None
     if builder == "dirhtml":
-        pep_zero_text = pep_zero_text.replace('="../', '="')  # remove relative directory links
+        # remove relative directory links
+        pep_zero_text = pep_zero_text.replace('="../', '="')
     html_root.joinpath("index.html").write_text(pep_zero_text, encoding="utf-8")
 
 

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from docutils import nodes
 import sphinx.writers.html5 as html5
+from docutils import nodes
 
 if TYPE_CHECKING:
     from sphinx.builders import html
@@ -38,7 +38,11 @@ class PEPTranslator(html5.HTML5Translator):
 
         # Only first paragraph can be compact (ignoring initial label & invisible nodes)
         first = isinstance(node.parent[0], nodes.label)
-        visible_siblings = [child for child in node.parent.children[first:] if not isinstance(child, nodes.Invisible)]
+        visible_siblings = [
+            child
+            for child in node.parent.children[first:]
+            if not isinstance(child, nodes.Invisible)
+        ]
         if visible_siblings[0] is not node:
             return False
 
@@ -58,13 +62,18 @@ class PEPTranslator(html5.HTML5Translator):
         self.body.append(self.context.pop())
 
     def visit_footnote_reference(self, node):
-        self.body.append(self.starttag(node, "a", suffix="[",
-            CLASS=f"footnote-reference {self.settings.footnote_references}",
-            href=f"#{node['refid']}"
-        ))
+        self.body.append(
+            self.starttag(
+                node,
+                "a",
+                suffix="[",
+                CLASS=f"footnote-reference {self.settings.footnote_references}",
+                href=f"#{node['refid']}",
+            )
+        )
 
     def depart_footnote_reference(self, node):
-        self.body.append(']</a>')
+        self.body.append("]</a>")
 
     def visit_label(self, node):
         # pass parent node to get id into starttag:
@@ -83,21 +92,29 @@ class PEPTranslator(html5.HTML5Translator):
         self.body.append(self.context.pop())
         back_refs = node.parent["backrefs"]
         if self.settings.footnote_backlinks and len(back_refs) > 1:
-            back_links = ", ".join(f"<a href='#{ref}'>{i}</a>" for i, ref in enumerate(back_refs, start=1))
+            back_links = ", ".join(
+                f"<a href='#{ref}'>{i}</a>" for i, ref in enumerate(back_refs, start=1)
+            )
             self.body.append(f"<em> ({back_links}) </em>")
 
         # Close the def tags
         self.body.append("</dt>\n<dd>")
 
     def visit_bullet_list(self, node):
-        if isinstance(node.parent, nodes.section) and "contents" in node.parent["names"]:
+        if (
+            isinstance(node.parent, nodes.section)
+            and "contents" in node.parent["names"]
+        ):
             self.body.append("<details><summary>Table of Contents</summary>")
             self.context.append("</details>")
         super().visit_bullet_list(node)
 
     def depart_bullet_list(self, node):
         super().depart_bullet_list(node)
-        if isinstance(node.parent, nodes.section) and "contents" in node.parent["names"]:
+        if (
+            isinstance(node.parent, nodes.section)
+            and "contents" in node.parent["names"]
+        ):
             self.body.append(self.context.pop())
 
     def unknown_visit(self, node: nodes.Node) -> None:

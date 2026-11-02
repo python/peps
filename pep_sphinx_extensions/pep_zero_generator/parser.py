@@ -7,20 +7,23 @@ from collections.abc import Iterable, Sequence
 from email.parser import HeaderParser
 from pathlib import Path
 
-from pep_sphinx_extensions.pep_zero_generator.constants import ACTIVE_ALLOWED
-from pep_sphinx_extensions.pep_zero_generator.constants import HIDE_STATUS
-from pep_sphinx_extensions.pep_zero_generator.constants import SPECIAL_STATUSES
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_ACTIVE
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_PROVISIONAL
-from pep_sphinx_extensions.pep_zero_generator.constants import STATUS_VALUES
-from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_STANDARDS
-from pep_sphinx_extensions.pep_zero_generator.constants import TYPE_VALUES
+from pep_sphinx_extensions.pep_zero_generator.constants import (
+    ACTIVE_ALLOWED,
+    HIDE_STATUS,
+    SPECIAL_STATUSES,
+    STATUS_ACTIVE,
+    STATUS_PROVISIONAL,
+    STATUS_VALUES,
+    TYPE_STANDARDS,
+    TYPE_VALUES,
+)
 from pep_sphinx_extensions.pep_zero_generator.errors import PEPError
 
 
 @dataclasses.dataclass(order=True, frozen=True)
 class _Author:
     """Represent PEP authors."""
+
     full_name: str  # The author's name.
     email: str  # The author's email address.
 
@@ -53,7 +56,9 @@ class PEP:
         metadata = HeaderParser().parsestr(pep_text)
         required_header_misses = PEP.required_headers - set(metadata.keys())
         if required_header_misses:
-            _raise_pep_error(self, f"PEP is missing required headers {required_header_misses}")
+            _raise_pep_error(
+                self, f"PEP is missing required headers {required_header_misses}"
+            )
 
         try:
             self.number = int(metadata["PEP"])
@@ -62,7 +67,9 @@ class PEP:
 
         # Check PEP number matches filename
         if self.number != int(filename.stem[4:]):
-            _raise_pep_error(self, f"PEP number does not match file name ({filename})", pep_num=True)
+            _raise_pep_error(
+                self, f"PEP number does not match file name ({filename})", pep_num=True
+            )
 
         # Title
         self.title: str = metadata["Title"]
@@ -70,14 +77,18 @@ class PEP:
         # Type
         self.pep_type: str = metadata["Type"]
         if self.pep_type not in TYPE_VALUES:
-            _raise_pep_error(self, f"{self.pep_type} is not a valid Type value", pep_num=True)
+            _raise_pep_error(
+                self, f"{self.pep_type} is not a valid Type value", pep_num=True
+            )
 
         # Status
         status = metadata["Status"]
         if status in SPECIAL_STATUSES:
             status = SPECIAL_STATUSES[status]
         if status not in STATUS_VALUES:
-            _raise_pep_error(self, f"{status} is not a valid Status value", pep_num=True)
+            _raise_pep_error(
+                self, f"{status} is not a valid Status value", pep_num=True
+            )
 
         # Special case for Active PEPs.
         if status == STATUS_ACTIVE and self.pep_type not in ACTIVE_ALLOWED:
@@ -97,7 +108,9 @@ class PEP:
 
         # Topic (for sub-indices)
         _topic = metadata.get("Topic", "").lower().split(",")
-        self.topic: set[str] = {topic for topic_raw in _topic if (topic := topic_raw.strip())}
+        self.topic: set[str] = {
+            topic for topic_raw in _topic if (topic := topic_raw.strip())
+        }
 
         # Other headers
         self.created = metadata["Created"]
@@ -187,11 +200,14 @@ def _parse_author(data: str) -> list[_Author]:
     """Return a list of author names and emails."""
 
     author_list = []
-    data = (data.replace("\n", " ")
-                .replace(", Jr", jr_placeholder)
-                .rstrip().removesuffix(","))
+    data = (
+        data.replace("\n", " ")
+        .replace(", Jr", jr_placeholder)
+        .rstrip()
+        .removesuffix(",")
+    )
     for author_email in data.split(", "):
-        if ' <' in author_email:
+        if " <" in author_email:
             author, email = author_email.removesuffix(">").split(" <")
         else:
             author, email = author_email, ""

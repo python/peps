@@ -41,7 +41,8 @@ ALL_HEADERS = (
     "Title",
     "Author",
     "Sponsor",
-    "BDFL-Delegate", "PEP-Delegate",
+    "BDFL-Delegate",
+    "PEP-Delegate",
     "Discussions-To",
     "Status",
     "Type",
@@ -57,18 +58,20 @@ ALL_HEADERS = (
 REQUIRED_HEADERS = frozenset({"PEP", "Title", "Author", "Status", "Type", "Created"})
 
 # See PEP 1 for the full list
-ALL_STATUSES = frozenset({
-    "Accepted",
-    "Active",
-    "April Fool!",
-    "Deferred",
-    "Draft",
-    "Final",
-    "Provisional",
-    "Rejected",
-    "Superseded",
-    "Withdrawn",
-})
+ALL_STATUSES = frozenset(
+    {
+        "Accepted",
+        "Active",
+        "April Fool!",
+        "Deferred",
+        "Draft",
+        "Final",
+        "Provisional",
+        "Rejected",
+        "Superseded",
+        "Withdrawn",
+    }
+)
 
 # PEPs that are allowed to link directly to PEPs
 SKIP_DIRECT_PEP_LINK_CHECK = frozenset({"0009", "0287", "0676", "0684", "8001"})
@@ -86,8 +89,12 @@ DISCOURSE_THREAD_PATTERN = re.compile(r"([\w\-]+/)?\d+", DEFAULT_FLAGS)
 DISCOURSE_POST_PATTERN = re.compile(r"([\w\-]+/)?\d+(/\d+)?", DEFAULT_FLAGS)
 
 MAILMAN_2_PATTERN = re.compile(r"[\w\-]+/\d{4}-[a-z]+/\d+\.html", DEFAULT_FLAGS)
-MAILMAN_3_THREAD_PATTERN = re.compile(r"[\w\-]+@python\.org/thread/[a-z0-9]+/?", DEFAULT_FLAGS)
-MAILMAN_3_MESSAGE_PATTERN = re.compile(r"[\w\-]+@python\.org/message/[a-z0-9]+/?(#[a-z0-9]+)?", DEFAULT_FLAGS)
+MAILMAN_3_THREAD_PATTERN = re.compile(
+    r"[\w\-]+@python\.org/thread/[a-z0-9]+/?", DEFAULT_FLAGS
+)
+MAILMAN_3_MESSAGE_PATTERN = re.compile(
+    r"[\w\-]+@python\.org/message/[a-z0-9]+/?(#[a-z0-9]+)?", DEFAULT_FLAGS
+)
 
 # Controlled by the "--detailed" flag
 DETAILED_ERRORS = False
@@ -203,7 +210,9 @@ def check_direct_links(line_num: int, line: str) -> MessageIterator:
         yield line_num, "Use the :rfc:`NNN` role to refer to RFCs"
 
 
-def _output_error(filename: Path, lines: Sequence[str], errors: Iterable[Message]) -> int:
+def _output_error(
+    filename: Path, lines: Sequence[str], errors: Iterable[Message]
+) -> int:
     relative_filename = filename.relative_to(ROOT_DIR)
     err_count = 0
     for line_num, msg in errors:
@@ -501,7 +510,14 @@ def _invalid_domain(domain_part: str) -> bool:
     return not root.isalnum() or not root.isascii()
 
 
-def _thread(line_num: int, url: str, prefix: str, *, allow_message: bool = False, discussions_to: bool = False) -> MessageIterator:
+def _thread(
+    line_num: int,
+    url: str,
+    prefix: str,
+    *,
+    allow_message: bool = False,
+    discussions_to: bool = False,
+) -> MessageIterator:
     if allow_message and discussions_to:
         msg = "allow_message and discussions_to cannot both be True"
         raise ValueError(msg)
@@ -523,7 +539,7 @@ def _thread(line_num: int, url: str, prefix: str, *, allow_message: bool = False
 
             # We use ``str.rpartition`` as the topic name is optional
             topic_name, _, topic_id = remainder.rpartition("/")
-            if topic_name == '' and _is_digits(topic_id):
+            if topic_name == "" and _is_digits(topic_id):
                 return
             topic_name = topic_name.replace("-", "0").replace("_", "0")
             # the topic name must not be entirely numeric

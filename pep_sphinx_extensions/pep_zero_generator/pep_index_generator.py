@@ -15,6 +15,7 @@ We then add the newly created PEP 0 file to two Sphinx environment variables
 to allow it to be processed as normal.
 
 """
+
 from __future__ import annotations
 
 import json
@@ -22,11 +23,13 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pep_sphinx_extensions.pep_zero_generator import parser
-from pep_sphinx_extensions.pep_zero_generator import subindices
-from pep_sphinx_extensions.pep_zero_generator import writer
+from pep_sphinx_extensions.pep_zero_generator import parser, subindices, writer
 from pep_sphinx_extensions.pep_zero_generator.constants import SUBINDICES_BY_TOPIC
-from release_management.serialize import create_release_cycle, create_release_schedule_calendar, create_release_json
+from release_management.serialize import (
+    create_release_cycle,
+    create_release_json,
+    create_release_schedule_calendar,
+)
 
 if TYPE_CHECKING:
     from sphinx.application import Sphinx
@@ -81,14 +84,14 @@ def create_pep_zero(app: Sphinx, env: BuildEnvironment, docnames: list[str]) -> 
 
     release_peps = build_release_peps(peps)
 
-    numerical_index_text = writer.PEPZeroWriter(
-        release_peps
-    ).write_numerical_index(peps)
+    numerical_index_text = writer.PEPZeroWriter(release_peps).write_numerical_index(
+        peps
+    )
     subindices.update_sphinx("numerical", numerical_index_text, docnames, env)
 
-    pep0_text = writer.PEPZeroWriter(
-        release_peps
-    ).write_pep0(peps, builder=env.settings["builder"])
+    pep0_text = writer.PEPZeroWriter(release_peps).write_pep0(
+        peps, builder=env.settings["builder"]
+    )
     pep0_path = subindices.update_sphinx("pep-0000", pep0_text, docnames, env)
     peps.append(parser.PEP(pep0_path))
 
@@ -103,10 +106,16 @@ def create_pep_zero(app: Sphinx, env: BuildEnvironment, docnames: list[str]) -> 
     write_peps_json(peps, Path(app.outdir))
 
     release_cycle = create_release_cycle()
-    app.outdir.joinpath('api/release-cycle.json').write_text(release_cycle, encoding="utf-8")
+    app.outdir.joinpath("api/release-cycle.json").write_text(
+        release_cycle, encoding="utf-8"
+    )
 
     release_json = create_release_json()
-    app.outdir.joinpath('api/python-releases.json').write_text(release_json, encoding="utf-8")
+    app.outdir.joinpath("api/python-releases.json").write_text(
+        release_json, encoding="utf-8"
+    )
 
     release_ical = create_release_schedule_calendar()
-    app.outdir.joinpath('release-schedule.ics').write_text(release_ical, encoding="utf-8")
+    app.outdir.joinpath("release-schedule.ics").write_text(
+        release_ical, encoding="utf-8"
+    )
