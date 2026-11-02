@@ -41,12 +41,12 @@ separate resolver tests from source inspection and metadata-conversion tests.
        select the older release
      - Yes
    * - PDM
-     - 2.29.5 (Oct 2026) rejects the package version; the recovery policy is also
-       present in 2.13.0 (Mar 2024)
+     - 2.13.0 (Mar 2024) and 2.29.5 (Oct 2026) reject candidates with invalid
+       dependency metadata
      - Yes
    * - Poetry
-     - 1.8.2 (Mar 2024) and 2.5.1 (Sep 2026) strip invalid markers;
-       2.5.1 drops the unknown-marker dependency in the tested conversion path
+     - 1.8.2 (Mar 2024) and 2.5.1 (Sep 2026) drop the dependency containing
+       the unknown marker rather than reject the package version
      - No
 
 
@@ -127,9 +127,8 @@ affected version, rather than removal of the condition.
 uv
 --
 
-A local test with stable uv 0.13.6, using ``uv pip compile --no-index`` with
-``--find-links`` pointing at the two-wheel fixture, selected version 1.0.
-Testing with uv 0.7.0 produced the same fallback to version 1.0. No preview
+Local tests with uv 0.7.0 and 0.13.6, using ``uv pip compile --no-index`` with
+``--find-links`` pointing at the two wheels, selected version 1.0. No preview
 feature was enabled.
 
 PDM
@@ -159,11 +158,13 @@ parse the dependency again. This turns a conditional dependency into an
 unconditional one. The exception name changed from ``InvalidMarker`` to
 ``InvalidMarkerError``, but the recovery policy remained.
 
-An unknown marker name need not reach that handler. In a local test passing the
-fixture's dependency to the ``PackageInfo`` metadata conversion in Poetry
-2.5.1, parsing instead raised an invalid-requirement error. Poetry logged a warning
-and skipped the entire dependency, yielding a package with no dependencies.
-This tested metadata conversion, not end-to-end resolution.
+Unknown marker names follow a different recovery path. Both versions parse
+``idna; "pointer_bits::64" in sys_abi_info`` as an invalid requirement, log a
+warning, and skip the entire dependency. In local-index resolution tests, both
+locked ``marker-test`` 2.0 without ``idna``, rather than rejecting version 2.0
+and selecting version 1.0. By contrast, a malformed condition using a known
+marker, such as ``idna; python_version == "not a version"``, triggers the
+marker-stripping recovery and leaves an unconditional dependency on ``idna``.
 
 Related issues document the history of this inspection path:
 
