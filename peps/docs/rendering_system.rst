@@ -183,7 +183,7 @@ The HTML files are then written out to the build directory.
 --------
 
 The theme is comprised of the HTML template in
-``pep_sphinx_extensions/pep_theme/templates/page.html`` and the stylesheets in
+``pep_sphinx_extensions/pep_theme/page.html`` and the stylesheets in
 ``pep_sphinx_extensions/pep_theme/static``.
 
 The template is entirely self-contained, not relying on any default behaviour
