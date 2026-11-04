@@ -7,9 +7,13 @@
 # If it breaks in the future, it can be safely replaced by plain
 # Python or text lexers.
 
-from pygments.lexer import inherit
-from pygments.lexers.python import PythonLexer
-from pygments.token import Operator
+from pygments.lexer import DelegatingLexer, inherit
+from pygments.lexers.python import (
+    PythonLexer,
+    PythonTracebackLexer,
+    _PythonConsoleLexerBase,
+)
+from pygments.token import Operator, Other
 
 
 class Py824Lexer(PythonLexer):
@@ -25,5 +29,21 @@ class Py824Lexer(PythonLexer):
     }
 
 
+class Py824ConsoleLexer(DelegatingLexer):
+    name = "py824-console"
+
+    def __init__(self, **options):
+        pylexer = Py824Lexer
+        tblexer = PythonTracebackLexer
+
+        class _ReplaceInnerCode(DelegatingLexer):
+            def __init__(self, **options):
+                super().__init__(
+                    pylexer, _PythonConsoleLexerBase, Other.Code, **options
+                )
+
+        super().__init__(tblexer, _ReplaceInnerCode, Other.Traceback, **options)
+
+
 def register():
-    return [Py824Lexer]
+    return [Py824Lexer, Py824ConsoleLexer]
