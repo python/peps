@@ -1,9 +1,9 @@
 # The code in this file is based on:
-# https://github.com/python/cpython/blob/v3.15.0/Doc/tools/extensions/lexers/asdl_lexer.py
+# https://github.com/python/cpython/blob/v3.15.2/Doc/tools/extensions/lexers/asdl_lexer.py
 
 # Licensed under the Python Software Foundation License v2
 # For the full license text, see:
-# https://github.com/python/cpython/blob/v3.15.0/LICENSE
+# https://github.com/python/cpython/blob/v3.15.2/LICENSE
 
 from pygments.lexer import RegexLexer, bygroups, include
 from pygments.token import Comment, Keyword, Name, Operator, Punctuation, Text
