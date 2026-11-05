@@ -157,14 +157,15 @@ catch an invalid-marker exception, remove everything after the semicolon, and
 parse the dependency again. This turns a conditional dependency into an
 unconditional one. The exception name changed from ``InvalidMarker`` to
 ``InvalidMarkerError``, but the recovery policy remained.
+Metadata-conversion tests with both versions confirmed that
+``idna; python_version == "not a version"`` becomes unconditional ``idna``.
 
 Unknown marker names follow a different recovery path. Both versions parse
 ``idna; "pointer_bits::64" in sys_abi_info`` as an invalid requirement, log a
-warning, and skip the entire dependency. In local-index resolution tests, both
-locked ``marker-test`` 2.0 without ``idna``, rather than rejecting version 2.0
-and selecting version 1.0. By contrast, a malformed condition using a known
-marker, such as ``idna; python_version == "not a version"``, triggers the
-marker-stripping recovery and leaves an unconditional dependency on ``idna``.
+warning, and skip the entire dependency. Full ``poetry lock`` runs against a
+local index confirmed this behavior in both versions: they locked
+``marker-test`` 2.0 without ``idna``, rather than rejecting version 2.0 and
+selecting version 1.0.
 
 Related issues document the history of this inspection path:
 
