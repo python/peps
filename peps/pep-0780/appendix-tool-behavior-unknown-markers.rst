@@ -60,11 +60,13 @@ pip
 
 The table below shows how pip handles an unsupported marker in runtime or
 build dependencies when installing a local project, a wheel, or a source
-distribution. Local tests with
-pip 26.2.2 (Oct 2026) used ``--find-links`` candidates, isolated setuptools builds, and
-dry-run installation; packages were not uploaded to TestPyPI. Backend
-validation of ``project.dependencies`` failed during
-``get_requires_for_build_wheel``, before metadata could be generated.
+distribution. Local tests with pip 26.2.2 (Oct 2026) used ``--find-links``
+candidates, isolated setuptools builds, and dry-run installation; packages were
+not uploaded to TestPyPI. The original setuptools backend did not recognize
+``sys_abi_info`` and rejected ``project.dependencies`` during
+``get_requires_for_build_wheel``. The source-project tests were repeated with
+marker recognition patched into setuptools' build dependencies, allowing the
+requirement to be preserved in generated metadata. Pip itself was unchanged.
 
 .. list-table:: pip behavior with an unsupported marker
    :header-rows: 1
@@ -74,7 +76,8 @@ validation of ``project.dependencies`` failed during
      - Outcome
      - Older-release fallback
    * - ``pip install .``; marker in ``project.dependencies``
-     - Backend validation fails before dependency metadata is available
+     - Unmodified backend fails validation; patched backend generates metadata
+       that pip rejects
      - Not applicable
    * - ``pip install .``; marker in ``build-system.requires``
      - Frontend fails while reading ``pyproject.toml``
@@ -83,8 +86,9 @@ validation of ``project.dependencies`` failed during
      - pip 24.1 and later reject the version as invalid metadata
      - Yes
    * - ``pip install marker-test``; marker in sdist ``project.dependencies``
-     - Backend validation fails before dependency metadata is available
-     - No
+     - Unmodified backend fails validation; patched backend generates metadata
+       that pip rejects
+     - Yes with the patched backend; no with the unmodified backend
    * - ``pip install marker-test``; marker in sdist ``build-system.requires``
      - Frontend fails while preparing the candidate
      - No
@@ -93,17 +97,20 @@ validation of ``project.dependencies`` failed during
      - Wheel installs without inspecting the sdist's build requirements
      - Not applicable
 
-The sdist cases fail earlier than wheel dependency processing. Build requirement
-parsing occurs before invoking the backend, and backend metadata validation can
-fail before the resolver receives dependency metadata. The wheel fallback
-behavior therefore does not imply fallback for arbitrary build or backend
-errors. Local source installs have no older index candidate to select in any
-case.
+Source builds can fail before the resolver receives dependency metadata:
+build requirement parsing occurs before invoking the backend, and backend
+validation can fail before metadata is generated. When the patched backend
+successfully generated metadata, pip rejected the indexed sdist for version
+2.0 and selected the version 1.0 wheel. Pinning version 2.0 instead failed.
+Local source installs have no older index candidate to select. Metadata-level
+fallback therefore applies to sdists too, but does not imply fallback for
+arbitrary build or backend errors.
 
 The remainder of this appendix considers only the third row, the case where a
-wheel's dependency metadata contains an unsupported marker. This is the key case for fallback to an older
-package version. The other cases are not expected to provide such fallback,
-as discussed in the :ref:`Backwards Compatibility
+wheel's dependency metadata contains an unsupported marker. This is the key
+case for fallback to an older package version, as it has by far the largest
+impact on backwards compatibility. The other cases have the limitations
+discussed in the :ref:`Backwards Compatibility
 <pep780-backwards-compatibility>` section of :pep:`780`.
 
 For the wheel case, pip 24.0 aborts with a requirement-parsing error
