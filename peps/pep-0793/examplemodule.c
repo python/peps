@@ -6,7 +6,7 @@ Example module with C-level module-global state, and
   PyType_GetModuleByToken)
 
 Once compiled and renamed to not include a version tag (for example
-examplemodule.so on Linux), this will run succesfully on both regular
+examplemodule.so on Linux), this will run successfully on both regular
 and free-threaded builds.
 
 Python usage:
