@@ -144,8 +144,9 @@ Specification
 
 The following APIs are available through ``Python.h`` and require an
 :term:`attached thread state`. Unless otherwise specified, an *asyncobj*
-argument must be a :c:type:`PyAsync` object. Callbacks receive borrowed
-references to their arguments.
+argument must be a :c:type:`PyAsync` object; passing any other object is
+undefined behavior. Callbacks receive :term:`borrowed references <borrowed
+reference>` to their arguments.
 
 
 Async objects
@@ -153,9 +154,21 @@ Async objects
 
 .. c:type:: PyAsync
 
-    An opaque Python object that implements the :class:`~collections.abc.Coroutine`
-    protocol. A :c:type:`PyAsync` object stores a sequence of asynchronous
-    operations and callbacks to execute when it is awaited.
+    An opaque Python object that implements the
+    :class:`~collections.abc.Coroutine` protocol. A :c:type:`PyAsync`
+    object stores a queue of asynchronous operations and callbacks to
+    execute when it is awaited.
+
+    Awaiting a :c:type:`PyAsync` object runs its queued operations in
+    order. The object suspends whenever an operation suspends, and
+    completes once the queue is empty, returning the result set with
+    :c:func:`PyAsync_SetResult` (``None`` by default). A :c:type:`PyAsync`
+    object is recognized by :func:`asyncio.iscoroutine` and
+    :func:`inspect.isawaitable`, and can be passed to
+    :func:`asyncio.create_task`.
+
+    The type cannot be subclassed or instantiated from Python, and is not
+    exposed in any Python module.
 
 
 .. c:var:: PyTypeObject PyAsync_Type
@@ -179,8 +192,9 @@ Async objects
     with :c:func:`PyAsync_SetResult`. An object can only be awaited once;
     attempting to reuse a completed object raises :exc:`RuntimeError`.
 
-    Destroying an object that was never awaited or cancelled with
-    :c:func:`PyAsync_Cancel` emits a :exc:`ResourceWarning`.
+    Destroying an object that was never awaited, cancelled with
+    :c:func:`PyAsync_Cancel`, or closed emits a :exc:`RuntimeWarning`, as
+    destroying a native coroutine that was never awaited does.
 
 
 .. c:function:: int PyAsync_SetResult(PyObject *asyncobj, PyObject *result)
@@ -192,8 +206,44 @@ Async objects
     previously stored result. It cannot fail and returns ``0``.
 
 
+Coroutine protocol
+------------------
+
+A :c:type:`PyAsync` object behaves as a native coroutine object does:
+
+* ``send(value)`` resumes the object. *value* must be ``None`` if the
+  object has not started. The object raises :exc:`StopIteration` carrying
+  its result when it completes.
+* ``throw(exc)`` raises *exc* inside the currently awaited operation, as
+  :keyword:`await` would. If the operation does not handle it, the
+  operation's error callback is invoked with the exception, and so on as
+  described under :c:func:`PyAsync_AddAwait`. If the object has not started,
+  or is between operations, the exception propagates and the object
+  completes. This is how :mod:`asyncio` cancellation reaches an awaiting
+  :c:type:`PyAsync` object: a C error callback can observe
+  :exc:`asyncio.CancelledError` exactly as an ``except`` clause in a
+  coroutine would.
+* ``close()`` throws :exc:`GeneratorExit` into the object. The currently
+  awaited operation is closed, pending error callbacks and
+  :keyword:`async with` exits observe :exc:`GeneratorExit`, and the object
+  completes. As with native coroutines, if the object suspends again while
+  handling :exc:`GeneratorExit`, ``close()`` raises :exc:`RuntimeError`.
+  Closing an object that has not started or has completed does nothing.
+
+A :c:type:`PyAsync` object may not be resumed while it is already executing;
+doing so raises :exc:`ValueError`. Queue and storage mutations are
+serialized per object, so on the :term:`free-threaded <free threading>`
+build it is safe to add operations or set values from another thread, but
+an object can only be driven by one thread at a time.
+
+
 Awaiting and callbacks
 ----------------------
+
+Callbacks report their outcome through their return value. Every callback
+must set an exception if and only if it reports failure; a callback that
+returns success with an exception set, or failure without one, causes the
+:c:type:`PyAsync` object to raise :exc:`SystemError`.
 
 .. c:type:: int (*PyAsync_Callback)(PyObject *asyncobj, PyObject *result)
 
@@ -231,12 +281,14 @@ Awaiting and callbacks
     exception to the caller awaiting *asyncobj*.
 
 
-.. c:function:: int PyAsync_AddAwait(PyObject *asyncobj, PyObject *coroutine, PyAsync_Callback result_callback, PyAsync_Error error_callback)
+.. c:function:: int PyAsync_AddAwait(PyObject *asyncobj, PyObject *awaitable, PyAsync_Callback result_callback, PyAsync_Error error_callback)
 
-    Append *coroutine* to the operations to await when *asyncobj* executes.
+    Append *awaitable* to the operations to await when *asyncobj* executes.
     Operations execute in the order they were added. This function stores a
-    strong reference to *coroutine*, which must be a non-``NULL`` awaitable
-    object distinct from *asyncobj*.
+    strong reference to *awaitable*, which must be a non-``NULL``
+    :term:`awaitable` object distinct from *asyncobj*; anything else is
+    rejected with :exc:`TypeError` when this function is called, not when
+    *asyncobj* is awaited.
 
     On successful completion, *result_callback* is invoked with *asyncobj*
     and the operation's return value. If *result_callback* is ``NULL``, the
@@ -246,8 +298,9 @@ Awaiting and callbacks
     *error_callback* is invoked. If *error_callback* is ``NULL``, the exception
     propagates to the caller awaiting *asyncobj*.
 
-    Callbacks may append further operations to *asyncobj*. Adding operations
-    to a completed object raises :exc:`RuntimeError`.
+    Callbacks may append further operations to *asyncobj*; they are added
+    to the end of the queue and run after all previously queued operations.
+    Adding operations to a completed object raises :exc:`RuntimeError`.
 
     Return ``0`` on success, or ``-1`` with an exception set on failure.
 
@@ -256,7 +309,8 @@ Awaiting and callbacks
 
     Like :c:func:`PyAsync_AddAwait`, but steals a reference to *expr* on
     both success and failure. If *expr* is ``NULL``, return ``-1`` without
-    changing the current exception.
+    changing the current exception, which is assumed to have been set by
+    whatever produced *expr*.
 
     Otherwise, return ``0`` on success, or ``-1`` with an exception set
     on failure.
@@ -276,28 +330,51 @@ Awaiting and callbacks
 
     Clear the queued operations and callbacks, releasing their references
     and discarding the current await iterator. This also suppresses the
-    :exc:`ResourceWarning` for an object that was never awaited.
+    :exc:`RuntimeWarning` for an object that was never awaited.
 
-    This function may be called from a callback. Further operations may be
-    added to *asyncobj* until it completes. This function cannot fail.
+    This function may be called from a callback, in which case the object
+    completes once the callback returns, unless the callback adds new
+    operations. Further operations may be added to *asyncobj* until it
+    completes. A pending :keyword:`async with` exit (see
+    :c:func:`PyAsync_AsyncWith`) is not cleared and still runs.
+
+    The currently awaited operation, if any, is dropped without being
+    closed. This function is unrelated to :mod:`asyncio` task cancellation,
+    which reaches the object through ``throw()``. It cannot fail.
 
 
 .. c:function:: int PyAsync_AsyncWith(PyObject *asyncobj, PyObject *context_manager, PyAsync_Callback result_callback, PyAsync_Error error_callback)
 
-    Append an :keyword:`async with` operation using *context_manager*.
-    Await its ``__aenter__`` method, invoke *result_callback*, and await its
-    ``__aexit__`` method. *result_callback* receives a :c:type:`PyAsync`
-    object representing the context manager operation and the value
-    returned by ``__aenter__``. It may be ``NULL``.
+    Append an :keyword:`async with` block using *context_manager*. When the
+    operation runs, the ``__aenter__`` method of *context_manager* is
+    awaited, *result_callback* is invoked, any operations it queued are
+    awaited, and finally the ``__aexit__`` method is awaited.
 
-    If *result_callback* fails, its exception is passed to ``__aexit__``,
-    which may suppress it by returning a true value. An exception from
-    ``__aenter__`` propagates without invoking ``__aexit__``.
+    *result_callback*, which may be ``NULL``, is the body of the block. It
+    receives a :c:type:`PyAsync` object representing the block and the
+    value returned by ``__aenter__``. The block object shares its result
+    and value storage with *asyncobj* (:c:func:`PyAsync_SetResult`,
+    :c:func:`PyAsync_SetValue` and the other storage functions act on
+    *asyncobj*), but has its own operation queue: operations added to the
+    block object run inside the block, before ``__aexit__``. Operations
+    added to *asyncobj* run after the block, as they would in Python.
 
-    *error_callback* handles exceptions from the operation, including any
-    exception left unsuppressed by ``__aexit__``. It receives *asyncobj*
-    and the exception. If it is ``NULL``, the exception propagates to the
-    caller awaiting *asyncobj*.
+    Once ``__aenter__`` has completed, ``__aexit__`` is always awaited,
+    whether the block completes normally, *result_callback* or an
+    operation inside the block raises, an exception is thrown into the
+    object (including :exc:`asyncio.CancelledError`), or the object is
+    closed. On an exception, ``__aexit__`` receives the exception and may
+    suppress it by returning a true value. An exception from
+    ``__aenter__`` propagates without invoking ``__aexit__``. If
+    ``__aexit__`` itself raises, the block's exception becomes the
+    ``__context__`` of the new one.
+
+    *error_callback* handles exceptions from the operation as a whole,
+    including any exception left unsuppressed by ``__aexit__``. It receives
+    *asyncobj* and the exception. If it is ``NULL``, the exception
+    propagates to the caller awaiting *asyncobj*.
+
+    Blocks may be nested by calling this function on a block object.
 
     Return ``0`` on success, or ``-1`` with an exception set on failure.
 
@@ -307,6 +384,7 @@ Value storage
 
 Each :c:type:`PyAsync` object has one object slot and one arbitrary pointer
 slot for storing state between callbacks. Both slots are initially ``NULL``.
+Code that needs more than one object stores a tuple or other container.
 
 .. c:function:: int PyAsync_SetValue(PyObject *asyncobj, PyObject *value)
 
@@ -342,7 +420,10 @@ slot for storing state between callbacks. Both slots are initially ``NULL``.
 Limited API
 -----------
 
-All APIs in this PEP will be made part of the :ref:`Stable ABI <stable-abi>` in Python 3.16.
+All APIs in this PEP are part of the :ref:`Limited API <limited-c-api>`
+and the :ref:`Stable ABI <stable-abi>` as of Python 3.16.
+:c:func:`PyAsync_CheckExact` is a function rather than a macro for this
+reason.
 
 
 Rationale
@@ -444,7 +525,7 @@ for the extension.
         return 1;
     }
 
-    // Equivalent to def call_async(func): return await func()
+    // Equivalent to: async def call_async(func): return await func()
     static PyObject *
     call_async(PyObject *self, PyObject *func) /* METH_O */
     {
