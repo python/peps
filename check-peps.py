@@ -398,7 +398,7 @@ def _validate_python_version(line_num: int, line: str) -> MessageIterator:
             yield line_num, f"Python-Version minor part must not have leading zeros: {version}"
 
         if micro == "":
-            return
+            continue
         if minor == "x":
             yield line_num, f"Python-Version micro part must be empty if minor part is 'x': {version}"
         elif micro[0] == "0":

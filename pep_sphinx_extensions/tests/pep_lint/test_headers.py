@@ -382,3 +382,27 @@ def test_validate_python_version(line: str, expected_warnings: set):
         assert warnings == [], warnings
 
     assert found_warnings == expected_warnings
+
+
+@pytest.mark.parametrize(
+    ("line", "expected_warnings"),
+    [
+        (
+            "3.12, 4.0",
+            ["Python-Version major part must be 1, 2, or 3: 4.0"],
+        ),
+        (
+            "3.x, 3.01",
+            ["Python-Version minor part must not have leading zeros: 3.01"],
+        ),
+        (
+            "2.7, 3.0.a",
+            ["Python-Version micro part must be numeric: 3.0.a"],
+        ),
+    ],
+)
+def test_validate_python_version_multiple(line: str, expected_warnings: list):
+    warnings = [
+        warning for (_, warning) in check_peps._validate_python_version(1, line)
+    ]
+    assert warnings == expected_warnings, warnings
