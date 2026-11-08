@@ -382,3 +382,41 @@ def test_validate_python_version(line: str, expected_warnings: set):
         assert warnings == [], warnings
 
     assert found_warnings == expected_warnings
+
+
+@pytest.mark.parametrize(
+    ("line", "expected_warnings"),
+    [
+        # Every version in the header must be validated, not just the first.
+        # A version without a micro part used to end validation early.
+        ("3.0, 3.a", ["Python-Version minor part must be numeric: 3.a"]),
+        ("3.12, 4.0", ["Python-Version major part must be 1, 2, or 3: 4.0"]),
+        (
+            "3.11, 3.x.1",
+            ["Python-Version micro part must be empty if minor part is 'x': 3.x.1"],
+        ),
+        (
+            "3.9, 3.09",
+            ["Python-Version minor part must not have leading zeros: 3.09"],
+        ),
+        (
+            "3.a, 4.b",
+            [
+                "Python-Version minor part must be numeric: 3.a",
+                "Python-Version major part must be 1, 2, or 3: 4.b",
+                "Python-Version minor part must be numeric: 4.b",
+            ],
+        ),
+        # valid lists stay silent
+        ("3.0, 3.1, 3.14", []),
+        ("1.5.2, 2.7.18, 3.13.1", []),
+    ],
+    # call str() on each parameterised value in the test ID.
+    ids=str,
+)
+def test_validate_python_version_all_versions(line: str, expected_warnings: list):
+    warnings = [
+        warning for (_, warning) in check_peps._validate_python_version(1, line)
+    ]
+
+    assert warnings == expected_warnings, warnings
