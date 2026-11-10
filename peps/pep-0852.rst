@@ -58,6 +58,24 @@ users. For example, ``mypyc`` still `does not support all asynchronous features
 <https://github.com/mypyc/mypyc/issues/868>`__, because they are forced to
 build coroutine types from scratch, which is difficult to do correctly.
 
+This problem is not unique to ``mypyc``; it shows up across the extension
+ecosystem:
+
+- PyO3 has had an `open tracking issue
+  <https://github.com/PyO3/pyo3/issues/1632>`__ for ``async fn`` support since
+  2021. Its experimental support relies on a coroutine type implemented by
+  PyO3 itself, which still has gaps; for example, it `does not support
+  <https://github.com/PyO3/pyo3/issues/5855>`__ the asynchronous context
+  manager protocol.
+- A contributor to ``pydantic-core`` `asked
+  <https://github.com/pydantic/pydantic-core/issues/1468>`__ how to await a
+  Python coroutine from Rust, and was told by a maintainer that moving the
+  asynchronous logic out of Python "is *really* hard".
+- pybind11 has had an `open feature request
+  <https://github.com/pybind/pybind11/issues/2658>`__ for defining
+  asynchronous functions since 2020, in which the author resorted to
+  hand-writing their own awaitable class in C++.
+
 For extension developers, the current solution to this problem is to do one
 of three things:
 
@@ -90,6 +108,8 @@ To `quote <https://discuss.python.org/t/42842/3>`__ Marc-André Lemburg:
     the interactions with the asyncio (and other) event loops.
 
 
+.. _pep-852-no-third-party:
+
 A third-party library is bad for both maintainers and users
 -----------------------------------------------------------
 
@@ -107,7 +127,7 @@ using C API binding libraries and not the C API itself. Unfortunately, these
 binding libraries cannot wrap APIs that don't come directly from CPython, so
 native libraries are effectively unusable to projects using other C API bindings.
 In fact, PyAwaitable uses a vendoring technique that would make it functionally
-impossible to use it from something such as PyO3.
+impossible to use from something such as PyO3.
 
 There have been `some <https://discuss.python.org/t/54860>`__ `discussions
 <https://discuss.python.org/t/51710/>`__ about making this easier (both of which
@@ -122,21 +142,56 @@ to quote :pep:`20`, "practicality beats purity".
 Why was a third-party library created in the first place?
 **********************************************************
 
-When PyAwaitable was first created in early 2024, the author of the implementation
-(who is also the author of this proposal) was new to CPython contribution and
-thus not in a great place to author a PEP or oversee an implementation of PyAwaitable
-in CPython. A relatively simple implementation was possible without changes to
-the CPython core, and as such, PyAwaitable was better fit as a library for the
-time being -- though always with the intent of eventually becoming part of the
-public C API. The author has since become a core developer, and as such, it is
-now much more feasible for them to maintain a variant of PyAwaitable in CPython
-directly.
+When PyAwaitable was first created in early 2024, a relatively simple
+implementation was possible without changes to the CPython core, and as
+such, PyAwaitable was better fit as a library for the time being -- though
+always with the intent of eventually becoming part of the public C API.
+The idea was that a third-party library would iron out potential design
+flaws in the API as a whole before they were immortalized into CPython,
+and this was largely successful (see :ref:`the deviations from PyAwaitable
+<pep-852-deviations>`); as such, the third-party library has served its purpose,
+and it is now time to add it to the C API.
 
 It is also worth noting that the reference implementation of this proposal does
 require the use of some internal helper functions (that PyAwaitable, as a
 third-party, had to copy and work around), which is more evidence that PyAwaitable
 is a good fit for CPython, as one of the original arguments against adding such
 an API was that it was implementable using only the public C API.
+
+
+The C API is allowed to be ergonomic where possible
+***************************************************
+
+When discussed in early 2024, the main argument against this proposal was that
+it was implementable using only Python's public C API. To `quote <https://discuss.python.org/t/42842/2>`_
+Petr Viktorin:
+
+    To set expectations: I don’t think this needs to be in CPython itself.
+    I know that sounds disappointing, but after all, Python is made to be
+    extendable; we want to have interesting projects outside the core.
+
+Since then, there is a much larger precedent for adding convenience functions
+to Python's C API (as in, functions that can be implemented in terms of the
+existing C API or in standard C). For example:
+
+- There have been numerous attribute access helpers added in recent years, such
+  as :c:func:`PyObject_GetOptionalAttr`, :c:func:`PySys_GetAttr`,
+  :c:func:`PyImport_ImportModuleAttr`, and related functions.
+- :c:type:`PyMutex`, while useful for the :term:`free threading` effort, is
+  a generic locking interface that could have been implemented outside CPython's
+  core.
+- Several private APIs that were promoted to public, such as the
+  :ref:`c-api-time`.
+- The APIs described by :pep:`788` can largely be implemented through
+  :mod:`atexit` callbacks.
+
+APIs like these were added because Python's C API should be easy to use where
+possible -- merely because something *can* be implemented using the
+public C API does not mean that it's the best option for users, especially
+given the difficulty of distributing native code that wraps Python's C API.
+When something is tightly coupled to a core language feature (in this case,
+``async``/``await``), it is typically a better fit for the C API and not for
+a third-party library.
 
 
 Specification
@@ -219,22 +274,18 @@ A :c:type:`PyAsync` object behaves as a native coroutine object does:
   operation's error callback is invoked with the exception, and so on as
   described under :c:func:`PyAsync_AddAwait`. If the object has not started,
   or is between operations, the exception propagates and the object
-  completes. This is how :mod:`asyncio` cancellation reaches an awaiting
-  :c:type:`PyAsync` object: a C error callback can observe
-  :exc:`asyncio.CancelledError` exactly as an ``except`` clause in a
-  coroutine would.
+  completes.
 * ``close()`` throws :exc:`GeneratorExit` into the object. The currently
   awaited operation is closed, pending error callbacks and
   :keyword:`async with` exits observe :exc:`GeneratorExit`, and the object
-  completes. As with native coroutines, if the object suspends again while
-  handling :exc:`GeneratorExit`, ``close()`` raises :exc:`RuntimeError`.
-  Closing an object that has not started or has completed does nothing.
+  completes.  Closing an object that has not started or has completed does
+  nothing.
 
 A :c:type:`PyAsync` object may not be resumed while it is already executing;
 doing so raises :exc:`ValueError`. Queue and storage mutations are
-serialized per object, so on the :term:`free-threaded <free threading>`
-build it is safe to add operations or set values from another thread, but
-an object can only be driven by one thread at a time.
+serialized per object, so on the :term:`free-threaded build` it is safe to
+add operations or set values from another thread, but an object can only be
+driven by one thread at a time.
 
 
 Awaiting and callbacks
@@ -422,8 +473,6 @@ Limited API
 
 All APIs in this PEP are part of the :ref:`Limited API <limited-c-api>`
 and the :ref:`Stable ABI <stable-abi>` as of Python 3.16.
-:c:func:`PyAsync_CheckExact` is a function rather than a macro for this
-reason.
 
 
 Rationale
@@ -439,8 +488,16 @@ be reason for adding an ``asyncio`` C API in the future, its only goal is to
 make :keyword:`async def` functions possible to implement in the C API.
 
 
+.. _pep-852-deviations:
+
 Deviations from PyAwaitable
 ---------------------------
+
+The primary purpose of making PyAwaitable a third-party library and not a
+formal C API proposal (yet) was to identify the best design choices based on
+user experience and feedback. As such, this proposal does not copy PyAwaitable's
+API exactly, and instead describes a new API without the original design flaws
+of PyAwaitable.
 
 
 ``PyAsync`` instead of ``PyAwaitable``
@@ -690,7 +747,46 @@ A reference implementation of this PEP can be found
 Rejected Ideas
 ==============
 
-TBD.
+
+A single callback with a state number
+-------------------------------------
+
+Instead of one callback per :keyword:`await`, Serhiy Storchaka suggested in
+the `2023 discussion <https://discuss.python.org/t/22786>`__ a single
+callback that is re-entered with a state number and dispatches with a
+``switch``. This is closer to a generator API than to :keyword:`await`, and
+pushes the state machine onto the user, which is the burden this PEP aims to
+remove. Users who prefer that style can implement it on top of the proposed
+API.
+
+In addition, a single function with a ``switch`` would likely encourage users
+to use ``static`` variables, which have thread-safety implications that would
+likely go against the efforts of the :term:`free threading` project.
+
+
+C++20 coroutines
+----------------
+
+Steve Dower suggested in the same discussion that native coroutine support
+is better left to languages that have it, such as C++20 via pybind11. The C
+API is a C API, and most of the extension ecosystem (including binding
+generators) cannot consume C++ interfaces. Nothing in this PEP prevents a
+C++ wrapper from offering ``co_await`` on top of :c:type:`PyAsync`.
+
+
+Reusing native coroutine objects
+--------------------------------
+
+Native coroutine objects (instances of :class:`types.CoroutineType`) are bound
+to a Python frame with bytecode, and thus there is no way to construct one
+around C code without emulating a frame. A new type is simpler and avoids
+exposing frame internals.
+
+
+Keeping the API in a third-party library
+----------------------------------------
+
+See :ref:`pep-852-no-third-party`.
 
 
 Open Issues
