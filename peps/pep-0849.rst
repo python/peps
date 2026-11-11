@@ -117,20 +117,61 @@ usual annotation dict ``{"a": int, "b": list[str]}``. But when called as
 .. code-block:: python
 
     {
-        "a": AnnotationAST(ast.Name("int"), {"int": int}),
-        "b": AnnotationAST(ast.Subscript(ast.Name("list"), ast.Name("str")), {"list": list, "str": str}),
+        "a": AnnotationAST(
+            ast.Expression(ast.Name("int")),
+            AnnotationNamespace(...),
+        ),
+        "b": AnnotationAST(
+            ast.Expression(ast.Subscript(ast.Name("list"), ast.Name("str"))),
+            AnnotationNamespace(...),
+        ),
     }
 
-However, most users will never see these objects directly. Rather, we propose
-to add a new function ``get_type_annotations`` to the :py:mod:`typing`
-module, which will internally perform the above call and then return the
-familiar ``{"a": int, "b": list[str]}`` annotation dictionary.
+Each value in this dictionary contains the AST of the annotation expression
+as it was found in the source code and a namespace that can be used to evaluate
+the AST into the correct typing objects. Note that this AST is the direct result
+of parsing the annotation without applying any optimizations such as constant
+folding. The namespace references all relevant enclosing scopes and thus will
+always contain the correct bindings for any names used in the annotation.
+
+This format and the AST objects are not intended to be used directly by
+consumers of annotations. Rather, they are intended as a primarily internal
+representation that allows a new set of utility functions to evaluate them into
+the usual typing objects. For example, we propose ``get_type_annotations`` to be
+added to the :py:mod:`typing` module, which will internally perform the above call
+and then return the familiar ``{"a": int, "b": list[str]}`` annotation dictionary.
+It will internally use a simple helper that implements the semantics the typing
+spec defines, similar to this snippet:
+
+.. code-block:: python
+
+    def eval_type_AST(node, namespace):
+        match node:
+            case ast.Name:
+                return namespace[node.id]
+            case ast.Attribute:
+                value = eval_type_AST(node.value, namespace)
+                return getattr(value, node.attr)
+            case ast.BinOp(left, ast.BitOr(), right):
+                return Union[eval_type_AST(left, namespace), eval_type_AST(right, namespace)]
+        ...
 
 The power of this approach is that it lets us implement new type expressions
-such as the ones mentioned above by simply extending the evaluation logic in
-``get_type_annotations``. This logic can then be completely decoupled from the
-usual Python expression semantics and can instead create typing objects that
-allow complete runtime introspection.
+such as the ones mentioned above by simply extending this evaluation logic.
+And since it is not implemented in the compiled bytecode itself, it can even be
+backported to older Python versions via the ``typing_extensions`` module.
+For example, if we wanted to implement the ``1 | 2 | 3`` literal type expression,
+it would be enough to add a new case like this:
+
+.. code-block:: python
+
+    def eval_type_AST(node, namespace):
+        match node:
+            ...
+
+            case ast.Constant(value) if isinstance(value, int):
+                return Literal[value]
+        ...
 
 We also propose to add some additional utility functionality related to
 annotate functions and these AST objects. In particular, a new
@@ -141,102 +182,37 @@ users will need this in order to create annotate functions that support
 this somewhat more complex format.
 
 
-Implementation
-==============
-
-While the exact mechanism annotate functions use is an implementation detail,
-it may be useful to look at what that might look like. Consider, for example,
-the class from above:
-
-.. code-block:: python
-
-    class MyClass:
-        a: int
-        b: list[str]
-
-Under this proposal its annotate function may behave similarly to this Python code:
-
-.. code-block:: python
-
-    def __annotate__(format):
-        namespace = {
-            "int": int,
-            "list": list,
-            "str": str,
-        }
-        asts = {
-            "a": "\x1a\x03int",
-            "b": "\x18\x1a\x04list\x1a\x03str",
-        }
-        return _make_annotate_asts(namespace, asts)
-
-It functions in essentially three steps. It populates the namespace dictionary
-by performing ordinary variable name lookups. This is important to ensure that
-we can later evaluate the returned AST objects using the correct bindings for
-each variable. It also loads some string constants that contain binary data
-defining each annotation's AST. This is a compact format that is easily
-implemented with existing compiler functionality. It also is much faster to
-parse than storing the source code of the annotations directly. The annotate
-function then uses a new intrinsic to actually build the required annotation
-AST objects.
-
-The proposed ``get_type_annotations`` function would then compute the type objects
-using a function like this:
-
-.. code-block:: python
-
-    def eval_type_annotation_AST(node, namespace):
-        match node:
-            case ast.Name:
-                return namespace[node.id]
-            case ast.Attribute:
-                value = eval_type_annotation_AST(node.value, namespace)
-                return getattr(value, node.attr)
-        ...
-
-
 Performance Impact
 ==================
 
-While every new feature has to be weighed against its impact on performance and
-complexity, typing related features deserve additional scrutiny because type
-annotations are an entirely optional part of the Python language. We thus need
-to consider three separate groups of users and its impact on them: users who
-do not use type annotations at all, users who annotate their code for type
-checkers and/or linters but don't use runtime introspection and finally, users
-who also evaluate their type annotations at runtime.
+We measured the performance of the reference implementation across three
+groups of metrics: the time it takes to import modules, the memory footprint of
+annotate functions, and the time it takes to evaluate them. The first two of
+these are the most important since they impact every Python user, while the
+last only affects users that evaluate type annotations at runtime.
 
-For this, we considered three metrics: the time it takes to import modules both
-without and with type annotations, the annotate functions' size in memory and
-the time it takes to actually evaluate the annotate functions. The
-import time is most important for the first group of users; the second group is
-also affected by the annotate functions' memory footprint and the time to
-evaluate the annotate functions only impacts the last group of users.
+Relative to the current CPython implementation, import times for modules both
+with and without type annotations remained unchanged. Memory consumption
+decreased slightly by up to 5%, depending on the testing setup. The size of
+generated .pyc files decreased by about 6%. Note that these numbers are
+comparing the size of the entire modules, not just the annotate functions
+themselves.
 
-Using our reference implementation, we have found no significant difference in
-import times of modules that do not use type annotations. For modules that do
-use annotations, import was moderately faster and the memory footprint slightly
-smaller using the proposed annotate functions, both by a few percent. But
-unfortunately, evaluation time can increase significantly. In the worst case,
-when annotations are requested in the value format and every used name is
-defined, the increase is about sevenfold. However, when some names are not
-defined and the ``STRING`` or ``FORWARDREF`` formats have to be used, the
-current approach is also significantly slower and results in comparable times
-to the proposed annotate functions.
+Unfortunately, the annotate functions' evaluation time increased significantly,
+by about a factor of 10 in real-world scenarios. However, even code that
+directly uses annotations only spends a small fraction of its time in these
+function calls. For example, when using the :py:mod:`dataclasses` module, each
+call slowed down only by between 10% and 45%. The exact slowdown depends
+heavily on the structure of the annotations that are evaluated and on whether
+forward references are used. We suspect that most real-world code will be on the
+lower end of this range.
 
-A common situation where type annotations are evaluated is when tools like
-:py:mod:`dataclasses` or similar ORM packages analyze class or function
-definitions to synthesize additional behavior. For these tools, the time to,
-e.g., create a dataclass will be impacted by this proposal. But as mentioned
-above, there already are many situations where inspecting annotations takes
-a similar amount of time.
-
-In total, since the negative performance impacts only affect the smallest group
-of users, who also benefit from the newly possible type annotations, we consider
-this a worthwhile trade-off. The specification of the proposed format is also
-open enough that many optimizations are possible should they be deemed necessary
-in the future. For many users, this proposal will even be a slight performance
-improvement since their code never evaluates any annotate functions.
+In total, this proposal improves performance for many users that do not
+evaluate annotations at runtime. The negative impact on users that do evaluate
+annotations is only moderate, and these users are likely to also benefit the
+most from the new expressiveness that is being enabled. The implementation also
+leaves room for future optimizations that can be tailored to observed
+real-world usage.
 
 .. _outside-annos:
 
@@ -289,11 +265,11 @@ The ``AST`` Format
 A new value called ``AST`` is added to the ``annotationlib.Format`` enum with
 value 5. Annotate functions do not have to support this format. If an
 annotate function is called with this format, it must return a
-dict with str keys and ``AnnotationAST`` objects as values (or a single ``AnnotationAST`` object
-for evaluate functions, like ``evaluate_value`` on ``TypeAliasType``).
-These are instances of a proposed new class that
-hold the annotation's AST as an ``ast.expr`` object and a namespace that is
-used to evaluate them.
+dict with str keys and ``AnnotationAST`` objects as values (or a single
+``AnnotationAST`` object for evaluate functions, like ``evaluate_value`` on
+``TypeAliasType``).
+These are instances of a proposed new class that hold the annotation's AST as
+an ``ast.Expression`` object and a namespace that is used to evaluate them.
 
 Compiler-generated annotate functions will always support this format.
 They will store the necessary AST data as string constants and then
@@ -334,6 +310,79 @@ an annotate function that supports all annotation formats by converting the
 passed-in values appropriately.
 
 
+**************
+Implementation
+**************
+
+How each annotate function can implement the AST format is an implementation
+detail. It will differ greatly not only between different Python interpreters
+but also between, e.g., compiler-generated annotate functions and user-defined or
+synthesized ones. We will now explain several changes in the implementation of
+compiler-generated annotate functions that are necessary to support the new
+format with the performance characteristics described above.
+
+Currently, when a class like this is defined:
+
+.. code-block:: python
+
+    class MyClass:
+        a: int
+        b: list[str]
+
+The compiler generates a ``__annotate__`` method that behaves like this:
+
+.. code-block:: python
+
+    def __annotate__(format):
+        if format > Format.VALUE_WITH_FAKE_GLOBALS:
+            raise NotImplementedError
+        return {"a": int, "b": list[str]}
+
+That is, the annotations are compiled into each annotate function's bytecode.
+In the reference implementation, we instead store the annotations' ASTs and some
+additional name and scoping data in constants and then construct the objects in
+the requested format on demand. Since this process is identical for all annotate
+functions, we no longer need a new function object for each annotate and instead
+construct a simple ``AnnotateObject`` object that holds the necessary data
+and implements the ``__call__`` method to return the annotation in the requested
+format. A simplified Python version of these looks like this:
+
+.. code-block:: python
+
+    class AnnotateObject:
+        def __init__(self, asts, globals, ...):
+            self.asts = asts
+            self.globals = globals
+            ...
+
+        def __call__(self, format):
+            namespace = AnnotationNamespace(globals=self.globals, ...)
+            asts = {
+                name: AnnotationAST(_build_ast(ast), namespace)
+                for name, ast in self.asts.items()
+            }
+            if format == Format.AST:
+                return asts
+            elif format == Format.VALUE:
+                return {
+                    name: ast.evaluate()
+                    for name, ast in asts.items()
+                }
+            elif format == Format.STRING:
+                return {
+                    name: ast.unparse()
+                    for name, ast in asts.items()
+                }
+            ...
+
+These objects do not store the ASTs as :py:class:`ast.AST` objects directly, but
+rather strings containing a serialization of them, saving a significant amount
+of memory. Many of the performance characteristics are highly dependent on this
+storage representation and the implementation of the ``_build_ast`` method.
+If, for example, it is decided in the future that a different tradeoff between
+use cases and their performance is more desirable, the implementation of these
+objects can be changed easily without affecting the external interface.
+
 ***********************
 Backwards Compatibility
 ***********************
@@ -368,6 +417,14 @@ valid type annotations will not be changed to mean something different.
 Potential future changes can only define new semantics for syntactic constructs that
 currently are not valid type annotations and thus do not occur in user code.
 
+It also is important to note that the Python AST itself is unstable and may
+change from version to version. This means that the internal structure of the
+values returned by annotate functions called with the AST format are similarly
+unstable. Because of this, we encourage users to not use this format directly
+but to rely on the helper functions that return the usual typing objects. These
+functions and their return values are part of the typing spec and thus are
+stable; a change in the AST would only change what their implementation looks
+like.
 
 *********************
 Security Implications
@@ -456,6 +513,27 @@ defined in. Initially it seems like this namespace can be reconstructed from
 the annotate function's object since they contain the globals and cellvars used.
 However, this is not sufficient since namespaces can use more complex lookup
 logic when ``global`` statements or name mangling are used.
+
+Lossy AST Serialization
+=======================
+
+There are some attributes of AST nodes that are not strictly necessary to
+evaluate them. Most importantly, many nodes store the position in source code
+where they were found. These are used in error messages and debugging tools.
+Storing these attributes in the internal AST serialization results in about
+3% larger .pyc files. Since we already achieved a significant reduction in
+bytecode size, we decided to keep all attributes in the AST serialization and
+maintain full compatibility with existing tracebacks and debugging tools.
+
+
+****************
+Acknowledgements
+****************
+
+Thanks to Michael J. Sullivan for a lot of helpful feedback on this PEP and the
+reference implementation. Particularly, the idea to replace annotate functions
+with ``AnnotateObject``, which led to a significant performance improvement.
+
 
 *********
 Copyright
