@@ -847,6 +847,115 @@ Python code passes the lock and dictionary through the context manager:
 lock, and releases the lock even if the dictionary update raises an exception.
 
 
+.. _pep-852-cpp-wrapper:
+
+Example: Implementing a C++ wrapper
+***********************************
+
+Wrappers for other languages usually want each callback to be a closure
+with its own captured state, such as a ``std::function`` in C++. A wrapper
+that does this can be implemented on top of this API:
+
+.. code-block:: cpp
+
+    #include <Python.h>
+    #include <deque>
+    #include <exception>
+    #include <functional>
+    #include <memory>
+
+    using Callback = std::function<int(PyObject *asyncobj, PyObject *result)>;
+    using Queue = std::deque<Callback>;
+
+    static void
+    free_queue(void *ptr)
+    {
+        delete static_cast<Queue *>(ptr);
+    }
+
+    static int
+    trampoline(PyObject *asyncobj, PyObject *result)
+    {
+        auto *queue = static_cast<Queue *>(PyAsync_GetData(asyncobj));
+        Callback callback = std::move(queue->front());
+        queue->pop_front();
+        try {
+            return callback(asyncobj, result);
+        }
+        catch (const std::exception &exc) {
+            /* C++ exceptions must not unwind into the interpreter. */
+            PyErr_SetString(PyExc_RuntimeError, exc.what());
+            return 0;
+        }
+    }
+
+    static int
+    add_await(PyObject *asyncobj, PyObject *awaitable, Callback callback)
+    {
+        auto *queue = static_cast<Queue *>(PyAsync_GetData(asyncobj));
+        try {
+            if (queue == nullptr) {
+                auto owned = std::make_unique<Queue>();
+                if (PyAsync_SetData(asyncobj, owned.get(), free_queue) < 0) {
+                    return -1;
+                }
+                /* The async object owns the queue from here on. */
+                queue = owned.release();
+            }
+            queue->push_back(std::move(callback));
+        }
+        catch (const std::bad_alloc &) {
+            PyErr_NoMemory();
+            return -1;
+        }
+        if (PyAsync_AddAwait(asyncobj, awaitable, trampoline, nullptr) < 0) {
+            queue->pop_back();
+            return -1;
+        }
+        return 0;
+    }
+
+With this wrapper, a coroutine function can be written using lambdas that
+capture their own state:
+
+.. code-block:: cpp
+
+    /* Equivalent to: async def scale(awaitable, factor):
+                          return (await awaitable) * factor */
+    static PyObject *
+    scale(PyObject *self, PyObject *args) /* METH_VARARGS */
+    {
+        PyObject *awaitable;
+        double factor;
+        if (!PyArg_ParseTuple(args, "Od", &awaitable, &factor)) {
+            return nullptr;
+        }
+        PyObject *asyncobj = PyAsync_New();
+        if (asyncobj == nullptr) {
+            return nullptr;
+        }
+        auto multiply = [factor](PyObject *asyncobj, PyObject *value) -> int {
+            double number = PyFloat_AsDouble(value);
+            if (number == -1.0 && PyErr_Occurred()) {
+                return 0;
+            }
+            PyObject *result = PyFloat_FromDouble(number * factor);
+            if (result == nullptr) {
+                return 0;
+            }
+            int res = PyAsync_SetResult(asyncobj, result);
+            Py_DECREF(result);
+            return res == 0;
+        };
+        if (add_await(asyncobj, awaitable, multiply) < 0) {
+            PyAsync_Cancel(asyncobj);
+            Py_DECREF(asyncobj);
+            return nullptr;
+        }
+        return asyncobj;
+    }
+
+
 Reference Implementation
 ========================
 
@@ -930,7 +1039,7 @@ object, for the following reasons:
 Wrappers that do want a closure per callback (for example, a C++ wrapper
 that accepts ``std::function`` objects) can be built on the single data
 pointer by storing a queue of closures in it and registering a trampoline as
-the callback.
+the callback; see :ref:`the C++ wrapper example <pep-852-cpp-wrapper>`.
 
 
 Keeping the API in a third-party library
@@ -943,6 +1052,7 @@ Open Issues
 ===========
 
 TBD.
+
 
 Acknowledgements
 ================
