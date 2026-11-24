@@ -1,4 +1,7 @@
 import pytest
+from docutils import nodes
+from docutils.core import publish_doctree
+from docutils.parsers.rst import Parser
 
 from pep_sphinx_extensions.pep_processor.transforms import pep_headers
 from pep_sphinx_extensions.pep_zero_generator.constants import (
@@ -15,6 +18,89 @@ from pep_sphinx_extensions.pep_zero_generator.constants import (
     TYPE_PROCESS,
     TYPE_STANDARDS,
 )
+
+
+@pytest.mark.parametrize(
+    ("discussions_to", "post_history", "expected"),
+    [
+        pytest.param(
+            "",
+            "`1-Jan-2026 <https://discuss.python.org/t/older/100>`__, "
+            "`2-Jan-2026 <https://discuss.python.org/t/current/200/3>`__, 3-Jan-2026",
+            "https://discuss.python.org/t/current/200",
+            id="last-link-points-to-a-reply",
+        ),
+        pytest.param(
+            "",
+            "`2-Jan-2026 <https://discuss.python.org/t/200/3/>`__",
+            "https://discuss.python.org/t/200",
+            id="reply-url-without-a-topic-slug",
+        ),
+        pytest.param(
+            "",
+            "`2-Jan-2026 <https://discuss.python.org/t/current/200/>`__",
+            "https://discuss.python.org/t/current/200/",
+            id="topic-url",
+        ),
+        pytest.param(
+            "",
+            "`2-Jan-2026 <https://example.com/thread/200/3>`__",
+            "https://example.com/thread/200/3",
+            id="other-forum",
+        ),
+        pytest.param(
+            "Discussions-To: https://discuss.python.org/t/explicit/300\n",
+            "`2-Jan-2026 <https://discuss.python.org/t/current/200/3>`__",
+            "https://discuss.python.org/t/explicit/300",
+            id="explicit-link-takes-precedence",
+        ),
+        pytest.param(
+            "Discussions-To: Pending\n",
+            "`2-Jan-2026 <https://discuss.python.org/t/current/200/3>`__",
+            "Pending",
+            id="explicit-pending-takes-precedence",
+        ),
+        pytest.param("", "2-Jan-2026", None, id="date-without-a-link"),
+        pytest.param("", "Pending", None, id="pending-history"),
+        pytest.param("", None, None, id="no-history"),
+    ],
+)
+def test_discussions_to_fallback(discussions_to, post_history, expected):
+    source = f"PEP: 9000\nTitle: Test PEP\n{discussions_to}Status: Draft\n"
+    if post_history is not None:
+        source += f"Post-History: {post_history}\n"
+    document = publish_doctree(
+        source,
+        source_path="pep-9000.rst",
+        parser=Parser(rfc2822=True),
+        settings_overrides={"docinfo_xform": False},
+    )
+    header = document[0]
+    source_fields = {field[0].astext(): field[1] for field in header}
+    if post_history is not None:
+        history_link_urls = [
+            link["refuri"]
+            for link in source_fields["Post-History"].findall(nodes.reference)
+        ]
+
+    pep_headers.PEPHeaders(document).apply()
+
+    fields = {field[0].astext(): field[1] for field in header}
+    if expected is None:
+        assert "Discussions-To" not in fields
+    elif expected == "Pending":
+        assert fields["Discussions-To"].astext() == expected
+    else:
+        links = list(fields["Discussions-To"].findall(nodes.reference))
+        assert [link["refuri"] for link in links] == [expected]
+        if expected.startswith("https://discuss.python.org/"):
+            assert links[0].astext() == "Discourse thread"
+        assert list(fields).index("Discussions-To") < list(fields).index("Status")
+    if post_history is not None:
+        assert [
+            link["refuri"] for link in fields["Post-History"].findall(nodes.reference)
+        ] == history_link_urls
+    assert ("Discussions-To" in document["headers"]) == bool(discussions_to)
 
 
 @pytest.mark.parametrize(
