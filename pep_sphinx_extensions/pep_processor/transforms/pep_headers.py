@@ -4,6 +4,7 @@ from pathlib import Path
 from docutils import nodes, transforms
 from sphinx import errors
 
+from pep_sphinx_extensions.discussions import discourse_topic_url
 from pep_sphinx_extensions.pep_processor.transforms import pep_zero
 from pep_sphinx_extensions.pep_processor.transforms.pep_zero import _mask_email
 from pep_sphinx_extensions.pep_zero_generator.constants import (
@@ -217,18 +218,15 @@ def _insert_discussions_to_fallback(header: nodes.field_list) -> nodes.field | N
     if post_history is None:
         return None
 
-    for reference in reversed(list(post_history.findall(nodes.reference))):
-        if url := reference.get("refuri"):
-            break
-    else:
+    urls = [
+        reference["refuri"]
+        for reference in post_history.findall(nodes.reference)
+        if reference.get("refuri")
+    ]
+    if not urls:
         return None
 
-    # A Discourse post URL ends in a reply number after the topic ID.
-    url = re.sub(
-        r"^(https://discuss\.python\.org/t/(?:[\w-]+/)?[0-9]+)/[0-9]+/?$",
-        r"\1",
-        url,
-    )
+    url = discourse_topic_url(urls[-1])
     link = nodes.reference("", url, refuri=url)
     discussion_field = nodes.field(
         "",
