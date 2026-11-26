@@ -4,6 +4,7 @@ from pathlib import Path
 from docutils import nodes, transforms
 from sphinx import errors
 
+from pep_sphinx_extensions.discussions import discourse_topic_url
 from pep_sphinx_extensions.pep_processor.transforms import pep_zero
 from pep_sphinx_extensions.pep_processor.transforms.pep_zero import _mask_email
 from pep_sphinx_extensions.pep_zero_generator.constants import (
@@ -95,11 +96,14 @@ class PEPHeaders(transforms.Transform):
         if len(header) < 2 or header[1][0].astext().lower() != "title":
             raise PEPParsingError("No title!")
 
+        generated_discussions_to = _insert_discussions_to_fallback(header)
         fields_to_remove = []
         self.document["headers"] = headers = {}
         for field in header:
-            row_attributes = {sub.tagname: sub.rawsource for sub in field}
-            headers[row_attributes["field_name"]] = row_attributes["field_body"]
+            # Only source fields belong in the raw header metadata.
+            if field is not generated_discussions_to:
+                row_attributes = {sub.tagname: sub.rawsource for sub in field}
+                headers[row_attributes["field_name"]] = row_attributes["field_body"]
 
             name = field[0].astext().lower()
             body = field[1]
@@ -197,6 +201,40 @@ class PEPHeaders(transforms.Transform):
         # Remove unneeded fields
         for field in fields_to_remove:
             field.parent.remove(field)
+
+
+def _insert_discussions_to_fallback(header: nodes.field_list) -> nodes.field | None:
+    post_history = None
+    insert_at = len(header)
+    for index, field in enumerate(header):
+        name = field[0].astext().lower()
+        if name == "discussions-to":
+            return None
+        if name == "post-history":
+            post_history = field[1]
+        elif name == "status":
+            insert_at = index
+
+    if post_history is None:
+        return None
+
+    urls = [
+        reference["refuri"]
+        for reference in post_history.findall(nodes.reference)
+        if reference.get("refuri")
+    ]
+    if not urls:
+        return None
+
+    url = discourse_topic_url(urls[-1])
+    link = nodes.reference("", url, refuri=url)
+    discussion_field = nodes.field(
+        "",
+        nodes.field_name("", "Discussions-To"),
+        nodes.field_body("", nodes.paragraph("", "", link)),
+    )
+    header.insert(insert_at, discussion_field)
+    return discussion_field
 
 
 def _generate_list_url(mailto: str) -> str:

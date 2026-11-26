@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import dataclasses
+import re
 from collections.abc import Iterable, Sequence
 from email.parser import HeaderParser
 from pathlib import Path
 
+from pep_sphinx_extensions.discussions import discourse_topic_url
 from pep_sphinx_extensions.pep_zero_generator.constants import (
     ACTIVE_ALLOWED,
     HIDE_STATUS,
@@ -114,7 +116,6 @@ class PEP:
 
         # Other headers
         self.created = metadata["Created"]
-        self.discussions_to = metadata["Discussions-To"]
         self.python_version = metadata["Python-Version"]
         self.replaces = metadata["Replaces"]
         self.requires = metadata["Requires"]
@@ -125,6 +126,13 @@ class PEP:
             self.post_history = " ".join(metadata["Post-History"].split())
         else:
             self.post_history = None
+
+        self.discussions_to = metadata["Discussions-To"]
+        if self.discussions_to is None and self.post_history:
+            # Post-History represents linked dates as `DD-Mmm-YYYY <URL>`__.
+            urls = re.findall(r"<([^<>\s]+)>`__?", self.post_history)
+            if urls:
+                self.discussions_to = discourse_topic_url(urls[-1])
 
     def __repr__(self) -> str:
         return f"<PEP {self.number:0>4} - {self.title}>"

@@ -1,4 +1,7 @@
 import pytest
+from docutils import nodes
+from docutils.core import publish_doctree
+from docutils.parsers.rst import Parser
 
 from pep_sphinx_extensions.pep_processor.transforms import pep_headers
 from pep_sphinx_extensions.pep_zero_generator.constants import (
@@ -15,6 +18,104 @@ from pep_sphinx_extensions.pep_zero_generator.constants import (
     TYPE_PROCESS,
     TYPE_STANDARDS,
 )
+
+
+def _render_pep_headers(post_history, *, discussions_to=""):
+    document = publish_doctree(
+        f"PEP: 9000\nTitle: Test PEP\n{discussions_to}Status: Draft\n{post_history}",
+        source_path="pep-9000.rst",
+        parser=Parser(rfc2822=True),
+        settings_overrides={"docinfo_xform": False},
+    )
+    pep_headers.PEPHeaders(document).apply()
+    return document
+
+
+@pytest.mark.parametrize(
+    ("last_url", "expected_url", "label"),
+    [
+        pytest.param(
+            "https://discuss.python.org/t/current/200/3",
+            "https://discuss.python.org/t/current/200",
+            "Discourse thread",
+            id="reply-url",
+        ),
+        pytest.param(
+            "https://discuss.python.org/t/200/3/",
+            "https://discuss.python.org/t/200",
+            "Discourse thread",
+            id="reply-url-without-a-topic-slug",
+        ),
+        pytest.param(
+            "https://discuss.python.org/t/current/200/",
+            "https://discuss.python.org/t/current/200/",
+            "Discourse thread",
+            id="topic-url",
+        ),
+        pytest.param(
+            "https://example.com/thread/200/3",
+            "https://example.com/thread/200/3",
+            "https://example.com/thread/200/3",
+            id="other-forum",
+        ),
+    ],
+)
+def test_discussions_to_uses_last_post_history_link(last_url, expected_url, label):
+    first_url = "https://discuss.python.org/t/older/100"
+    document = _render_pep_headers(
+        f"Post-History: `01-Jan-2026 <{first_url}>`__, "
+        f"`02-Jan-2026 <{last_url}>`__, 03-Jan-2026\n"
+    )
+
+    fields = {field[0].astext(): field[1] for field in document[0]}
+    links = list(fields["Discussions-To"].findall(nodes.reference))
+    assert [(link["refuri"], link.astext()) for link in links] == [
+        (expected_url, label)
+    ]
+    assert list(fields).index("Discussions-To") < list(fields).index("Status")
+    assert [
+        link["refuri"] for link in fields["Post-History"].findall(nodes.reference)
+    ] == [first_url, last_url]
+    assert "Discussions-To" not in document["headers"]
+
+
+@pytest.mark.parametrize(
+    ("value", "label", "expected_urls"),
+    [
+        pytest.param(
+            "https://discuss.python.org/t/explicit/300",
+            "Discourse thread",
+            ["https://discuss.python.org/t/explicit/300"],
+            id="explicit-link",
+        ),
+        pytest.param("Pending", "Pending", [], id="explicit-pending"),
+    ],
+)
+def test_explicit_discussions_to_takes_precedence(value, label, expected_urls):
+    document = _render_pep_headers(
+        "Post-History: `02-Jan-2026 <https://discuss.python.org/t/current/200/3>`__\n",
+        discussions_to=f"Discussions-To: {value}\n",
+    )
+
+    fields = {field[0].astext(): field[1] for field in document[0]}
+    body = fields["Discussions-To"]
+    assert body.astext() == label
+    assert [link["refuri"] for link in body.findall(nodes.reference)] == expected_urls
+    assert document["headers"]["Discussions-To"] == value
+
+
+@pytest.mark.parametrize(
+    "post_history",
+    [
+        pytest.param("Post-History: 02-Jan-2026\n", id="date-without-a-link"),
+        pytest.param("Post-History: Pending\n", id="pending-history"),
+        pytest.param("", id="no-history"),
+    ],
+)
+def test_no_discussions_to_without_post_history_links(post_history):
+    document = _render_pep_headers(post_history)
+
+    assert "Discussions-To" not in {field[0].astext() for field in document[0]}
 
 
 @pytest.mark.parametrize(
